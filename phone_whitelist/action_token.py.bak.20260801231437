@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import secrets
+import time
+from dataclasses import dataclass
+
+from .service import normalize_phone_number
+
+
+TOKEN_LIFETIME_SECONDS = 30 * 60
+MAX_CLOCK_SKEW_SECONDS = 60
+MAX_TOKEN_LENGTH = 512
+
+
+class ActionTokenError(ValueError):
+    pass
+
+
+class ActionTokenExpired(ActionTokenError):
+    pass
+
+
+@dataclass(frozen=True)
+class ActionTokenClaims:
+    phone_number: str
+    issued_at: int
+    expires_at: int
+    nonce: str
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    try:
+        return base64.b64decode(value + padding, altchars=b"-_", validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ActionTokenError("トークンの形式が不正です") from exc
+
+
+def parse_secret(secret_hex: str) -> bytes:
+    try:
+        secret = bytes.fromhex((secret_hex or "").strip())
+    except ValueError as exc:
+        raise ActionTokenError("トークン署名鍵が不正です") from exc
+    if len(secret) < 32:
+        raise ActionTokenError("トークン署名鍵が設定されていません")
+    return secret
+
+
+def issue_action_token(phone_number: object, secret_hex: str, *, now: int | None = None) -> str:
+    now = int(time.time()) if now is None else int(now)
+    payload = {
+        "p": normalize_phone_number(phone_number),
+        "iat": now,
+        "exp": now + TOKEN_LIFETIME_SECONDS,
+        "n": secrets.token_urlsafe(16),
+    }
+    body = _b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    signature = _b64url_encode(hmac.new(parse_secret(secret_hex), body.encode("ascii"), hashlib.sha256).digest())
+    return f"{body}.{signature}"
+
+
+def validate_action_token(token: str, secret_hex: str, *, now: int | None = None) -> ActionTokenClaims:
+    token = str(token or "").strip()
+    if not token or len(token) > MAX_TOKEN_LENGTH or token.count(".") != 1:
+        raise ActionTokenError("トークンの形式が不正です")
+    body, supplied_signature = token.split(".", 1)
+    try:
+        body_bytes = body.encode("ascii", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise ActionTokenError("トークンの形式が不正です") from exc
+    expected_signature = _b64url_encode(hmac.new(parse_secret(secret_hex), body_bytes, hashlib.sha256).digest())
+    if not hmac.compare_digest(supplied_signature, expected_signature):
+        raise ActionTokenError("トークンを確認できません")
+    try:
+        payload = json.loads(_b64url_decode(body).decode("utf-8"))
+        issued_at = int(payload["iat"])
+        expires_at = int(payload["exp"])
+        nonce = str(payload["n"])
+        phone_number = normalize_phone_number(payload["p"])
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ActionTokenError("トークンの内容が不正です") from exc
+    if not nonce or len(nonce) > 64:
+        raise ActionTokenError("トークンの内容が不正です")
+    if expires_at - issued_at != TOKEN_LIFETIME_SECONDS:
+        raise ActionTokenError("トークンの有効期間が不正です")
+    now = int(time.time()) if now is None else int(now)
+    if issued_at > now + MAX_CLOCK_SKEW_SECONDS:
+        raise ActionTokenError("トークンの発行時刻が不正です")
+    if now > expires_at:
+        raise ActionTokenExpired("このリンクの有効期限は切れています")
+    return ActionTokenClaims(phone_number, issued_at, expires_at, nonce)
+
+
+def token_fingerprint(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()

@@ -152,6 +152,11 @@
 
       <div class="mail-box">
         <h3>📧 請求書登録メールアドレスへ送付</h3>
+        {% if email_otp_enabled %}
+          <p class="mail-status">
+            送信成功後、選択した送付先（To）をこのアップロードの閲覧用OTP送信先に登録します。
+          </p>
+        {% endif %}
         {% if mail_contacts %}
           <div class="mail-form-row">
             <label for="mailTo">送付先</label>

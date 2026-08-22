@@ -1,4 +1,7 @@
+import configparser
+import html
 import logging
+import os
 import re
 import smtplib
 import ssl
@@ -33,6 +36,50 @@ iPhoneご使用の方は、トップページ（　https://mfu.iori0624.jp/exter
 
 # 署名ファイルのパス（このファイルと同じディレクトリ）
 SIGNATURE_FILE = Path(__file__).parent / "signature.txt"
+SMTP_CONFIG_FILE = Path(os.environ.get("MFU_SMTP_CONFIG_FILE", "/etc/mfu/smtp.ini"))
+DEFAULT_FROM_DISPLAY_NAME = "MFU_System"
+
+
+def _load_smtp_settings() -> tuple[str, int, str, str]:
+    """Load the one authorized MFU SMTP transport configuration."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        with SMTP_CONFIG_FILE.open("r", encoding="utf-8") as config_file:
+            parser.read_file(config_file)
+    except OSError as exc:
+        raise RuntimeError(f"SMTP設定ファイルを読み込めません: {SMTP_CONFIG_FILE}") from exc
+
+    if not parser.has_section("smtp"):
+        raise RuntimeError(f"SMTP設定に[smtp]セクションがありません: {SMTP_CONFIG_FILE}")
+
+    section = parser["smtp"]
+    host = section.get("host", "").strip()
+    username = section.get("username", "").strip()
+    password_file_value = section.get("password_file", "").strip()
+    try:
+        port = section.getint("port")
+        starttls = section.getboolean("starttls")
+    except ValueError as exc:
+        raise RuntimeError(f"SMTP設定のport/starttlsが不正です: {SMTP_CONFIG_FILE}") from exc
+
+    if not host or not username or not password_file_value:
+        raise RuntimeError(f"SMTP設定の必須項目が不足しています: {SMTP_CONFIG_FILE}")
+    if port != 587 or not starttls:
+        raise RuntimeError("MFUのSMTP送信は587番かつSTARTTLS必須です")
+
+    password_file = Path(password_file_value)
+    if not password_file.is_absolute():
+        password_file = SMTP_CONFIG_FILE.parent / password_file
+    try:
+        if password_file.stat().st_mode & 0o007:
+            raise RuntimeError(f"SMTPパスワードファイルを他ユーザーからアクセス不可にしてください: {password_file}")
+        password = password_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"SMTPパスワードファイルを読み込めません: {password_file}") from exc
+    if not password:
+        raise RuntimeError(f"SMTPパスワードが空です: {password_file}")
+
+    return host, port, username, password
 
 # モジュール読み込み時に署名を1回だけ読み込む
 try:
@@ -55,16 +102,14 @@ def send_mail(
     event_uuid: str | None = None,    # 後方互換性のため残す
     event_name: str | None = None,
     from_display_name: str | None = None,
-    smtp_host: str = "192.168.103.15",
-    smtp_port: int = 25,
     timeout: int = 45,
     debug: bool = False,
-    starttls: bool | None = None,
     ignore_quit_errors: bool = True,
     external_login_user_id: int | None = None,
     mail_kind: str | None = None,
     append_signature: bool = True,
     attachments: list[dict] | None = None,
+    html_body: str | None = None,
 ) -> None:
     """
     メール送信ユーティリティ。
@@ -138,18 +183,33 @@ def send_mail(
             if m:
                 display_name = Header(m.group(1), "utf-8").encode()
             else:
-                display_name = Header(event_name or "イベント", "utf-8").encode()
+                display_name = Header(event_name or DEFAULT_FROM_DISPLAY_NAME, "utf-8").encode()
     else:
-        display_name = Header("IORI0624_MFUシステム", "utf-8").encode()
+        display_name = Header(DEFAULT_FROM_DISPLAY_NAME, "utf-8").encode()
 
     # 本文に署名を追加
     final_body = body + DEFAULT_SIGNATURE if append_signature else body
+    final_html_body = html_body
+    if final_html_body is not None and append_signature and DEFAULT_SIGNATURE:
+        signature_html = "<br>".join(
+            html.escape(line) for line in DEFAULT_SIGNATURE.strip().splitlines()
+        )
+        final_html_body = f"{final_html_body}<br><br>{signature_html}"
 
-    # メッセージ作成（添付があれば multipart）
+    def _body_part():
+        if final_html_body is None:
+            return MIMEText(final_body, "plain", "utf-8")
+        alternative = MIMEMultipart("alternative")
+        alternative.attach(MIMEText(final_body, "plain", "utf-8"))
+        alternative.attach(MIMEText(final_html_body, "html", "utf-8"))
+        return alternative
+
+    # HTML本文は multipart/alternative、添付ありの場合はその外側を
+    # multipart/mixed にして、一般的なメールクライアントで正しく表示する。
     has_attachments = bool(attachments)
     if has_attachments:
-        msg = MIMEMultipart()
-        msg.attach(MIMEText(final_body, "plain", "utf-8"))
+        msg = MIMEMultipart("mixed")
+        msg.attach(_body_part())
         for idx, att in enumerate(attachments or []):
             if not isinstance(att, dict):
                 raise ValueError(f"attachments[{idx}] must be dict")
@@ -173,7 +233,7 @@ def send_mail(
             part.add_header("Content-Disposition", "attachment", filename=filename)
             msg.attach(part)
     else:
-        msg = MIMEText(final_body, "plain", "utf-8")
+        msg = _body_part()
     msg["Subject"] = subject or ""
     msg["From"] = formataddr((display_name, from_address))
     msg["To"] = to_header
@@ -192,13 +252,10 @@ def send_mail(
     else:
         msg["X-MFU-Mail-ID"] = mfu_mail_uuid
 
-    # STARTTLS 自動判定
-    if starttls is None:
-        starttls = (smtp_port == 587)
-
     smtp = None
     sent_ok = False
     try:
+        smtp_host, smtp_port, smtp_username, smtp_password = _load_smtp_settings()
         smtp = smtplib.SMTP(
             host=smtp_host,
             port=smtp_port,
@@ -212,13 +269,14 @@ def send_mail(
         if debug:
             print("[SMTP] EHLO:", code, resp.decode() if isinstance(resp, bytes) else resp)
 
-        if starttls:
-            code, resp = smtp.starttls(context=ssl.create_default_context())
-            if debug:
-                print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
-            code, resp = smtp.ehlo()
-            if debug:
-                print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
+        code, resp = smtp.starttls(context=ssl.create_default_context())
+        if debug:
+            print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
+        code, resp = smtp.ehlo()
+        if debug:
+            print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
+
+        smtp.login(smtp_username, smtp_password)
 
         result = smtp.sendmail(from_address, [*to_list, *cc_list], msg.as_string())
         if result:
@@ -315,11 +373,8 @@ def send_external_unread_reminder_mail(email: str, *, external_login_user_id: in
 def send_mime(
     msg,
     *,
-    smtp_host: str = "192.168.103.15",
-    smtp_port: int = 25,
     timeout: int = 45,
     debug: bool = False,
-    starttls: bool | None = None,
     ignore_quit_errors: bool = True,
 ) -> None:
     """構築済みのMIMEメッセージをそのまま送信（署名は追加しない）"""
@@ -372,12 +427,10 @@ def send_mime(
         _summary_log(False, "(none)", subj, "no recipients")
         return
 
-    if starttls is None:
-        starttls = (smtp_port == 587)
-
     smtp = None
     sent_ok = False
     try:
+        smtp_host, smtp_port, smtp_username, smtp_password = _load_smtp_settings()
         smtp = smtplib.SMTP(host=smtp_host, port=smtp_port, timeout=timeout)
         if debug:
             smtp.set_debuglevel(1)
@@ -386,13 +439,14 @@ def send_mime(
         if debug:
             print("[SMTP] EHLO:", code, resp.decode() if isinstance(resp, bytes) else resp)
 
-        if starttls:
-            code, resp = smtp.starttls(context=ssl.create_default_context())
-            if debug:
-                print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
-            code, resp = smtp.ehlo()
-            if debug:
-                print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
+        code, resp = smtp.starttls(context=ssl.create_default_context())
+        if debug:
+            print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
+        code, resp = smtp.ehlo()
+        if debug:
+            print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
+
+        smtp.login(smtp_username, smtp_password)
 
         result = smtp.sendmail(envelope_from, rcpts, msg.as_string())
         if result:

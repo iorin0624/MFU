@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}通話品質診断 詳細{% endblock %}
+{% block content %}
+<div class="container py-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">通話品質診断 詳細</h1>
+    <a class="btn btn-outline-secondary" href="{{ url_for('phone_diagnostics.index') }}">一覧へ戻る</a>
+  </div>
+  <div class="card mb-3"><div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">日時</dt><dd class="col-sm-9">{{ item.started_at or item.ended_at }}</dd>
+      <dt class="col-sm-3">相手番号</dt><dd class="col-sm-9">{{ item.remote_number or '-' }}</dd>
+      <dt class="col-sm-3">通話時間</dt><dd class="col-sm-9">{{ item.billsec }}秒</dd>
+      <dt class="col-sm-3">コーデック</dt><dd class="col-sm-9">read={{ item.read_codec or '-' }} / write={{ item.write_codec or '-' }}</dd>
+      <dt class="col-sm-3">RTP送信元</dt><dd class="col-sm-9">{{ item.rtp_source or '-' }}</dd>
+      <dt class="col-sm-3">RTP送信先</dt><dd class="col-sm-9">{{ item.rtp_dest or '-' }}</dd>
+      <dt class="col-sm-3">SIP接続先</dt><dd class="col-sm-9">{{ item.sip_remote_addr or '-' }}</dd>
+      <dt class="col-sm-3">下りパケット</dt><dd class="col-sm-9">{{ item.remote_packets if item.remote_packets is not none else '-' }}／損失 {{ item.remote_lost if item.remote_lost is not none else '-' }}（{{ '%.4f%%'|format(item.remote_loss_pct) if item.remote_loss_pct is not none else '-' }}）</dd>
+      <dt class="col-sm-3">上りパケット</dt><dd class="col-sm-9">{{ item.local_packets if item.local_packets is not none else '-' }}／損失 {{ item.local_lost if item.local_lost is not none else '-' }}（{{ '%.4f%%'|format(item.local_loss_pct) if item.local_loss_pct is not none else '-' }}）</dd>
+      <dt class="col-sm-3">下りジッタ</dt><dd class="col-sm-9">{{ '%.3f ms'|format(item.remote_avg_jitter_ms if item.remote_avg_jitter_ms is not none else item.tx_jitter_ms) if (item.remote_avg_jitter_ms is not none or item.tx_jitter_ms is not none) else '-' }}</dd>
+      <dt class="col-sm-3">RTT</dt><dd class="col-sm-9">{{ '%.3f ms'|format(item.rtt_ms) if item.rtt_ms is not none else '-' }}</dd>
+      <dt class="col-sm-3">Unique ID</dt><dd class="col-sm-9"><code>{{ item.uniqueid }}</code></dd>
+    </dl>
+  </div></div>
+  <div class="card"><div class="card-header"><strong>RTCP生データ</strong></div><div class="card-body"><pre class="mb-0" style="white-space:pre-wrap">{{ item.metrics | tojson(indent=2) }}</pre></div></div>
+</div>
+{% endblock %}

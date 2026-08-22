@@ -8,7 +8,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     .gallery { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
-    .gallery .item { position:relative; display:inline-block; text-align:center; }
+    .gallery .item { position:relative; display:inline-block; text-align:center; padding-top:52px; }
     .caption { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .poster { width: 220px; aspect-ratio: 16/9; border-radius: 8px; background:#000; object-fit: cover; cursor: pointer; display:block; }
@@ -18,18 +18,43 @@
       background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
       border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
 
-    .share-badge { position:absolute; top:8px; right:8px;
-      background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.35);
-      border-radius:999px; width:38px; height:38px; display:flex; align-items:center; justify-content:center;
-      font-size:17px; line-height:1; cursor:pointer; }
-    .share-badge:hover { background:rgba(0,0,0,.75); }
-
     /* 変換中バッジ */
     .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
       background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
       border:1px solid rgba(255,255,255,.5); user-select:none; }
 
     @media (pointer:coarse){ .poster, video.thumb { width: 260px; } }
+
+    .file-check { position:absolute; opacity:0; pointer-events:none; }
+    .tapbox { position:absolute; top:4px; left:6px; width:42px; height:42px; border-radius:10px;
+      background:rgba(255,255,255,.94); border:1px solid #d8dee7; display:flex; align-items:center;
+      justify-content:center; font-size:20px; font-weight:700; user-select:none; cursor:pointer;
+      box-shadow:0 1px 4px rgba(0,0,0,.1); z-index:3; }
+    .item.selected .tapbox { background:#0d6efd; color:#fff; border-color:#0d6efd; }
+    .item.selected .poster, .item.selected video.thumb { outline:3px solid #0d6efd; outline-offset:2px; }
+
+    .zip-toolbar { display:flex; flex-wrap:wrap; gap:.6em; justify-content:center; align-items:center;
+      background:rgba(255,255,255,.94); -webkit-backdrop-filter:saturate(180%) blur(8px);
+      backdrop-filter:saturate(180%) blur(8px); border:1px solid #e6e6e6; border-radius:10px;
+      box-shadow:0 2px 10px rgba(0,0,0,.06); padding:.6em .8em; position:fixed; left:50%;
+      transform:translateX(-50%); width:calc(min(100vw - 1.2rem, 980px));
+      bottom:max(8px, env(safe-area-inset-bottom)); z-index:1000; }
+    .zip-toolbar .btn { font-weight:700; min-width:8.6em; padding:.75em 1.05em; border-radius:10px; }
+    .zip-toolbar .shortcut-action { background:#1267d6; color:#fff; border-color:#0d56b6; }
+    .zip-toolbar .shortcut-action:hover { background:#0f5fc9; color:#fff; }
+    .toolbar-row { display:contents; }
+    .sel-count { font-weight:700; font-size:.95rem; color:#333; background:#f0f0f0;
+      padding:.45em .75em; border-radius:999px; white-space:nowrap; }
+    .btn-busy { opacity:.7; pointer-events:none; position:relative; }
+    .btn-busy::after { content:""; display:inline-block; width:1em; height:1em;
+      border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+      margin-left:.5em; vertical-align:-2px; animation:zipspin .7s linear infinite; }
+    @keyframes zipspin { to { transform:rotate(360deg); } }
+    #zip-bottom-spacer { height:0; }
+    @media (max-width:480px) {
+      .zip-toolbar { gap:.5em; padding:.5em .6em; border-radius:8px; }
+      .toolbar-row { display:flex; flex:1 1 100%; justify-content:center; align-items:center; gap:.5em; }
+    }
   </style>
 </head>
 <body class="container py-4">
@@ -77,7 +102,8 @@
              data-web="{{ v.web }}"
              data-mime="{{ mime }}"
              data-converting="{{ 'true' if v.converting else 'false' }}">
-          <button type="button" class="share-badge" aria-label="動画を共有" title="共有">↗️</button>
+          <input id="movie-check-{{ loop.index0 }}" class="file-check" type="checkbox" data-filename="{{ v.name }}">
+          <label class="tapbox" for="movie-check-{{ loop.index0 }}" aria-label="選択">✓</label>
           {% if v.poster %}
             <img src="{{ v.poster }}" class="poster" alt="poster" loading="lazy">
           {% endif %}
@@ -93,13 +119,6 @@
           </video>
 
           <div class="small text-muted caption mt-1" title="{{ v.name }}">{{ v.name }}</div>
-          <div class="mt-1 d-flex justify-content-center gap-2">
-            <a class="btn btn-sm btn-outline-secondary"
-               href="{{ url_for('album.movie_download', album_id=album_id, child_id=child_id, filename=v.name) }}">
-              ⬇️ ダウンロード
-            </a>
-            <a class="btn btn-sm btn-outline-primary" href="{{ v.raw }}" target="_blank" rel="noopener">🔗 直接リンク</a>
-          </div>
         </div>
       {% endfor %}
     {% else %}
@@ -107,61 +126,24 @@
     {% endif %}
   </div>
 
+  {% if videos %}
+    <div id="zip-bottom-spacer" aria-hidden="true"></div>
+    <div class="zip-toolbar" aria-label="選択式ダウンロードツールバー（下部固定）" role="group">
+      <div class="toolbar-row toolbar-selection-row">
+        <button id="btn-all" type="button" class="btn btn-outline-primary btn-sm">全選択</button>
+        <button id="btn-none" type="button" class="btn btn-outline-secondary btn-sm">全解除</button>
+        <span id="sel-count" class="sel-count" aria-live="polite">0本選択中</span>
+      </div>
+      <div class="toolbar-row toolbar-download-row">
+        <button id="btn-zip" type="button" class="btn btn-success btn-sm" disabled>ZIPでDL</button>
+        <button id="btn-shortcut" type="button" class="btn shortcut-action btn-sm" data-mfu-shortcut-button hidden style="display:none" disabled>SCでDL</button>
+      </div>
+    </div>
+  {% endif %}
+
+  <script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/mfu_shortcut_download.js', v='20260821-2') }}"></script>
   <script>
-    function toAbsoluteUrl(urlLike){
-      if (!urlLike) return '';
-      try { return new URL(urlLike, location.href).href; }
-      catch(_) { return ''; }
-    }
-
-    function safeFilename(nameHint='video.mp4', mimeType='video/mp4'){
-      const fallbackExt = (mimeType.split('/')[1] || 'mp4').replace(/[^a-z0-9]/gi,'') || 'mp4';
-      const base = `${nameHint || ''}`.split('/').pop().replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
-      const file = base || `video.${fallbackExt}`;
-      return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
-    }
-
-    function isShareCanceled(error){
-      const msg = `${error?.message || ''}`.toLowerCase();
-      return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
-    }
-
-    async function shareMovieByUrl(movieUrl, filenameHint='movie.mp4'){
-      const absoluteMovieUrl = toAbsoluteUrl(movieUrl);
-      if (!absoluteMovieUrl) {
-        alert('共有する動画URLを取得できませんでした');
-        return;
-      }
-      try {
-        if (navigator.share && navigator.canShare) {
-          try {
-            const response = await fetch(absoluteMovieUrl, { credentials:'include', cache:'no-store' });
-            if (response.ok) {
-              const blob = await response.blob();
-              const mimeType = blob.type || 'video/mp4';
-              const file = new File([blob], safeFilename(filenameHint, mimeType), { type: mimeType });
-              if (navigator.canShare({ files:[file] })) {
-                await navigator.share({ files:[file], title:'MFU' });
-                return;
-              }
-            }
-          } catch(_) { }
-        }
-        if (navigator.share) {
-          await navigator.share({ url:absoluteMovieUrl, title:'MFU' });
-          return;
-        }
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(absoluteMovieUrl);
-          alert('共有URLをクリップボードにコピーしました。');
-          return;
-        }
-        prompt('このURLをコピーして共有してください。', absoluteMovieUrl);
-      } catch (error) {
-        if (!isShareCanceled(error)) console.error('shareMovieByUrl failed:', error);
-      }
-    }
-
     function setVideoSrcIfEmpty(videoEl, raw, mime){
       if (!videoEl) return;
       if (videoEl.currentSrc) return;
@@ -203,13 +185,6 @@
         return;
       }
 
-      if (e.target.closest('.share-badge')) {
-        e.preventDefault();
-        e.stopPropagation();
-        const movieUrl = item.dataset.raw;
-        const nameHint = item.dataset.name || 'movie.mp4';
-        shareMovieByUrl(movieUrl, nameHint);
-      }
     }, true);
 
     // ポスターが無いものは画面内に入ったら src セット
@@ -271,6 +246,97 @@
       // 初回すぐにもチェック
       tick();
     }
+
+    // ===== 選択式ZIP / iPhoneショートカット保存 =====
+    const movieChecks = Array.from(document.querySelectorAll('.file-check'));
+    const btnAll = document.getElementById('btn-all');
+    const btnNone = document.getElementById('btn-none');
+    const btnZip = document.getElementById('btn-zip');
+    const btnShortcut = document.getElementById('btn-shortcut');
+    const selectedCount = document.getElementById('sel-count');
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const albumId = {{ album_id|tojson }};
+    const childId = {{ child_id|tojson }};
+
+    function selectedMovieNames(){
+      return movieChecks.filter(input=>input.checked).map(input=>input.dataset.filename).filter(Boolean);
+    }
+    function updateMovieSelection(){
+      const count=selectedMovieNames().length;
+      if(selectedCount) selectedCount.textContent=`${count}本選択中`;
+      if(btnZip) btnZip.disabled=count===0 || btnZip.classList.contains('btn-busy');
+      if(btnShortcut) btnShortcut.disabled=count===0 || btnShortcut.classList.contains('btn-busy');
+      movieChecks.forEach(input=>input.closest('.item')?.classList.toggle('selected',input.checked));
+      setupDownloadSpacer();
+    }
+    function setupDownloadSpacer(){
+      const bar=document.querySelector('.zip-toolbar');
+      const spacer=document.getElementById('zip-bottom-spacer');
+      if(bar&&spacer) spacer.style.height=(bar.offsetHeight+12)+'px';
+    }
+    movieChecks.forEach(input=>input.addEventListener('change',updateMovieSelection));
+    btnAll?.addEventListener('click',()=>{ movieChecks.forEach(input=>input.checked=true); updateMovieSelection(); });
+    btnNone?.addEventListener('click',()=>{ movieChecks.forEach(input=>input.checked=false); updateMovieSelection(); });
+
+    btnZip?.addEventListener('click',async()=>{
+      const names=selectedMovieNames();
+      if(!names.length) return;
+      btnZip.classList.add('btn-busy');
+      btnZip.disabled=true;
+      btnZip.textContent='ZIP準備中…';
+      try{
+        const paths=names.map(name=>`album_movies/${albumId}/${childId}/original/${name}`);
+        const key=(crypto?.randomUUID?.() || `${Date.now()}${Math.random()}`);
+        const data=await MFUZipDownload.prepare({paths,csrfToken,key});
+        MFUZipDownload.startDownload(data.download_url);
+      }catch(error){
+        console.error(error);
+        alert('ZIPダウンロードの準備に失敗しました。');
+      }finally{
+        btnZip.classList.remove('btn-busy');
+        btnZip.textContent='ZIPでDL';
+        updateMovieSelection();
+      }
+    });
+
+    function resetShortcutButton(){
+      if(!btnShortcut) return;
+      btnShortcut.classList.remove('btn-busy');
+      btnShortcut.textContent='SCでDL';
+      updateMovieSelection();
+    }
+    window.addEventListener('pageshow',resetShortcutButton);
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='visible') resetShortcutButton();
+    });
+    btnShortcut?.addEventListener('click',async()=>{
+      const filenames=selectedMovieNames();
+      if(!filenames.length) return;
+      btnShortcut.classList.add('btn-busy');
+      btnShortcut.disabled=true;
+      btnShortcut.textContent='SC準備中…';
+      try{
+        const response=await fetch('/mobile-download/api/jobs',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
+          body:JSON.stringify({source_type:'album',album_id:albumId,child_id:childId,filenames}),
+        });
+        const data=await response.json().catch(()=>null);
+        if(!response.ok || !data?.ok || !data?.shortcut_url){
+          throw new Error(data?.error || 'shortcut_download_job_failed');
+        }
+        btnShortcut.textContent='SCを開きます';
+        await MFUShortcutDownload.launch(data);
+      }catch(error){
+        console.error(error);
+        alert('ショートカット用ダウンロードの準備に失敗しました。');
+      }finally{
+        window.setTimeout(resetShortcutButton,800);
+      }
+    });
+    updateMovieSelection();
+    window.addEventListener('resize',()=>requestAnimationFrame(setupDownloadSpacer));
+    window.addEventListener('orientationchange',()=>requestAnimationFrame(setupDownloadSpacer));
   </script>
 </body>
 </html>

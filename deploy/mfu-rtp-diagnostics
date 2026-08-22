@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CAPTURE=/var/lib/asterisk/bin/mfu_rtp_detail_capture.py
+STATE_DIR=/run/mfu-rtp-diagnostics
+STATE_FILE=$STATE_DIR/current.json
+UNIT=mfu-rtp-detail.service
+mkdir -p "$STATE_DIR"
+chmod 0700 "$STATE_DIR"
+
+json_error() {
+  python3 -c 'import json,sys; print(json.dumps({"ok":False,"error":sys.argv[1]},separators=(",",":")))' "$1"
+}
+
+active_session() {
+  [[ -s "$STATE_FILE" ]] || return 1
+  systemctl is-active --quiet "$UNIT"
+}
+
+action=${1:-status}
+session_id=${2:-}
+if (( $# > 2 )); then
+  json_error "too many arguments"
+  exit 2
+fi
+
+case "$action" in
+  start)
+    [[ "$session_id" =~ ^[a-f0-9]{32}$ ]] || { json_error "invalid session id"; exit 2; }
+    if active_session; then
+      json_error "a detail diagnostic session is already running"
+      exit 1
+    fi
+    contact_ip=$(asterisk -rx "pjsip show contacts" | sed -nE '/Contact:[[:space:]]+10610\/.*[[:space:]]Avail[[:space:]]/s/.*@([0-9.]+):.*/\1/p' | sort -u | paste -sd, -)
+    [[ -n "$contact_ip" ]] || { json_error "endpoint 10610 has no available IPv4 contact"; exit 1; }
+    started_at=$(date -Is)
+    expires_at=$(date -Is -d '+30 minutes')
+    printf '{"ok":true,"session_id":"%s","status":"running","contact_ip":"%s","started_at":"%s","expires_at":"%s"}\n' \
+      "$session_id" "$contact_ip" "$started_at" "$expires_at" > "$STATE_FILE"
+    chmod 0600 "$STATE_FILE"
+    systemd-run --quiet --collect --unit=mfu-rtp-detail \
+      --property=Type=simple --property=User=asterisk --property=Group=asterisk \
+      --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
+      --property=AmbientCapabilities=CAP_NET_RAW --property=CapabilityBoundingSet=CAP_NET_RAW \
+      /usr/bin/python3 "$CAPTURE" "$session_id" "$contact_ip" 1800
+    cat "$STATE_FILE"
+    ;;
+  stop)
+    [[ "$session_id" =~ ^[a-f0-9]{32}$ ]] || { json_error "invalid session id"; exit 2; }
+    [[ -s "$STATE_FILE" ]] || { json_error "no detail diagnostic session exists"; exit 1; }
+    current=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_id"])' "$STATE_FILE")
+    [[ "$current" == "$session_id" ]] || { json_error "session id does not match"; exit 1; }
+    if systemctl is-active --quiet "$UNIT"; then
+      systemctl kill --kill-who=main --signal=TERM "$UNIT"
+    fi
+    printf '{"ok":true,"session_id":"%s","status":"stopping"}\n' "$session_id"
+    ;;
+  status)
+    (( $# <= 1 )) || { json_error "unexpected argument"; exit 2; }
+    if active_session; then
+      cat "$STATE_FILE"
+    else
+      printf '{"ok":true,"status":"idle"}\n'
+    fi
+    ;;
+  *)
+    json_error "unsupported action"
+    exit 2
+    ;;
+esac

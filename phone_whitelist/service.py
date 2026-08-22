@@ -11,7 +11,9 @@ MAX_CSV_BYTES = 1_000_000
 MAX_CSV_ROWS = 10_000
 MAX_NAME_LENGTH = 100
 MAX_NOTE_LENGTH = 500
-MAX_SIP_CALLER_NAME_LENGTH = 32
+MAX_SIP_CALLER_NAME_BYTES = 40
+BLACKLIST_CALLER_NAME_PREFIX = "BL　"
+MAX_BLACKLIST_NAME_BYTES = MAX_SIP_CALLER_NAME_BYTES - len(BLACKLIST_CALLER_NAME_PREFIX.encode("utf-8"))
 
 
 class WhitelistValidationError(ValueError):
@@ -41,10 +43,11 @@ def validate_entry(phone_number: object, name: object, note: object) -> dict[str
     return {"phone_number": phone, "name": clean_name, "note": clean_note}
 
 
-def sanitize_sip_caller_name(value: object) -> str:
+def sanitize_sip_caller_name(value: object, *, max_bytes: int = MAX_SIP_CALLER_NAME_BYTES) -> str:
     text = str(value or "").strip()
     safe = "".join(char for char in text if not unicodedata.category(char).startswith("C"))
-    return safe[:MAX_SIP_CALLER_NAME_LENGTH]
+    encoded = safe.encode("utf-8")[:max_bytes]
+    return encoded.decode("utf-8", errors="ignore")
 
 
 def decode_csv_bytes(data: bytes) -> str:
@@ -115,8 +118,10 @@ def parse_csv_bytes(data: bytes) -> list[dict[str, str]]:
 def build_pbx_payload(
     entries: list[dict[str, object] | str],
     *,
+    blacklist_numbers: list[object] | None = None,
     whitelist_disabled_until: int = 0,
     anonymous_allowed_until: int = 0,
+    anonymous_hangup_enabled: bool | int = False,
 ) -> str:
     normalized: dict[str, str] = {}
     for entry in entries:
@@ -130,10 +135,23 @@ def build_pbx_payload(
     for value in (whitelist_disabled_until, anonymous_allowed_until):
         if not isinstance(value, int) or value < 0:
             raise WhitelistValidationError("切替期限が不正です")
+    if anonymous_hangup_enabled not in (False, True, 0, 1):
+        raise WhitelistValidationError("非通知拒否設定が不正です")
     lines = [
         "# Managed by MFU.2 phone whitelist",
         f"# MFU_WHITELIST_DISABLED_UNTIL={whitelist_disabled_until}",
         f"# MFU_ANONYMOUS_ALLOWED_UNTIL={anonymous_allowed_until}",
+        f"# MFU_ANONYMOUS_HANGUP_ENABLED={int(bool(anonymous_hangup_enabled))}",
     ]
     lines.extend(f"{phone}|{normalized[phone]}" for phone in sorted(normalized))
+    blacklist: dict[str, str] = {}
+    for entry in blacklist_numbers or []:
+        if isinstance(entry, dict):
+            phone = normalize_phone_number(entry.get("phone_number"))
+            name = sanitize_sip_caller_name(entry.get("name"), max_bytes=MAX_BLACKLIST_NAME_BYTES)
+        else:
+            phone = normalize_phone_number(entry)
+            name = ""
+        blacklist[phone] = base64.b64encode(name.encode("utf-8")).decode("ascii")
+    lines.extend(f"B|{phone}|{blacklist[phone]}" for phone in sorted(blacklist))
     return "\n".join(lines) + "\n"

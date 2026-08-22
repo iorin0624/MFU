@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}ETC一括登録の確認{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-1">freee一括登録の確認</h1>
+    <div class="text-muted">この画面ではまだfreeeへ送信されません。</div>
+  </div>
+  <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index') }}">明細一覧へ戻る</a>
+</div>
+
+{% if eligible %}
+<div class="alert alert-primary">
+  <strong>{{ eligible|length }}件／合計 ¥{{ '{:,}'.format(total_amount) }}</strong> を順番に登録します。
+  途中で失敗した明細があっても、残りの処理は続行します。
+</div>
+
+<div class="card mb-3">
+  <div class="card-header fw-bold">登録番号別の登録先</div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead><tr><th>登録番号</th><th>取引先</th><th>品目</th><th class="text-end">件数</th><th class="text-end">金額</th></tr></thead>
+      <tbody>
+      {% for group in groups %}
+        <tr>
+          <td>{{ group.registration_number }}{% if group.issuer_name %}<div class="small text-muted">{{ group.issuer_name }}</div>{% endif %}</td>
+          <td>{{ group.partner_name }}</td>
+          <td>{{ group.item_name }}</td>
+          <td class="text-end">{{ group.count }}件</td>
+          <td class="text-end">¥{{ '{:,}'.format(group.amount) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<details class="mb-3">
+  <summary>登録対象の明細を確認（{{ eligible|length }}件）</summary>
+  <div class="list-group mt-2">
+    {% for record in eligible %}
+    <div class="list-group-item d-flex justify-content-between gap-3">
+      <span>{{ record.used_at.strftime('%Y年%m月%d日 %H:%M') }}　{{ record.entry_ic or '入口記録なし' }} → {{ record.exit_ic or '出口記録なし' }}</span>
+      <strong class="text-nowrap">¥{{ '{:,}'.format(record.amount) }}</strong>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+
+<form method="post" action="{{ url_for('etc_accounting.batch_start') }}" onsubmit="this.querySelector('button[type=submit]').disabled=true;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="confirm" value="1">
+  {% for record in eligible %}<input type="hidden" name="record_ids" value="{{ record.id }}">{% endfor %}
+  <div class="d-flex flex-wrap gap-2 justify-content-end">
+    <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index') }}">キャンセル</a>
+    <button class="btn btn-success" type="submit">{{ eligible|length }}件の一括登録を開始</button>
+  </div>
+</form>
+{% else %}
+<div class="alert alert-warning">現在、一括登録できる明細はありません。</div>
+{% endif %}
+
+{% if excluded %}
+<div class="card border-warning mt-4">
+  <div class="card-header fw-bold">登録対象から除外（{{ excluded|length }}件）</div>
+  <div class="list-group list-group-flush">
+  {% for record in excluded %}
+    <div class="list-group-item d-flex flex-wrap justify-content-between gap-2">
+      <span>{{ record.used_at.strftime('%Y年%m月%d日 %H:%M') }}　{{ record.entry_ic or '入口記録なし' }} → {{ record.exit_ic or '出口記録なし' }}</span>
+      <span class="badge bg-warning text-dark">{{ record.batch_reason }}</span>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

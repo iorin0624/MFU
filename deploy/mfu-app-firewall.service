@@ -1,0 +1,12 @@
+[Unit]
+Description=Restrict MFU Gunicorn LAN listener to the reverse proxy
+After=network-pre.target
+Before=mfu.service mfu-upload-lan.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mfu-app-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

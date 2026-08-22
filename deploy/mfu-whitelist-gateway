@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+original=${SSH_ORIGINAL_COMMAND:-}
+if [[ -z "$original" ]]; then
+  exec sudo -n /usr/local/sbin/mfu-whitelist-apply
+fi
+
+read -r namespace action session_id extra <<< "$original"
+if [[ "$namespace" == "click-to-call" ]]; then
+  if [[ "$action" != "start" || ! "${session_id:-}" =~ ^[a-f0-9]{32}$ || -n "${extra:-}" ]]; then
+    echo '{"ok":false,"error":"invalid click-to-call command"}'
+    exit 2
+  fi
+  exec sudo -n /usr/local/sbin/mfu-click-to-call start "$session_id"
+fi
+
+if [[ "$namespace" == "call-through" ]]; then
+  if [[ ! "$action" =~ ^(reserve|cancel)$ || ! "${session_id:-}" =~ ^[a-f0-9]{32}$ || -n "${extra:-}" ]]; then
+    echo '{"ok":false,"error":"invalid call-through command"}'
+    exit 2
+  fi
+  exec sudo -n /usr/local/sbin/mfu-call-through "$action" "$session_id"
+fi
+
+if [[ "$namespace" != "diagnostics" || -n "${extra:-}" ]]; then
+  echo '{"ok":false,"error":"command not permitted"}'
+  exit 2
+fi
+
+case "$action" in
+  start|stop)
+    [[ "${session_id:-}" =~ ^[a-f0-9]{32}$ ]] || { echo '{"ok":false,"error":"invalid session id"}'; exit 2; }
+    exec sudo -n /usr/local/sbin/mfu-rtp-diagnostics "$action" "$session_id"
+    ;;
+  status)
+    [[ -z "${session_id:-}" ]] || { echo '{"ok":false,"error":"unexpected argument"}'; exit 2; }
+    exec sudo -n /usr/local/sbin/mfu-rtp-diagnostics status
+    ;;
+  *)
+    echo '{"ok":false,"error":"unsupported action"}'
+    exit 2
+    ;;
+esac

@@ -38,6 +38,11 @@ from requests.exceptions import SSLError as RequestsSSLError
 from requests.exceptions import Timeout as RequestsTimeout
 
 from app.chat.socketio_ext import socketio
+from app.external_login_user.session_revocation import (
+    is_external_user_active,
+    register_external_user_socket,
+    unregister_external_user_socket,
+)
 from app.utils.db import get_db
 
 try:
@@ -160,6 +165,8 @@ CHAT_RATE_LIMIT_MEMORY_MAX_KEYS = 5000
 CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS = 60
 CHAT_RATE_LIMIT_REDIS_CLIENT: Any | None = None
 CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED = False
+CHAT_SOCKET_ACTOR_LOCK = threading.Lock()
+CHAT_SOCKET_ACTORS: dict[str, dict[str, Any]] = {}
 
 
 def _actor_log_id(actor: dict[str, Any] | None) -> str:
@@ -177,6 +184,88 @@ def _audit_log(action: str, **fields: Any) -> None:
         text = str(value).replace("\n", " ").replace("\r", " ").strip()
         normalized.append(f"{key}={text}")
     current_app.logger.info("chat_audit %s", " ".join(normalized))
+
+
+def _socket_sid() -> str:
+    return str(getattr(request, "sid", "") or "").strip()
+
+
+def _remember_socket_actor(actor: dict[str, Any] | None) -> None:
+    sid = _socket_sid()
+    if not sid or not actor:
+        return
+    with CHAT_SOCKET_ACTOR_LOCK:
+        CHAT_SOCKET_ACTORS[sid] = dict(actor)
+
+
+def _forget_socket_actor() -> dict[str, Any] | None:
+    sid = _socket_sid()
+    if not sid:
+        return None
+    with CHAT_SOCKET_ACTOR_LOCK:
+        return CHAT_SOCKET_ACTORS.pop(sid, None)
+
+
+def _get_cached_socket_actor() -> dict[str, Any] | None:
+    sid = _socket_sid()
+    if sid:
+        with CHAT_SOCKET_ACTOR_LOCK:
+            actor = CHAT_SOCKET_ACTORS.get(sid)
+        if actor:
+            return dict(actor)
+    return None
+
+
+def _get_socket_actor() -> dict[str, Any] | None:
+    actor = _get_cached_socket_actor()
+    if actor:
+        return actor
+    actor = get_chat_actor()
+    if actor:
+        _remember_socket_actor(actor)
+    return actor
+
+
+def _external_user_id_for_actor(actor: dict[str, Any] | None) -> int:
+    if not actor:
+        return 0
+    if actor.get("is_chat_admin_alias"):
+        try:
+            return int(actor.get("source_ext_user_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+    if str(actor.get("actor_type") or "") != "line":
+        return 0
+    try:
+        return int(actor.get("actor_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _disconnect_if_external_user_revoked(actor: dict[str, Any] | None) -> bool:
+    ext_user_id = _external_user_id_for_actor(actor)
+    if ext_user_id <= 0:
+        return False
+    try:
+        if is_external_user_active(ext_user_id):
+            return False
+    except Exception:
+        current_app.logger.exception(
+            "chat external user status check failed user_id=%s sid=%s",
+            ext_user_id,
+            _socket_sid(),
+        )
+    emit(
+        "force_logout",
+        {
+            "reason": "account_deleted",
+            "message": "このアカウントは退会処理済みのためログアウトしました。",
+            "redirect": "/external-login/",
+        },
+        to=_socket_sid() or None,
+    )
+    disconnect()
+    return True
 
 
 def _get_rate_limit_redis_client() -> Any | None:
@@ -2552,7 +2641,9 @@ def _get_chat_admin_alias_row(ext_user_id: int) -> dict[str, Any] | None:
     try:
         cur.execute(
             """
-            SELECT id, nickname, email, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+            SELECT id, nickname, email, social_id,
+                   COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+                   COALESCE(is_deleted, 0) AS is_deleted
               FROM external_login_user
              WHERE id=%s
              LIMIT 1
@@ -2560,7 +2651,7 @@ def _get_chat_admin_alias_row(ext_user_id: int) -> dict[str, Any] | None:
             (int(ext_user_id),),
         )
         row = cur.fetchone()
-        if not row:
+        if not row or int(row.get("is_deleted") or 0) == 1:
             return None
         row["chat_admin_alias"] = int(row.get("chat_admin_alias") or 0)
         return row
@@ -3186,7 +3277,10 @@ def _has_active_event_membership(event_id: int, user_id: str | int) -> bool:
         row = _get_latest_event_member_row(event_id, user_id)
         if not row:
             return False
-        return int(row.get("is_canceled") or 0) == 0
+        return (
+            str(row.get("status") or "").strip().lower() == "approved"
+            and int(row.get("is_canceled") or 0) == 0
+        )
     except Exception:
         current_app.logger.warning(
             "chat active membership check failed event=%s user_id=%s",
@@ -7610,16 +7704,39 @@ def manifest():
 
 @socketio.on("connect")
 def chat_connect():
+    ext_user_id = session.get("ext_user_id")
+    if ext_user_id:
+        try:
+            ext_user_id = int(ext_user_id)
+        except (TypeError, ValueError):
+            current_app.logger.warning("chat socket connect denied: invalid ext_user_id")
+            return False
+        try:
+            if not is_external_user_active(ext_user_id, force_refresh=True):
+                current_app.logger.info(
+                    "chat socket connect denied: external user deleted user_id=%s",
+                    ext_user_id,
+                )
+                return False
+        except Exception:
+            current_app.logger.exception(
+                "chat socket connect denied: external user status check failed user_id=%s",
+                ext_user_id,
+            )
+            return False
+
     actor = get_chat_actor()
     _audit_log("room_join", actor=_actor_log_id(actor), result="connect")
     if not actor:
         current_app.logger.info("chat socket connect denied: no actor")
         return False
+    _remember_socket_actor(actor)
+
     ext_user_joined = False
-    ext_user_id = session.get("ext_user_id")
     if ext_user_id:
         try:
-            join_room(f"external_user:{int(ext_user_id)}")
+            join_room(f"external_user:{ext_user_id}")
+            register_external_user_socket(ext_user_id, _socket_sid())
             ext_user_joined = True
         except Exception:
             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
@@ -7653,6 +7770,16 @@ def chat_connect():
     )
     return True
 
+
+@socketio.on("disconnect")
+def chat_disconnect():
+    sid = _socket_sid()
+    actor = _forget_socket_actor()
+    ext_user_id = _external_user_id_for_actor(actor)
+    if ext_user_id > 0:
+        unregister_external_user_socket(ext_user_id, sid)
+
+
 @socketio.on("chat_join")
 def on_join(data):
     _ensure_chat_rooms_schema()
@@ -7661,7 +7788,7 @@ def on_join(data):
     _ensure_chat_read_state_room_schema()
     _ensure_chat_read_state_v2_schema()
     _ensure_chat_edit_schema()
-    actor = get_chat_actor()
+    actor = _get_socket_actor()
     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
     room_id = str((data or {}).get("room_id") or "").strip() or None
 
@@ -7705,7 +7832,7 @@ def on_join(data):
 
 @socketio.on("chat_seen")
 def on_seen(data):
-    actor = get_chat_actor()
+    actor = _get_cached_socket_actor()
     if not actor:
         disconnect()
         return
@@ -7779,7 +7906,7 @@ def on_seen(data):
 
 @socketio.on("chat_typing")
 def on_typing(data):
-    actor = get_chat_actor()
+    actor = _get_cached_socket_actor()
     if not actor:
         disconnect()
         return
@@ -7826,7 +7953,9 @@ def on_typing(data):
 
 @socketio.on("chat_send")
 def on_send(data):
-    actor = get_chat_actor()
+    actor = _get_socket_actor()
+    if _disconnect_if_external_user_revoked(actor):
+        return
     actor_key = get_chat_actor_key(actor)
     room_id = str((data or {}).get("room_id") or "").strip() or None
     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
@@ -7966,7 +8095,9 @@ def on_send(data):
 
 @socketio.on("chat_react")
 def on_react(data):
-    actor = get_chat_actor()
+    actor = _get_socket_actor()
+    if _disconnect_if_external_user_revoked(actor):
+        return
     if not actor:
         disconnect()
         return
@@ -8083,7 +8214,9 @@ def on_react(data):
 
 @socketio.on("dm_react")
 def on_dm_react(data):
-    actor = get_chat_actor()
+    actor = _get_socket_actor()
+    if _disconnect_if_external_user_revoked(actor):
+        return
     actor_key = get_chat_actor_key(actor)
     if not actor or not actor_key:
         disconnect()
@@ -8178,7 +8311,9 @@ def on_dm_react(data):
 
 @socketio.on("chat_notify_dm")
 def notify_dm(data):
-    actor = get_chat_actor()
+    actor = _get_socket_actor()
+    if _disconnect_if_external_user_revoked(actor):
+        return
     if not actor:
         disconnect()
         return

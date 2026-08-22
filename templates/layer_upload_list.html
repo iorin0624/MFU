@@ -19,7 +19,6 @@
           <th>アップロード日時</th>
           <th>レイヤーアップロード有無</th>
           <th>フォルダ数</th>
-          <th>ZIP有無</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -33,11 +32,11 @@
           <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
           <td>{{ 'あり' if item.has_layer_upload else 'なし' }}</td>
           <td>{{ item.folder_count }}</td>
-          <td>{{ 'あり' if item.has_zip else 'なし' }}</td>
           <td>
             <div class="d-flex flex-wrap gap-2">
               <a href="{{ url_for('upload_history.layer_upload_detail', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary">詳細表示</a>
               <form action="{{ url_for('upload_history.layer_upload_delete', uuid=item.uuid) }}" method="post"
+                    data-admin-passkey-action="layer_upload_delete:{{ item.uuid }}"
                     onsubmit="return confirm('レイヤーアップロード履歴と受付データを削除します。通常アップロード側は削除されません。実行しますか？');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
                 <button class="btn btn-sm btn-outline-danger">レイヤー側を削除</button>
@@ -48,7 +47,7 @@
         {% endfor %}
         {% if not uploads %}
         <tr>
-          <td colspan="9" class="text-center text-muted py-4">表示可能なデータがありません。</td>
+          <td colspan="8" class="text-center text-muted py-4">表示可能なデータがありません。</td>
         </tr>
         {% endif %}
       </tbody>

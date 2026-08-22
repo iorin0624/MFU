@@ -32,6 +32,7 @@ from app.payment.square_state import (
     should_apply_square_update,
     square_datetime,
 )
+from app.utils.admin_passkey_stepup import require_admin_passkey
 
 from . import invoice_bp
 from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
@@ -257,6 +258,9 @@ def invoice_restore(invoice_id: int):
 @login_required
 def invoice_purge(invoice_id: int):
     _require_invoice_delete_csrf()
+    guard = require_admin_passkey(f"invoice_purge:{invoice_id}")
+    if guard:
+        return guard
     try:
         invoice = purge_deleted_invoice(
             invoice_id,
@@ -285,9 +289,9 @@ def issuer_template_new():
     if request.method == "POST":
         form_data = build_issuer_template_form_data(request.form)
         try:
-            template_id = create_issuer_template(request.form)
+            create_issuer_template(request.form)
             flash("発行者テンプレートを登録しました。", "success")
-            return redirect(url_for("invoice.issuer_template_edit", template_id=template_id))
+            return redirect(url_for("invoice.issuer_template_list"))
         except InvoiceValidationError as exc:
             flash(str(exc), "warning")
     return render_template("issuer_template_form.html", form_data=form_data, mode="new")
@@ -307,7 +311,7 @@ def issuer_template_edit(template_id: int):
         try:
             update_issuer_template(template_id, request.form)
             flash("発行者テンプレートを更新しました。", "success")
-            return redirect(url_for("invoice.issuer_template_edit", template_id=template_id))
+            return redirect(url_for("invoice.issuer_template_list"))
         except InvoiceValidationError as exc:
             flash(str(exc), "warning")
     return render_template(
@@ -351,9 +355,9 @@ def contact_list():
 def contact_new():
     if request.method == "POST":
         try:
-            contact_id = save_contact(None, request.form)
+            save_contact(None, request.form)
             flash("請求先を登録しました。", "success")
-            return redirect(url_for("invoice.contact_edit", contact_id=contact_id))
+            return redirect(url_for("invoice.contact_list"))
         except InvoiceValidationError as exc:
             flash(str(exc), "warning")
     return render_template("invoice_contact_form.html", form_data=request.form, mode="new")
@@ -370,7 +374,7 @@ def contact_edit(contact_id: int):
         try:
             save_contact(contact_id, request.form)
             flash("請求先を更新しました。", "success")
-            return redirect(url_for("invoice.contact_edit", contact_id=contact_id))
+            return redirect(url_for("invoice.contact_list"))
         except InvoiceValidationError as exc:
             flash(str(exc), "warning")
             contact = {**contact, **request.form}

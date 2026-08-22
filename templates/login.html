@@ -1,315 +1,77 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>ログイン</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MFU ログイン</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/login.css') }}" rel="stylesheet">
 </head>
 <body class="bg-light d-flex justify-content-center align-items-center min-vh-100">
-  <div class="card shadow-sm p-4" style="max-width: 400px; width: 100%;">
-    <h2 class="text-center mb-4">ログイン</h2>
-    
-    {% if error %}
-      <div class="alert alert-danger text-center">{{ error }}</div>
+  <main class="card shadow-sm p-4 login-card">
+    <h1 class="h3 text-center mb-4">ログイン</h1>
+    {% if error %}<div class="alert alert-danger text-center">{{ error }}</div>{% endif %}
+    {% if info %}<div class="alert alert-info text-center">{{ info }}</div>{% endif %}
+    <div id="auth-error" class="alert alert-danger text-center d-none" role="alert"></div>
+    <div id="auth-info" class="alert alert-info text-center d-none" role="status"></div>
+
+    {% set approval_return = (session.get('post_login_next') or request.args.get('next') or '') == '/auth/admin/qr/approve' %}
+    {% set show_qr_login = not preauth_active and not approval_return %}
+    {% if show_qr_login %}
+    <section id="qr-section" class="border rounded p-3 mb-3 text-center">
+      <strong>管理者：スマートフォンでQRログイン</strong>
+      <p class="small text-muted mb-2">PCでのID・パスワード入力は不要です。スマートフォン側でパスキー認証を行います。</p>
+      <img id="qr-image" class="qr-image d-none" alt="管理者QRログイン">
+      <div id="qr-status" class="small mt-2">QRコードを準備しています…</div>
+      <button type="button" id="qr-reload" class="btn btn-sm btn-outline-secondary mt-2 d-none">QRコードを再発行</button>
+    </section>
+    <div class="d-flex align-items-center gap-2 mb-3" aria-hidden="true">
+      <hr class="flex-grow-1"><span class="small text-muted">または</span><hr class="flex-grow-1">
+    </div>
     {% endif %}
-    {% if info %}
-      <div class="alert alert-info text-center">{{ info }}</div>
-    {% endif %}
-    <div id="passkey-error" class="alert alert-danger text-center d-none"></div>
-    <div id="mfa-error" class="alert alert-danger text-center d-none"></div>
-    <div id="mfa-info" class="alert alert-info text-center d-none"></div>
 
-    <form method="post" data-preauth-active="{{ 'true' if preauth_active else 'false' }}" data-preauth-username="{{ preauth_username or '' }}">
-      <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
-      <div class="mb-3">
-        <label for="username" class="form-label">ユーザー名</label>
-        <input type="text" id="username" name="username" class="form-control" required value="{{ preauth_username or username or '' }}">
+    <form id="login-form" method="post"
+          data-preauth-active="{{ 'true' if preauth_active else 'false' }}"
+          data-preauth-username="{{ preauth_username or '' }}"
+          data-admin-mfa="{{ 'true' if admin_mfa else 'false' }}"
+          data-qr-login-enabled="{{ 'true' if show_qr_login else 'false' }}">
+      <input type="hidden" name="csrf_token" id="csrf-token" value="{{ csrf_token_value }}">
+      <input type="hidden" name="next" value="{{ request.args.get('next') or session.get('post_login_next', '') }}">
+      <div id="credentials-section" class="{{ 'd-none' if preauth_active else '' }}">
+        <div class="mb-3">
+          <label for="username" class="form-label">ユーザー名</label>
+          <input type="text" id="username" name="username" class="form-control" required autocomplete="username" value="{{ preauth_username or username or '' }}">
+        </div>
+        <div class="mb-3">
+          <label for="password" class="form-label">パスワード</label>
+          <input type="password" id="password" name="password" class="form-control" autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary w-100 mb-2">ID・パスワードを確認</button>
+        <button type="button" id="initial-passkey" class="btn btn-outline-secondary w-100">一般ユーザー：パスキーでログイン</button>
       </div>
-
-      <div class="mb-3" id="password-group">
-        <label for="password" class="form-label">パスワード</label>
-        <input type="password" id="password" name="password" class="form-control">
-      </div>
-
-      <button type="submit" class="btn btn-primary w-100 mb-2" id="primary-login">ログイン</button>
-      <button type="submit" class="btn btn-outline-secondary w-100 mb-2" id="password-login" name="password_login" value="1">
-        パスワードでログイン
-      </button>
     </form>
 
-    <div id="mfa-section" class="mt-3 d-none">
+    <section id="mfa-section" class="{{ '' if preauth_active else 'd-none' }}">
+      <p class="small text-muted">追加認証を1つ選んでください。</p>
       <div class="mb-3">
-        <label for="totp-code" class="form-label">アプリOTP</label>
-        <input type="text" id="totp-code" class="form-control" inputmode="numeric" autocomplete="one-time-code">
-        <button type="button" id="totp-verify" class="btn btn-outline-primary w-100 mt-2">OTPを確認</button>
+        <label for="totp-code" class="form-label">認証アプリ（TOTP）</label>
+        <input type="text" id="totp-code" class="form-control" inputmode="numeric" autocomplete="one-time-code" maxlength="8">
+        <button type="button" id="totp-verify" class="btn btn-primary w-100 mt-2">TOTPでログイン</button>
       </div>
-      <div class="mb-3">
-        <label for="email-code" class="form-label">メールOTP</label>
-        <div class="d-grid gap-2">
-          <button type="button" id="email-send" class="btn btn-outline-secondary">メールOTPを送信</button>
-        </div>
+      <button type="button" id="mfa-passkey" class="btn btn-outline-primary w-100 mb-3">登録済みパスキーを使う</button>
+
+      {% if not admin_mfa or admin_email_recovery %}
+      <details class="mb-3">
+        <summary>メールOTP{% if admin_mfa %}（緊急復旧）{% endif %}</summary>
+        <button type="button" id="email-send" class="btn btn-outline-secondary w-100 mt-2">メールOTPを送信</button>
         <input type="text" id="email-code" class="form-control mt-2" inputmode="numeric" autocomplete="one-time-code">
-        <button type="button" id="email-verify" class="btn btn-outline-secondary w-100 mt-2">メールOTPを確認</button>
-      </div>
-    </div>
-  </div>
-  <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
-  <script>
-    const loginForm = document.querySelector("form");
-    const passkeyError = document.getElementById("passkey-error");
-    const mfaError = document.getElementById("mfa-error");
-    const mfaInfo = document.getElementById("mfa-info");
-    const usernameInput = document.getElementById("username");
-    const passwordGroup = document.getElementById("password-group");
-    const mfaSection = document.getElementById("mfa-section");
-    const totpVerifyButton = document.getElementById("totp-verify");
-    const emailSendButton = document.getElementById("email-send");
-    const emailVerifyButton = document.getElementById("email-verify");
-    let isFallbacking = false;
-
-    const showPasskeyError = (message) => {
-      if (!passkeyError) return;
-      passkeyError.textContent = message;
-      passkeyError.classList.remove("d-none");
-    };
-
-    const clearPasskeyError = () => {
-      if (!passkeyError) return;
-      passkeyError.textContent = "";
-      passkeyError.classList.add("d-none");
-    };
-
-    const showMfaError = (message) => {
-      if (!mfaError) return;
-      mfaError.textContent = message;
-      mfaError.classList.remove("d-none");
-    };
-
-    const showMfaInfo = (message) => {
-      if (!mfaInfo) return;
-      mfaInfo.textContent = message;
-      mfaInfo.classList.remove("d-none");
-    };
-
-    const clearMfaMessages = () => {
-      if (mfaError) {
-        mfaError.textContent = "";
-        mfaError.classList.add("d-none");
-      }
-      if (mfaInfo) {
-        mfaInfo.textContent = "";
-        mfaInfo.classList.add("d-none");
-      }
-    };
-
-    const showMfaSection = (username) => {
-      if (usernameInput) {
-        usernameInput.value = username;
-        usernameInput.readOnly = true;
-      }
-      if (passwordGroup) {
-        passwordGroup.classList.add("d-none");
-      }
-      if (mfaSection) {
-        mfaSection.classList.remove("d-none");
-      }
-    };
-
-    const ensurePreauth = async (username) => {
-      const res = await fetch("/auth/preauth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ username }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        showMfaError(data.error || "認証準備に失敗しました。");
-        return null;
-      }
-      showMfaSection(username);
-      if (!data.totp_enabled) {
-        showMfaInfo("TOTPが未設定の場合はメールOTPをご利用ください。");
-      }
-      return data;
-    };
-
-    const attemptPasskeyLogin = async ({ onFallback } = {}) => {
-      clearPasskeyError();
-      clearMfaMessages();
-      const username = usernameInput.value.trim();
-      if (!username) {
-        showPasskeyError("ユーザー名を入力してください。");
-        return;
-      }
-      if (!navigator.credentials || !window.PublicKeyCredential) {
-        showPasskeyError("この環境ではパスキーを利用できません。");
-        if (onFallback) onFallback();
-        return;
-      }
-
-      try {
-        const optionsRes = await fetch("/webauthn/auth/options", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ username }),
-        });
-        if (optionsRes.status === 404) {
-          const statusRes = await fetch("/auth/mfa/status", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "same-origin",
-            body: JSON.stringify({ username }),
-          });
-          const statusData = await statusRes.json().catch(() => ({}));
-          if (statusRes.ok && statusData.ok && statusData.totp_enabled) {
-            showPasskeyError("パスキー未登録のためOTPログインに進みます。");
-            if (onFallback) onFallback(username);
-            return;
-          }
-          if (statusRes.ok && statusData.ok && !statusData.totp_enabled) {
-            loginForm.submit();
-            return;
-          }
-          showPasskeyError(statusData.error || "パスキー情報の取得に失敗しました。");
-          if (onFallback) onFallback(username);
-          return;
-        }
-        const optionsData = await optionsRes.json();
-        if (!optionsRes.ok) {
-          showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
-          if (onFallback) onFallback(username);
-          return;
-        }
-
-        const credential = await navigator.credentials.get({
-          publicKey: PasskeyUtils.decodeRequestOptions(optionsData),
-        });
-        const verifyRes = await fetch("/webauthn/auth/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({
-            username,
-            credential: PasskeyUtils.serializeAuthenticationCredential(credential),
-          }),
-        });
-        const verifyData = await verifyRes.json();
-        if (!verifyRes.ok) {
-          showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
-          if (onFallback) onFallback(username);
-          return;
-        }
-        window.location.href = verifyData.redirect || "/upload";
-      } catch (err) {
-        if (err && err.name === "NotAllowedError") {
-          showPasskeyError("キャンセルされました。");
-        } else {
-          showPasskeyError("パスキーの利用中にエラーが発生しました。");
-        }
-        if (onFallback) onFallback(username);
-      }
-    };
-
-    const preauthActive = loginForm?.dataset.preauthActive === "true";
-    const preauthUsername = loginForm?.dataset.preauthUsername || "";
-
-    if (preauthActive && preauthUsername) {
-      showMfaSection(preauthUsername);
-    }
-
-    if (loginForm) {
-      loginForm.addEventListener("submit", (event) => {
-        const submitter = event.submitter;
-        if (submitter && submitter.id === "password-login") {
-          return;
-        }
-        if (isFallbacking) {
-          return;
-        }
-        event.preventDefault();
-        attemptPasskeyLogin({
-          onFallback: async (username) => {
-            isFallbacking = true;
-            await ensurePreauth(username);
-            isFallbacking = false;
-          },
-        });
-      });
-    }
-
-    if (totpVerifyButton) {
-      totpVerifyButton.addEventListener("click", async () => {
-        clearMfaMessages();
-        const username = usernameInput.value.trim();
-        const code = (document.getElementById("totp-code")?.value || "").trim();
-        if (!username || !code) {
-          showMfaError("ユーザー名とOTPを入力してください。");
-          return;
-        }
-        const res = await fetch("/mfa/totp/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ username, code }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          showMfaError(data.error || "OTP認証に失敗しました。");
-          return;
-        }
-        window.location.href = data.redirect || "/upload";
-      });
-    }
-
-    if (emailSendButton) {
-      emailSendButton.addEventListener("click", async () => {
-        clearMfaMessages();
-        const username = usernameInput.value.trim();
-        if (!username) {
-          showMfaError("ユーザー名を入力してください。");
-          return;
-        }
-        const res = await fetch("/mfa/email/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ username }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          showMfaError(data.error || "メール送信に失敗しました。");
-          return;
-        }
-        showMfaInfo("メールOTPを送信しました。");
-      });
-    }
-
-    if (emailVerifyButton) {
-      emailVerifyButton.addEventListener("click", async () => {
-        clearMfaMessages();
-        const username = usernameInput.value.trim();
-        const code = (document.getElementById("email-code")?.value || "").trim();
-        if (!username || !code) {
-          showMfaError("ユーザー名とOTPを入力してください。");
-          return;
-        }
-        const res = await fetch("/mfa/email/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ username, code }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          showMfaError(data.error || "OTP認証に失敗しました。");
-          return;
-        }
-        window.location.href = data.redirect || "/upload";
-      });
-    }
-  </script>
+        <button type="button" id="email-verify" class="btn btn-outline-secondary w-100 mt-2">メールOTPでログイン</button>
+      </details>
+      {% endif %}
+      <a href="{{ url_for('login', reset=1) }}" class="btn btn-link w-100">最初からやり直す</a>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='js/passkey-utils.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/login.js') }}" defer></script>
 </body>
 </html>

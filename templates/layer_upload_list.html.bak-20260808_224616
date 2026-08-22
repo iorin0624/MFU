@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}レイヤーアップロード一覧{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <h2 class="mb-0">レイヤーアップロード一覧</h2>
+    <a href="{{ url_for('upload') }}" class="btn btn-outline-secondary btn-sm">アップロード画面へ戻る</a>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-striped table-bordered align-middle text-nowrap">
+      <thead class="table-light">
+        <tr>
+          <th>UUID</th>
+          <th>ユーザー名</th>
+          <th>タイトル</th>
+          <th>撮影日</th>
+          <th>アップロード日時</th>
+          <th>レイヤーアップロード有無</th>
+          <th>フォルダ数</th>
+          <th>ZIP有無</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in uploads %}
+        <tr>
+          <td title="{{ item.uuid }}">{{ item.uuid[:8] }}...</td>
+          <td>{{ item.username }}</td>
+          <td>{{ item.title }}</td>
+          <td>{{ item.date }}</td>
+          <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
+          <td>{{ 'あり' if item.has_layer_upload else 'なし' }}</td>
+          <td>{{ item.folder_count }}</td>
+          <td>{{ 'あり' if item.has_zip else 'なし' }}</td>
+          <td>
+            <div class="d-flex flex-wrap gap-2">
+              <a href="{{ url_for('upload_history.layer_upload_detail', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary">詳細表示</a>
+              <form action="{{ url_for('upload_history.layer_upload_delete', uuid=item.uuid) }}" method="post"
+                    onsubmit="return confirm('レイヤーアップロード履歴と受付データを削除します。通常アップロード側は削除されません。実行しますか？');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+                <button class="btn btn-sm btn-outline-danger">レイヤー側を削除</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not uploads %}
+        <tr>
+          <td colspan="9" class="text-center text-muted py-4">表示可能なデータがありません。</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

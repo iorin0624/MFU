@@ -1,0 +1,1533 @@
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import hmac
+import io
+import json
+import os
+import re
+import subprocess
+import time
+import uuid
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import urlparse
+
+from flask import Response, abort, flash, jsonify, make_response, redirect, render_template, request, session, url_for
+from mysql.connector import IntegrityError
+
+from app import admin_required
+from app.utils.db import get_db
+
+from . import phone_whitelist_bp
+from .action_token import (
+    ActionTokenError,
+    ActionTokenExpired,
+    token_fingerprint,
+    validate_action_token,
+)
+from .service import (
+    MAX_CSV_BYTES,
+    WhitelistValidationError,
+    build_pbx_payload,
+    parse_csv_bytes,
+    validate_entry,
+)
+
+
+PBX_HOST = os.getenv("PHONE_WHITELIST_PBX_HOST", "192.168.103.21")
+PBX_USER = os.getenv("PHONE_WHITELIST_PBX_USER", "mfu-whitelist")
+PBX_KEY_PATH = os.getenv("PHONE_WHITELIST_SSH_KEY", "/mnt/mfu/ssh/mfu_freepbx_whitelist")
+PBX_KNOWN_HOSTS = os.getenv("PHONE_WHITELIST_KNOWN_HOSTS", "/mnt/mfu/ssh/known_hosts")
+PBX_TIMEOUT_SECONDS = max(5, int(os.getenv("PHONE_WHITELIST_SSH_TIMEOUT", "20")))
+DB_LOCK_NAME = "mfu_phone_whitelist_update"
+PAGE_SIZE = 100
+JST = timezone(timedelta(hours=9))
+MANUAL_UNTIL = datetime(9999, 12, 31, 23, 59, 59)
+MANUAL_EPOCH = 4_102_444_800
+SETTING_COLUMNS = {
+    "anonymous_allowed": "anonymous_allowed_until",
+    "whitelist_disabled": "whitelist_disabled_until",
+}
+DURATION_SECONDS = {"900": 900, "1800": 1800, "3600": 3600, "10800": 10800}
+CLICK_TO_CALL_ENDPOINTS = {
+    "10601": "固定電話 01",
+    "10602": "固定電話 02",
+    "10610": "IORI 16",
+    "10620": "Desktop",
+}
+CLICK_TO_CALL_TRUNKS = {
+    "brastel": {"name": "Brastel（05068741025）", "available": True},
+    "hikaritel": {"name": "HikariTEL（0436374516）", "available": False},
+}
+CLICK_TO_CALL_ACTIVE_STATUSES = (
+    "queued", "phone_ringing", "phone_answered", "external_ringing", "call_started",
+)
+CLICK_TO_CALL_TERMINAL_STATUSES = (
+    "phone_no_answer", "external_failed", "call_ended", "failed",
+)
+CLICK_TO_CALL_STATUS_LABELS = {
+    "queued": "発信準備中",
+    "phone_ringing": "選択した電話機を呼出中",
+    "phone_answered": "電話機が応答しました",
+    "external_ringing": "相手先を呼出中",
+    "call_started": "通話中",
+    "phone_no_answer": "電話機が応答しませんでした",
+    "external_failed": "外線発信に失敗しました",
+    "call_ended": "通話終了",
+    "failed": "発信処理に失敗しました",
+}
+CLICK_TO_CALL_STATUS_ORDER = {
+    "queued": 0,
+    "phone_ringing": 1,
+    "phone_answered": 2,
+    "external_ringing": 3,
+    "call_started": 4,
+}
+
+
+class PhoneWhitelistError(RuntimeError):
+    pass
+
+
+class ActionTokenUsedError(RuntimeError):
+    pass
+
+
+class PublicRateLimitError(RuntimeError):
+    pass
+
+
+def ensure_phone_whitelist_schema() -> None:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS phone_whitelist_entries (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                phone_number VARCHAR(16) NOT NULL UNIQUE,
+                name VARCHAR(100) NOT NULL DEFAULT '',
+                note VARCHAR(500) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_phone_whitelist_name (name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS phone_blacklist_entries (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                phone_number VARCHAR(16) NOT NULL UNIQUE,
+                name VARCHAR(100) NOT NULL DEFAULT '',
+                note VARCHAR(500) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_phone_blacklist_name (name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS phone_whitelist_sync_state (
+                id TINYINT NOT NULL PRIMARY KEY,
+                last_synced_at DATETIME NULL,
+                entry_count INT NOT NULL DEFAULT 0,
+                updated_by VARCHAR(128) NOT NULL DEFAULT '',
+                last_result VARCHAR(32) NOT NULL DEFAULT '',
+                message VARCHAR(500) NOT NULL DEFAULT ''
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS phone_blacklist_action_tokens (
+                token_hash CHAR(64) NOT NULL PRIMARY KEY,
+                phone_number VARCHAR(16) NOT NULL,
+                issued_at DATETIME NOT NULL,
+                expires_at DATETIME NOT NULL,
+                used_at DATETIME NOT NULL,
+                used_ip VARCHAR(64) NOT NULL DEFAULT '',
+                outcome VARCHAR(32) NOT NULL DEFAULT '',
+                INDEX idx_phone_blacklist_action_expires (expires_at),
+                INDEX idx_phone_blacklist_action_phone (phone_number)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS phone_click_to_call_jobs (
+                job_id CHAR(32) NOT NULL PRIMARY KEY,
+                phone_number VARCHAR(16) NOT NULL,
+                endpoint VARCHAR(16) NOT NULL,
+                endpoint_name VARCHAR(100) NOT NULL,
+                trunk_key VARCHAR(32) NOT NULL,
+                trunk_name VARCHAR(100) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                detail VARCHAR(255) NOT NULL DEFAULT '',
+                requested_by VARCHAR(128) NOT NULL DEFAULT '',
+                requested_ip VARCHAR(64) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                answered_at DATETIME NULL,
+                connected_at DATETIME NULL,
+                ended_at DATETIME NULL,
+                terminal_audited TINYINT(1) NOT NULL DEFAULT 0,
+                INDEX idx_phone_c2c_endpoint_status (endpoint, status),
+                INDEX idx_phone_c2c_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        for column in ("whitelist_disabled_until", "anonymous_allowed_until"):
+            cur.execute(f"SHOW COLUMNS FROM phone_whitelist_sync_state LIKE '{column}'")
+            if cur.fetchone() is None:
+                cur.execute(f"ALTER TABLE phone_whitelist_sync_state ADD COLUMN {column} DATETIME NULL")
+        cur.execute("SHOW COLUMNS FROM phone_whitelist_sync_state LIKE 'blacklist_count'")
+        if cur.fetchone() is None:
+            cur.execute(
+                "ALTER TABLE phone_whitelist_sync_state "
+                "ADD COLUMN blacklist_count INT NOT NULL DEFAULT 0"
+            )
+        cur.execute("SHOW COLUMNS FROM phone_whitelist_sync_state LIKE 'anonymous_hangup_enabled'")
+        if cur.fetchone() is None:
+            cur.execute(
+                "ALTER TABLE phone_whitelist_sync_state "
+                "ADD COLUMN anonymous_hangup_enabled TINYINT(1) NOT NULL DEFAULT 1"
+            )
+        cur.execute("SELECT id FROM phone_whitelist_sync_state WHERE id=1")
+        if cur.fetchone() is None:
+            cur.execute(
+                """
+                INSERT IGNORE INTO phone_whitelist_entries (phone_number, name, note)
+                VALUES (%s, %s, %s)
+                """,
+                ("08093242655", "テスト番号", "初期ホワイトリスト"),
+            )
+            cur.execute("SELECT COUNT(*) AS count FROM phone_whitelist_entries")
+            count = int((cur.fetchone() or {}).get("count") or 0)
+            cur.execute(
+                """
+                INSERT INTO phone_whitelist_sync_state
+                    (id, last_synced_at, entry_count, updated_by, last_result, message)
+                VALUES (1, NOW(), %s, %s, %s, %s)
+                """,
+                (count, "system", "initialized", "FreePBXの既存番号を初期データとして取り込みました"),
+            )
+        cur.execute(
+            "UPDATE phone_whitelist_sync_state "
+            "SET anonymous_allowed_until=NULL "
+            "WHERE id=1 AND anonymous_hangup_enabled=1 AND anonymous_allowed_until IS NOT NULL"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def ensure_phone_whitelist_nav_item() -> None:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT id FROM mfu_nav_items WHERE url=%s LIMIT 1", ("/admin/phone-whitelist",))
+        existing = cur.fetchone()
+        if existing is None:
+            cur.execute(
+                """
+                SELECT id FROM mfu_nav_items
+                 WHERE label LIKE %s AND parent_id IS NULL
+                 ORDER BY id LIMIT 1
+                """,
+                ("%システム系%",),
+            )
+            parent = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO mfu_nav_items
+                    (parent_id, label, url, order_no, is_enabled, feature_key, open_in_new_tab, is_external)
+                VALUES (%s, %s, %s, %s, 1, NULL, 0, 0)
+                """,
+                ((parent or {}).get("id"), "📞 着信リスト管理", "/admin/phone-whitelist", 65),
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _actor() -> str:
+    return str(session.get("user") or "unknown")[:128]
+
+
+def _client_ip() -> str:
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+    return (forwarded or request.remote_addr or "-")[:64]
+
+
+def _action_token_secret() -> str:
+    return (os.getenv("PHONE_BLACKLIST_ACTION_SECRET") or "").strip()
+
+
+def _same_origin_public_request() -> bool:
+    expected = urlparse(request.host_url)
+    for header in ("Origin", "Referer"):
+        raw = (request.headers.get(header) or "").strip()
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc:
+            return False
+    return True
+
+
+def _public_json_error(message: str, status: int):
+    return jsonify({"ok": False, "message": message}), status
+
+
+def _enforce_public_rate_limit() -> None:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT COUNT(*) AS count
+              FROM logs
+             WHERE ip=%s
+               AND (
+                    path LIKE '/admin/phone-whitelist/audit/blacklist_token_%%'
+                    OR path LIKE '/admin/phone-whitelist/audit/whitelist_token_%%'
+               )
+               AND log_date >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            """,
+            (_client_ip(),),
+        )
+        if int((cur.fetchone() or {}).get("count") or 0) >= 30:
+            raise PublicRateLimitError("試行回数が多すぎます。しばらく待ってからお試しください")
+    finally:
+        db.close()
+
+
+def _validated_public_token(token: str):
+    secret = _action_token_secret()
+    if not secret:
+        raise PhoneWhitelistError("登録リンク機能が設定されていません")
+    return validate_action_token(token, secret)
+
+
+def _token_datetime(epoch: int) -> datetime:
+    return datetime.fromtimestamp(epoch, tz=JST).replace(tzinfo=None)
+
+
+def _audit(action: str, result: str, details: dict[str, Any], error: str = "") -> None:
+    payload = {"action": action, "result": result, "details": details}
+    if error:
+        payload["error"] = error[:500]
+    log_text = "PHONE_WHITELIST " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    db = None
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute(
+            """
+            INSERT INTO logs
+                (log_date, ip, method, path, status, endpoint, username, latency_ms, log_text)
+            VALUES
+                (NOW(), %s, %s, %s, %s, %s, %s, 0, %s)
+            """,
+            (
+                _client_ip(),
+                request.method,
+                f"/admin/phone-whitelist/audit/{action}",
+                200 if result == "ok" else 500,
+                "phone_whitelist.audit",
+                _actor(),
+                log_text[:4000],
+            ),
+        )
+        db.commit()
+    except Exception:
+        if db:
+            db.rollback()
+    finally:
+        if db:
+            db.close()
+
+
+def _until_epoch(value: datetime | None) -> int:
+    if not value:
+        return 0
+    if value.year >= 2099:
+        return MANUAL_EPOCH
+    aware = value.replace(tzinfo=JST) if value.tzinfo is None else value.astimezone(JST)
+    return max(0, int(aware.timestamp()))
+
+
+def _fetch_settings(cur) -> dict[str, Any]:
+    cur.execute(
+        "SELECT whitelist_disabled_until, anonymous_allowed_until, anonymous_hangup_enabled "
+        "FROM phone_whitelist_sync_state WHERE id=1"
+    )
+    return cur.fetchone() or {}
+
+
+def _apply_to_pbx(
+    entries: list[dict[str, Any]],
+    blacklist_numbers: list[dict[str, str]],
+    settings: dict[str, Any] | None = None,
+) -> str:
+    settings = settings or {}
+    command = [
+        "/usr/bin/ssh", "-T", "-i", PBX_KEY_PATH,
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={PBX_KNOWN_HOSTS}",
+        "-o", "ConnectTimeout=5", f"{PBX_USER}@{PBX_HOST}",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            input=build_pbx_payload(
+                entries,
+                blacklist_numbers=blacklist_numbers,
+                whitelist_disabled_until=_until_epoch(settings.get("whitelist_disabled_until")),
+                anonymous_allowed_until=_until_epoch(settings.get("anonymous_allowed_until")),
+                anonymous_hangup_enabled=bool(settings.get("anonymous_hangup_enabled")),
+            ),
+            text=True,
+            capture_output=True,
+            timeout=PBX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PhoneWhitelistError("FreePBXへの反映がタイムアウトしました") from exc
+    except OSError as exc:
+        raise PhoneWhitelistError(f"FreePBX反映コマンドを起動できません: {exc}") from exc
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "反映に失敗しました").strip()
+        raise PhoneWhitelistError(f"FreePBXへの反映に失敗しました: {message[:500]}")
+    output = (result.stdout or "").strip()
+    if not output.startswith("OK "):
+        raise PhoneWhitelistError(f"FreePBXから不正な応答が返りました: {output[:500]}")
+    return output
+
+
+def _click_to_call_secret() -> str:
+    return (os.getenv("PHONE_CLICK_TO_CALL_SECRET") or "").strip()
+
+
+def _click_to_call_pbx(job_id: str, payload: dict[str, str]) -> dict[str, Any]:
+    command = [
+        "/usr/bin/ssh", "-T", "-i", PBX_KEY_PATH,
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={PBX_KNOWN_HOSTS}",
+        "-o", "ConnectTimeout=5", f"{PBX_USER}@{PBX_HOST}",
+        "click-to-call", "start", job_id,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            input=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            text=True,
+            capture_output=True,
+            timeout=PBX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PhoneWhitelistError(f"FreePBXの発信処理に接続できません: {exc}") from exc
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "FreePBXの発信処理に失敗しました").strip()
+        raise PhoneWhitelistError(message[:500])
+    try:
+        response = json.loads((result.stdout or "").strip())
+    except json.JSONDecodeError as exc:
+        raise PhoneWhitelistError("FreePBXから不正な応答を受信しました") from exc
+    if not isinstance(response, dict) or not response.get("ok"):
+        raise PhoneWhitelistError(str(response.get("error") if isinstance(response, dict) else response)[:500])
+    return response
+
+
+def _fetch_sync_entries(cur) -> list[dict[str, str]]:
+    cur.execute("SELECT phone_number, name FROM phone_whitelist_entries ORDER BY phone_number")
+    return [
+        {"phone_number": str(row["phone_number"]), "name": str(row.get("name") or "")}
+        for row in cur.fetchall()
+    ]
+
+
+def _fetch_blacklist_numbers(cur) -> list[dict[str, str]]:
+    cur.execute("SELECT phone_number, name FROM phone_blacklist_entries ORDER BY phone_number")
+    return [
+        {"phone_number": str(row["phone_number"]), "name": str(row.get("name") or "")}
+        for row in cur.fetchall()
+    ]
+
+
+def _run_locked_change(change: Callable[[Any], dict[str, Any]], actor: str) -> tuple[dict[str, Any], int]:
+    db = get_db()
+    locked = False
+    remote_applied = False
+    before_entries: list[dict[str, str]] = []
+    before_blacklist: list[dict[str, str]] = []
+    before_settings: dict[str, Any] = {}
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT GET_LOCK(%s, 15) AS acquired", (DB_LOCK_NAME,))
+        locked = int((cur.fetchone() or {}).get("acquired") or 0) == 1
+        if not locked:
+            raise PhoneWhitelistError("別の更新処理が実行中です。少し待ってから再試行してください")
+        before_entries = _fetch_sync_entries(cur)
+        before_blacklist = _fetch_blacklist_numbers(cur)
+        before_settings = _fetch_settings(cur)
+        details = change(cur)
+        after_entries = _fetch_sync_entries(cur)
+        after_blacklist = _fetch_blacklist_numbers(cur)
+        after_settings = _fetch_settings(cur)
+        response = _apply_to_pbx(after_entries, after_blacklist, after_settings)
+        remote_applied = True
+        cur.execute(
+            """
+            UPDATE phone_whitelist_sync_state
+               SET last_synced_at=NOW(), entry_count=%s, blacklist_count=%s, updated_by=%s,
+                   last_result='ok', message=%s
+             WHERE id=1
+            """,
+            (len(after_entries), len(after_blacklist), actor, response[:500]),
+        )
+        db.commit()
+        remote_applied = False
+        return details, len(after_entries)
+    except Exception as exc:
+        db.rollback()
+        if remote_applied:
+            try:
+                _apply_to_pbx(before_entries, before_blacklist, before_settings)
+            except Exception as rollback_exc:
+                raise PhoneWhitelistError(
+                    f"MFU.2の保存に失敗し、FreePBXの自動切り戻しにも失敗しました: {rollback_exc}"
+                ) from exc
+        raise
+    finally:
+        if locked:
+            try:
+                release_cur = db.cursor()
+                release_cur.execute("SELECT RELEASE_LOCK(%s)", (DB_LOCK_NAME,))
+                release_cur.fetchone()
+            except Exception:
+                pass
+        db.close()
+
+
+def _render_index(*, preview_entries=None, csv_payload="", list_type: str | None = None):
+    list_type = list_type or (request.args.get("list") or "whitelist").strip()
+    if list_type not in {"whitelist", "blacklist"}:
+        list_type = "whitelist"
+    table = "phone_blacklist_entries" if list_type == "blacklist" else "phone_whitelist_entries"
+    query = (request.args.get("q") or "").strip()
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        where = ""
+        params: list[Any] = []
+        if query:
+            where = " WHERE phone_number LIKE %s OR name LIKE %s OR note LIKE %s"
+            like = f"%{query}%"
+            params.extend([like, like, like])
+        cur.execute(f"SELECT COUNT(*) AS count FROM {table}{where}", tuple(params))
+        total = int((cur.fetchone() or {}).get("count") or 0)
+        offset = (page - 1) * PAGE_SIZE
+        cur.execute(
+            f"""
+            SELECT id, phone_number, name, note, created_at, updated_at
+              FROM {table}
+              {where}
+             ORDER BY phone_number
+             LIMIT %s OFFSET %s
+            """,
+            tuple(params + [PAGE_SIZE, offset]),
+        )
+        entries = cur.fetchall()
+        cur.execute(
+            """
+            SELECT w.phone_number
+              FROM phone_whitelist_entries AS w
+              JOIN phone_blacklist_entries AS b USING (phone_number)
+            """
+        )
+        overlap_numbers = {str(row["phone_number"]) for row in cur.fetchall()}
+        cur.execute("SELECT * FROM phone_whitelist_sync_state WHERE id=1")
+        sync_state = cur.fetchone() or {}
+    finally:
+        db.close()
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    now = datetime.now(JST).replace(tzinfo=None)
+    for setting, column in SETTING_COLUMNS.items():
+        until = sync_state.get(column)
+        sync_state[f"{setting}_active"] = bool(until and until > now)
+        sync_state[f"{setting}_manual"] = bool(until and until.year >= 2099)
+    sync_state["anonymous_hangup_enabled"] = bool(sync_state.get("anonymous_hangup_enabled"))
+    return render_template(
+        "admin_phone_whitelist.html",
+        entries=entries, total=total, query=query, page=page, pages=pages,
+        sync_state=sync_state, preview_entries=preview_entries, csv_payload=csv_payload,
+        list_type=list_type, overlap_numbers=overlap_numbers,
+        click_to_call_endpoints=CLICK_TO_CALL_ENDPOINTS,
+        click_to_call_trunks=CLICK_TO_CALL_TRUNKS,
+        click_to_call_status_labels=CLICK_TO_CALL_STATUS_LABELS,
+    )
+
+
+def _public_register_page(list_type: str):
+    is_blacklist = list_type == "blacklist"
+    response = make_response(
+        render_template(
+            "public_phone_blacklist_register.html",
+            list_type=list_type,
+            page_title="着信拒否リストへ登録" if is_blacklist else "ホワイトリストへ登録",
+            heading="🚫 着信拒否リストへ登録" if is_blacklist else "✅ ホワイトリストへ登録",
+            submit_label=(
+                "ブラックリストへ登録して即時反映"
+                if is_blacklist
+                else "ホワイトリストへ登録して即時反映"
+            ),
+            accent_color="#dc2626" if is_blacklist else "#16a34a",
+        )
+    )
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "connect-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    )
+    return response
+
+
+@phone_whitelist_bp.get("/phone-blacklist/register")
+def public_blacklist_register_page():
+    return _public_register_page("blacklist")
+
+
+@phone_whitelist_bp.get("/phone-whitelist/register")
+def public_whitelist_register_page():
+    return _public_register_page("whitelist")
+
+
+def _public_register_inspect(list_type: str):
+    audit_prefix = f"{list_type}_token"
+    if not _same_origin_public_request():
+        return _public_json_error("アクセス元を確認できません", 403)
+    token = str((request.get_json(silent=True) or {}).get("token") or "")
+    fingerprint = token_fingerprint(token)
+    try:
+        _enforce_public_rate_limit()
+        claims = _validated_public_token(token)
+        db = get_db()
+        try:
+            cur = db.cursor(dictionary=True)
+            cur.execute("SELECT outcome FROM phone_blacklist_action_tokens WHERE token_hash=%s", (fingerprint,))
+            if cur.fetchone() is not None:
+                raise ActionTokenUsedError("このリンクは使用済みです")
+        finally:
+            db.close()
+        _audit(
+            f"{audit_prefix}_inspect",
+            "ok",
+            {"token_hash_prefix": fingerprint[:12], "phone_number": claims.phone_number},
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "phone_number": claims.phone_number,
+                "expires_at": _token_datetime(claims.expires_at).isoformat(sep=" "),
+            }
+        )
+    except ActionTokenExpired as exc:
+        _audit(f"{audit_prefix}_inspect", "error", {"token_hash_prefix": fingerprint[:12]}, "expired")
+        return _public_json_error(str(exc), 410)
+    except ActionTokenUsedError as exc:
+        _audit(f"{audit_prefix}_inspect", "error", {"token_hash_prefix": fingerprint[:12]}, "used")
+        return _public_json_error(str(exc), 409)
+    except PublicRateLimitError as exc:
+        _audit(f"{audit_prefix}_rate_limit", "error", {"token_hash_prefix": fingerprint[:12]}, "limited")
+        return _public_json_error(str(exc), 429)
+    except ActionTokenError:
+        _audit(f"{audit_prefix}_inspect", "error", {"token_hash_prefix": fingerprint[:12]}, "invalid")
+        return _public_json_error("このリンクは無効です", 403)
+    except PhoneWhitelistError as exc:
+        _audit(f"{audit_prefix}_inspect", "error", {"token_hash_prefix": fingerprint[:12]}, str(exc))
+        return _public_json_error("登録リンク機能を利用できません", 503)
+
+
+@phone_whitelist_bp.post("/phone-blacklist/register/inspect")
+def public_blacklist_register_inspect():
+    return _public_register_inspect("blacklist")
+
+
+@phone_whitelist_bp.post("/phone-whitelist/register/inspect")
+def public_whitelist_register_inspect():
+    return _public_register_inspect("whitelist")
+
+
+@phone_whitelist_bp.post("/phone-blacklist/register/apply")
+def public_blacklist_register_apply():
+    if not _same_origin_public_request():
+        return _public_json_error("アクセス元を確認できません", 403)
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get("token") or "")
+    fingerprint = token_fingerprint(token)
+    try:
+        _enforce_public_rate_limit()
+        claims = _validated_public_token(token)
+        entry = validate_entry(claims.phone_number, payload.get("name"), payload.get("note"))
+        issued_at = _token_datetime(claims.issued_at)
+        expires_at = _token_datetime(claims.expires_at)
+
+        def change(cur):
+            cur.execute(
+                "SELECT outcome FROM phone_blacklist_action_tokens WHERE token_hash=%s FOR UPDATE",
+                (fingerprint,),
+            )
+            if cur.fetchone() is not None:
+                raise ActionTokenUsedError("このリンクは使用済みです")
+            cur.execute(
+                "SELECT id, phone_number, name, note FROM phone_blacklist_entries WHERE phone_number=%s",
+                (entry["phone_number"],),
+            )
+            existing = cur.fetchone()
+            outcome = "already_registered" if existing else "registered"
+            cur.execute(
+                """
+                INSERT INTO phone_blacklist_action_tokens
+                    (token_hash, phone_number, issued_at, expires_at, used_at, used_ip, outcome)
+                VALUES (%s, %s, %s, %s, NOW(), %s, %s)
+                """,
+                (fingerprint, entry["phone_number"], issued_at, expires_at, _client_ip(), outcome),
+            )
+            if not existing:
+                cur.execute(
+                    "INSERT INTO phone_blacklist_entries (phone_number, name, note) VALUES (%s, %s, %s)",
+                    (entry["phone_number"], entry["name"], entry["note"]),
+                )
+            cur.execute("SELECT 1 FROM phone_whitelist_entries WHERE phone_number=%s", (entry["phone_number"],))
+            return {
+                "after": entry,
+                "already_registered": bool(existing),
+                "whitelist_overlap": cur.fetchone() is not None,
+                "token_hash_prefix": fingerprint[:12],
+            }
+
+        details, _count = _run_locked_change(change, "discord-token")
+        _audit("blacklist_token_apply", "ok", details)
+        if details["already_registered"]:
+            message = "この電話番号は既にブラックリストへ登録されています。"
+        elif details["whitelist_overlap"]:
+            message = "ブラックリストへ登録しました。ホワイトリストにも登録されていますが、ブラックリストが優先されます。"
+        else:
+            message = "ブラックリストへ登録し、FreePBXへ反映しました。"
+        return jsonify({"ok": True, "message": message})
+    except ActionTokenExpired as exc:
+        _audit("blacklist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "expired")
+        return _public_json_error(str(exc), 410)
+    except ActionTokenUsedError as exc:
+        _audit("blacklist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "used")
+        return _public_json_error(str(exc), 409)
+    except PublicRateLimitError as exc:
+        _audit("blacklist_token_rate_limit", "error", {"token_hash_prefix": fingerprint[:12]}, "limited")
+        return _public_json_error(str(exc), 429)
+    except ActionTokenError:
+        _audit("blacklist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "invalid")
+        return _public_json_error("このリンクは無効です", 403)
+    except WhitelistValidationError as exc:
+        _audit("blacklist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, str(exc))
+        return _public_json_error(str(exc), 400)
+    except IntegrityError:
+        _audit("blacklist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "used_or_duplicate")
+        return _public_json_error("このリンクは使用済みです", 409)
+    except PhoneWhitelistError as exc:
+        _audit("blacklist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, str(exc))
+        return _public_json_error("FreePBXへの反映に失敗しました。期限内にもう一度お試しください。", 503)
+
+
+@phone_whitelist_bp.post("/phone-whitelist/register/apply")
+def public_whitelist_register_apply():
+    if not _same_origin_public_request():
+        return _public_json_error("アクセス元を確認できません", 403)
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get("token") or "")
+    fingerprint = token_fingerprint(token)
+    try:
+        _enforce_public_rate_limit()
+        claims = _validated_public_token(token)
+        entry = validate_entry(claims.phone_number, payload.get("name"), payload.get("note"))
+        issued_at = _token_datetime(claims.issued_at)
+        expires_at = _token_datetime(claims.expires_at)
+
+        def change(cur):
+            cur.execute(
+                "SELECT outcome FROM phone_blacklist_action_tokens WHERE token_hash=%s FOR UPDATE",
+                (fingerprint,),
+            )
+            if cur.fetchone() is not None:
+                raise ActionTokenUsedError("このリンクは使用済みです")
+            cur.execute(
+                "SELECT id FROM phone_blacklist_entries WHERE phone_number=%s",
+                (entry["phone_number"],),
+            )
+            blacklisted = cur.fetchone() is not None
+            cur.execute(
+                "SELECT id, phone_number, name, note FROM phone_whitelist_entries WHERE phone_number=%s",
+                (entry["phone_number"],),
+            )
+            existing = cur.fetchone()
+            if blacklisted:
+                outcome = "rejected_blacklisted"
+            elif existing:
+                outcome = "already_registered"
+            else:
+                outcome = "registered"
+            cur.execute(
+                """
+                INSERT INTO phone_blacklist_action_tokens
+                    (token_hash, phone_number, issued_at, expires_at, used_at, used_ip, outcome)
+                VALUES (%s, %s, %s, %s, NOW(), %s, %s)
+                """,
+                (fingerprint, entry["phone_number"], issued_at, expires_at, _client_ip(), outcome),
+            )
+            if not blacklisted and not existing:
+                cur.execute(
+                    "INSERT INTO phone_whitelist_entries (phone_number, name, note) VALUES (%s, %s, %s)",
+                    (entry["phone_number"], entry["name"], entry["note"]),
+                )
+            return {
+                "after": entry,
+                "already_registered": bool(existing),
+                "blacklisted": blacklisted,
+                "token_hash_prefix": fingerprint[:12],
+            }
+
+        details, _count = _run_locked_change(change, "discord-token-whitelist")
+        if details["blacklisted"]:
+            _audit("whitelist_token_apply", "error", details, "blacklisted")
+            return _public_json_error(
+                "この番号はブラックリストに登録されているため、ホワイトリストへ登録できません。",
+                409,
+            )
+        _audit("whitelist_token_apply", "ok", details)
+        if details["already_registered"]:
+            message = "この電話番号は既にホワイトリストへ登録されています。"
+        else:
+            message = "ホワイトリストへ登録し、FreePBXへ反映しました。"
+        return jsonify({"ok": True, "message": message})
+    except ActionTokenExpired as exc:
+        _audit("whitelist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "expired")
+        return _public_json_error(str(exc), 410)
+    except ActionTokenUsedError as exc:
+        _audit("whitelist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "used")
+        return _public_json_error(str(exc), 409)
+    except PublicRateLimitError as exc:
+        _audit("whitelist_token_rate_limit", "error", {"token_hash_prefix": fingerprint[:12]}, "limited")
+        return _public_json_error(str(exc), 429)
+    except ActionTokenError:
+        _audit("whitelist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "invalid")
+        return _public_json_error("このリンクは無効です", 403)
+    except WhitelistValidationError as exc:
+        _audit("whitelist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, str(exc))
+        return _public_json_error(str(exc), 400)
+    except IntegrityError:
+        _audit("whitelist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, "used_or_duplicate")
+        return _public_json_error("このリンクは使用済みです", 409)
+    except PhoneWhitelistError as exc:
+        _audit("whitelist_token_apply", "error", {"token_hash_prefix": fingerprint[:12]}, str(exc))
+        return _public_json_error("FreePBXへの反映に失敗しました。期限内にもう一度お試しください。", 503)
+
+
+@phone_whitelist_bp.get("/admin/phone-whitelist")
+@admin_required
+def index():
+    return _render_index()
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/click-to-call/start")
+@admin_required
+def click_to_call_start():
+    payload = request.get_json(silent=True) or {}
+    try:
+        entry_id = int(payload.get("entry_id") or 0)
+    except (TypeError, ValueError):
+        entry_id = 0
+    endpoint = str(payload.get("endpoint") or "").strip()
+    trunk_key = str(payload.get("trunk") or "").strip()
+    if endpoint not in CLICK_TO_CALL_ENDPOINTS:
+        return jsonify({"ok": False, "message": "電話機の選択が不正です"}), 400
+    trunk = CLICK_TO_CALL_TRUNKS.get(trunk_key)
+    if not trunk or not trunk["available"]:
+        return jsonify({"ok": False, "message": "選択した外線は現在利用できません"}), 400
+
+    db = get_db()
+    job_id = uuid.uuid4().hex
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT w.phone_number, w.name,
+                   EXISTS(
+                       SELECT 1 FROM phone_blacklist_entries b
+                        WHERE b.phone_number=w.phone_number
+                   ) AS blacklisted
+              FROM phone_whitelist_entries w
+             WHERE w.id=%s
+            """,
+            (entry_id,),
+        )
+        entry = cur.fetchone()
+        if not entry:
+            return jsonify({"ok": False, "message": "ホワイトリストの電話番号が見つかりません"}), 404
+        if bool(entry.get("blacklisted")):
+            return jsonify({"ok": False, "message": "ブラックリスト登録中の番号には発信できません"}), 409
+        cur.execute(
+            """
+            SELECT job_id FROM phone_click_to_call_jobs
+             WHERE endpoint=%s
+               AND status IN (%s,%s,%s,%s,%s)
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+             LIMIT 1
+            """,
+            (endpoint, *CLICK_TO_CALL_ACTIVE_STATUSES),
+        )
+        if cur.fetchone():
+            return jsonify({"ok": False, "message": "選択した電話機では別の発信処理が進行中です"}), 409
+        cur.execute(
+            """
+            INSERT INTO phone_click_to_call_jobs
+                (job_id, phone_number, endpoint, endpoint_name, trunk_key, trunk_name,
+                 status, requested_by, requested_ip)
+            VALUES (%s,%s,%s,%s,%s,%s,'queued',%s,%s)
+            """,
+            (
+                job_id, str(entry["phone_number"]), endpoint, CLICK_TO_CALL_ENDPOINTS[endpoint],
+                trunk_key, str(trunk["name"]), _actor(), _client_ip(),
+            ),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    pbx_payload = {
+        "job_id": job_id,
+        "phone_number": str(entry["phone_number"]),
+        "endpoint": endpoint,
+        "trunk": trunk_key,
+    }
+    try:
+        _click_to_call_pbx(job_id, pbx_payload)
+        db = get_db()
+        try:
+            cur = db.cursor()
+            cur.execute(
+                "UPDATE phone_click_to_call_jobs SET status='phone_ringing' "
+                "WHERE job_id=%s AND status='queued'",
+                (job_id,),
+            )
+            db.commit()
+        finally:
+            db.close()
+        _audit(
+            "click_to_call_start", "ok",
+            {
+                "job_id": job_id, "phone_number": entry["phone_number"],
+                "endpoint": endpoint, "trunk": trunk_key,
+            },
+        )
+        return jsonify({
+            "ok": True, "job_id": job_id, "status": "phone_ringing",
+            "status_label": CLICK_TO_CALL_STATUS_LABELS["phone_ringing"],
+        })
+    except PhoneWhitelistError as exc:
+        db = get_db()
+        try:
+            cur = db.cursor()
+            cur.execute(
+                "UPDATE phone_click_to_call_jobs "
+                "SET status='failed', detail=%s, ended_at=NOW() WHERE job_id=%s",
+                (str(exc)[:255], job_id),
+            )
+            db.commit()
+        finally:
+            db.close()
+        _audit("click_to_call_start", "error", {"job_id": job_id}, str(exc))
+        return jsonify({"ok": False, "message": str(exc), "job_id": job_id}), 503
+
+
+@phone_whitelist_bp.get("/admin/phone-whitelist/click-to-call/<job_id>")
+@admin_required
+def click_to_call_status(job_id: str):
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        abort(404)
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT job_id, phone_number, endpoint, endpoint_name, trunk_key, trunk_name,
+                   status, detail, created_at, updated_at, answered_at, connected_at, ended_at,
+                   terminal_audited
+              FROM phone_click_to_call_jobs WHERE job_id=%s
+            """,
+            (job_id,),
+        )
+        job = cur.fetchone()
+        if not job:
+            abort(404)
+        if job["status"] in CLICK_TO_CALL_TERMINAL_STATUSES and not job["terminal_audited"]:
+            cur.execute(
+                "UPDATE phone_click_to_call_jobs SET terminal_audited=1 "
+                "WHERE job_id=%s AND terminal_audited=0",
+                (job_id,),
+            )
+            db.commit()
+            _audit(
+                "click_to_call_complete", "ok",
+                {
+                    "job_id": job_id, "phone_number": job["phone_number"],
+                    "endpoint": job["endpoint"], "trunk": job["trunk_key"],
+                    "status": job["status"], "detail": job["detail"],
+                },
+            )
+        result = {
+            key: (value.isoformat(sep=" ") if isinstance(value, datetime) else value)
+            for key, value in job.items()
+            if key != "terminal_audited"
+        }
+        result["status_label"] = CLICK_TO_CALL_STATUS_LABELS.get(job["status"], job["status"])
+        result["terminal"] = job["status"] in CLICK_TO_CALL_TERMINAL_STATUSES
+        return jsonify({"ok": True, "job": result})
+    finally:
+        db.close()
+
+
+@phone_whitelist_bp.post("/internal/phone-click-to-call/status")
+def click_to_call_internal_status():
+    if request.content_length is not None and request.content_length > 4096:
+        abort(413)
+    allowed = {
+        item.strip()
+        for item in os.getenv("PHONE_CLICK_TO_CALL_ALLOWED_IPS", "192.168.103.21,127.0.0.1").split(",")
+        if item.strip()
+    }
+    if request.remote_addr not in allowed:
+        abort(403)
+    body = request.get_data(cache=True)
+    if len(body) > 4096:
+        abort(413)
+    timestamp = request.headers.get("X-MFU-Timestamp", "")
+    signature = request.headers.get("X-MFU-Signature", "").strip().lower()
+    secret = _click_to_call_secret()
+    if not secret or not re.fullmatch(r"\d{10,12}", timestamp):
+        abort(403)
+    if abs(int(time.time()) - int(timestamp)) > 300:
+        abort(403)
+    expected = hmac.new(
+        secret.encode("utf-8"), timestamp.encode("ascii") + b"." + body, hashlib.sha256,
+    ).hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", signature) or not hmac.compare_digest(expected, signature):
+        abort(403)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return jsonify({"ok": False, "message": "JSONが不正です"}), 400
+    job_id = str(payload.get("job_id") or "")
+    status = str(payload.get("status") or "")
+    detail = str(payload.get("detail") or "")[:255]
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id) or status not in CLICK_TO_CALL_STATUS_LABELS:
+        return jsonify({"ok": False, "message": "状態通知が不正です"}), 400
+
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT status FROM phone_click_to_call_jobs WHERE job_id=%s FOR UPDATE", (job_id,))
+        current = cur.fetchone()
+        if not current:
+            return jsonify({"ok": False, "message": "ジョブが見つかりません"}), 404
+        if current["status"] in CLICK_TO_CALL_TERMINAL_STATUSES:
+            db.commit()
+            return jsonify({"ok": True, "status": current["status"]})
+        if (
+            status in CLICK_TO_CALL_STATUS_ORDER
+            and CLICK_TO_CALL_STATUS_ORDER.get(current["status"], -1) > CLICK_TO_CALL_STATUS_ORDER[status]
+        ):
+            db.commit()
+            return jsonify({"ok": True, "status": current["status"]})
+        timestamp_updates = {
+            "phone_answered": "answered_at=COALESCE(answered_at,NOW())",
+            "call_started": "connected_at=COALESCE(connected_at,NOW())",
+            "phone_no_answer": "ended_at=COALESCE(ended_at,NOW())",
+            "external_failed": "ended_at=COALESCE(ended_at,NOW())",
+            "call_ended": "ended_at=COALESCE(ended_at,NOW())",
+            "failed": "ended_at=COALESCE(ended_at,NOW())",
+        }
+        extra_update = timestamp_updates.get(status)
+        sql = "UPDATE phone_click_to_call_jobs SET status=%s, detail=%s"
+        if extra_update:
+            sql += f", {extra_update}"
+        sql += " WHERE job_id=%s"
+        cur.execute(sql, (status, detail, job_id))
+        db.commit()
+        return jsonify({"ok": True, "status": status})
+    finally:
+        db.close()
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/add")
+@admin_required
+def add_entry():
+    try:
+        entry = validate_entry(request.form.get("phone_number"), request.form.get("name"), request.form.get("note"))
+
+        def change(cur):
+            cur.execute(
+                "INSERT INTO phone_whitelist_entries (phone_number, name, note) VALUES (%s, %s, %s)",
+                (entry["phone_number"], entry["name"], entry["note"]),
+            )
+            return {"after": entry}
+
+        details, count = _run_locked_change(change, _actor())
+        details["entry_count"] = count
+        _audit("add", "ok", details)
+        flash("電話番号を登録し、FreePBXへ反映しました", "success")
+    except IntegrityError:
+        _audit("add", "error", {"input": request.form.get("phone_number", "")}, "重複番号")
+        flash("同じ電話番号が既に登録されています", "danger")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("add", "error", {"input": request.form.get("phone_number", "")}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/<int:entry_id>/edit")
+@admin_required
+def edit_entry(entry_id: int):
+    try:
+        entry = validate_entry(request.form.get("phone_number"), request.form.get("name"), request.form.get("note"))
+
+        def change(cur):
+            cur.execute("SELECT phone_number, name, note FROM phone_whitelist_entries WHERE id=%s", (entry_id,))
+            before = cur.fetchone()
+            if not before:
+                raise WhitelistValidationError("対象の電話番号が見つかりません")
+            cur.execute(
+                "UPDATE phone_whitelist_entries SET phone_number=%s, name=%s, note=%s WHERE id=%s",
+                (entry["phone_number"], entry["name"], entry["note"], entry_id),
+            )
+            return {"id": entry_id, "before": before, "after": entry}
+
+        details, count = _run_locked_change(change, _actor())
+        details["entry_count"] = count
+        _audit("edit", "ok", details)
+        flash("変更を保存し、FreePBXへ反映しました", "success")
+    except IntegrityError:
+        _audit("edit", "error", {"id": entry_id}, "重複番号")
+        flash("同じ電話番号が既に登録されています", "danger")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("edit", "error", {"id": entry_id}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/<int:entry_id>/delete")
+@admin_required
+def delete_entry(entry_id: int):
+    try:
+        def change(cur):
+            cur.execute("SELECT phone_number, name, note FROM phone_whitelist_entries WHERE id=%s", (entry_id,))
+            before = cur.fetchone()
+            if not before:
+                raise WhitelistValidationError("対象の電話番号が見つかりません")
+            cur.execute("DELETE FROM phone_whitelist_entries WHERE id=%s", (entry_id,))
+            return {"id": entry_id, "before": before}
+
+        details, count = _run_locked_change(change, _actor())
+        details["entry_count"] = count
+        _audit("delete", "ok", details)
+        flash("電話番号を削除し、FreePBXへ反映しました", "success")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("delete", "error", {"id": entry_id}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/blacklist/add")
+@admin_required
+def add_blacklist_entry():
+    try:
+        entry = validate_entry(request.form.get("phone_number"), request.form.get("name"), request.form.get("note"))
+
+        def change(cur):
+            cur.execute(
+                "INSERT INTO phone_blacklist_entries (phone_number, name, note) VALUES (%s, %s, %s)",
+                (entry["phone_number"], entry["name"], entry["note"]),
+            )
+            cur.execute("SELECT 1 FROM phone_whitelist_entries WHERE phone_number=%s", (entry["phone_number"],))
+            return {"after": entry, "whitelist_overlap": cur.fetchone() is not None}
+
+        details, _count = _run_locked_change(change, _actor())
+        _audit("blacklist_add", "ok", details)
+        flash("ブラックリストへ登録し、FreePBXへ反映しました", "success")
+        if details["whitelist_overlap"]:
+            flash("この番号はホワイトリストにも登録されています。ブラックリストが優先されます。", "warning")
+    except IntegrityError:
+        _audit("blacklist_add", "error", {"input": request.form.get("phone_number", "")}, "重複番号")
+        flash("同じ電話番号がブラックリストに既に登録されています", "danger")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("blacklist_add", "error", {"input": request.form.get("phone_number", "")}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index", list="blacklist"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/blacklist/<int:entry_id>/edit")
+@admin_required
+def edit_blacklist_entry(entry_id: int):
+    try:
+        entry = validate_entry(request.form.get("phone_number"), request.form.get("name"), request.form.get("note"))
+
+        def change(cur):
+            cur.execute("SELECT phone_number, name, note FROM phone_blacklist_entries WHERE id=%s", (entry_id,))
+            before = cur.fetchone()
+            if not before:
+                raise WhitelistValidationError("対象のブラックリスト番号が見つかりません")
+            cur.execute(
+                "UPDATE phone_blacklist_entries SET phone_number=%s, name=%s, note=%s WHERE id=%s",
+                (entry["phone_number"], entry["name"], entry["note"], entry_id),
+            )
+            cur.execute("SELECT 1 FROM phone_whitelist_entries WHERE phone_number=%s", (entry["phone_number"],))
+            return {
+                "id": entry_id,
+                "before": before,
+                "after": entry,
+                "whitelist_overlap": cur.fetchone() is not None,
+            }
+
+        details, _count = _run_locked_change(change, _actor())
+        _audit("blacklist_edit", "ok", details)
+        flash("ブラックリストの変更を保存し、FreePBXへ反映しました", "success")
+        if details["whitelist_overlap"]:
+            flash("この番号はホワイトリストにも登録されています。ブラックリストが優先されます。", "warning")
+    except IntegrityError:
+        _audit("blacklist_edit", "error", {"id": entry_id}, "重複番号")
+        flash("同じ電話番号がブラックリストに既に登録されています", "danger")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("blacklist_edit", "error", {"id": entry_id}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index", list="blacklist"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/blacklist/<int:entry_id>/delete")
+@admin_required
+def delete_blacklist_entry(entry_id: int):
+    try:
+        def change(cur):
+            cur.execute("SELECT phone_number, name, note FROM phone_blacklist_entries WHERE id=%s", (entry_id,))
+            before = cur.fetchone()
+            if not before:
+                raise WhitelistValidationError("対象のブラックリスト番号が見つかりません")
+            cur.execute("DELETE FROM phone_blacklist_entries WHERE id=%s", (entry_id,))
+            return {"id": entry_id, "before": before}
+
+        details, _count = _run_locked_change(change, _actor())
+        _audit("blacklist_delete", "ok", details)
+        flash("ブラックリストから削除し、FreePBXへ反映しました", "success")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("blacklist_delete", "error", {"id": entry_id}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index", list="blacklist"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/blacklist/import/preview")
+@admin_required
+def blacklist_import_preview():
+    upload = request.files.get("csv_file")
+    try:
+        if not upload or not upload.filename:
+            raise WhitelistValidationError("CSVファイルを選択してください")
+        data = upload.read(MAX_CSV_BYTES + 1)
+        entries = parse_csv_bytes(data)
+        payload = base64.b64encode(data).decode("ascii")
+        _audit("blacklist_csv_preview", "ok", {"filename": upload.filename, "rows": len(entries)})
+        return _render_index(preview_entries=entries, csv_payload=payload, list_type="blacklist")
+    except WhitelistValidationError as exc:
+        _audit("blacklist_csv_preview", "error", {"filename": getattr(upload, "filename", "")}, str(exc))
+        flash(str(exc), "danger")
+        return redirect(url_for("phone_whitelist.index", list="blacklist"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/blacklist/import/apply")
+@admin_required
+def blacklist_import_apply():
+    raw_payload = request.form.get("csv_payload") or ""
+    try:
+        if len(raw_payload) > ((MAX_CSV_BYTES + 2) // 3) * 4 + 8:
+            raise WhitelistValidationError("CSVデータが大きすぎます")
+        try:
+            data = base64.b64decode(raw_payload, validate=True)
+        except ValueError as exc:
+            raise WhitelistValidationError("CSV確認データが不正です。再度ファイルを選択してください") from exc
+        entries = parse_csv_bytes(data)
+
+        def change(cur):
+            cur.execute("SELECT phone_number FROM phone_blacklist_entries")
+            existing = {str(row["phone_number"]) for row in cur.fetchall()}
+            inserted = 0
+            updated = 0
+            for entry in entries:
+                if entry["phone_number"] in existing:
+                    updated += 1
+                else:
+                    inserted += 1
+                cur.execute(
+                    """
+                    INSERT INTO phone_blacklist_entries (phone_number, name, note)
+                    VALUES (%s, %s, %s)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), note=VALUES(note)
+                    """,
+                    (entry["phone_number"], entry["name"], entry["note"]),
+                )
+            numbers = [entry["phone_number"] for entry in entries]
+            placeholders = ",".join(["%s"] * len(numbers))
+            cur.execute(
+                f"SELECT COUNT(*) AS count FROM phone_whitelist_entries WHERE phone_number IN ({placeholders})",
+                tuple(numbers),
+            )
+            overlap_count = int((cur.fetchone() or {}).get("count") or 0)
+            return {
+                "rows": len(entries),
+                "inserted": inserted,
+                "updated": updated,
+                "whitelist_overlap_count": overlap_count,
+            }
+
+        details, _count = _run_locked_change(change, _actor())
+        _audit("blacklist_csv_import", "ok", details)
+        flash(f"ブラックリストCSVを反映しました（追加{details['inserted']}件、更新{details['updated']}件）", "success")
+        if details["whitelist_overlap_count"]:
+            flash(
+                f"ホワイトリストにも登録されている番号が{details['whitelist_overlap_count']}件あります。ブラックリストが優先されます。",
+                "warning",
+            )
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("blacklist_csv_import", "error", {}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index", list="blacklist"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/import/preview")
+@admin_required
+def import_preview():
+    upload = request.files.get("csv_file")
+    try:
+        if not upload or not upload.filename:
+            raise WhitelistValidationError("CSVファイルを選択してください")
+        data = upload.read(MAX_CSV_BYTES + 1)
+        entries = parse_csv_bytes(data)
+        payload = base64.b64encode(data).decode("ascii")
+        _audit("csv_preview", "ok", {"filename": upload.filename, "rows": len(entries)})
+        return _render_index(preview_entries=entries, csv_payload=payload)
+    except WhitelistValidationError as exc:
+        _audit("csv_preview", "error", {"filename": getattr(upload, "filename", "")}, str(exc))
+        flash(str(exc), "danger")
+        return redirect(url_for("phone_whitelist.index"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/import/apply")
+@admin_required
+def import_apply():
+    raw_payload = request.form.get("csv_payload") or ""
+    try:
+        if len(raw_payload) > ((MAX_CSV_BYTES + 2) // 3) * 4 + 8:
+            raise WhitelistValidationError("CSVデータが大きすぎます")
+        try:
+            data = base64.b64decode(raw_payload, validate=True)
+        except ValueError as exc:
+            raise WhitelistValidationError("CSV確認データが不正です。再度ファイルを選択してください") from exc
+        entries = parse_csv_bytes(data)
+
+        def change(cur):
+            cur.execute("SELECT phone_number FROM phone_whitelist_entries")
+            existing = {str(row["phone_number"]) for row in cur.fetchall()}
+            inserted = 0
+            updated = 0
+            for entry in entries:
+                if entry["phone_number"] in existing:
+                    updated += 1
+                else:
+                    inserted += 1
+                cur.execute(
+                    """
+                    INSERT INTO phone_whitelist_entries (phone_number, name, note)
+                    VALUES (%s, %s, %s)
+                    ON DUPLICATE KEY UPDATE name=VALUES(name), note=VALUES(note)
+                    """,
+                    (entry["phone_number"], entry["name"], entry["note"]),
+                )
+            return {"rows": len(entries), "inserted": inserted, "updated": updated}
+
+        details, count = _run_locked_change(change, _actor())
+        details["entry_count"] = count
+        _audit("csv_import", "ok", details)
+        flash(f"CSVを反映しました（追加{details['inserted']}件、更新{details['updated']}件）", "success")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("csv_import", "error", {}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index"))
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/settings")
+@admin_required
+def update_setting():
+    setting = (request.form.get("setting") or "").strip()
+    enabled = request.form.get("enabled") == "1"
+    duration = (request.form.get("duration") or "3600").strip()
+    if setting not in {*SETTING_COLUMNS, "anonymous_hangup"}:
+        flash("切替項目が不正です", "danger")
+        return redirect(url_for("phone_whitelist.index"))
+    try:
+        if setting == "anonymous_hangup":
+            def change(cur):
+                cur.execute(
+                    "SELECT anonymous_hangup_enabled, anonymous_allowed_until "
+                    "FROM phone_whitelist_sync_state WHERE id=1 FOR UPDATE"
+                )
+                before_row = cur.fetchone() or {}
+                if enabled:
+                    cur.execute(
+                        "UPDATE phone_whitelist_sync_state "
+                        "SET anonymous_hangup_enabled=1, anonymous_allowed_until=NULL WHERE id=1"
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE phone_whitelist_sync_state SET anonymous_hangup_enabled=0 WHERE id=1"
+                    )
+                return {
+                    "setting": setting,
+                    "before": bool(before_row.get("anonymous_hangup_enabled")),
+                    "after": enabled,
+                    "anonymous_allowed_forced_off": bool(
+                        enabled and before_row.get("anonymous_allowed_until")
+                    ),
+                }
+
+            details, count = _run_locked_change(change, _actor())
+            details["entry_count"] = count
+            _audit("setting_change", "ok", details)
+            flash(
+                f"非通知を常にHangup(21)する設定を{'有効' if enabled else '解除'}にしました",
+                "success",
+            )
+            return redirect(url_for("phone_whitelist.index"))
+
+        if enabled:
+            if duration == "manual":
+                until = MANUAL_UNTIL
+            elif duration in DURATION_SECONDS:
+                until = datetime.now(JST).replace(tzinfo=None) + timedelta(seconds=DURATION_SECONDS[duration])
+            else:
+                raise WhitelistValidationError("有効期間が不正です")
+        else:
+            until = None
+        column = SETTING_COLUMNS[setting]
+
+        def change(cur):
+            cur.execute(
+                f"SELECT {column} AS value, anonymous_hangup_enabled "
+                "FROM phone_whitelist_sync_state WHERE id=1 FOR UPDATE"
+            )
+            before_row = cur.fetchone() or {}
+            if setting == "anonymous_allowed" and enabled and before_row.get("anonymous_hangup_enabled"):
+                raise WhitelistValidationError(
+                    "「非通知を常にHangup(21)」がONのため、非通知着信を許可できません"
+                )
+            before = before_row.get("value")
+            cur.execute(f"UPDATE phone_whitelist_sync_state SET {column}=%s WHERE id=1", (until,))
+            return {
+                "setting": setting,
+                "before": before.isoformat(sep=" ") if before else None,
+                "after": until.isoformat(sep=" ") if until else None,
+                "duration": duration if enabled else "off",
+            }
+
+        details, count = _run_locked_change(change, _actor())
+        details["entry_count"] = count
+        _audit("setting_change", "ok", details)
+        label = "ホワイトリスト無効化" if setting == "whitelist_disabled" else "非通知着信の許可"
+        flash(f"{label}を{'有効' if enabled else '解除'}にしました", "success")
+    except (WhitelistValidationError, PhoneWhitelistError) as exc:
+        _audit("setting_change", "error", {"setting": setting, "enabled": enabled}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index"))
+
+
+@phone_whitelist_bp.get("/admin/phone-whitelist/export")
+@admin_required
+def export_csv():
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT phone_number, name, note FROM phone_whitelist_entries ORDER BY phone_number")
+        rows = cur.fetchall()
+    finally:
+        db.close()
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(["phone_number", "name", "note"])
+    for row in rows:
+        writer.writerow([row["phone_number"], row["name"], row["note"]])
+    data = "\ufeff" + output.getvalue()
+    _audit("csv_export", "ok", {"rows": len(rows)})
+    filename = datetime.now().strftime("phone_whitelist_%Y%m%d_%H%M%S.csv")
+    return Response(
+        data,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@phone_whitelist_bp.get("/admin/phone-whitelist/blacklist/export")
+@admin_required
+def export_blacklist_csv():
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT phone_number, name, note FROM phone_blacklist_entries ORDER BY phone_number")
+        rows = cur.fetchall()
+    finally:
+        db.close()
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(["phone_number", "name", "note"])
+    for row in rows:
+        writer.writerow([row["phone_number"], row["name"], row["note"]])
+    data = "\ufeff" + output.getvalue()
+    _audit("blacklist_csv_export", "ok", {"rows": len(rows)})
+    filename = datetime.now().strftime("phone_blacklist_%Y%m%d_%H%M%S.csv")
+    return Response(
+        data,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@phone_whitelist_bp.post("/admin/phone-whitelist/sync")
+@admin_required
+def sync_now():
+    try:
+        details, count = _run_locked_change(lambda _cur: {"manual": True}, _actor())
+        details["entry_count"] = count
+        _audit("sync", "ok", details)
+        flash("現在の全件をFreePBXへ再反映しました", "success")
+    except PhoneWhitelistError as exc:
+        _audit("sync", "error", {}, str(exc))
+        flash(str(exc), "danger")
+    return redirect(url_for("phone_whitelist.index"))

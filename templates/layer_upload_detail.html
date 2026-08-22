@@ -3,10 +3,21 @@
 
 {% block content %}
 <div class="container mt-4 mb-5">
+  <div id="layer-upload-detail"
+       data-zip-prepare-url="{{ url_for('upload_history.layer_upload_zip_prepare', uuid=upload.uuid) }}"
+       data-csrf="{{ csrf_token_value }}">
   <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
     <h2 class="mb-0">レイヤーアップロード詳細</h2>
-    <a href="{{ url_for('upload_history.layer_upload_list') }}" class="btn btn-outline-secondary btn-sm">一覧へ戻る</a>
+    <div class="d-flex flex-wrap gap-2">
+      {% if groups %}
+      <button type="button" class="btn btn-primary btn-sm layer-zip-download"
+              data-reply-uuid="" data-status-target="layer-zip-status-all">UUID一括ZIPダウンロード</button>
+      {% endif %}
+      <a href="{{ url_for('upload_history.layer_upload_list') }}" class="btn btn-outline-secondary btn-sm">一覧へ戻る</a>
+    </div>
   </div>
+
+  <div id="layer-zip-status-all" class="alert alert-info py-2 d-none" role="status"></div>
 
   <div class="card shadow-sm mb-4">
     <div class="card-body">
@@ -25,17 +36,24 @@
       <section class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
           <div>
-            <strong>フォルダ:</strong> {{ group.folder_name }}
+            <strong>返信UUID:</strong> {{ group.reply_uuid }}
             <span class="text-muted ms-2">画像 {{ group.images|length }} 枚</span>
+            <div class="small text-muted mt-1">
+              投稿日時: {{ group.posted_at.strftime('%Y-%m-%d %H:%M:%S') if group.posted_at else '不明' }}
+            </div>
           </div>
-          <div class="d-flex flex-wrap gap-2">
-            {% for zip_name in group.zips %}
-              <a href="{{ url_for('upload_history.layer_upload_zip', uuid=upload.uuid, reply_uuid=group.folder_name, filename=zip_name) }}"
-                 class="btn btn-sm btn-success">ZIPダウンロード</a>
-            {% endfor %}
-          </div>
+          {% if group.images %}
+          <button type="button" class="btn btn-outline-primary btn-sm layer-zip-download"
+                  data-reply-uuid="{{ group.reply_uuid }}"
+                  data-status-target="layer-zip-status-{{ group.reply_uuid }}">このアップロードをZIP</button>
+          {% endif %}
         </div>
         <div class="card-body">
+          <div id="layer-zip-status-{{ group.reply_uuid }}" class="alert alert-info py-2 d-none" role="status"></div>
+          <div class="mb-3">
+            <div class="fw-semibold mb-1">コメント</div>
+            <div class="border rounded bg-light p-3" style="white-space: pre-wrap; overflow-wrap: anywhere;">{{ group.comment if group.comment else '（コメントなし）' }}</div>
+          </div>
           {% if group.images %}
           <div class="row g-2">
             {% for image_name in group.images %}
@@ -60,5 +78,12 @@
   {% else %}
     <div class="alert alert-secondary">このアップロードに紐づくレイヤーアップロードはまだありません。</div>
   {% endif %}
+  </div>
 </div>
+{% endblock %}
+
+{% block body_extra %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/layer-upload-detail.js') }}" defer></script>
 {% endblock %}

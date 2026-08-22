@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from ipaddress import ip_address, ip_network
 from typing import Any
 
 import bcrypt
+import hmac
+import pyotp
 from flask import jsonify, request, session
+from app.utils.admin_auth import ADMIN_USERNAME, audit, establish_admin_session, rate_limited, record_attempt
+from app.utils.totp_util import get_user_otp_secret
 
 from app.chat import (
     CHAT_ALLOWED_REACTION_EMOJIS,
@@ -180,7 +183,7 @@ def _dm_inbox_for(actor: dict[str, Any]) -> list[dict[str, Any]]:
 def gui_session():
     actor = get_chat_actor()
     if not actor:
-        return jsonify({"ok": True, "authenticated": False})
+        return jsonify({"ok": True, "authenticated": False, "csrf_token": _chat_csrf()})
     return jsonify(
         {
             "ok": True,
@@ -199,8 +202,15 @@ def gui_login():
     payload = request.get_json(silent=True) or {}
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
+    csrf_token = str(payload.get("csrf_token") or "")
+    if not csrf_token or not hmac.compare_digest(csrf_token, str(session.get("chat_csrf") or "")):
+        return _json_error("csrf_failed", 403)
     if not username or not password:
         return _json_error("username_password_required", 400)
+    if username == ADMIN_USERNAME and rate_limited(
+        username, "chat_password", window_minutes=15, max_failures=10
+    ):
+        return _json_error("rate_limited", 429)
 
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -211,26 +221,25 @@ def gui_login():
         cur.close()
         db.close()
     if not row or not bcrypt.checkpw(password.encode(), str(row.get("password_hash") or "").encode()):
+        if username == ADMIN_USERNAME:
+            record_attempt(username, "chat_password", False)
+            audit("CHAT_PASSWORD_FAILURE")
         return _json_error("login_failed", 401)
 
-    remote_addr = request.remote_addr or "0.0.0.0"
-    try:
-        client_ip = ip_address(remote_addr)
-        is_local = (
-            client_ip in ip_network("192.168.103.0/24")
-            or client_ip in ip_network("fe80::/10")
-            or client_ip in ip_network("2404:7a81:bc40:2a00::/64")
-            or client_ip in ip_network("2404:7a81:8ac1:1000::/64")
-        )
-    except ValueError:
-        is_local = False
-
-    totp_status = get_totp_status(username)
-    if totp_status.get("enabled") and totp_status.get("has_secret") and not is_local:
-        session.clear()
-        session["preauth_user"] = username
-        session["preauth_expires_at"] = datetime.now() + timedelta(minutes=5)
-        return _json_error("mfa_required", 401, mfa_required=True)
+    if username == ADMIN_USERNAME:
+        record_attempt(username, "chat_password", True)
+        if rate_limited(username, "chat_totp", window_minutes=5, max_failures=5):
+            return _json_error("rate_limited", 429)
+        code = str(payload.get("totp_code") or "").strip()
+        secret = get_user_otp_secret(username)
+        if not code or not secret or not pyotp.TOTP(secret).verify(code, valid_window=1):
+            record_attempt(username, "chat_totp", False)
+            audit("CHAT_TOTP_FAILURE")
+            return _json_error("mfa_required", 401, mfa_required=True)
+        record_attempt(username, "chat_totp", True)
+        establish_admin_session(method="chat_totp", nickname=row.get("nickname"))
+        actor = get_chat_actor()
+        return jsonify({"ok": True, "actor": _actor_payload(actor), "csrf_token": _chat_csrf()})
 
     session.clear()
     session["user"] = username

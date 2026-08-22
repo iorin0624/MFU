@@ -1,15 +1,18 @@
 from flask import Blueprint, render_template, request, abort, redirect, url_for, current_app
 import os
-import json
+import shutil
 import uuid as uuidlib
-import urllib.parse
 from datetime import datetime
 
 from app.utils.db import get_db
 from app.utils.image import save_as_jpeg
-from app.utils.file_ops import create_zip
+from app.utils.layer_reply_store import create_layer_reply, get_layer_reply
 from app.utils.mail import send_mail  # ← 追加：送信はmail.pyに統一
-from app.utils.upload_notifications import build_processed_upload_message, send_discord_upload_notification
+from app.utils.upload_notifications import (
+    build_processed_upload_discord_embed,
+    build_processed_upload_message,
+    send_discord_upload_notification,
+)
 
 layer_reply_bp = Blueprint("layer_reply", __name__)
 UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
@@ -22,7 +25,7 @@ def layer_upload(uuid):
 
     cursor.execute(
         """
-        SELECT title, date, username
+        SELECT id, title, date, username
           FROM uploads
          WHERE uuid = %s
            AND mode = 'layer'
@@ -48,9 +51,7 @@ def layer_upload(uuid):
         reply_uuid = uuidlib.uuid4().hex
         base_dir = os.path.join(LAYER_ROOT, uuid, reply_uuid)
         original_dir = os.path.join(base_dir, "original")
-        zip_dir = os.path.join(base_dir, "zip")
         os.makedirs(original_dir, exist_ok=True)
-        os.makedirs(zip_dir, exist_ok=True)
 
         now_str = datetime.now().strftime("%Y年%m月%d日_%H時%M分")
         prefix = f"{now_str}_{upload['title']}"
@@ -64,27 +65,40 @@ def layer_upload(uuid):
                 continue
             saved_files.append(filename)
 
-        zip_path = os.path.join(zip_dir, f"{prefix}.zip")
-        create_zip(zip_path, [os.path.join(original_dir, f) for f in saved_files])
+        posted_at = datetime.now()
+        try:
+            create_layer_reply(
+                upload_id=int(upload["id"]),
+                reply_uuid=reply_uuid,
+                title_snapshot=upload["title"],
+                comment=comment,
+                posted_at=posted_at,
+                image_filenames=saved_files,
+            )
+        except Exception:
+            shutil.rmtree(base_dir, ignore_errors=True)
+            current_app.logger.exception(
+                "レイヤーアップロードのDB登録に失敗: upload_uuid=%s reply_uuid=%s",
+                uuid,
+                reply_uuid,
+            )
+            raise
 
-        info = {
-            "reply_uuid": reply_uuid,
-            "comment": comment,
-            "title": upload["title"],
-            "filenames": saved_files,
-            "created": datetime.now().isoformat()
-        }
-        with open(os.path.join(base_dir, "info.json"), "w", encoding="utf-8") as f:
-            json.dump(info, f, ensure_ascii=False, indent=2)
-
-        # 通知URL
-        zip_filename_encoded = urllib.parse.quote(os.path.basename(zip_path))
-        zip_url = f"https://mfu.iori0624.jp/uploads/layer_uploads/{uuid}/{reply_uuid}/zip/{zip_filename_encoded}"
+        detail_url = f"https://mfu.iori0624.jp/layer_upload_list/{uuid}"
 
         msg = build_processed_upload_message(
             title=upload["title"],
             comment=comment,
-            download_url=zip_url,
+            detail_url=detail_url,
+            image_count=len(saved_files),
+            posted_at=posted_at,
+        )
+        discord_embed = build_processed_upload_discord_embed(
+            title=upload["title"],
+            comment=comment,
+            detail_url=detail_url,
+            image_count=len(saved_files),
+            posted_at=posted_at,
         )
 
         if user:
@@ -100,6 +114,8 @@ def layer_upload(uuid):
                 upload_id=reply_uuid,
                 message=msg,
                 context_label="layer upload",
+                embed=discord_embed,
+                feature_key="layer_reply",
             )
 
             if (notify_method or "").strip().lower() in ("email", "both") and (email or "").strip():
@@ -110,8 +126,6 @@ def layer_upload(uuid):
                         subject="加工済み写真アップロード通知",
                         body=msg,
                         event_uuid="notify",               # From: notify@mail.iori0624.jp
-                        smtp_host="192.168.103.15",
-                        smtp_port=25,
                         timeout=10,
                     )
                 except Exception as e:
@@ -130,13 +144,12 @@ def layer_upload(uuid):
 
 @layer_reply_bp.route("/layer_reply/<reply_uuid>")
 def view_reply(reply_uuid):
-    # reply_uuid を含むパスを探索
-    for parent_uuid in os.listdir(LAYER_ROOT):
-        candidate = os.path.join(LAYER_ROOT, parent_uuid, reply_uuid)
-        if os.path.isdir(candidate):
-            info_path = os.path.join(candidate, "info.json")
-            if os.path.exists(info_path):
-                with open(info_path, "r", encoding="utf-8") as f:
-                    info = json.load(f)
-                return render_template("layer_reply.html", info=info, uuid=parent_uuid, reply_uuid=reply_uuid)
-    return abort(404)
+    info = get_layer_reply(reply_uuid)
+    if not info:
+        return abort(404)
+    return render_template(
+        "layer_reply.html",
+        info=info,
+        uuid=info["upload_uuid"],
+        reply_uuid=info["reply_uuid"],
+    )

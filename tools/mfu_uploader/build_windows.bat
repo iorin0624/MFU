@@ -6,13 +6,10 @@ python -m pip install -r requirements.txt
 python -m PyInstaller ^
   --noconfirm ^
   --clean ^
-  --windowed ^
-  --name MFUUploader ^
-  --hidden-import PySide6.QtCore ^
-  --hidden-import PySide6.QtGui ^
-  --hidden-import PySide6.QtWidgets ^
-  main.py
+  --distpath dist_v10 ^
+  --workpath build_v10 ^
+  MFUUploader.spec
 
 echo.
-echo Built: %~dp0dist\MFUUploader\MFUUploader.exe
+echo Built: %~dp0dist_v10\MFUUploader\MFUUploader.exe
 pause

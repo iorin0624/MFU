@@ -11,6 +11,7 @@ from .services import (
     create_target,
     get_logs,
     get_target,
+    get_tracking_timeline,
     list_targets,
     run_check,
     send_test_discord_notification,
@@ -37,11 +38,29 @@ except Exception:
 @shipment_tracking_bp.route("/admin/shipment-tracking", methods=["GET"])
 @admin_required
 def shipment_tracking_list():
-    targets = list_targets()
+    all_targets = list_targets()
+    selected_status = (request.args.get("status") or "active").strip().lower()
+    if selected_status not in {"active", "inactive", "all"}:
+        selected_status = "active"
+
+    counts = {
+        "active": sum(1 for target in all_targets if target.get("is_active")),
+        "inactive": sum(1 for target in all_targets if not target.get("is_active")),
+        "all": len(all_targets),
+    }
+    if selected_status == "active":
+        targets = [target for target in all_targets if target.get("is_active")]
+    elif selected_status == "inactive":
+        targets = [target for target in all_targets if not target.get("is_active")]
+    else:
+        targets = all_targets
+
     return render_template(
         "admin/shipment_tracking/list.html",
         targets=targets,
         carrier_master=CARRIER_MASTER,
+        selected_status=selected_status,
+        counts=counts,
     )
 
 
@@ -85,6 +104,7 @@ def shipment_tracking_detail(id: int):
         return redirect(url_for("shipment_tracking.shipment_tracking_list"))
 
     logs = get_logs(id, limit=20)
+    tracking_timeline = get_tracking_timeline(id, target.get("last_payload_json"))
     pretty_payload = None
     if target.get("last_payload_json"):
         try:
@@ -96,6 +116,7 @@ def shipment_tracking_detail(id: int):
         "admin/shipment_tracking/detail.html",
         target=target,
         logs=logs,
+        tracking_timeline=tracking_timeline,
         pretty_payload=pretty_payload,
         carrier_master=CARRIER_MASTER,
     )

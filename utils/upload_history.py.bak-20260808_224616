@@ -1,0 +1,274 @@
+from pathlib import Path
+import shutil
+
+from flask import Blueprint, abort, current_app, redirect, render_template, send_file, session, url_for
+from werkzeug.utils import secure_filename
+
+from app.utils.db import get_db
+from app.utils.layer_reply_store import (
+    FILE_KIND_IMAGE,
+    FILE_KIND_ZIP,
+    delete_layer_replies,
+    get_layer_reply_summary,
+    layer_reply_file_exists,
+    list_layer_reply_groups,
+)
+from app.utils.upload_deletion import delete_normal_upload
+
+upload_history_bp = Blueprint("upload_history", __name__)
+
+UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+DOWNLOAD_EXTENSIONS = {".zip", ".7z", ".rar"}
+
+
+def _storage_root() -> Path:
+    return Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR)).resolve()
+
+
+def _layer_root() -> Path:
+    return (_storage_root() / "layer_uploads").resolve()
+
+
+def _is_admin(username: str) -> bool:
+    return username == "admin"
+
+
+def _fetch_uploads_for_user(username: str, *, scope: str):
+    active_column = {
+        "upload": "upload_deleted_at",
+        "layer": "layer_deleted_at",
+    }.get(scope)
+    if not active_column:
+        raise ValueError("invalid upload history scope")
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    if _is_admin(username):
+        cursor.execute(
+            f"SELECT * FROM uploads WHERE {active_column} IS NULL ORDER BY created_at DESC"
+        )
+    else:
+        cursor.execute(
+            f"SELECT * FROM uploads WHERE username = %s AND {active_column} IS NULL ORDER BY created_at DESC",
+            (username,),
+        )
+    uploads = cursor.fetchall()
+    db.close()
+    return uploads
+
+
+def _fetch_upload_by_uuid(uuid: str, *, scope: str | None = None):
+    active_column = {
+        "upload": "upload_deleted_at",
+        "layer": "layer_deleted_at",
+        None: None,
+    }.get(scope)
+    if scope is not None and not active_column:
+        raise ValueError("invalid upload history scope")
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    where_active = f" AND {active_column} IS NULL" if active_column else ""
+    cursor.execute(f"SELECT * FROM uploads WHERE uuid = %s{where_active}", (uuid,))
+    upload = cursor.fetchone()
+    db.close()
+    return upload
+
+
+def _ensure_upload_permission(upload: dict, username: str):
+    if not upload:
+        abort(404)
+    if not _is_admin(username) and upload.get("username") != username:
+        abort(403)
+
+
+def _safe_path(base: Path, *parts: str):
+    cleaned_parts = []
+    for part in parts:
+        candidate = (part or "").strip()
+        if not candidate or Path(candidate).name != candidate:
+            return None
+        cleaned_parts.append(candidate)
+    if not cleaned_parts:
+        return None
+    target = base.joinpath(*cleaned_parts).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return None
+    return target
+
+
+def _list_layer_groups(upload_id: int):
+    return list_layer_reply_groups(upload_id)
+
+
+def _layer_summary(upload_id: int):
+    return get_layer_reply_summary(upload_id)
+
+
+@upload_history_bp.route("/upload_list")
+def upload_list():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    uploads = _fetch_uploads_for_user(username, scope="upload")
+
+    return render_template("upload_list.html", uploads=uploads, is_admin=_is_admin(username))
+
+
+@upload_history_bp.route("/layer_upload_list")
+def layer_upload_list():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    uploads = _fetch_uploads_for_user(username, scope="layer")
+
+    rows = []
+    for upload in uploads:
+        rows.append({**upload, **_layer_summary(upload["id"])})
+
+    return render_template("layer_upload_list.html", uploads=rows)
+
+
+@upload_history_bp.route("/layer_upload_list/<uuid>")
+def layer_upload_detail(uuid):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    upload = _fetch_upload_by_uuid(uuid, scope="layer")
+    _ensure_upload_permission(upload, username)
+
+    groups = _list_layer_groups(upload["id"])
+    return render_template("layer_upload_detail.html", upload=upload, groups=groups)
+
+
+@upload_history_bp.route("/layer_upload_list/<uuid>/image/<reply_uuid>/<filename>")
+def layer_upload_image(uuid, reply_uuid, filename):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    upload = _fetch_upload_by_uuid(uuid, scope="layer")
+    _ensure_upload_permission(upload, username)
+
+    if not layer_reply_file_exists(
+        upload_id=upload["id"],
+        reply_uuid=reply_uuid,
+        filename=filename,
+        file_kind=FILE_KIND_IMAGE,
+    ):
+        abort(404)
+
+    base = (_layer_root() / secure_filename(uuid) / secure_filename(reply_uuid) / "original").resolve()
+    target = _safe_path(base, filename)
+    if not target or not target.exists() or not target.is_file():
+        abort(404)
+    if target.suffix.lower() not in IMAGE_EXTENSIONS:
+        abort(404)
+
+    return send_file(target, conditional=True)
+
+
+@upload_history_bp.route("/layer_upload_list/<uuid>/zip/<reply_uuid>/<filename>")
+def layer_upload_zip(uuid, reply_uuid, filename):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    upload = _fetch_upload_by_uuid(uuid, scope="layer")
+    _ensure_upload_permission(upload, username)
+
+    if not layer_reply_file_exists(
+        upload_id=upload["id"],
+        reply_uuid=reply_uuid,
+        filename=filename,
+        file_kind=FILE_KIND_ZIP,
+    ):
+        abort(404)
+
+    base = (_layer_root() / secure_filename(uuid) / secure_filename(reply_uuid) / "zip").resolve()
+    target = _safe_path(base, filename)
+    if not target or not target.exists() or not target.is_file():
+        abort(404)
+    if target.suffix.lower() not in DOWNLOAD_EXTENSIONS:
+        abort(404)
+
+    return send_file(target, as_attachment=True, download_name=target.name, conditional=True)
+
+
+@upload_history_bp.route("/upload_delete/<uuid>", methods=["POST"])
+def upload_delete(uuid):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    # admin以外は本人のアップロードのみ削除可
+    cursor.execute(
+        "SELECT * FROM uploads WHERE uuid = %s AND upload_deleted_at IS NULL",
+        (uuid,),
+    )
+    upload = cursor.fetchone()
+
+    if not upload:
+        db.close()
+        return abort(404)
+
+    if not _is_admin(username) and upload["username"] != username:
+        db.close()
+        return abort(403)
+
+    db.close()
+
+    delete_normal_upload(
+        upload_id=upload["id"],
+        uuid=uuid,
+        storage_root=_storage_root(),
+    )
+
+    return redirect(url_for("upload_history.upload_list"))
+
+
+@upload_history_bp.route("/layer_upload_delete/<uuid>", methods=["POST"])
+def layer_upload_delete(uuid):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM uploads WHERE uuid=%s AND layer_deleted_at IS NULL",
+        (uuid,),
+    )
+    upload = cursor.fetchone()
+    if not upload:
+        db.close()
+        return abort(404)
+    if not _is_admin(username) and upload["username"] != username:
+        db.close()
+        return abort(403)
+
+    try:
+        delete_layer_replies(upload["id"], db=db, cursor=cursor)
+        cursor.execute(
+            "UPDATE uploads SET layer_deleted_at=COALESCE(layer_deleted_at, NOW()) WHERE id=%s",
+            (upload["id"],),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    layer_dir = _layer_root() / secure_filename(uuid)
+    if layer_dir.exists() and layer_dir.is_dir():
+        shutil.rmtree(layer_dir)
+
+    return redirect(url_for("upload_history.layer_upload_list"))

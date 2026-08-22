@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.utils.db import get_db
+from app.utils.upload_download_history import purge_upload_download_history
 
 
 UPLOAD_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -65,10 +66,17 @@ def delete_normal_upload(
     db = db_factory()
     cursor = db.cursor()
     try:
+        deleted_download_history = purge_upload_download_history(
+            upload_id,
+            db=db,
+            cursor=cursor,
+        )
         cursor.execute("DELETE FROM files WHERE upload_id = %s", (upload_id,))
         deleted_files = max(0, int(cursor.rowcount or 0))
         cursor.execute("DELETE FROM messages WHERE uuid = %s", (uuid,))
         deleted_messages = max(0, int(cursor.rowcount or 0))
+        cursor.execute("DELETE FROM upload_email_otps WHERE upload_id = %s", (upload_id,))
+        deleted_email_otps = max(0, int(cursor.rowcount or 0))
         cursor.execute(
             """
             UPDATE uploads
@@ -88,7 +96,9 @@ def delete_normal_upload(
     return {
         "uuid": uuid,
         "removed_directory": removed_directory,
+        "deleted_download_history": deleted_download_history,
         "deleted_files": deleted_files,
         "deleted_messages": deleted_messages,
+        "deleted_email_otps": deleted_email_otps,
         "updated_uploads": updated_uploads,
     }

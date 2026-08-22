@@ -7,6 +7,7 @@ from email.utils import parsedate_to_datetime
 from flask import request, render_template, jsonify, abort, url_for, redirect, session, current_app
 from . import bp
 from app.utils.db import get_db
+from app.utils.admin_passkey_stepup import require_admin_passkey
 from .utils import _require_mfu_login_redirect, _admin_csrf_token
 from .utils import (
     _get_current_privacy_policy_config,
@@ -474,6 +475,9 @@ def admin_ext_users_update(user_id: int):
 @bp.post("/admin/ext-users/<int:user_id>/anonymize-delete")
 def admin_ext_users_anonymize_delete(user_id: int):
     guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+    guard = require_admin_passkey(f"external_user_anonymize:{user_id}")
     if guard:
         return guard
 

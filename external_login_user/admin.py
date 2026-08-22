@@ -8,10 +8,8 @@ import textwrap
 from pathlib import Path
 from functools import lru_cache
 from flask import request, jsonify
-from email.mime.text import MIMEText
 from email.header import Header
 from email.utils import formataddr
-import smtplib
 from flask import current_app
 from .utils import (
     _event_admin_can_view,

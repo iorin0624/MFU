@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -23,6 +26,16 @@ STORE_ROOT = Path(
 ORIGINAL_ROOT = STORE_ROOT / "originals"
 THUMBNAIL_ROOT = STORE_ROOT / "thumbnails"
 ROOT_FOLDER_ID = 1
+
+
+# A sliding-window request should only slice an already ordered catalogue.  Re-reading
+# and naturally sorting several thousand rows for every window made a small pause
+# visible at each boundary.  The revision is checked on every request, so catalogue
+# changes still invalidate the cached order immediately.
+_ORDERED_ROWS_CACHE: dict[tuple[int, str], dict] = {}
+_ORDERED_ROWS_CACHE_LOCK = threading.RLock()
+_ORDERED_ROWS_CACHE_TTL = 120.0
+_ORDERED_ROWS_CACHE_MAX_ENTRIES = 24
 
 
 class CatalogError(RuntimeError):
@@ -47,6 +60,16 @@ class CatalogDuplicate(CatalogConflict):
 
 def _rows(cursor) -> list[dict]:
     return list(cursor.fetchall() or [])
+
+
+def _natural_sort_key(value: str) -> tuple:
+    """Return a stable, Explorer-like key for names containing numbers."""
+    parts = re.split(r"(\d+)", str(value or ""))
+    return tuple(
+        (0, int(part), len(part)) if part.isdigit() else (1, part.casefold())
+        for part in parts
+        if part
+    )
 
 
 def _normalise_virtual_path(value: str) -> str:
@@ -120,30 +143,120 @@ def _record(row: dict, folder_path: str) -> dict:
             else None
         ),
         "hasThumb": bool(row.get("thumbnail_relpath")),
+        "sourceUrl": str(row.get("source_url") or ""),
     }
 
 
-def list_payload(folder: str | None = None) -> dict:
+def _catalog_revision(cursor, folder_id: int) -> str:
+    cursor.execute(
+        "SELECT COUNT(*) AS file_count, "
+        "COALESCE(MAX(UNIX_TIMESTAMP(updated_at)), 0) AS file_updated "
+        "FROM image_viewer_files WHERE folder_id=%s AND status='active'",
+        (folder_id,),
+    )
+    files = cursor.fetchone() or {}
+    cursor.execute(
+        "SELECT COUNT(*) AS folder_count, "
+        "COALESCE(MAX(UNIX_TIMESTAMP(updated_at)), 0) AS folder_updated "
+        "FROM image_viewer_folders WHERE status='active'"
+    )
+    folders = cursor.fetchone() or {}
+    raw = ":".join(str(value or 0) for value in (
+        files.get("file_count"), files.get("file_updated"),
+        folders.get("folder_count"), folders.get("folder_updated"),
+    ))
+    return hashlib.sha256(raw.encode("ascii")).hexdigest()[:20]
+
+
+def _ordered_file_rows(cursor, folder_id: int, direction: str, revision: str) -> list[dict]:
+    cache_key = (int(folder_id), str(direction))
+    now = time.monotonic()
+    with _ORDERED_ROWS_CACHE_LOCK:
+        cached = _ORDERED_ROWS_CACHE.get(cache_key)
+        if (
+            cached
+            and cached.get("revision") == revision
+            and now - float(cached.get("stored_at") or 0) < _ORDERED_ROWS_CACHE_TTL
+        ):
+            return cached["rows"]
+
+    cursor.execute(
+        "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch "
+        "FROM image_viewer_files f "
+        "WHERE f.status='active' AND f.folder_id=%s",
+        (folder_id,),
+    )
+    ordered_rows = _rows(cursor)
+    ordered_rows.sort(
+        key=lambda row: (
+            _natural_sort_key(row.get("display_name") or ""),
+            int(row.get("id") or 0),
+        ),
+        reverse=direction == "DESC",
+    )
+    with _ORDERED_ROWS_CACHE_LOCK:
+        _ORDERED_ROWS_CACHE[cache_key] = {
+            "revision": revision,
+            "stored_at": now,
+            "rows": ordered_rows,
+        }
+        if len(_ORDERED_ROWS_CACHE) > _ORDERED_ROWS_CACHE_MAX_ENTRIES:
+            oldest = min(
+                _ORDERED_ROWS_CACHE,
+                key=lambda key: float(_ORDERED_ROWS_CACHE[key].get("stored_at") or 0),
+            )
+            _ORDERED_ROWS_CACHE.pop(oldest, None)
+    return ordered_rows
+
+
+def catalog_version(folder: str = "") -> dict:
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        folder_id = _folder_id(cursor, folder)
+        return {
+            "ok": True,
+            "folder": _normalise_virtual_path(folder),
+            "version": _catalog_revision(cursor, folder_id),
+        }
+    finally:
+        conn.close()
+
+
+def list_payload(
+    folder: str = "", *, page: int = 1, per_page: int = 401,
+    sort: str = "asc", center: int | None = None,
+) -> dict:
+    page = max(1, int(page or 1))
+    per_page = max(25, min(1000, int(per_page or 401)))
+    direction = "DESC" if str(sort).lower() == "desc" else "ASC"
     conn = get_db()
     try:
         cursor = conn.cursor(dictionary=True)
         _, by_path = _folder_maps(cursor)
         path_by_id = {folder_id: path for path, folder_id in by_path.items()}
-        params: tuple = ()
-        where = "f.status = 'active'"
-        if folder is not None:
-            folder_id = _folder_id(cursor, folder)
-            where += " AND f.folder_id = %s"
-            params = (folder_id,)
-        cursor.execute(
-            "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch "
-            "FROM image_viewer_files f "
-            f"WHERE {where} ORDER BY f.folder_id, f.display_name",
-            params,
-        )
+        normalised_folder = _normalise_virtual_path(folder)
+        folder_id = _folder_id(cursor, normalised_folder)
+        revision = _catalog_revision(cursor, folder_id)
+        ordered_rows = _ordered_file_rows(cursor, folder_id, direction, revision)
+        total = len(ordered_rows)
+        pages = max(1, (total + per_page - 1) // per_page)
+        if center is not None:
+            center = max(0, min(int(center), max(0, total - 1)))
+            offset = max(0, center - (per_page // 2))
+            if total > per_page:
+                offset = min(offset, total - per_page)
+            page = min(pages, (center // per_page) + 1)
+        else:
+            page = min(page, pages)
+            page_start = (page - 1) * per_page
+            overlap_before = min(150, per_page // 4)
+            offset = max(0, page_start - overlap_before)
+            if total > per_page:
+                offset = min(offset, total - per_page)
         images = [
             _record(row, path_by_id[int(row["folder_id"])])
-            for row in _rows(cursor)
+            for row in ordered_rows[offset:offset + per_page]
         ]
         folders = sorted(
             by_path.keys(), key=lambda value: (value.count("/"), value.lower())
@@ -154,11 +267,47 @@ def list_payload(folder: str | None = None) -> dict:
             "root": str(STORE_ROOT),
             "folders": folders,
             "images": images,
+            "folder": normalised_folder,
+            "version": revision,
+            "pagination": {
+                "page": page, "perPage": per_page, "total": total,
+                "pages": pages, "hasMore": offset + per_page < total,
+                "offset": offset,
+                "center": center if center is not None else offset + (per_page // 2),
+                "mode": "window" if center is not None else "page",
+            },
             "generatedAt": datetime.now().timestamp(),
             "completedAt": datetime.now().timestamp(),
         }
     finally:
         conn.close()
+
+
+def ensure_folder(folder_path: str) -> str:
+    """Create a missing virtual folder path, returning its normalized path."""
+    normalised = _normalise_virtual_path(folder_path)
+    if not normalised:
+        return ""
+    parent = ""
+    for name in PurePosixPath(normalised).parts:
+        candidate = f"{parent}/{name}".strip("/")
+        conn = get_db()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            try:
+                _folder_id(cursor, candidate)
+                parent = candidate
+                continue
+            except CatalogNotFound:
+                pass
+        finally:
+            conn.close()
+        try:
+            create_folder(parent, name)
+        except CatalogConflict:
+            pass
+        parent = candidate
+    return normalised
 
 
 def create_folder(parent_path: str, name: str) -> str:
@@ -224,11 +373,32 @@ def _next_display_name(cursor, folder_id: int, suffix: str) -> str:
         "WHERE folder_id = %s AND status <> 'trash'",
         (folder_id,),
     )
+    highest = 0
+    for row in _rows(cursor):
+        stem = Path(row["display_name"]).stem
+        if stem.isdigit():
+            highest = max(highest, int(stem))
+    return f"{highest + 1}{suffix}"
+
+
+def _unique_display_name(cursor, folder_id: int, display_name: str) -> str:
+    cursor.execute(
+        "SELECT display_name FROM image_viewer_files "
+        "WHERE folder_id = %s AND status <> 'trash'",
+        (folder_id,),
+    )
     used = {row["display_name"].lower() for row in _rows(cursor)}
-    number = 1
-    while f"{number}{suffix}".lower() in used:
-        number += 1
-    return f"{number}{suffix}"
+    if display_name.lower() not in used:
+        return display_name
+    path = Path(display_name)
+    stem = path.stem or "file"
+    suffix = path.suffix
+    counter = 1
+    while True:
+        candidate = f"{stem}_{counter:03d}{suffix}"
+        if candidate.lower() not in used:
+            return candidate
+        counter += 1
 
 
 def store_file(
@@ -238,25 +408,32 @@ def store_file(
     *,
     move_source: bool = False,
     checksum: bytes | None = None,
+    ensure_unique_display_name: bool = False,
+    source_url: str | None = None,
 ) -> dict:
     source = Path(source)
     if not source.is_file():
         raise CatalogNotFound(f"Source file not found: {source}")
     checksum = checksum or checksum_file(source)
+    source_url = str(source_url or "").strip() or None
+    if source_url and len(source_url) > 2048:
+        raise CatalogError("Source URL is too long")
     suffix = source.suffix.lower()
     file_uuid = str(uuid.uuid4())
     storage_relpath = f"{file_uuid[:2]}/{file_uuid}{suffix}"
     destination = ORIGINAL_ROOT / storage_relpath
     destination.parent.mkdir(parents=True, exist_ok=True)
     conn = get_db()
-    lock_name = f"mfu_image_sha256_{checksum.hex()}"
-    lock_acquired = False
+    checksum_lock_name = f"mfu_image_sha256_{checksum.hex()}"
+    checksum_lock_acquired = False
+    folder_lock_name = None
+    folder_lock_acquired = False
     cursor = None
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT GET_LOCK(%s, 30) AS acquired", (lock_name,))
-        lock_acquired = bool((cursor.fetchone() or {}).get("acquired"))
-        if not lock_acquired:
+        cursor.execute("SELECT GET_LOCK(%s, 30) AS acquired", (checksum_lock_name,))
+        checksum_lock_acquired = bool((cursor.fetchone() or {}).get("acquired"))
+        if not checksum_lock_acquired:
             raise CatalogError("Timed out while checking for duplicate files")
         cursor.execute(
             "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch "
@@ -286,19 +463,35 @@ def store_file(
                 conn.commit()
                 existing = None
         if existing:
+            if source_url and not existing.get("source_url"):
+                cursor.execute(
+                    "UPDATE image_viewer_files SET source_url = %s WHERE id = %s",
+                    (source_url, existing["id"]),
+                )
+                conn.commit()
+                existing["source_url"] = source_url
             _, by_path = _folder_maps(cursor)
             path_by_id = {folder_id: path for path, folder_id in by_path.items()}
             existing_folder = path_by_id.get(int(existing["folder_id"]), "")
             raise CatalogDuplicate(_record(existing, existing_folder))
         folder_id = _folder_id(cursor, folder_path)
-        display_name = display_name or _next_display_name(cursor, folder_id, suffix)
+        folder_lock_name = f"mfu_image_folder_{folder_id}"
+        cursor.execute("SELECT GET_LOCK(%s, 30) AS acquired", (folder_lock_name,))
+        folder_lock_acquired = bool((cursor.fetchone() or {}).get("acquired"))
+        if not folder_lock_acquired:
+            raise CatalogError("Timed out while assigning a file number")
+        if display_name:
+            if ensure_unique_display_name:
+                display_name = _unique_display_name(cursor, folder_id, display_name)
+        else:
+            display_name = _next_display_name(cursor, folder_id, suffix)
         if "/" in display_name or "\\" in display_name:
             raise CatalogError("Invalid file name")
         cursor.execute(
             "INSERT INTO image_viewer_files "
             "(file_uuid, folder_id, display_name, storage_relpath, extension, "
-            "media_type, mime_type, file_size, file_mtime, checksum_sha256, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FROM_UNIXTIME(%s), %s, 'processing')",
+            "media_type, mime_type, file_size, file_mtime, checksum_sha256, source_url, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FROM_UNIXTIME(%s), %s, %s, 'processing')",
             (
                 file_uuid,
                 folder_id,
@@ -310,6 +503,7 @@ def store_file(
                 source.stat().st_size,
                 source.stat().st_mtime,
                 checksum,
+                source_url,
             ),
         )
         try:
@@ -333,9 +527,14 @@ def store_file(
         )
         return _record(cursor.fetchone(), _normalise_virtual_path(folder_path))
     finally:
-        if lock_acquired and cursor is not None:
+        if folder_lock_acquired and folder_lock_name and cursor is not None:
             try:
-                cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                cursor.execute("SELECT RELEASE_LOCK(%s)", (folder_lock_name,))
+            except Exception:
+                pass
+        if checksum_lock_acquired and cursor is not None:
+            try:
+                cursor.execute("SELECT RELEASE_LOCK(%s)", (checksum_lock_name,))
             except Exception:
                 pass
         conn.close()
@@ -399,6 +598,7 @@ def file_properties(path: str) -> dict:
             "width": width,
             "height": height,
             "sha256": bytes(row["checksum_sha256"]).hex() if row.get("checksum_sha256") else checksum_file(real_path).hex(),
+            "sourceUrl": str(row.get("source_url") or ""),
         }
     finally:
         conn.close()
@@ -500,6 +700,105 @@ def rename_entry(path: str, new_name: str, entry_type: str) -> str:
         conn.close()
 
 
+def build_append_sequence_plan(source_paths: list[str], target_path: str) -> list[dict]:
+    """Return deterministic target/source rename mappings for appended numbering."""
+    if not isinstance(source_paths, list) or not 1 <= len(source_paths) <= 1000:
+        raise CatalogError("後ろへ付けるファイルを1～1000件選択してください。")
+    target_parent, target_name = _split_entry_path(target_path)
+    normalized_sources = [_normalise_virtual_path(path) for path in source_paths]
+    if len(set(normalized_sources)) != len(normalized_sources):
+        raise CatalogError("同じファイルが重複して選択されています。")
+    normalized_target = _normalise_virtual_path(target_path)
+    if normalized_target in normalized_sources:
+        raise CatalogConflict("基準ファイルは後ろへ付けるファイルとは別にしてください。")
+
+    target_stem = Path(target_name).stem
+    if not target_stem:
+        raise CatalogError("基準ファイルの名前を確認してください。")
+    ordered_paths = [normalized_target, *normalized_sources]
+    plan = []
+    for index, source_path in enumerate(ordered_paths, start=1):
+        parent_path, source_name = _split_entry_path(source_path)
+        if parent_path != target_parent:
+            raise CatalogConflict("すべて同じフォルダー内のファイルを選択してください。")
+        extension = Path(source_name).suffix
+        new_name = f"{target_stem}_{index}{extension}"
+        if len(new_name) > 255:
+            raise CatalogError("生成されるファイル名が長すぎます。")
+        new_path = f"{target_parent}/{new_name}".strip("/")
+        plan.append(
+            {
+                "sourcePath": source_path,
+                "sourceName": source_name,
+                "name": new_name,
+                "path": new_path,
+                "folder": target_parent,
+            }
+        )
+    final_names = [item["name"].casefold() for item in plan]
+    if len(set(final_names)) != len(final_names):
+        raise CatalogConflict("生成されるファイル名が重複しています。")
+    return plan
+
+
+def append_sequence_files(source_paths: list[str], target_path: str) -> list[dict]:
+    plan = build_append_sequence_plan(source_paths, target_path)
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        rows_by_path = {}
+        for item in plan:
+            row, folder_path = _file_row_for_virtual_path(cursor, item["sourcePath"])
+            if folder_path != item["folder"]:
+                raise CatalogConflict("すべて同じフォルダー内のファイルを選択してください。")
+            rows_by_path[item["sourcePath"]] = row
+        participant_ids = {int(row["id"]) for row in rows_by_path.values()}
+        if len(participant_ids) != len(plan):
+            raise CatalogConflict("同じファイルが重複して選択されています。")
+
+        folder_id = int(next(iter(rows_by_path.values()))["folder_id"])
+        cursor.execute(
+            "SELECT id, display_name FROM image_viewer_files "
+            "WHERE folder_id=%s AND status='active'",
+            (folder_id,),
+        )
+        final_names = {item["name"].casefold() for item in plan}
+        for existing in _rows(cursor):
+            if int(existing["id"]) not in participant_ids and str(existing["display_name"]).casefold() in final_names:
+                raise CatalogConflict(f"同名のファイルが既にあります: {existing['display_name']}")
+
+        try:
+            operation_id = uuid.uuid4().hex
+            temporary_names = {}
+            for index, item in enumerate(plan, start=1):
+                row = rows_by_path[item["sourcePath"]]
+                temporary_name = f".mfu-sequence-{operation_id}-{index}{Path(item['sourceName']).suffix}"
+                temporary_names[int(row["id"])] = temporary_name
+                cursor.execute(
+                    "UPDATE image_viewer_files SET display_name=%s WHERE id=%s AND status='active'",
+                    (temporary_name, int(row["id"])),
+                )
+                if cursor.rowcount != 1:
+                    raise CatalogNotFound("File not found")
+            for item in plan:
+                row = rows_by_path[item["sourcePath"]]
+                cursor.execute(
+                    "UPDATE image_viewer_files SET display_name=%s WHERE id=%s AND display_name=%s AND status='active'",
+                    (item["name"], int(row["id"]), temporary_names[int(row["id"])]),
+                )
+                if cursor.rowcount != 1:
+                    raise CatalogNotFound("File not found")
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if getattr(exc, "errno", None) == 1062:
+                raise CatalogConflict("同名のファイルが既にあります。") from exc
+            raise
+        return plan
+    finally:
+        conn.close()
+
+
 def move_entry(path: str, destination: str, entry_type: str) -> str:
     source_parent, name = _split_entry_path(path)
     destination = _normalise_virtual_path(destination)
@@ -549,6 +848,77 @@ def move_entry(path: str, destination: str, entry_type: str) -> str:
                 raise CatalogConflict("An entry with that name already exists") from exc
             raise
         return f"{destination}/{name}".strip("/")
+    finally:
+        conn.close()
+
+
+def copy_file_entry(path: str, destination: str) -> dict:
+    """Copy one virtual file while keeping the original active."""
+    destination = _normalise_virtual_path(destination)
+    conn = get_db()
+    copied_path = None
+    try:
+        cursor = conn.cursor(dictionary=True)
+        source_row, _ = _file_row_for_virtual_path(cursor, path)
+        destination_id = _folder_id(cursor, destination)
+        source_path = (ORIGINAL_ROOT / source_row["storage_relpath"]).resolve()
+        source_path.relative_to(ORIGINAL_ROOT.resolve())
+        if not source_path.is_file():
+            raise CatalogNotFound("Stored file not found")
+
+        file_uuid = str(uuid.uuid4())
+        suffix = str(source_row.get("extension") or source_path.suffix).lower()
+        storage_relpath = f"{file_uuid[:2]}/{file_uuid}{suffix}"
+        copied_path = ORIGINAL_ROOT / storage_relpath
+        copied_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cursor.execute(
+                "INSERT INTO image_viewer_files "
+                "(file_uuid, folder_id, display_name, storage_relpath, thumbnail_relpath, "
+                "extension, media_type, mime_type, file_size, file_mtime, checksum_sha256, "
+                "source_url, width, height, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'processing')",
+                (
+                    file_uuid,
+                    destination_id,
+                    source_row["display_name"],
+                    storage_relpath,
+                    source_row.get("thumbnail_relpath"),
+                    suffix,
+                    source_row["media_type"],
+                    source_row.get("mime_type"),
+                    source_row["file_size"],
+                    source_row["file_mtime"],
+                    source_row.get("checksum_sha256"),
+                    source_row.get("source_url"),
+                    source_row.get("width"),
+                    source_row.get("height"),
+                ),
+            )
+            copied_id = int(cursor.lastrowid)
+            shutil.copy2(source_path, copied_path)
+            cursor.execute(
+                "UPDATE image_viewer_files SET status = 'active' WHERE file_uuid = %s",
+                (file_uuid,),
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            copied_path.unlink(missing_ok=True)
+            if getattr(exc, "errno", None) == 1062:
+                raise CatalogConflict("An entry with that name already exists") from exc
+            raise
+
+        copied_row = dict(source_row)
+        copied_row.update(
+            id=copied_id,
+            file_uuid=file_uuid,
+            folder_id=destination_id,
+            storage_relpath=storage_relpath,
+            status="active",
+            mtime_epoch=copied_path.stat().st_mtime,
+        )
+        return _record(copied_row, destination)
     finally:
         conn.close()
 

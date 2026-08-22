@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}ETC freee登録設定{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div><h1 class="h3 mb-1">ETC freee登録設定</h1><div class="text-muted">1件ずつ承認登録するときの勘定科目・税区分・決済口座です。</div></div>
+  <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index') }}">一覧へ</a>
+</div>
+{% for warning in master.warnings or [] %}<div class="alert alert-warning">{{ warning }}</div>{% endfor %}
+<form method="post" class="card"><div class="card-body row g-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="col-md-6"><label class="form-label">勘定科目</label><select class="form-select" name="account_item_id" required><option value="">選択してください</option>{% for item in master.account_items %}<option value="{{ item.id }}" {{ 'selected' if current.account_item_id == item.id else '' }}>{{ format_account(item) }}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label">税区分</label><select class="form-select" name="tax_code" required><option value="">選択してください</option>{% for tax in master.taxes %}{% set code = tax_code(tax) %}<option value="{{ code }}" {{ 'selected' if current.tax_code == code else '' }}>{{ format_tax(tax) }}</option>{% endfor %}</select></div>
+  <div class="col-md-4"><label class="form-label">決済状態</label><select class="form-select" name="deal_payment_mode"><option value="settled" {{ 'selected' if (current.deal_payment_mode or 'settled') == 'settled' else '' }}>決済済み</option><option value="unsettled" {{ 'selected' if current.deal_payment_mode == 'unsettled' else '' }}>未決済</option></select></div>
+  <div class="col-md-8"><label class="form-label">決済口座</label><select class="form-select" name="walletable"><option value="">未決済の場合は不要</option>{% for wallet in master.walletables %}{% set value = walletable_type(wallet) ~ ':' ~ walletable_id(wallet) %}<option value="{{ value }}" {{ 'selected' if current.walletable_type == walletable_type(wallet) and current.walletable_id == walletable_id(wallet) else '' }}>{{ format_wallet(wallet) }}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label">取引先（任意）</label><select class="form-select" name="partner_id"><option value="">指定なし</option>{% for partner in master.partners %}<option value="{{ partner.id }}" {{ 'selected' if current.partner_id == partner.id else '' }}>{{ format_partner(partner) }}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label">取引先コード（任意）</label><input class="form-control" name="partner_code" value="{{ current.partner_code or '' }}"></div>
+  <div class="col-12"><button class="btn btn-primary">設定を保存</button></div>
+</div></form>
+
+<div class="card mt-4" id="registration-mappings">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <strong>登録番号別のfreee設定</strong>
+    <span class="text-muted small">登録番号一覧の全22事業者について、取引先・品目を設定します</span>
+  </div>
+  <div class="card-body">
+    <template id="etcPartnerOptions">
+      <option value="">選択してください</option>
+      {% for partner in master.partners %}<option value="{{ partner.id }}">{{ format_partner(partner) }}</option>{% endfor %}
+    </template>
+    <template id="etcItemOptions">
+      <option value="">選択してください</option>
+      {% for item in master['items'] %}<option value="{{ item.id }}">{{ format_item(item) }}</option>{% endfor %}
+    </template>
+    {% for mapping in registration_mappings %}
+    <form method="post" action="{{ url_for('etc_accounting.registration_mapping_save', registration_number=mapping.registration_number) }}" class="border rounded p-3 mb-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+        <div>
+          <div class="fw-bold font-monospace">{{ mapping.registration_number }}</div>
+          <div class="text-muted small">{{ mapping.issuer_name or '発行元名を取得できませんでした' }}</div>
+          <div class="text-muted small">明細 {{ mapping.record_count }}件（freee未登録 {{ mapping.unregistered_count }}件）</div>
+        </div>
+        <span class="badge {{ 'bg-success' if mapping.configured else 'bg-warning text-dark' }}">
+          {{ '設定済み' if mapping.configured else '設定待ち' }}
+        </span>
+      </div>
+      <div class="row g-3 align-items-end">
+        <div class="col-lg-5">
+          <label class="form-label">freee取引先</label>
+          <select class="form-select js-etc-master-select" name="partner_id" required data-template="etcPartnerOptions" data-selected="{{ mapping.partner_id or '' }}">
+            <option value="">選択してください</option>
+            {% if mapping.partner_id %}<option value="{{ mapping.partner_id }}" selected>{{ mapping.partner_name }}</option>{% endif %}
+          </select>
+        </div>
+        <div class="col-lg-5">
+          <label class="form-label">freee品目</label>
+          <select class="form-select js-etc-master-select" name="item_id" required data-template="etcItemOptions" data-selected="{{ mapping.item_id or '' }}">
+            <option value="">選択してください</option>
+            {% if mapping.item_id %}<option value="{{ mapping.item_id }}" selected>{{ mapping.item_name }}</option>{% endif %}
+          </select>
+        </div>
+        <div class="col-lg-2"><button class="btn btn-primary w-100">保存</button></div>
+      </div>
+    </form>
+    {% else %}
+    <div class="alert alert-light border mb-0">登録番号を読み取ったETC利用証明書はまだありません。</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card mt-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>ETC自動ログイン</strong>
+    <span class="badge {{ 'bg-success' if etc_credentials.configured else 'bg-secondary' }}">
+      {{ '設定済み' if etc_credentials.configured else '未設定' }}
+    </span>
+  </div>
+  <div class="card-body">
+    <p class="text-muted">ログアウトしていた場合、PDF取得前にChromium上で自動ログインします。認証情報はサーバーの保護領域へ暗号化して保存します。</p>
+    {% if etc_credentials.error %}<div class="alert alert-danger">{{ etc_credentials.error }}</div>{% endif %}
+    {% if etc_credentials.login_blocked %}<div class="alert alert-warning">前回の自動ログインに失敗したため停止中です。正しい認証情報を再保存してください。</div>{% endif %}
+    <form method="post" action="{{ url_for('etc_accounting.credentials_save') }}" class="row g-3" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="col-md-6">
+        <label class="form-label" for="etc-login-id">ユーザーID</label>
+        <input class="form-control" id="etc-login-id" name="login_id" maxlength="12" value="{{ etc_credentials.login_id or '' }}" autocomplete="username" required>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="etc-password">パスワード</label>
+        <input class="form-control" type="password" id="etc-password" name="password" maxlength="32" autocomplete="new-password" required>
+        <div class="form-text">保存済みパスワードは画面へ再表示しません。変更しない場合は保存操作を行わないでください。</div>
+      </div>
+      <div class="col-12"><button class="btn btn-primary">認証情報を暗号化して保存</button></div>
+    </form>
+    {% if etc_credentials.configured %}
+    <form method="post" action="{{ url_for('etc_accounting.credentials_delete') }}" class="mt-3" onsubmit="return confirm('保存済みのETC自動ログイン情報を削除しますか？');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-outline-danger">自動ログイン情報を削除</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+<script>
+(() => {
+  document.querySelectorAll('.js-etc-master-select').forEach((select) => {
+    const load = () => {
+      if (select.dataset.loaded === '1') return;
+      const template = document.getElementById(select.dataset.template);
+      if (!template) return;
+      const selected = select.dataset.selected || '';
+      select.replaceChildren(template.content.cloneNode(true));
+      select.value = selected;
+      select.dataset.loaded = '1';
+    };
+    select.addEventListener('focus', load, {once: true});
+    select.addEventListener('pointerdown', load, {once: true});
+  });
+})();
+</script>
+{% endblock %}

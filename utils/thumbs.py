@@ -12,7 +12,10 @@ ALBUM_ROOTS = {
     "upload": "/mnt/mfu/uploads"
 }
 
-ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.heic'}
+ALLOWED_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.heic', '.heif',
+    '.cr2', '.cr3', '.nef', '.nrw', '.arw', '.dng',
+}
 
 def allowed_file(filename):
     return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
@@ -37,7 +40,7 @@ def get_files_with_thumbs(mode, album_id, child_id):
     }
 
     def allowed_file(filename):
-        return any(filename.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.heic'])
+        return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
 
     if mode not in ALBUM_ROOTS:
         print(f"[ERROR] get_files_with_thumbs: 未知のmode: {mode}")

@@ -1,0 +1,24 @@
+[Unit]
+Description=MFU desktop uploader LAN-only API
+Requires=mfu-app-firewall.service
+After=network.target mfu-app-firewall.service
+
+[Service]
+Type=simple
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+Environment=TMPDIR=/mnt/mfu/tmp
+Environment=PYTHONUNBUFFERED=1
+Environment=MFU_LAN_UPLOADER_SERVICE=1
+ExecStartPre=/bin/mkdir -p /mnt/mfu/tmp
+ExecStartPre=/bin/chown mfu:mfu /mnt/mfu/tmp
+ExecStart=/mnt/mfu/venv/bin/gunicorn --workers 1 --worker-class gthread --threads 8 --bind 192.168.103.16:8081 --timeout 1200 --graceful-timeout 30 --keep-alive 2 --backlog 128 --worker-tmp-dir /mnt/mfu/tmp --no-sendfile --capture-output --error-logfile - --log-level info app.lan_uploader:application
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=16384
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

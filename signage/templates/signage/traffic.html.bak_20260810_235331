@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>高速道路 交通情報</title>
+  <style>
+    :root { color-scheme: dark; --panel: rgba(7, 16, 29, .90); --muted: #a9b9cd; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #07101d; color: white; font-family: "Noto Sans JP", "IPAGothic", sans-serif; }
+    #map { position: fixed !important; inset: 0; width: 100vw; height: 100vh; background: radial-gradient(circle at center, #18324c, #07101d 68%); }
+    .header { position: fixed; z-index: 5; top: 18px; left: 22px; right: 22px; display: flex; align-items: center; gap: 20px; padding: 14px 20px; border: 1px solid rgba(255,255,255,.20); border-radius: 18px; background: var(--panel); box-shadow: 0 10px 35px rgba(0,0,0,.35); }
+    .title { font-size: clamp(28px, 3.1vw, 48px); font-weight: 800; white-space: nowrap; }
+    .area { color: #75c7ff; font-size: clamp(21px, 2.2vw, 34px); font-weight: 700; }
+    .clock { margin-left: auto; text-align: right; font-size: clamp(22px, 2.1vw, 32px); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .roads { position: fixed; z-index: 5; left: 22px; bottom: 22px; max-width: calc(100% - 44px); display: flex; flex-wrap: wrap; gap: 9px; padding: 13px 15px; border: 1px solid rgba(255,255,255,.18); border-radius: 17px; background: var(--panel); }
+    .road { padding: 7px 13px; border: 1px solid rgba(255,255,255,.26); border-radius: 999px; background: rgba(255,255,255,.08); font-size: clamp(16px, 1.55vw, 24px); font-weight: 700; transition: background .25s, border-color .25s, color .25s; }
+    .road.active { color: #07101d; border-color: #75c7ff; background: #75c7ff; }
+    .legend { position: fixed; z-index: 5; right: 22px; top: 112px; display: grid; gap: 7px; padding: 12px 14px; border-radius: 15px; background: var(--panel); font-size: clamp(14px, 1.3vw, 19px); }
+    .legend div { display: flex; align-items: center; gap: 8px; }
+    .line { width: 36px; height: 7px; border-radius: 4px; }
+    .waiting { position: fixed; z-index: 4; inset: 0; display: grid; place-content: center; text-align: center; gap: 14px; padding: 28px; }
+    .waiting strong { font-size: clamp(30px, 4vw, 58px); }
+    .waiting span { color: var(--muted); font-size: clamp(18px, 2vw, 29px); }
+    .map-ready .waiting { display: none; }
+    .notice { position: fixed; z-index: 5; right: 22px; bottom: 22px; color: #d6e1ef; padding: 8px 12px; border-radius: 12px; background: var(--panel); font-size: clamp(12px, 1vw, 16px); }
+    @media (max-width: 900px) { .legend { top: 104px; } .notice { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="map" aria-label="高速道路の交通状況"></div>
+  <div class="waiting" role="status">
+    <strong id="status-title">交通情報を準備しています</strong>
+    <span id="status-detail">地図を読み込んでいます</span>
+  </div>
+  <header class="header">
+    <div class="title">🚗 高速道路 交通情報</div>
+    <div class="area" id="area-name">千葉エリア</div>
+    <time class="clock" id="clock"></time>
+  </header>
+  <aside class="legend" aria-label="渋滞色の凡例">
+    <div><span class="line" style="background:#2fb44a"></span>順調</div>
+    <div><span class="line" style="background:#f1c40f"></span>混雑</div>
+    <div><span class="line" style="background:#e53935"></span>渋滞</div>
+    <div><span class="line" style="background:#8e1b1b"></span>激しい渋滞</div>
+  </aside>
+  <div class="roads" aria-label="対象路線">
+    <span class="road">千葉・湾岸広域</span>
+    <span class="road">首都高・外環道</span>
+  </div>
+  <div class="notice">事故・通行止め等の詳細は道路管理者の公式情報をご確認ください</div>
+  <script>
+    const apiKey = {{ google_maps_api_key|tojson }};
+    let trafficConfig = {{ traffic_config|tojson }};
+    let views = trafficConfig.views;
+    let map, viewIndex = 0, roadRotationTimer = null;
+    function showView(index, animate = true) {
+      viewIndex = index;
+      const view = views[viewIndex];
+      document.getElementById("area-name").textContent = view.name;
+      document.querySelectorAll(".road").forEach((item, itemIndex) => {
+        item.classList.toggle("active", itemIndex === viewIndex);
+      });
+      if (!map) return;
+      if (animate) map.panTo(view.center);
+      else map.setCenter(view.center);
+      map.setZoom(view.zoom);
+    }
+    function startRoadRotation() {
+      if (roadRotationTimer !== null) {
+        clearTimeout(roadRotationTimer);
+      }
+      showView(0, false);
+      roadRotationTimer = setTimeout(() => {
+        if (viewIndex >= views.length - 1) {
+          roadRotationTimer = null;
+          return;
+        }
+        showView(viewIndex + 1);
+      }, Math.max(5, Number(views[viewIndex].duration_seconds) || 20) * 1000);
+    }
+    async function refreshTrafficConfig() {
+      try {
+        const response = await fetch("{{ url_for('signage.traffic_config') }}", { cache: "no-store" });
+        if (!response.ok) return;
+        const nextConfig = await response.json();
+        if (Array.isArray(nextConfig.views) && nextConfig.views.length === 2) {
+          trafficConfig = nextConfig;
+          views = nextConfig.views;
+        }
+      } catch (_) {
+        // 現在の設定で表示を継続する。
+      }
+    }
+    async function refreshAndStartRoadRotation() {
+      await refreshTrafficConfig();
+      startRoadRotation();
+    }
+    function updateClock() {
+      document.getElementById("clock").textContent = new Intl.DateTimeFormat("ja-JP", {
+        month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit"
+      }).format(new Date());
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Home") {
+        event.preventDefault();
+        refreshAndStartRoadRotation();
+      }
+    });
+    window.initTrafficMap = function () {
+      map = new google.maps.Map(document.getElementById("map"), {
+        center: views[0].center, zoom: views[0].zoom, mapTypeControl: false,
+        streetViewControl: false, fullscreenControl: false, rotateControl: false,
+        clickableIcons: false, gestureHandling: "none", disableDefaultUI: true
+      });
+      new google.maps.TrafficLayer({ autoRefresh: true }).setMap(map);
+      document.body.classList.add("map-ready");
+      startRoadRotation();
+    };
+    function showError(title, detail) {
+      document.getElementById("status-title").textContent = title;
+      document.getElementById("status-detail").textContent = detail;
+    }
+    if (!apiKey) {
+      showError("交通情報は設定待ちです", "Google Maps APIキーをMFUへ設定してください");
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(apiKey) + "&callback=initTrafficMap&v=weekly&loading=async&language=ja&region=JP";
+      script.async = true;
+      script.onerror = () => showError("交通情報を取得できません", "通信状態またはAPI設定を確認してください");
+      document.head.appendChild(script);
+      setTimeout(() => {
+        if (!document.body.classList.contains("map-ready")) {
+          showError("交通情報を取得できません", "API設定・利用上限・ネットワークを確認してください");
+        }
+      }, 15000);
+    }
+  </script>
+</body>
+</html>

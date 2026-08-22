@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -6,6 +7,8 @@ import requests
 DISCORD_CONTENT_LIMIT = 2000
 DISCORD_RESPONSE_BODY_LOG_LIMIT = 400
 COMMENT_PREVIEW_LIMIT = 500
+DISCORD_EMBED_FIELD_LIMIT = 1024
+DISCORD_UPLOAD_COLOR = 0x3498DB
 
 
 def normalize_notification_settings(notify_method: Optional[str], webhook_url: Optional[str]) -> tuple[str, str]:
@@ -28,6 +31,22 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _feature_webhook(feature_key: str, legacy_webhook: str) -> str:
+    try:
+        from app.discord_notifications.repository import get_discord_webhook
+        return get_discord_webhook(feature_key, legacy_webhook)
+    except Exception:
+        return legacy_webhook
+
+
+def _record_feature_delivery(feature_key: str, *, success: bool, error: str = "") -> None:
+    try:
+        from app.discord_notifications.repository import record_discord_delivery
+        record_discord_delivery(feature_key, success=success, error=error)
+    except Exception:
+        pass
+
+
 def _fit_discord_content(content: str, limit: int = DISCORD_CONTENT_LIMIT) -> str:
     if len(content) <= limit:
         return content
@@ -43,16 +62,64 @@ def _fit_discord_content(content: str, limit: int = DISCORD_CONTENT_LIMIT) -> st
     return _truncate(content, limit)
 
 
-def build_processed_upload_message(*, title: str, comment: str, download_url: str) -> str:
+def build_processed_upload_message(
+    *,
+    title: str,
+    comment: str,
+    detail_url: str,
+    image_count: int,
+    posted_at: datetime,
+) -> str:
     comment_text = (comment or "").strip() or "（なし）"
     comment_text = _truncate(comment_text, COMMENT_PREVIEW_LIMIT)
     raw = (
         "📸 加工済み写真がアップロードされました\n"
-        f"📂 タイトル: {title}\n"
-        f"💬 コメント: {comment_text}\n"
-        f"🔗 ダウンロード: {download_url}"
+        f"タイトル: {title}\n"
+        f"画像枚数: {max(0, int(image_count))}枚\n"
+        f"コメント: {comment_text}\n"
+        f"投稿日時: {posted_at.strftime('%Y年%m月%d日 %H:%M:%S')}\n\n"
+        f"詳細を確認:\n{detail_url}"
     )
     return _fit_discord_content(raw)
+
+
+def build_processed_upload_discord_embed(
+    *,
+    title: str,
+    comment: str,
+    detail_url: str,
+    image_count: int,
+    posted_at: datetime,
+) -> dict:
+    comment_text = (comment or "").strip() or "（なし）"
+    return {
+        "title": "📸 加工済み写真がアップロードされました",
+        "url": detail_url,
+        "color": DISCORD_UPLOAD_COLOR,
+        "fields": [
+            {
+                "name": "撮影タイトル",
+                "value": _truncate((title or "（タイトルなし）").strip(), DISCORD_EMBED_FIELD_LIMIT),
+                "inline": False,
+            },
+            {
+                "name": "画像枚数",
+                "value": f"{max(0, int(image_count))}枚",
+                "inline": True,
+            },
+            {
+                "name": "投稿日時",
+                "value": posted_at.strftime("%Y年%m月%d日 %H:%M:%S"),
+                "inline": True,
+            },
+            {
+                "name": "コメント",
+                "value": _truncate(comment_text, DISCORD_EMBED_FIELD_LIMIT),
+                "inline": False,
+            },
+        ],
+        "footer": {"text": "タイトルをクリックするとMFUの詳細画面を開きます"},
+    }
 
 
 def send_discord_upload_notification(
@@ -64,8 +131,11 @@ def send_discord_upload_notification(
     upload_id: str,
     message: str,
     context_label: str,
+    embed: Optional[dict] = None,
+    feature_key: str = "upload_complete",
 ) -> bool:
     normalized_method, normalized_webhook = normalize_notification_settings(notify_method, webhook_url)
+    normalized_webhook = _feature_webhook(feature_key, normalized_webhook)
     webhook_masked = _mask_webhook(normalized_webhook)
 
     if normalized_method not in ("discord", "both"):
@@ -91,6 +161,11 @@ def send_discord_upload_notification(
         return False
 
     payload_content = _fit_discord_content(message)
+    payload = (
+        {"embeds": [embed], "allowed_mentions": {"parse": []}}
+        if embed
+        else {"content": payload_content, "allowed_mentions": {"parse": []}}
+    )
     logger.info(
         "%s Discord通知開始: user=%s notify_method=%s upload_id=%s webhook=%s content_len=%s",
         context_label,
@@ -103,7 +178,7 @@ def send_discord_upload_notification(
 
     resp = None
     try:
-        resp = requests.post(normalized_webhook, json={"content": payload_content}, timeout=10)
+        resp = requests.post(normalized_webhook, json=payload, timeout=10)
         body_preview = _truncate((resp.text or "").replace("\n", "\\n"), DISCORD_RESPONSE_BODY_LOG_LIMIT)
         logger.info(
             "%s Discord response: user=%s upload_id=%s status=%s body=%s",
@@ -114,6 +189,7 @@ def send_discord_upload_notification(
             body_preview or "(empty)",
         )
         resp.raise_for_status()
+        _record_feature_delivery(feature_key, success=True)
         logger.info(
             "%s Discord通知成功: user=%s notify_method=%s upload_id=%s",
             context_label,
@@ -123,6 +199,7 @@ def send_discord_upload_notification(
         )
         return True
     except Exception as exc:
+        _record_feature_delivery(feature_key, success=False, error=f"{type(exc).__name__}: {exc}")
         status = getattr(resp, "status_code", "n/a")
         body = _truncate((getattr(resp, "text", "") or "").replace("\n", "\\n"), DISCORD_RESPONSE_BODY_LOG_LIMIT)
         logger.exception(

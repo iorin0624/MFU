@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from ipaddress import ip_address, ip_network
 from typing import Any, Dict
@@ -10,6 +11,9 @@ def run_ssh_command(cmd: str, meta: Dict[str, Any] | None = None) -> Dict[str, A
     """FW_BAN_HOST へ SSH でコマンドを実行し、互換フォーマットで返す。"""
     host = os.getenv("FW_BAN_HOST", "192.168.103.15")
     user = os.getenv("FW_BAN_USER", "root")
+    identity_file = os.getenv("FW_BAN_IDENTITY_FILE", "/mnt/mfu/ssh/fw_ban_ed25519")
+    known_hosts_file = os.getenv("FW_BAN_KNOWN_HOSTS", "/mnt/mfu/ssh/known_hosts")
+    ssh_home = os.getenv("FW_BAN_SSH_HOME", "/mnt/mfu/tmp")
     ssh_connect_timeout = int(os.getenv("FW_BAN_SSH_CONNECT_TIMEOUT", "5"))
     ssh_exec_timeout = int(os.getenv("FW_BAN_SSH_EXEC_TIMEOUT", "12"))
 
@@ -20,7 +24,13 @@ def run_ssh_command(cmd: str, meta: Dict[str, Any] | None = None) -> Dict[str, A
         "-o",
         f"ConnectTimeout={ssh_connect_timeout}",
         "-o",
-        "StrictHostKeyChecking=accept-new",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={known_hosts_file}",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-i",
+        identity_file,
         f"{user}@{host}",
         cmd,
     ]
@@ -29,9 +39,17 @@ def run_ssh_command(cmd: str, meta: Dict[str, Any] | None = None) -> Dict[str, A
     target = meta.get("target", "")
     executor = f"{user}@{host}"
     merged_meta = {"executor": executor, "via": "ssh", **meta}
+    process_env = os.environ.copy()
+    process_env["HOME"] = ssh_home
 
     try:
-        proc = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=ssh_exec_timeout)
+        proc = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=ssh_exec_timeout,
+            env=process_env,
+        )
     except subprocess.TimeoutExpired as e:
         return {
             "ok": False,
@@ -52,6 +70,10 @@ def run_ssh_command(cmd: str, meta: Dict[str, Any] | None = None) -> Dict[str, A
             status = "added"
         elif "ALREADY" in stdout:
             status = "already"
+        elif "REMOVED" in stdout:
+            status = "removed"
+        elif "MISSING" in stdout:
+            status = "missing"
         return {
             "ok": True,
             "status": status,
@@ -103,7 +125,7 @@ def normalize_ipv4_target(*, cidr: str = "", ip: str = "") -> str:
 
 
 def ban_ip_cidr_via_ssh(target: Dict[str, Any]) -> Dict[str, Any]:
-    """IPバージョンに応じて別ipsetへBANを追加して永続化する。"""
+    """制限付きSSH鍵を使い、IPバージョン別のipsetへBANを追加する。"""
     version = int(target.get("version", 0))
     net = str(target.get("target", "")).strip()
 
@@ -116,12 +138,59 @@ def ban_ip_cidr_via_ssh(target: Dict[str, Any]) -> Dict[str, Any]:
     else:
         raise ValueError("version は 4 または 6 を指定してください")
 
-    cmd = (
-        f"sudo ipset create {setname} hash:net family {family} -exist\n"
-        f"if sudo ipset test {setname} {net} >/dev/null 2>&1; then echo ALREADY; "
-        f"else sudo ipset add {setname} {net} -exist && echo ADDED; fi\n"
-        "sudo netfilter-persistent save"
+    cmd = f"ban {version} {shlex.quote(net)}"
+    return run_ssh_command(cmd, meta={"setname": setname, "target": net})
+
+
+def temporarily_ban_ip_cidr_via_ssh(
+    target: Dict[str, Any],
+    *,
+    timeout_sec: int,
+) -> Dict[str, Any]:
+    """Add an automatically detected address to the expiring firewall set."""
+    version = int(target.get("version", 0))
+    net = str(target.get("target", "")).strip()
+    timeout = max(60, min(604800, int(timeout_sec)))
+
+    if version == 4:
+        setname = "badhosts4_auto"
+    elif version == 6:
+        setname = "badhosts6_auto"
+    else:
+        raise ValueError("version は 4 または 6 を指定してください")
+
+    cmd = f"autoban {version} {shlex.quote(net)} {timeout}"
+    return run_ssh_command(
+        cmd,
+        meta={"setname": setname, "target": net, "timeout_sec": timeout},
     )
+
+
+def permanently_ban_ip_cidr_via_ssh(target: Dict[str, Any]) -> Dict[str, Any]:
+    """Add an automatically escalated address to its dedicated persistent set."""
+    version = int(target.get("version", 0))
+    net = str(target.get("target", "")).strip()
+    if version == 4:
+        setname = "badhosts4_auto_permanent"
+    elif version == 6:
+        setname = "badhosts6_auto_permanent"
+    else:
+        raise ValueError("version は 4 または 6 を指定してください")
+    cmd = f"autopermaban {version} {shlex.quote(net)}"
+    return run_ssh_command(cmd, meta={"setname": setname, "target": net})
+
+
+def unban_auto_permanent_ip_cidr_via_ssh(target: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove an address only from the dedicated automatic permanent set."""
+    version = int(target.get("version", 0))
+    net = str(target.get("target", "")).strip()
+    if version == 4:
+        setname = "badhosts4_auto_permanent"
+    elif version == 6:
+        setname = "badhosts6_auto_permanent"
+    else:
+        raise ValueError("version は 4 または 6 を指定してください")
+    cmd = f"autopermunban {version} {shlex.quote(net)}"
     return run_ssh_command(cmd, meta={"setname": setname, "target": net})
 
 

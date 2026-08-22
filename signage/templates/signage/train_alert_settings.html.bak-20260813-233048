@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}鉄道運行情報通知設定{% endblock %}
+{% block head_extra %}
+<meta name="robots" content="noindex,nofollow,noarchive">
+<style>
+  .train-alert-page { max-width: 1080px; margin: 0 auto 3rem; }
+  .route-toolbar { position: sticky; top: .5rem; z-index: 10; background: rgba(255,255,255,.96); backdrop-filter: blur(8px); }
+  .route-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem; }
+  .route-choice { min-width: 0; padding: .7rem .8rem; border: 1px solid #d8dee6; border-radius: .75rem; background: #fff; }
+  .route-choice:has(input:checked) { border-color: #0d6efd; background: #eef5ff; box-shadow: 0 0 0 1px rgba(13,110,253,.12); }
+  .route-choice label { min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+  .status-value { font-weight: 700; overflow-wrap: anywhere; }
+  @media (max-width: 991.98px) { .route-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 575.98px) { .route-grid { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
+{% block content %}
+<main class="container train-alert-page">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+    <div>
+      <h1 class="mb-1">鉄道運行情報通知設定</h1>
+      <p class="text-muted mb-0">選択した路線の状態・本文が変わったとき、Discordへカードで通知します。</p>
+    </div>
+    <a href="{{ url_for('train_status.index') }}" class="btn btn-outline-secondary">運行情報へ戻る</a>
+  </div>
+
+  <div class="alert {{ 'alert-success' if discord_configured else 'alert-warning' }}">
+    Discord Webhook：{{ 'adminアカウントに設定済み' if discord_configured else '未設定（adminアカウント設定で登録してください）' }}
+  </div>
+  <div class="alert {{ 'alert-success' if catalog_count >= 100 else 'alert-warning' }}">
+    路線カタログ：{% if catalog_count >= 100 %}{{ catalog_count }}路線を取得済み{% else %}準備中です。次回の10分同期後に再度確認してください。{% endif %}
+  </div>
+
+  <section class="card card-body shadow-sm mb-4" aria-labelledby="train-alert-status-heading">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <h2 id="train-alert-status-heading" class="h4 mb-0">稼働状況</h2>
+      <form method="post" class="m-0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+        <input type="hidden" name="action" value="test_notification">
+        <button type="submit" class="btn btn-outline-primary btn-sm"{% if not discord_configured %} disabled{% endif %}>Discordテスト通知</button>
+      </form>
+    </div>
+    <div class="row g-3" id="alert-status-grid">
+      <div class="col-sm-6 col-lg-3"><div class="text-muted small">通知設定</div><div id="status-enabled" class="status-value">{{ '有効' if config.enabled else '無効' }}</div></div>
+      <div class="col-sm-6 col-lg-3"><div class="text-muted small">選択路線</div><div id="status-selected" class="status-value">{{ config.selected_urls|length }}路線</div></div>
+      <div class="col-sm-6 col-lg-3"><div class="text-muted small">最終判定</div><div id="status-checked" class="status-value">{{ alert_status.checked_at or '次回取得待ち' }}</div></div>
+      <div class="col-sm-6 col-lg-3"><div class="text-muted small">最終通知</div><div id="status-notified" class="status-value">{{ alert_status.last_notification_at or 'まだありません' }}</div></div>
+    </div>
+    <div id="alert-status-error" class="alert alert-danger mt-3 mb-0{% if not alert_status.error and sync_status.notification_ok is not sameas false %} d-none{% endif %}">
+      {{ alert_status.error or sync_status.notification_error or '' }}
+    </div>
+  </section>
+
+  <form method="post" class="card card-body shadow-sm" id="train-alert-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+    <input type="hidden" name="action" value="save_alert_config">
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" role="switch" id="train-alert-enabled" name="enabled" value="1"{% if config.enabled %} checked{% endif %}>
+      <label class="form-check-label fw-bold" for="train-alert-enabled">Discord通知を有効にする</label>
+    </div>
+    <div class="alert alert-info py-2">
+      初回保存後は現在状態を基準として記録し、その時点で発生中の情報は一斉通知しません。以後の変更と復旧を通知します。
+    </div>
+
+    <div class="route-toolbar border rounded p-3 mb-3 shadow-sm">
+      <div class="row g-2 align-items-center">
+        <div class="col-md">
+          <label for="route-search" class="visually-hidden">路線名検索</label>
+          <input id="route-search" type="search" class="form-control" placeholder="路線名を検索">
+        </div>
+        <div class="col-md-auto fw-bold"><span id="selected-route-count">{{ config.selected_urls|length }}</span>路線を選択中</div>
+        <div class="col-md-auto d-flex gap-2">
+          <button type="button" class="btn btn-sm btn-outline-primary" data-select-all="1">全選択</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-select-all="0">全解除</button>
+        </div>
+      </div>
+    </div>
+
+    {% for group_key, group_label in [('kanto', '関東の路線'), ('shinkansen', '新幹線')] %}
+    <section class="mb-4 route-group" data-group="{{ group_key }}">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+        <h2 class="h4 mb-0">{{ group_label }} <span class="badge text-bg-secondary">{{ route_groups[group_key]|length }}</span></h2>
+        <div class="btn-group btn-group-sm">
+          <button type="button" class="btn btn-outline-primary" data-group-select="{{ group_key }}" data-value="1">この分類を全選択</button>
+          <button type="button" class="btn btn-outline-secondary" data-group-select="{{ group_key }}" data-value="0">全解除</button>
+        </div>
+      </div>
+      <div class="route-grid">
+        {% for route in route_groups[group_key] %}
+        <div class="route-choice" data-route-name="{{ route.line_name|lower }}">
+          <div class="form-check mb-0">
+            <input class="form-check-input route-checkbox" type="checkbox" name="selected_route"
+                   value="{{ route.url }}" id="route-{{ group_key }}-{{ loop.index }}"
+                   data-group="{{ group_key }}"{% if route.url in selected_urls %} checked{% endif %}>
+            <label class="form-check-label fw-semibold" for="route-{{ group_key }}-{{ loop.index }}">{{ route.line_name }}</label>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+
+    {% if catalog_count >= 100 %}
+    <div class="d-flex flex-wrap gap-2">
+      <button type="submit" class="btn btn-primary">通知設定を保存</button>
+      <a href="{{ url_for('train_status.index') }}" class="btn btn-outline-secondary">キャンセル</a>
+    </div>
+    {% endif %}
+  </form>
+</main>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  "use strict";
+  const checkboxes = Array.from(document.querySelectorAll(".route-checkbox"));
+  const search = document.getElementById("route-search");
+  const count = document.getElementById("selected-route-count");
+
+  function updateCount() {
+    count.textContent = checkboxes.filter((input) => input.checked).length;
+  }
+
+  function setChecked(inputs, checked) {
+    inputs.forEach((input) => { input.checked = checked; });
+    updateCount();
+  }
+
+  checkboxes.forEach((input) => input.addEventListener("change", updateCount));
+  document.querySelectorAll("[data-select-all]").forEach((button) => {
+    button.addEventListener("click", () => setChecked(checkboxes, button.dataset.selectAll === "1"));
+  });
+  document.querySelectorAll("[data-group-select]").forEach((button) => {
+    button.addEventListener("click", () => setChecked(
+      checkboxes.filter((input) => input.dataset.group === button.dataset.groupSelect),
+      button.dataset.value === "1"
+    ));
+  });
+  search.addEventListener("input", () => {
+    const needle = search.value.trim().toLocaleLowerCase("ja");
+    document.querySelectorAll(".route-choice").forEach((choice) => {
+      choice.classList.toggle("d-none", Boolean(needle) && !choice.dataset.routeName.includes(needle));
+    });
+    document.querySelectorAll(".route-group").forEach((group) => {
+      const visible = group.querySelector(".route-choice:not(.d-none)");
+      group.classList.toggle("d-none", !visible);
+    });
+  });
+
+  function localTime(value, fallback) {
+    if (!value) return fallback;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric", month: "numeric", day: "numeric", weekday: "short",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    }).format(date);
+  }
+
+  async function refreshStatus() {
+    try {
+      const response = await fetch({{ url_for('train_status.alert_status')|tojson }}, {
+        cache: "no-store", headers: { "Accept": "application/json" }
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const status = payload.status || {};
+      const sync = payload.sync || {};
+      document.getElementById("status-checked").textContent = localTime(status.checked_at, "次回取得待ち");
+      document.getElementById("status-notified").textContent = localTime(status.last_notification_at, "まだありません");
+      const error = status.error || sync.notification_error || "";
+      const alert = document.getElementById("alert-status-error");
+      alert.textContent = error;
+      alert.classList.toggle("d-none", !error);
+    } catch (_) {}
+  }
+
+  updateCount();
+  window.setInterval(refreshStatus, 60 * 1000);
+})();
+</script>
+{% endblock %}

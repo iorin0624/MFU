@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}メールフィルターの優先順位 - MFU{% endblock %}
+{% block head_extra %}
+<style>
+  .mf-order-shell{max-width:960px;margin:0 auto 3rem}
+  .mf-order-panel{border:1px solid #dce5ef;border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  .mf-order-hero{padding:1.25rem;background:linear-gradient(135deg,#f7fbff,#eef7ff)}
+  .mf-order-toolbar{padding:1rem;position:sticky;top:.5rem;z-index:20}
+  .mf-order-list{list-style:none;margin:0;padding:0;display:grid;gap:.65rem}
+  .mf-order-card{display:grid;grid-template-columns:auto 3rem minmax(0,1fr) auto;gap:.8rem;align-items:center;padding:.85rem 1rem;border:1px solid #dce5ef;border-radius:12px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.04);cursor:grab}
+  .mf-order-card:active{cursor:grabbing}
+  .mf-order-card.is-disabled{opacity:.62;background:#f8fafc}
+  .mf-order-card.dragging{opacity:.35}
+  .mf-order-card.drag-over{border-color:#0d6efd;box-shadow:0 0 0 3px rgba(13,110,253,.16)}
+  .mf-order-handle{font-size:1.35rem;color:#64748b;user-select:none}
+  .mf-order-number{display:inline-grid;place-items:center;width:2.35rem;height:2.35rem;border-radius:999px;background:#eaf3ff;color:#0b57b7;font-weight:800}
+  .mf-order-name{font-weight:700;overflow-wrap:anywhere}
+  .mf-order-summary{font-size:.86rem;color:#64748b;overflow-wrap:anywhere}
+  .mf-order-empty{padding:2.5rem 1rem;text-align:center;color:#64748b}
+  .mf-order-actions{display:flex;gap:.3rem}
+  @media(max-width:640px){.mf-order-card{grid-template-columns:auto 2.7rem minmax(0,1fr);padding:.75rem}.mf-order-actions{grid-column:2/4;justify-content:flex-end}}
+</style>
+{% endblock %}
+{% block content %}
+<main class="mf-order-shell">
+  <section class="mf-order-panel mf-order-hero mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <div class="text-primary fw-semibold small">DOVECOT SIEVE</div>
+        <h1 class="h3 mb-1">フィルターの優先順位</h1>
+        <p class="text-muted mb-0">上にあるルールから順番に判定されます。カードをドラッグして移動してください。</p>
+      </div>
+      <a href="{{ url_for('mail_filters.index') }}" class="btn btn-outline-secondary">編集画面へ戻る</a>
+    </div>
+  </section>
+  <div id="messageBox" class="alert d-none" role="alert"></div>
+  <section class="mf-order-panel mf-order-toolbar mb-3">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-7">
+        <label class="form-label fw-semibold" for="mailboxSelect">メールボックス</label>
+        <select id="mailboxSelect" class="form-select"><option value="">読み込み中...</option></select>
+      </div>
+      <div class="col-md-5 d-flex gap-2 justify-content-md-end">
+        <button id="reloadButton" type="button" class="btn btn-outline-secondary">再読み込み</button>
+        <button id="saveButton" type="button" class="btn btn-success" disabled>並び順を保存</button>
+      </div>
+    </div>
+    <div id="unsavedMessage" class="small text-warning-emphasis mt-2 d-none">並び順が変更されています。保存するとメールサーバーへ反映されます。</div>
+  </section>
+  <section class="mf-order-panel p-3">
+    <ol id="ruleList" class="mf-order-list"></ol>
+    <div id="emptyRules" class="mf-order-empty d-none">並び替えるフィルターはありません。</div>
+  </section>
+</main>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  const state = {mailbox:"",document:{rules:[]},remoteHash:"",dirty:false,dragging:null};
+  const csrfToken = {{ csrf_token_value|tojson }};
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? "").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+  const labels={condition:{header:"ヘッダー",address:"メールアドレス",envelope:"配送先",body:"本文"},operator:{contains:"を含む",is:"に完全一致",matches:"にワイルドカード一致",regex:"に正規表現一致"},action:{fileinto:"フォルダーへ移動",redirect:"転送",keep:"受信箱に残す",stop:"以降の判定を停止",discard:"破棄",setflag:"フラグを設定",addflag:"フラグを追加",reject:"受信拒否"}};
+  async function api(url,options={}){options.headers={...(options.headers||{}),"X-CSRF-Token":csrfToken};const response=await fetch(url,options);const data=await response.json().catch(()=>({}));if(!response.ok||!data.ok)throw new Error(data.error||`HTTP ${response.status}`);return data;}
+  function showMessage(message,type="danger"){const box=$("messageBox");box.className=`alert alert-${type}`;box.textContent=message;box.classList.remove("d-none");}
+  function clearMessage(){$("messageBox").classList.add("d-none");}
+  function setBusy(value){$("mailboxSelect").disabled=value;$("reloadButton").disabled=value;$("saveButton").disabled=value||!state.dirty;}
+  function setDirty(value=true){state.dirty=value;$("unsavedMessage").classList.toggle("d-none",!value);$("saveButton").disabled=!value;}
+  function conditionSummary(condition){const type=labels.condition[condition.type]||condition.type||"条件";const op=labels.operator[condition.operator]||condition.operator||"";const fields=(condition.fields||[]).join("・")||"対象未指定";const values=(condition.values||[]).join(" / ")||"値未指定";return `${type}「${fields}」${op}「${values}」`;}
+  function actionSummary(action){const name=labels.action[action.type]||action.type||"処理";return action.value?`${name}「${action.value}」`:name;}
+  function summary(rule){if(rule.raw)return "高度なSieveルール";const conditions=(rule.conditions||[]).map(conditionSummary).join(rule.mode==="any"?" または ":" かつ ");const actions=(rule.actions||[]).map(actionSummary).join(" → ");return `条件: ${conditions||"なし"} ／ 処理: ${actions||"なし"}`;}
+  function render(){const rules=state.document.rules||[];$("ruleList").innerHTML=rules.map((rule,index)=>`<li class="mf-order-card ${rule.enabled===false?"is-disabled":""}" draggable="true" data-index="${index}"><span class="mf-order-handle" aria-hidden="true">☰</span><span class="mf-order-number">${index+1}</span><div><div class="mf-order-name">${esc(rule.name||`ルール ${index+1}`)} ${rule.enabled===false?'<span class="badge text-bg-secondary ms-1">無効</span>':''}</div><div class="mf-order-summary">${esc(summary(rule))}</div></div><div class="mf-order-actions btn-group btn-group-sm"><button type="button" class="btn btn-outline-secondary move-up" data-index="${index}" ${index===0?"disabled":""} aria-label="上へ移動">↑</button><button type="button" class="btn btn-outline-secondary move-down" data-index="${index}" ${index===rules.length-1?"disabled":""} aria-label="下へ移動">↓</button></div></li>`).join("");$("emptyRules").classList.toggle("d-none",rules.length!==0);bindRows();}
+  function move(from,to){const rules=state.document.rules;if(from===to||from<0||to<0||from>=rules.length||to>=rules.length)return;const [item]=rules.splice(from,1);rules.splice(to,0,item);setDirty();render();}
+  function bindRows(){document.querySelectorAll(".move-up").forEach(el=>el.addEventListener("click",()=>move(+el.dataset.index,+el.dataset.index-1)));document.querySelectorAll(".move-down").forEach(el=>el.addEventListener("click",()=>move(+el.dataset.index,+el.dataset.index+1)));document.querySelectorAll(".mf-order-card").forEach(card=>{card.addEventListener("dragstart",event=>{state.dragging=+card.dataset.index;card.classList.add("dragging");event.dataTransfer.effectAllowed="move";});card.addEventListener("dragend",()=>{state.dragging=null;document.querySelectorAll(".mf-order-card").forEach(row=>row.classList.remove("dragging","drag-over"));});card.addEventListener("dragover",event=>{event.preventDefault();document.querySelectorAll(".mf-order-card").forEach(row=>row.classList.remove("drag-over"));card.classList.add("drag-over");event.dataTransfer.dropEffect="move";});card.addEventListener("dragleave",()=>card.classList.remove("drag-over"));card.addEventListener("drop",event=>{event.preventDefault();const from=state.dragging;const to=+card.dataset.index;card.classList.remove("drag-over");if(Number.isInteger(from))move(from,to);});});}
+  async function loadMailbox(){if(!state.mailbox)return;clearMessage();setBusy(true);try{const data=await api(`{{ url_for('mail_filters.api_mailbox') }}?mailbox=${encodeURIComponent(state.mailbox)}`);state.document=data.document||{rules:[]};state.remoteHash=data.script_hash||"";setDirty(false);render();}catch(error){showMessage(error.message);state.document={rules:[]};render();}finally{setBusy(false);}}
+  async function loadMailboxes(){setBusy(true);try{const data=await api("{{ url_for('mail_filters.api_mailboxes') }}");const boxes=data.mailboxes||[];$("mailboxSelect").innerHTML=boxes.map(row=>{const value=row.mailbox||row.email||row;return `<option value="${esc(value)}">${esc(value)}</option>`;}).join("");state.mailbox=$("mailboxSelect").value;await loadMailbox();}catch(error){showMessage(error.message);}finally{setBusy(false);}}
+  async function save(){if(!state.dirty||!state.mailbox)return;setBusy(true);clearMessage();try{await api("{{ url_for('mail_filters.api_validate') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox,document:state.document})});const data=await api("{{ url_for('mail_filters.api_deploy') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox,expected_hash:state.remoteHash,document:state.document})});state.remoteHash=data.script_hash||state.remoteHash;setDirty(false);showMessage("優先順位を保存し、メールサーバーへ反映しました。","success");render();}catch(error){showMessage(error.message);}finally{setBusy(false);}}
+  $("mailboxSelect").addEventListener("change",async event=>{if(state.dirty&&!confirm("未保存の並び替えを破棄してメールボックスを切り替えますか？")){event.target.value=state.mailbox;return;}state.mailbox=event.target.value;await loadMailbox();});
+  $("reloadButton").addEventListener("click",async()=>{if(!state.dirty||confirm("未保存の並び替えを破棄して再読み込みしますか？"))await loadMailbox();});
+  $("saveButton").addEventListener("click",save);
+  window.addEventListener("beforeunload",event=>{if(!state.dirty)return;event.preventDefault();event.returnValue="";});
+  loadMailboxes();
+})();
+</script>
+{% endblock %}

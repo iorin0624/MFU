@@ -10,6 +10,7 @@ from flask import current_app
 from mysql.connector import IntegrityError
 
 from app.utils.db import get_db
+from app.discord_notifications.repository import get_discord_webhook
 
 from .models import CARRIER_MASTER, TRIGGERED_BY_VALUES
 from .parsers import parse_japanpost, parse_sagawa, parse_yamato
@@ -164,7 +165,7 @@ def _get_admin_discord_webhook_url() -> str | None:
         if not row:
             return None
         webhook_url = (row.get("webhook_url") or "").strip()
-        return webhook_url or None
+        return get_discord_webhook("shipment_tracking", webhook_url) or None
     finally:
         db.close()
 
@@ -327,6 +328,108 @@ def get_logs(target_id: int, limit: int = 20) -> list[dict[str, Any]]:
     rows = cur.fetchall()
     db.close()
     return rows
+
+
+def _tracking_event_key(event: dict[str, Any]) -> str:
+    fields = (
+        "occurred_at",
+        "status",
+        "office_name",
+        "office_code",
+    )
+    return json.dumps(
+        [str(event.get(field) or "").strip() for field in fields],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def get_tracking_timeline(
+    target_id: int,
+    latest_payload_json: str | None,
+) -> list[dict[str, Any]]:
+    """Build a lossless carrier timeline from current and previously saved events."""
+    try:
+        latest_payload = json.loads(latest_payload_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        latest_payload = {}
+    latest_history = latest_payload.get("history")
+    if not isinstance(latest_history, list):
+        latest_history = []
+
+    current_events = [event for event in latest_history if isinstance(event, dict)]
+    current_keys = {_tracking_event_key(event) for event in current_events}
+    saved_events: dict[str, dict[str, Any]] = {}
+    first_seen: dict[str, datetime] = {}
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT checked_at, payload_json
+              FROM shipment_tracking_log
+             WHERE target_id=%s
+               AND success=1
+               AND changed=1
+               AND payload_json IS NOT NULL
+             ORDER BY checked_at ASC, id ASC
+            """,
+            (target_id,),
+        )
+        for row in cur.fetchall():
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            history = payload.get("history")
+            if not isinstance(history, list):
+                continue
+            for event in history:
+                if not isinstance(event, dict):
+                    continue
+                key = _tracking_event_key(event)
+                saved_events.setdefault(key, event)
+                if key not in first_seen and row.get("checked_at"):
+                    first_seen[key] = row["checked_at"]
+    finally:
+        db.close()
+
+    # Prefer the newest carrier representation while retaining events which the
+    # carrier removed from its current response.
+    for event in current_events:
+        saved_events[_tracking_event_key(event)] = event
+
+    timeline = []
+    for key, event in saved_events.items():
+        occurred = _parse_payload_datetime(event.get("occurred_at"))
+        checked = first_seen.get(key)
+        timeline.append(
+            {
+                "occurred_at": occurred,
+                "occurred_at_text": (
+                    occurred.strftime("%Y/%m/%d %H:%M") if occurred else "日時不明"
+                ),
+                "checked_at": checked,
+                "checked_at_text": (
+                    checked.strftime("%Y/%m/%d %H:%M") if checked else "確認日時不明"
+                ),
+                "status": str(event.get("status") or "").strip(),
+                "office_name": str(event.get("office_name") or "").strip(),
+                "office_code": str(event.get("office_code") or "").strip(),
+                "postal_code": str(event.get("postal_code") or "").strip(),
+                "prefecture": str(event.get("prefecture") or "").strip(),
+                "detail": str(event.get("detail") or "").strip(),
+                "is_archived": key not in current_keys,
+            }
+        )
+    timeline.sort(
+        key=lambda row: (
+            row.get("occurred_at") or datetime.min,
+            row.get("checked_at") or datetime.min,
+            row.get("status") or "",
+        )
+    )
+    return timeline
 
 
 def create_target(carrier_code: str, tracking_number: str, label: str | None, is_active: bool) -> int:

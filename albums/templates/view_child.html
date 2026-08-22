@@ -43,10 +43,13 @@
     .zip-toolbar.hidden{ display:none !important; }
     #zip-bottom-spacer{ height:0; }
 
-    .zip-toolbar .btn{ font-weight:700; }
+    .zip-toolbar .btn{ font-weight:700; min-width:8.6em; padding:.75em 1.05em; border-radius:10px; }
+    .zip-toolbar .shortcut-action{ background:#1267d6; color:#fff; border-color:#0d56b6; }
+    .zip-toolbar .shortcut-action:hover{ background:#0f5fc9; color:#fff; }
+    .toolbar-row{ display:contents; }
     .sel-count{
       font-weight:700; font-size:.95rem; color:#333;
-      background:#f0f0f0; padding:.35em .7em; border-radius:999px;
+      background:#f0f0f0; padding:.45em .75em; border-radius:999px; white-space:nowrap;
     }
 
     /* 進行率バー */
@@ -67,19 +70,11 @@
 
     @media (max-width:480px){
       .zip-toolbar{ gap:.5em; padding:.5em .6em; border-radius:8px; }
+      .toolbar-row{ display:flex; flex:1 1 100%; justify-content:center; align-items:center; gap:.5em; }
       .zip-progress .bar{ height:8px; }
       .zip-progress .txt{ font-size:.8rem; }
-      .sel-count{ font-size:.9rem; padding:.3em .6em; }
     }
 
-    #bb-share{
-      position:absolute; top:12px; right:60px; z-index:10000;
-      width:40px; height:40px; border-radius:999px;
-      border:1px solid rgba(255,255,255,.5); background:rgba(0,0,0,.55); color:#fff;
-      display:flex; align-items:center; justify-content:center;
-      font-size:18px; line-height:1; cursor:pointer;
-    }
-    #bb-share:hover{ background:rgba(0,0,0,.72); }
   </style>
 </head>
 <body class="container py-4">
@@ -157,13 +152,17 @@
 
   <!-- ▼ 下部固定ツールバー -->
   <div class="zip-toolbar" aria-label="選択式ダウンロードツールバー（下部固定）" role="group">
-    <button id="btn-all"  type="button" class="btn btn-outline-primary btn-sm">全選択</button>
-    <button id="btn-none" type="button" class="btn btn-outline-secondary btn-sm">全解除</button>
-    <span id="sel-count" class="sel-count" aria-live="polite">選択中: 0枚</span>
-    <button id="btn-share" type="button" class="btn btn-outline-dark btn-sm" disabled>共有</button>
-    <button id="btn-zip"  type="button" class="btn btn-success btn-sm" aria-describedby="zip-status" disabled>
-      選択した写真をZIPダウンロード
-    </button>
+    <div class="toolbar-row toolbar-selection-row">
+      <button id="btn-all"  type="button" class="btn btn-outline-primary btn-sm">全選択</button>
+      <button id="btn-none" type="button" class="btn btn-outline-secondary btn-sm">全解除</button>
+      <span id="sel-count" class="sel-count" aria-live="polite">0枚選択中</span>
+    </div>
+    <div class="toolbar-row toolbar-download-row">
+      <button id="btn-zip"  type="button" class="btn btn-success btn-sm" aria-describedby="zip-status" disabled>
+        ZIPでDL
+      </button>
+      <button id="btn-shortcut" type="button" class="btn shortcut-action btn-sm" data-mfu-shortcut-button hidden style="display:none" disabled>SCでDL</button>
+    </div>
 
     <div id="zip-progress" class="zip-progress" hidden>
       <div class="bar"><span id="zip-progress-fill" class="fill"></span></div>
@@ -175,6 +174,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
 <script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
+<script src="{{ url_for('static', filename='js/mfu_shortcut_download.js', v='20260821-2') }}"></script>
 <script>
   /* ====== Lightbox ====== */
   window.addEventListener('DOMContentLoaded', ()=>{
@@ -203,8 +203,8 @@
   const countEl = document.getElementById('sel-count');
   const btnAll  = document.getElementById('btn-all');
   const btnNone = document.getElementById('btn-none');
-  const btnShare = document.getElementById('btn-share');
   const btnZip  = document.getElementById('btn-zip');
+  const btnShortcut = document.getElementById('btn-shortcut');
   const statusEl = document.getElementById('zip-status');
   let lastOpenedImageUrl = '';
 
@@ -223,6 +223,30 @@
 
   function currentSelectionPaths(){
     return checks.filter(c=>c.checked).map(c=>c.dataset.path).filter(Boolean);
+  }
+  function currentShortcutFilenames(){
+    return checks
+      .filter(c=>c.checked)
+      .map(c=>c.dataset.filename || '')
+      .filter(name=>/\.(jpe?g|png|heic|heif)$/i.test(name));
+  }
+  async function createShortcutDownloadJob(filenames){
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const response = await fetch('/mobile-download/api/jobs', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},
+      body:JSON.stringify({
+        source_type:'album',
+        album_id:{{ album_id|tojson }},
+        child_id:{{ child_id|tojson }},
+        filenames,
+      }),
+    });
+    const data = await response.json().catch(()=>null);
+    if(!response.ok || !data?.ok || !data?.shortcut_url){
+      throw new Error(data?.error || 'shortcut_download_job_failed');
+    }
+    return data;
   }
   function toAbsoluteUrl(urlLike){
     if (!urlLike) return '';
@@ -361,10 +385,10 @@
   }
   function updateSelectionUI(){
     const sel = checks.filter(c=>c.checked);
-    if (countEl) countEl.textContent = `選択中: ${sel.length}枚`;
+    if (countEl) countEl.textContent = `${sel.length}枚選択中`;
     const inflight = btnZip?.classList.contains('btn-busy');
     if (btnZip)  btnZip.disabled = !!inflight || sel.length === 0;
-    if (btnShare) btnShare.disabled = !!inflight || sel.length === 0;
+    if (btnShortcut) btnShortcut.disabled = !!inflight || currentShortcutFilenames().length === 0;
     checks.forEach(c => c.closest('.item')?.classList.toggle('selected', c.checked));
   }
   checks.forEach(c => c.addEventListener('change', updateSelectionUI));
@@ -392,7 +416,7 @@
   }
 
   /* トグル文言 */
-  const defaultZipText = btnZip?.textContent || '選択した写真をZIPダウンロード';
+  const defaultZipText = 'ZIPでDL';
   let resetTimer=null;
   const setBtnText = (t)=>{ if(btnZip){ btnZip.textContent=t; if(statusEl) statusEl.textContent=t; requestAnimationFrame(setupBottomSpacer);} };
   const scheduleReset=(ms=5000)=>{ if(resetTimer) clearTimeout(resetTimer); resetTimer=setTimeout(()=>setBtnText(defaultZipText),ms); };
@@ -403,11 +427,36 @@
     }, true);
   });
 
-  btnShare?.addEventListener('click', async ()=>{
-    const paths=currentSelectionPaths();
-    if(!paths.length){ alert('ファイルを選択してください'); return; }
-    if(paths.length===1){ await shareSingleByPath(paths[0]); return; }
-    await shareMultipleByPaths(paths);
+  const resetShortcutButton = ()=>{
+    if(!btnShortcut) return;
+    btnShortcut.textContent='SCでDL';
+    btnShortcut.classList.remove('btn-busy');
+    updateSelectionUI();
+  };
+  // ショートカットからSafariへ戻った場合も待機表示を残さない。
+  window.addEventListener('pageshow', resetShortcutButton);
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'visible') resetShortcutButton();
+  });
+
+  btnShortcut?.addEventListener('click', async ()=>{
+    if(btnZip?.classList.contains('btn-busy')) return;
+    const filenames=currentShortcutFilenames();
+    if(!filenames.length){ alert('ショートカットで保存できる写真を選択してください'); return; }
+    btnShortcut.disabled=true;
+    btnShortcut.classList.add('btn-busy');
+    btnShortcut.textContent='SC準備中…';
+    try{
+      const data=await createShortcutDownloadJob(filenames);
+      btnShortcut.textContent='SCを開きます';
+      await MFUShortcutDownload.launch(data);
+    }catch(error){
+      console.error(error);
+      alert('ショートカット用ダウンロードの準備に失敗しました。');
+    }finally{
+      // Safariはshortcuts://を開いても元ページを維持するため明示的に解除する。
+      window.setTimeout(resetShortcutButton, 800);
+    }
   });
 
   btnZip?.addEventListener('click', async ()=>{
@@ -417,7 +466,7 @@
     if(!paths.length){ alert('ファイルを選択してください'); return; }
 
     btnZip.classList.add('btn-busy');
-    [btnAll, btnNone, btnShare].forEach(b=>{ if(b) b.disabled=true; });
+    [btnAll, btnNone, btnShortcut].forEach(b=>{ if(b) b.disabled=true; });
     btnZip.disabled = true;
     setBtnText('ZIP生成中…');
 
@@ -451,7 +500,7 @@
     }finally{
       setTimeout(hideProgress, hideAfterMs);
       btnZip.classList.remove('btn-busy');
-      [btnAll, btnNone, btnShare].forEach(b=>{ if(b) b.disabled=false; });
+      [btnAll, btnNone].forEach(b=>{ if(b) b.disabled=false; });
       btnZip.disabled=false;
       updateSelectionUI();
     }
@@ -469,31 +518,10 @@
     const hide=()=>bar.classList.add('hidden');
     const show=()=>{ bar.classList.remove('hidden'); setupBottomSpacer(); };
     document.querySelector('.gallery')?.addEventListener('click', (e)=>{ if(e.target.closest('a')) hide(); });
-    const ensureOverlayShareButton=(overlay)=>{
-      if (overlay.querySelector('#bb-share')) return;
-      const button=document.createElement('button');
-      button.id='bb-share';
-      button.type='button';
-      button.setAttribute('aria-label','共有');
-      button.setAttribute('title','共有');
-      button.textContent='↗️';
-      button.addEventListener('click', async (e)=>{
-        e.preventDefault();
-        e.stopPropagation();
-        const candidateUrl = toAbsoluteUrl(lastOpenedImageUrl) || resolveUrlFromOverlay(overlay);
-        if (!candidateUrl) {
-          alert('共有する画像URLを取得できませんでした');
-          return;
-        }
-        const hint=extractFilename(candidateUrl || 'image.jpg');
-        await shareByUrl(candidateUrl, hint);
-      });
-      overlay.appendChild(button);
-    };
     const applyOverlayObserver=(overlay)=>{
       const toggle=()=>{
         const visible=overlay.classList.contains('visible') && overlay.style.display!=='none';
-        if(visible){ hide(); ensureOverlayShareButton(overlay); }
+        if(visible) hide();
         else show();
       };
       toggle();

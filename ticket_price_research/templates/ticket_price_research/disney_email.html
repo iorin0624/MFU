@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja">
+<body style="margin:0;padding:0;background:#f3f6f9;color:#172033;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans JP',sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;">
+    最新のディズニーチケット価格を{{ payload.count }}件取得しました。
+  </div>
+  <div style="max-width:760px;margin:0 auto;padding:20px 12px;">
+    <div style="background:#ffffff;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;">
+      <div style="background:#173f68;color:#ffffff;padding:22px 24px;">
+        <h1 style="font-size:22px;line-height:1.4;margin:0 0 6px;">東京ディズニーリゾート<br>チケット価格一覧</h1>
+        <div style="font-size:13px;opacity:.9;">取得日時: {{ payload.fetched_at }} ／ 掲載件数: {{ payload.count }}件</div>
+      </div>
+
+      {% if payload.warnings %}
+        <div style="margin:18px 18px 0;padding:12px 14px;background:#fff8e1;border:1px solid #f0c36d;border-radius:8px;color:#6f4300;">
+          <strong>取得時の注意</strong>
+          <ul style="margin:6px 0 0;padding-left:20px;">
+            {% for warning in payload.warnings %}<li>{{ warning }}</li>{% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      <div style="padding:18px;">
+        {% for item in payload["items"] %}
+          <div style="border:1px solid #d9e2ec;border-radius:9px;margin:0 0 12px;padding:14px 15px;background:#ffffff;">
+            <div style="font-size:16px;font-weight:700;line-height:1.5;margin-bottom:9px;">{{ item.title }}</div>
+            <table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.55;">
+              <tr>
+                <td style="width:90px;color:#667085;padding:2px 0;">価格</td>
+                <td style="font-size:18px;font-weight:700;padding:2px 0;">
+                  {% if item.price is not none %}¥{{ "{:,}".format(item.price) }}{% else %}不明{% endif %}
+                </td>
+              </tr>
+              <tr>
+                <td style="color:#667085;padding:2px 0;">有効期限</td>
+                <td style="padding:2px 0;">{{ item.expiry_display or "不明" }}</td>
+              </tr>
+              <tr>
+                <td style="color:#667085;padding:2px 0;">取扱店</td>
+                <td style="padding:2px 0;">
+                  {% if item.shop_url %}
+                    <a href="{{ item.shop_url }}" style="color:#135ea8;">{{ item.shop_name or "不明" }}</a>
+                  {% else %}
+                    {{ item.shop_name or "不明" }}
+                  {% endif %}
+                  {% if item.shop_area %}
+                    <div style="color:#667085;font-size:12px;margin-top:2px;">{{ item.shop_area }}</div>
+                  {% endif %}
+                </td>
+              </tr>
+            </table>
+            {% if item.detail_url %}
+              <div style="margin-top:11px;">
+                <a href="{{ item.detail_url }}" style="display:inline-block;background:#1769aa;color:#ffffff;text-decoration:none;border-radius:6px;padding:9px 14px;font-size:14px;">商品詳細を確認</a>
+              </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+
+      <div style="background:#f7f9fb;border-top:1px solid #e3e8ef;padding:16px 20px;color:#667085;font-size:12px;line-height:1.7;">
+        同じ内容のPDFを添付しています。印刷や保存にはPDFをご利用ください。<br>
+        価格・在庫は変動します。購入前に各店舗ページで最新情報をご確認ください。
+      </div>
+    </div>
+  </div>
+</body>
+</html>

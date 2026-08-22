@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh MFU Tokyo Disney Resort information daily
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Tokyo
+Persistent=true
+Unit=mfu-tdr-refresh.service
+
+[Install]
+WantedBy=timers.target

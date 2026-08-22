@@ -1,0 +1,487 @@
+{% extends "base.html" %}
+{% block title %}メールフィルター管理 - MFU{% endblock %}
+{% block head_extra %}
+<style>
+  .mf-shell{max-width:1280px;margin:0 auto 3rem}
+  .mf-hero,.mf-panel{border:1px solid #dce5ef;border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  .mf-hero{padding:1.25rem;background:linear-gradient(135deg,#f7fbff,#eef7ff)}
+  .mf-panel{padding:1rem}
+  .mf-toolbar{position:sticky;top:.5rem;z-index:20}
+  .mf-status{font-size:.88rem}
+  .mf-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.82rem;min-height:180px}
+  .mf-history{max-height:360px;overflow:auto}
+  .mf-rule-list{border:1px solid #dce5ef;border-radius:12px;overflow:hidden;background:#fff}
+  .mf-rule-item{display:grid;grid-template-columns:auto minmax(150px,1.1fr) minmax(200px,1.6fr) minmax(180px,1.3fr) auto;gap:.75rem;align-items:center;padding:.8rem .9rem;border-bottom:1px solid #e7edf3}
+  .mf-rule-item:last-child{border-bottom:0}
+  .mf-rule-item:hover{background:#f7fbff}
+  .mf-rule-item.is-disabled{color:#7b8794;background:#fafafa}
+  .mf-rule-name{font-weight:700;overflow-wrap:anywhere}
+  .mf-rule-summary{font-size:.82rem;color:#667085;overflow-wrap:anywhere}
+  .mf-dirty{font-size:.76rem}
+  .mf-modal{position:fixed;inset:0;z-index:1080;display:grid;place-items:center;padding:1.25rem;background:rgba(15,23,42,.56);backdrop-filter:blur(2px)}
+  .mf-modal.d-none{display:none!important}
+  .mf-dialog{display:flex;flex-direction:column;width:min(980px,calc(100vw - 2rem));max-height:calc(100vh - 2rem);overflow:hidden;border:1px solid #9ba8b7;border-radius:10px;background:#f7f8fa;box-shadow:0 24px 70px rgba(0,0,0,.32)}
+  .mf-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.8rem 1rem;color:#fff;background:#0b74c9}
+  .mf-dialog-header h2{margin:0;font-size:1rem;font-weight:700}
+  .mf-dialog-body{overflow:auto;padding:1rem;background:#f5f6f8}
+  .mf-dialog-footer{display:flex;justify-content:flex-end;gap:.5rem;padding:.8rem 1rem;border-top:1px solid #cfd6de;background:#fff}
+  .mf-close{border:0;background:transparent;color:#fff;font-size:1.45rem;line-height:1}
+  .mf-fieldset{margin:0 0 1rem;padding:.8rem;border:1px solid #aeb7c2;border-radius:5px;background:#fff}
+  .mf-fieldset legend{float:none;width:auto;margin:0;padding:0 .35rem;font-size:.88rem;font-weight:700}
+  .mf-timing{display:grid;gap:.45rem}
+  .mf-condition-mode{display:flex;flex-wrap:wrap;gap:1.25rem;margin-bottom:.65rem}
+  .mf-edit-row{display:grid;grid-template-columns:minmax(155px,1fr) minmax(180px,1.15fr) minmax(220px,2.2fr) auto;gap:.45rem;align-items:start;padding:.42rem;background:#f0f2f5;border-bottom:1px solid #d8dee6}
+  .mf-edit-row:first-child{border-radius:5px 5px 0 0}
+  .mf-edit-row:last-child{border-bottom:0;border-radius:0 0 5px 5px}
+  .mf-edit-row .form-control,.mf-edit-row .form-select{min-height:34px}
+  .mf-row-buttons{display:flex;gap:.25rem;white-space:nowrap}
+  .mf-row-buttons .btn{min-width:34px}
+  .cond-values{overflow-y:hidden;resize:none}
+  .mf-custom-field{grid-column:1/4}
+  .mf-none-note{padding:1rem;border:1px dashed #aeb7c2;border-radius:5px;color:#667085;background:#fafafa}
+  body.mf-modal-open{overflow:hidden}
+  @media(max-width:991px){.mf-rule-item{grid-template-columns:auto 1fr auto}.mf-rule-summary{grid-column:2/4}.mf-toolbar{position:static}}
+  @media(max-width:767px){.mf-modal{padding:0}.mf-dialog{width:100vw;max-height:100vh;height:100vh;border:0;border-radius:0}.mf-edit-row{grid-template-columns:1fr}.mf-custom-field{grid-column:auto}.mf-row-buttons{justify-content:flex-end}.mf-rule-item{grid-template-columns:auto 1fr}.mf-rule-actions{grid-column:1/3;justify-self:end}}
+</style>
+{% endblock %}
+{% block content %}
+<main class="mf-shell">
+  <section class="mf-hero mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <div class="text-primary fw-semibold small">DOVECOT SIEVE</div>
+        <h1 class="h3 mb-1">メールフィルター管理</h1>
+        <p class="text-muted mb-0">Thunderbirdと同じ流れで、条件と実行する動作を設定できます。</p>
+      </div>
+      <button id="refreshButton" class="btn btn-outline-primary" type="button">フォルダー一覧を再取得</button>
+    </div>
+  </section>
+
+  <div id="messageBox" class="alert d-none" role="alert"></div>
+
+  <section class="mf-panel mb-3">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-7">
+        <label class="form-label fw-semibold" for="mailboxSelect">メールボックス</label>
+        <select id="mailboxSelect" class="form-select"><option value="">読み込み中...</option></select>
+      </div>
+      <div class="col-md-5">
+        <div class="mf-status text-muted">
+          <div>取得元：<span id="documentSource">—</span></div>
+          <div>反映先：<span id="activeTarget">—</span></div>
+          <div>ハッシュ：<code id="remoteHash">—</code></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="row g-3">
+    <div class="col-xl-9">
+      <section class="mf-panel mf-toolbar mb-3">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <button id="addRuleButton" type="button" class="btn btn-primary">＋ 新しいフィルター</button>
+          <a href="{{ url_for('mail_filters.reorder') }}" class="btn btn-outline-primary">優先順位を並び替え</a>
+          <button id="validateButton" type="button" class="btn btn-outline-success">構文確認</button>
+          <button id="saveButton" type="button" class="btn btn-success">保存して反映</button>
+          <span id="dirtyBadge" class="badge text-bg-warning mf-dirty d-none">未反映の変更あり</span>
+          <button id="importButton" type="button" class="btn btn-outline-secondary ms-xl-auto">現在設定をMFUへ取り込む</button>
+        </div>
+      </section>
+      <section class="mf-panel">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h2 class="h6 mb-0">フィルター一覧</h2>
+          <small class="text-muted">名前をダブルクリックして編集</small>
+        </div>
+        <div id="rulesContainer" class="mf-rule-list"></div>
+        <div id="emptyRules" class="text-center text-muted py-5 d-none">フィルターはありません。「新しいフィルター」から作成できます。</div>
+      </section>
+    </div>
+    <div class="col-xl-3">
+      <section class="mf-panel mb-3">
+        <h2 class="h6">利用可能なフォルダー</h2>
+        <div id="folderList" class="d-flex flex-wrap gap-1"></div>
+      </section>
+      <section class="mf-panel">
+        <h2 class="h6">変更履歴</h2>
+        <div id="historyList" class="mf-history small text-muted">履歴はありません。</div>
+      </section>
+    </div>
+  </div>
+
+  <details class="mf-panel mt-3">
+    <summary class="fw-semibold">生成されるSieveを確認</summary>
+    <textarea id="scriptPreview" class="form-control mf-code mt-3" readonly></textarea>
+  </details>
+</main>
+
+<div id="ruleEditorModal" class="mf-modal d-none" aria-hidden="true">
+  <section class="mf-dialog" role="dialog" aria-modal="true" aria-labelledby="ruleEditorTitle">
+    <header class="mf-dialog-header">
+      <h2 id="ruleEditorTitle">フィルターの設定</h2>
+      <button id="closeEditorButton" class="mf-close" type="button" aria-label="閉じる">×</button>
+    </header>
+    <div id="ruleEditorBody" class="mf-dialog-body"></div>
+    <footer class="mf-dialog-footer">
+      <button id="commitEditorButton" class="btn btn-primary px-4" type="button">OK</button>
+      <button id="cancelEditorButton" class="btn btn-outline-secondary" type="button">キャンセル</button>
+    </footer>
+  </section>
+</div>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  const state = {mailbox:"", folders:[], document:{requirements:[],rules:[],preamble:""}, remoteHash:"", history:[], dirty:false, editorIndex:null, editorDraft:null};
+  const csrfToken = {{ csrf_token_value|tojson }};
+  const $ = (id) => document.getElementById(id);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const splitLines = (value) => String(value || "").split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+  const folderLabel = (name) => String(name || "").replace(/^INBOX\./, "受信箱 ＞ ").replaceAll(".", " ＞ ");
+  const defaultFolder = () => state.folders.find(v => v !== "INBOX") || "INBOX";
+  const mailFlags = [
+    {value:"\\Seen", label:"既読（Seen）"},
+    {value:"\\Flagged", label:"重要・スター（Flagged）"},
+    {value:"\\Answered", label:"返信済み（Answered）"},
+    {value:"\\Deleted", label:"削除済み（Deleted）"},
+    {value:"\\Draft", label:"下書き（Draft）"}
+  ];
+  const fieldDefinitions = [
+    {id:"subject",label:"件名",type:"header",fields:["Subject"]},
+    {id:"from",label:"差出人",type:"address",fields:["From"]},
+    {id:"body",label:"本文",type:"body",fields:[]},
+    {id:"to",label:"宛先",type:"address",fields:["To"]},
+    {id:"cc",label:"Cc",type:"address",fields:["Cc"]},
+    {id:"to_or_cc",label:"宛先または Cc",type:"address",fields:["To","Cc"]},
+    {id:"from_or_recipients",label:"差出人または宛先、Cc、Bcc",type:"address",fields:["From","To","Cc","Bcc"]},
+    {id:"reply_to",label:"返信先",type:"address",fields:["Reply-To"]},
+    {id:"list_id",label:"メーリングリスト",type:"header",fields:["List-Id"]},
+    {id:"envelope_from",label:"SMTP差出人",type:"envelope",fields:["from"]},
+    {id:"envelope_to",label:"SMTP宛先",type:"envelope",fields:["to"]},
+    {id:"custom",label:"カスタムヘッダー...",type:"header",fields:[]}
+  ];
+  const operatorDefinitions = [
+    {value:"contains:0",label:"に次を含む"},
+    {value:"contains:1",label:"に次を含まない"},
+    {value:"is:0",label:"が次と一致する"},
+    {value:"is:1",label:"が次と異なる"},
+    {value:"starts:0",label:"が次で始まる"},
+    {value:"ends:0",label:"が次で終わる"},
+    {value:"matches:0",label:"がワイルドカードと一致する"},
+    {value:"regex:0",label:"が正規表現と一致する"}
+  ];
+  const actionTypeLabels = {fileinto:"メッセージを移動する",redirect:"次のアドレスへ転送する",keep:"受信箱にも残す",stop:"後続フィルターを停止する",discard:"メッセージを破棄する",setflag:"フラグを設定する",addflag:"フラグを追加する",reject:"受信を拒否する"};
+
+  const api = async (url, options={}) => {
+    options.headers = {...(options.headers || {}), "X-CSRF-Token": csrfToken};
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({ok:false,error:"応答を読み取れませんでした"}));
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  };
+  const showMessage = (text, kind="success") => {
+    const box = $("messageBox");
+    box.className = `alert alert-${kind}`;
+    box.textContent = text;
+    box.classList.remove("d-none");
+    window.scrollTo({top:0,behavior:"smooth"});
+  };
+  const setDirty = (value=true) => {
+    state.dirty = value;
+    $("dirtyBadge").classList.toggle("d-none", !value);
+  };
+  const confirmDiscard = () => !state.dirty || confirm("保存していない変更があります。破棄して読み込み直しますか？");
+  const resizeConditionTextarea = (element) => {
+    element.style.height = "auto";
+    element.style.height = `${Math.ceil(element.scrollHeight) + 2}px`;
+  };
+  const resizeConditionTextareas = () => {
+    document.querySelectorAll(".cond-values").forEach(resizeConditionTextarea);
+  };
+
+  async function loadMailboxes() {
+    try {
+      const data = await api("{{ url_for('mail_filters.api_mailboxes') }}");
+      const select = $("mailboxSelect");
+      select.innerHTML = data.mailboxes.map(item => `<option value="${esc(item.mailbox)}">${esc(item.mailbox)}${item.has_filter ? "（設定あり）" : ""}</option>`).join("");
+      if (data.mailboxes.length) {
+        state.mailbox = data.mailboxes[0].mailbox;
+        select.value = state.mailbox;
+        await loadMailbox();
+      } else select.innerHTML = '<option value="">メールボックスがありません</option>';
+    } catch (error) { showMessage(error.message, "danger"); }
+  }
+
+  async function loadMailbox() {
+    if (!state.mailbox) return;
+    setBusy(true);
+    try {
+      const data = await api(`{{ url_for('mail_filters.api_mailbox') }}?mailbox=${encodeURIComponent(state.mailbox)}`);
+      state.folders = data.folders || [];
+      state.document = data.document || {requirements:[],rules:[],preamble:""};
+      state.document.rules ||= [];
+      state.remoteHash = data.script_hash || "";
+      state.history = data.history || [];
+      $("documentSource").textContent = data.document_source === "mfu" ? "MFU保存データ" : "メールサーバー";
+      $("activeTarget").textContent = data.active_target || "未設定";
+      $("remoteHash").textContent = state.remoteHash ? state.remoteHash.slice(0, 12) : "空";
+      renderFolders(); renderRules(); renderHistory();
+      $("scriptPreview").value = "";
+      setDirty(false);
+    } catch (error) { showMessage(error.message, "danger"); }
+    finally { setBusy(false); }
+  }
+
+  function renderFolders() {
+    $("folderList").innerHTML = state.folders.map(name => `<span class="badge text-bg-light border" title="${esc(name)}">${esc(folderLabel(name))}</span>`).join("") || '<span class="text-muted">フォルダーがありません</span>';
+  }
+
+  function conditionFieldId(condition) {
+    if (condition.type === "body") return "body";
+    const fields = (condition.fields || []).map(v => String(v).toLowerCase());
+    const exact = fieldDefinitions.find(item => item.id !== "custom" && item.type === condition.type && item.fields.map(v=>v.toLowerCase()).join("|") === fields.join("|"));
+    if (exact) return exact.id;
+    if (fields.length === 1) {
+      const relaxed = fieldDefinitions.find(item => item.id !== "custom" && item.fields.length === 1 && item.fields[0].toLowerCase() === fields[0]);
+      if (relaxed) return relaxed.id;
+    }
+    return "custom";
+  }
+  const operatorValue = (condition) => `${condition.operator || "contains"}:${condition.negated ? 1 : 0}`;
+  const isNoCondition = (rule) => (rule.conditions || []).length === 1 && rule.conditions[0]?.type === "true";
+  const normalConditions = (rule) => isNoCondition(rule) ? [] : (rule.conditions || []);
+  function conditionSummary(rule) {
+    if (rule.raw) return "高度なSieveルール";
+    if (isNoCondition(rule)) return "条件なし（すべてのメール）";
+    const conditions = normalConditions(rule);
+    const joiner = rule.mode === "any" ? " または " : " かつ ";
+    return conditions.slice(0,2).map(condition => {
+      const field = fieldDefinitions.find(item => item.id === conditionFieldId(condition));
+      const op = operatorDefinitions.find(item => item.value === operatorValue(condition));
+      const value = (condition.values || []).join(" / ");
+      return `${field?.label || (condition.fields || []).join(",")} ${op?.label || "に一致"} ${value}`;
+    }).join(joiner) + (conditions.length > 2 ? ` ほか${conditions.length-2}件` : "");
+  }
+  function actionSummary(rule) {
+    if (rule.raw) return "原文を保持";
+    const actions = rule.actions || [];
+    return actions.slice(0,2).map(action => {
+      const value = action.type === "fileinto" ? folderLabel(action.value) : action.value;
+      return `${actionTypeLabels[action.type] || action.type}${value ? `：${value}` : ""}`;
+    }).join("、") + (actions.length > 2 ? ` ほか${actions.length-2}件` : "");
+  }
+
+  function renderRules() {
+    const rules = state.document.rules || [];
+    $("rulesContainer").innerHTML = rules.map((rule, ri) => `<article class="mf-rule-item ${rule.enabled===false?"is-disabled":""}" data-ri="${ri}">
+      <input class="form-check-input list-rule-enabled" data-ri="${ri}" type="checkbox" ${rule.enabled!==false?"checked":""} aria-label="${esc(rule.name)}を有効にする">
+      <div><div class="mf-rule-name">${esc(rule.name || `ルール${ri+1}`)}</div><div class="mf-rule-summary">${rule.raw?'<span class="badge text-bg-primary">高度なルール</span>':`優先順位 ${ri+1}`}</div></div>
+      <div class="mf-rule-summary"><strong>条件：</strong>${esc(conditionSummary(rule))}</div>
+      <div class="mf-rule-summary"><strong>動作：</strong>${esc(actionSummary(rule))}</div>
+      <div class="mf-rule-actions btn-group btn-group-sm">
+        <button class="btn btn-outline-primary edit-rule" data-ri="${ri}" type="button">編集</button>
+        <button class="btn btn-outline-secondary duplicate-rule" data-ri="${ri}" type="button" title="複製">複製</button>
+        <button class="btn btn-outline-danger remove-rule" data-ri="${ri}" type="button">削除</button>
+      </div>
+    </article>`).join("");
+    $("rulesContainer").classList.toggle("d-none", rules.length === 0);
+    $("emptyRules").classList.toggle("d-none", rules.length !== 0);
+    document.querySelectorAll(".list-rule-enabled").forEach(el => el.addEventListener("change", () => { state.document.rules[+el.dataset.ri].enabled=el.checked; setDirty(); renderRules(); }));
+    document.querySelectorAll(".edit-rule").forEach(el => el.addEventListener("click", () => openEditor(+el.dataset.ri)));
+    document.querySelectorAll(".duplicate-rule").forEach(el => el.addEventListener("click", () => duplicateRule(+el.dataset.ri)));
+    document.querySelectorAll(".remove-rule").forEach(el => el.addEventListener("click", () => removeRule(+el.dataset.ri)));
+    document.querySelectorAll(".mf-rule-item").forEach(el => el.addEventListener("dblclick", event => { if (!event.target.closest("button,input")) openEditor(+el.dataset.ri); }));
+  }
+
+  function newRule() {
+    return {name:`新しいフィルター ${(state.document.rules || []).length+1}`,enabled:true,mode:"all",conditions:[{type:"header",operator:"contains",negated:false,fields:["Subject"],values:[""]}],actions:[{type:"fileinto",value:defaultFolder(),copy:false}],raw:null};
+  }
+  function openEditor(index=null, draft=null) {
+    state.editorIndex = index;
+    state.editorDraft = clone(draft || (index === null ? newRule() : state.document.rules[index]));
+    $("ruleEditorTitle").textContent = index === null ? "新しいフィルター" : "フィルターの設定";
+    renderEditor();
+    $("ruleEditorModal").classList.remove("d-none");
+    $("ruleEditorModal").setAttribute("aria-hidden", "false");
+    document.body.classList.add("mf-modal-open");
+    requestAnimationFrame(() => {
+      resizeConditionTextareas();
+      $("editorRuleName")?.focus();
+    });
+  }
+  function closeEditor() {
+    $("ruleEditorModal").classList.add("d-none");
+    $("ruleEditorModal").setAttribute("aria-hidden", "true");
+    document.body.classList.remove("mf-modal-open");
+    state.editorDraft = null; state.editorIndex = null;
+  }
+  function duplicateRule(index) {
+    const draft = clone(state.document.rules[index]);
+    draft.name = `${draft.name || `ルール${index+1}`} のコピー`;
+    openEditor(null, draft);
+  }
+  function removeRule(index) {
+    if (!confirm(`「${state.document.rules[index].name}」を削除しますか？`)) return;
+    state.document.rules.splice(index,1); setDirty(); renderRules();
+  }
+
+  function conditionHtml(condition, ci) {
+    const target = conditionFieldId(condition);
+    const customValue = target === "custom" ? (condition.fields || []).join(", ") : "";
+    return `<div class="mf-edit-row" data-condition>
+      <select class="form-select form-select-sm cond-target" data-ci="${ci}" aria-label="条件の項目">${fieldDefinitions.map(item=>`<option value="${item.id}" ${target===item.id?"selected":""}>${esc(item.label)}</option>`).join("")}</select>
+      <select class="form-select form-select-sm cond-op" data-ci="${ci}" aria-label="一致方法">${operatorDefinitions.map(item=>`<option value="${item.value}" ${operatorValue(condition)===item.value?"selected":""}>${esc(item.label)}</option>`).join("")}</select>
+      <textarea class="form-control form-control-sm cond-values" data-ci="${ci}" rows="1" placeholder="検索する文字列（複数は改行）">${esc((condition.values||[]).join("\n"))}</textarea>
+      <div class="mf-row-buttons">
+        <button class="btn btn-sm btn-outline-primary add-condition" data-ci="${ci}" type="button" title="条件を追加">＋</button>
+        <button class="btn btn-sm btn-outline-secondary remove-condition" data-ci="${ci}" type="button" title="条件を削除" ${normalConditions(state.editorDraft).length<=1?"disabled":""}>－</button>
+      </div>
+      ${target === "custom" ? `<input class="form-control form-control-sm mf-custom-field cond-custom" data-ci="${ci}" value="${esc(customValue)}" placeholder="カスタムヘッダー名（例：X-Mailer）">` : ""}
+    </div>`;
+  }
+
+  function actionValueHtml(action, ai) {
+    if (action.type === "fileinto") return `<select class="form-select form-select-sm action-value" data-ai="${ai}">${state.folders.map(name=>`<option value="${esc(name)}" ${action.value===name?"selected":""}>${esc(folderLabel(name))}</option>`).join("")}</select>`;
+    if (["setflag","addflag"].includes(action.type)) {
+      const known = mailFlags.some(item=>item.value===action.value);
+      return `<select class="form-select form-select-sm action-value" data-ai="${ai}">${mailFlags.map(item=>`<option value="${esc(item.value)}" ${action.value===item.value?"selected":""}>${esc(item.label)}</option>`).join("")}${!known&&action.value?`<option value="${esc(action.value)}" selected>現在の設定（${esc(action.value)}）</option>`:""}</select>`;
+    }
+    if (["keep","stop","discard"].includes(action.type)) return '<div class="form-control form-control-sm bg-light text-muted">追加設定はありません</div>';
+    const placeholder = action.type === "redirect" ? "転送先メールアドレス" : action.type === "reject" ? "拒否時のメッセージ" : "値";
+    return `<input class="form-control form-control-sm action-value" data-ai="${ai}" value="${esc(action.value||"")}" placeholder="${placeholder}">`;
+  }
+  function actionHtml(action, ai) {
+    const count = state.editorDraft.actions?.length || 0;
+    return `<div class="mf-edit-row">
+      <select class="form-select form-select-sm action-type" data-ai="${ai}" aria-label="実行する動作">${Object.entries(actionTypeLabels).map(([value,label])=>`<option value="${value}" ${action.type===value?"selected":""}>${esc(label)}</option>`).join("")}</select>
+      <div>${actionValueHtml(action,ai)}</div>
+      <div>${["fileinto","redirect"].includes(action.type)?`<label class="form-check mt-1"><input class="form-check-input action-copy" data-ai="${ai}" type="checkbox" ${action.copy?"checked":""}> 受信箱にも残す</label>`:""}</div>
+      <div class="mf-row-buttons">
+        <button class="btn btn-sm btn-outline-secondary move-action-up" data-ai="${ai}" type="button" title="上へ" ${ai===0?"disabled":""}>↑</button>
+        <button class="btn btn-sm btn-outline-secondary move-action-down" data-ai="${ai}" type="button" title="下へ" ${ai>=count-1?"disabled":""}>↓</button>
+        <button class="btn btn-sm btn-outline-primary add-action" data-ai="${ai}" type="button" title="動作を追加">＋</button>
+        <button class="btn btn-sm btn-outline-secondary remove-action" data-ai="${ai}" type="button" title="動作を削除" ${count<=1?"disabled":""}>－</button>
+      </div>
+    </div>`;
+  }
+
+  function renderEditor() {
+    const rule = state.editorDraft;
+    if (!rule) return;
+    if (rule.raw) {
+      $("ruleEditorBody").innerHTML = `<div class="mb-3"><label class="form-label fw-semibold" for="editorRuleName">フィルター名</label><input id="editorRuleName" class="form-control" value="${esc(rule.name||"")}"></div>
+        <fieldset class="mf-fieldset"><legend>フィルターを適用するタイミング</legend><label class="form-check"><input id="editorRuleEnabled" class="form-check-input" type="checkbox" ${rule.enabled!==false?"checked":""}> 新着メール受信時に自動実行する</label></fieldset>
+        <fieldset class="mf-fieldset"><legend>高度なSieveルール</legend><textarea id="editorRawRule" class="form-control mf-code" rows="14">${esc(rule.raw)}</textarea><div class="form-text">画面項目へ変換できない高度な構文を原文のまま保持します。</div></fieldset>`;
+      $("editorRuleName").addEventListener("input",e=>rule.name=e.target.value);
+      $("editorRuleEnabled").addEventListener("change",e=>rule.enabled=e.target.checked);
+      $("editorRawRule").addEventListener("input",e=>rule.raw=e.target.value);
+      return;
+    }
+    const mode = isNoCondition(rule) ? "none" : (rule.mode === "any" ? "any" : "all");
+    $("ruleEditorBody").innerHTML = `<div class="mb-3"><label class="form-label fw-semibold" for="editorRuleName">フィルター名</label><input id="editorRuleName" class="form-control" value="${esc(rule.name||"")}"></div>
+      <fieldset class="mf-fieldset"><legend>フィルターを適用するタイミング</legend><div class="mf-timing">
+        <label class="form-check"><input id="editorRuleEnabled" class="form-check-input" type="checkbox" ${rule.enabled!==false?"checked":""}> 新着メール受信時に自動実行する</label>
+        <div class="form-text ms-4">メールサーバーで受信した直後に実行します。手動実行・送信後・定期実行はサーバーフィルターの対象外です。</div>
+      </div></fieldset>
+      <fieldset class="mf-fieldset"><legend>次の条件</legend><div class="mf-condition-mode">
+        <label class="form-check"><input class="form-check-input editor-mode" name="editorMode" type="radio" value="all" ${mode==="all"?"checked":""}> すべての条件に一致</label>
+        <label class="form-check"><input class="form-check-input editor-mode" name="editorMode" type="radio" value="any" ${mode==="any"?"checked":""}> いずれかの条件に一致</label>
+        <label class="form-check"><input class="form-check-input editor-mode" name="editorMode" type="radio" value="none" ${mode==="none"?"checked":""}> 条件なし</label>
+      </div><div id="conditionsEditor">${mode==="none"?'<div class="mf-none-note">条件を付けず、受信したすべてのメールに下の動作を実行します。</div>':normalConditions(rule).map(conditionHtml).join("")}</div></fieldset>
+      <fieldset class="mf-fieldset"><legend>以下の動作を実行する</legend><div id="actionsEditor">${(rule.actions||[]).map(actionHtml).join("")}</div></fieldset>`;
+    bindEditorEvents();
+    resizeConditionTextareas();
+  }
+
+  function bindEditorEvents() {
+    const rule = state.editorDraft;
+    $("editorRuleName").addEventListener("input",e=>rule.name=e.target.value);
+    $("editorRuleEnabled").addEventListener("change",e=>rule.enabled=e.target.checked);
+    document.querySelectorAll(".editor-mode").forEach(el=>el.addEventListener("change",()=>{
+      if (!el.checked) return;
+      if (el.value === "none") rule.conditions=[{type:"true",operator:"is",fields:[],values:[]}];
+      else { if (isNoCondition(rule)) rule.conditions=[{type:"header",operator:"contains",negated:false,fields:["Subject"],values:[""]}]; rule.mode=el.value; }
+      renderEditor();
+    }));
+    document.querySelectorAll(".cond-target").forEach(el=>el.addEventListener("change",()=>{
+      const condition=rule.conditions[+el.dataset.ci]; const selected=fieldDefinitions.find(item=>item.id===el.value);
+      condition.type=selected.type; condition.fields=clone(selected.fields); delete condition.customField; renderEditor();
+    }));
+    document.querySelectorAll(".cond-op").forEach(el=>el.addEventListener("change",()=>{
+      const [operator,negated]=el.value.split(":"); const condition=rule.conditions[+el.dataset.ci]; condition.operator=operator; condition.negated=negated==="1";
+    }));
+    document.querySelectorAll(".cond-values").forEach(el=>{resizeConditionTextarea(el);el.addEventListener("input",()=>{rule.conditions[+el.dataset.ci].values=splitLines(el.value);resizeConditionTextarea(el);});});
+    document.querySelectorAll(".cond-custom").forEach(el=>el.addEventListener("input",()=>rule.conditions[+el.dataset.ci].fields=el.value.split(",").map(v=>v.trim()).filter(Boolean)));
+    document.querySelectorAll(".add-condition").forEach(el=>el.addEventListener("click",()=>{rule.conditions.splice(+el.dataset.ci+1,0,{type:"header",operator:"contains",negated:false,fields:["Subject"],values:[""]});renderEditor();}));
+    document.querySelectorAll(".remove-condition").forEach(el=>el.addEventListener("click",()=>{if(rule.conditions.length>1){rule.conditions.splice(+el.dataset.ci,1);renderEditor();}}));
+    document.querySelectorAll(".action-type").forEach(el=>el.addEventListener("change",()=>{const action=rule.actions[+el.dataset.ai];action.type=el.value;action.value=el.value==="fileinto"?defaultFolder():["setflag","addflag"].includes(el.value)?"\\Seen":"";action.copy=false;renderEditor();}));
+    document.querySelectorAll(".action-value").forEach(el=>{el.addEventListener("input",()=>rule.actions[+el.dataset.ai].value=el.value);el.addEventListener("change",()=>rule.actions[+el.dataset.ai].value=el.value);});
+    document.querySelectorAll(".action-copy").forEach(el=>el.addEventListener("change",()=>rule.actions[+el.dataset.ai].copy=el.checked));
+    document.querySelectorAll(".add-action").forEach(el=>el.addEventListener("click",()=>{rule.actions.splice(+el.dataset.ai+1,0,{type:"fileinto",value:defaultFolder(),copy:false});renderEditor();}));
+    document.querySelectorAll(".remove-action").forEach(el=>el.addEventListener("click",()=>{if(rule.actions.length>1){rule.actions.splice(+el.dataset.ai,1);renderEditor();}}));
+    document.querySelectorAll(".move-action-up").forEach(el=>el.addEventListener("click",()=>moveAction(+el.dataset.ai,-1)));
+    document.querySelectorAll(".move-action-down").forEach(el=>el.addEventListener("click",()=>moveAction(+el.dataset.ai,1)));
+  }
+  function moveAction(actionIndex, delta) {
+    const actions=state.editorDraft?.actions || []; const next=actionIndex+delta;
+    if(next<0||next>=actions.length)return;
+    [actions[actionIndex],actions[next]]=[actions[next],actions[actionIndex]]; renderEditor();
+  }
+
+  function commitEditor() {
+    const rule = state.editorDraft;
+    if (!rule.name?.trim()) { alert("フィルター名を入力してください。"); $("editorRuleName")?.focus(); return; }
+    rule.name=rule.name.trim();
+    if (rule.raw) {
+      if (!rule.raw.trim()) { alert("Sieveルールを入力してください。"); return; }
+    } else {
+      if (!isNoCondition(rule)) {
+        for (const condition of rule.conditions || []) {
+          if (!(condition.values || []).some(Boolean)) { alert("条件の検索文字列を入力してください。"); return; }
+          if (condition.type !== "body" && !(condition.fields || []).some(Boolean)) { alert("条件の対象項目を入力してください。"); return; }
+        }
+      }
+      if (!(rule.actions || []).length) { alert("実行する動作を1つ以上設定してください。"); return; }
+      for (const action of rule.actions) if (!["keep","stop","discard"].includes(action.type) && !String(action.value||"").trim()) { alert("動作の対象または値を入力してください。"); return; }
+    }
+    if (state.editorIndex === null) state.document.rules.push(clone(rule));
+    else state.document.rules[state.editorIndex]=clone(rule);
+    setDirty(); renderRules(); closeEditor();
+  }
+
+  async function validateDocument(show=true) {
+    const data=await api("{{ url_for('mail_filters.api_validate') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox,document:state.document})});
+    $("scriptPreview").value=data.script||""; if(show)showMessage(data.message||"Sieve構文は正常です","success"); return data;
+  }
+  async function deploy() {
+    if(!confirm(`${state.mailbox} のフィルターを保存して受信処理へ反映しますか？`))return;
+    setBusy(true);
+    try { await validateDocument(false); const data=await api("{{ url_for('mail_filters.api_deploy') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox,expected_hash:state.remoteHash,document:state.document})}); state.remoteHash=data.script_hash; showMessage("フィルターを保存し、メールサーバーへ反映しました。","success"); await loadMailbox(); }
+    catch(error){showMessage(error.message,"danger");} finally{setBusy(false);}
+  }
+  async function importCurrent() {
+    if(!confirmDiscard())return; setBusy(true);
+    try{await api("{{ url_for('mail_filters.api_import') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox})});showMessage("現在のフィルターをMFUの履歴へ取り込みました。","success");await loadMailbox();}catch(error){showMessage(error.message,"danger");}finally{setBusy(false);}
+  }
+  function renderHistory() {
+    $("historyList").innerHTML=state.history.length?state.history.map(row=>`<div class="border-bottom py-2"><div class="fw-semibold">${esc(row.created_at||"")}</div><div>${esc(row.source)} / ${esc(row.deployed_by||"system")}</div><div><code>${esc((row.script_hash||"").slice(0,12))}</code></div><button class="btn btn-sm btn-outline-secondary mt-1 restore-version" data-id="${row.id}" type="button">この設定へ復元</button></div>`).join(""):"履歴はありません。";
+    document.querySelectorAll(".restore-version").forEach(el=>el.addEventListener("click",async()=>{if(!confirmDiscard()||!confirm("選択した履歴へ復元しますか？"))return;setBusy(true);try{await api("{{ url_for('mail_filters.api_restore') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({version_id:+el.dataset.id,expected_hash:state.remoteHash})});showMessage("以前のフィルターを復元しました。","success");await loadMailbox();}catch(error){showMessage(error.message,"danger");}finally{setBusy(false);}}));
+  }
+  function setBusy(value){["refreshButton","addRuleButton","validateButton","saveButton","importButton","mailboxSelect"].forEach(id=>$(id).disabled=value);}
+  let resizeFrame=0;
+  window.addEventListener("resize",()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(resizeConditionTextareas);});
+  window.addEventListener("beforeunload",event=>{if(!state.dirty)return;event.preventDefault();event.returnValue="";});
+  $("mailboxSelect").addEventListener("change",async e=>{const previous=state.mailbox;if(!confirmDiscard()){e.target.value=previous;return;}state.mailbox=e.target.value;await loadMailbox();});
+  $("refreshButton").addEventListener("click",async()=>{if(confirmDiscard())await loadMailbox();});
+  $("addRuleButton").addEventListener("click",()=>openEditor());
+  $("validateButton").addEventListener("click",async()=>{setBusy(true);try{await validateDocument();}catch(error){showMessage(error.message,"danger");}finally{setBusy(false);}});
+  $("saveButton").addEventListener("click",deploy);
+  $("importButton").addEventListener("click",importCurrent);
+  $("commitEditorButton").addEventListener("click",commitEditor);
+  $("cancelEditorButton").addEventListener("click",closeEditor);
+  $("closeEditorButton").addEventListener("click",closeEditor);
+  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("ruleEditorModal").classList.contains("d-none"))closeEditor();});
+  loadMailboxes();
+})();
+</script>
+{% endblock %}

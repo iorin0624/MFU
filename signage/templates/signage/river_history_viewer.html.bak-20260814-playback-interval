@@ -1,0 +1,454 @@
+{% extends "base.html" %}
+{% block title %}取得済みスクリーンショット{% endblock %}
+{% block head_extra %}
+<meta name="robots" content="noindex,nofollow,noarchive">
+<style>
+  body { background: #f3f6f9; }
+  .river-viewer { max-width: 1320px; margin: 0 auto 3rem; }
+  .river-viewer-header,
+  .river-viewer-panel {
+    border: 1px solid #d7dee7;
+    border-radius: 1rem;
+    background: #fff;
+    box-shadow: 0 8px 26px rgba(31, 48, 73, .07);
+  }
+  .river-viewer-header { padding: 1.1rem 1.25rem; }
+  .river-viewer-panel { padding: 1rem; }
+  .river-preview-frame {
+    border: 1px solid #c8d1dc;
+    border-radius: .85rem;
+    background: #eaf0f5;
+    overflow: hidden;
+  }
+  .river-preview-frame img { object-fit: contain; background: #eef2f6; }
+  .river-history-meta { color: #667085; font-size: .9rem; }
+  .river-history-slider { accent-color: #0d6efd; }
+  .river-history-day-buttons .btn { min-width: 7.5rem; }
+  #river-history-playback { min-width: 14rem; }
+  @media (max-width: 575.98px) {
+    .river-viewer-header,
+    .river-viewer-panel { border-radius: .75rem; padding: .85rem; }
+    .river-viewer-title { font-size: 1.45rem; }
+  }
+</style>
+{% endblock %}
+{% block content %}
+<main class="river-viewer">
+  <header class="river-viewer-header mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <h1 class="river-viewer-title h2 mb-1">取得済みスクリーンショット</h1>
+        <div id="river-preview-status" class="river-history-meta" aria-live="polite">取得状態を確認中です。</div>
+      </div>
+      <div class="d-flex flex-wrap gap-2">
+        <a href="{{ url_for('signage_admin.traffic_settings') }}" class="btn btn-outline-secondary btn-sm">設定へ戻る</a>
+        <button type="button" id="reload-river-preview" class="btn btn-primary btn-sm">最新画像を再読み込み</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="river-viewer-panel" aria-labelledby="river-history-heading">
+    <div id="river-preview-frame" class="river-preview-frame ratio ratio-16x9 position-relative">
+      <img id="river-preview-image"
+           src="{{ url_for('signage.river_image') }}?v=initial"
+           alt="取得済みの川の防災情報"
+           class="w-100 h-100">
+      {% for point in rain_alert_config.points %}
+      <span class="rain-point-marker d-none position-absolute translate-middle rounded-circle border border-3 border-white"
+            data-point-index="{{ loop.index0 }}"
+            data-lat="{{ point.lat }}"
+            data-lng="{{ point.lng }}"
+            title="{{ point.name }}"
+            style="width: 22px; height: 22px; background: {{ '#dc3545' if loop.index0 == 0 else '#6f42c1' }}; box-shadow: 0 0 0 2px rgba(0,0,0,.65); z-index: 3; pointer-events: none;"></span>
+      {% endfor %}
+    </div>
+    <div id="river-preview-unavailable" class="alert alert-warning mt-3 mb-0 d-none">
+      スクリーンショットはまだ準備できていません。
+    </div>
+
+    <div class="mt-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+        <h2 id="river-history-heading" class="h5 mb-0">過去96時間の履歴</h2>
+        <span id="river-history-selection" class="river-history-meta">履歴を読み込み中です。</span>
+      </div>
+      <div class="river-history-day-buttons d-flex flex-wrap gap-2 mb-3" aria-label="日付から履歴を選択">
+        <button type="button" class="btn btn-outline-primary btn-sm" data-river-day-offset="-2" disabled>一昨日</button>
+        <button type="button" class="btn btn-outline-primary btn-sm" data-river-day-offset="-1" disabled>昨日</button>
+        <button type="button" class="btn btn-outline-primary btn-sm" data-river-day-offset="0" disabled>今日</button>
+      </div>
+      <input id="river-history-slider" type="range"
+             class="form-range river-history-slider" min="0" max="0" step="1" value="0" disabled
+             aria-label="川の防災情報の履歴日時">
+      <div class="d-flex flex-wrap gap-2">
+        <button type="button" id="river-history-older" class="btn btn-outline-secondary btn-sm" disabled>← 1つ前</button>
+        <button type="button" id="river-history-newer" class="btn btn-outline-secondary btn-sm" disabled>1つ後 →</button>
+        <button type="button" id="river-history-latest" class="btn btn-outline-primary btn-sm" disabled>最新に戻る</button>
+        <button type="button" id="river-history-playback" class="btn btn-primary btn-sm" disabled>▶ 現在位置から最新まで再生</button>
+      </div>
+      <div id="river-history-help" class="form-text mt-2">
+        直近30分は毎分、それ以前は5分ごとに保存し、96時間を超えた履歴は自動削除します。
+      </div>
+    </div>
+  </section>
+</main>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  "use strict";
+  const riverPreviewImage = document.getElementById("river-preview-image");
+  const riverPreviewStatus = document.getElementById("river-preview-status");
+  const riverPreviewFrame = document.getElementById("river-preview-frame");
+  const riverPreviewUnavailable = document.getElementById("river-preview-unavailable");
+  const reloadRiverPreview = document.getElementById("reload-river-preview");
+  const riverHistorySlider = document.getElementById("river-history-slider");
+  const riverHistorySelection = document.getElementById("river-history-selection");
+  const riverHistoryOlder = document.getElementById("river-history-older");
+  const riverHistoryNewer = document.getElementById("river-history-newer");
+  const riverHistoryLatest = document.getElementById("river-history-latest");
+  const riverHistoryPlayback = document.getElementById("river-history-playback");
+  const riverHistoryDayButtons = Array.from(document.querySelectorAll("[data-river-day-offset]"));
+  const riverHistoryHelp = document.getElementById("river-history-help");
+  const riverImageUrl = {{ url_for('signage.river_image') | tojson }};
+  const riverStatusUrl = {{ url_for('signage.river_image_status') | tojson }};
+  const riverHistoryUrl = {{ url_for('signage_admin.river_history') | tojson }};
+  const riverMapUrl = {{ river_config.url | tojson }};
+  let riverHistory = [];
+  let currentRiverStatus = null;
+  let riverImageRecoveryInProgress = false;
+  let riverPlaybackRunning = false;
+  let riverPlaybackTimer = null;
+  const riverPlaybackIntervalMs = 1000;
+
+  function formatUpdatedAt(value) {
+    if (!value) return "更新日時不明";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    }).format(date);
+  }
+
+  function tokyoDate(offsetDays = 0) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tokyo", year: "numeric", month: "numeric", day: "numeric"
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const shifted = new Date(Date.UTC(
+      Number(values.year), Number(values.month) - 1, Number(values.day) + Number(offsetDays)
+    ));
+    const year = shifted.getUTCFullYear();
+    const month = shifted.getUTCMonth() + 1;
+    const day = shifted.getUTCDate();
+    return {
+      key: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+      label: `${month}/${day}`,
+      midnight: Date.parse(`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T00:00:00+09:00`)
+    };
+  }
+
+  function historyDateKey(entry) {
+    return String(entry?.captured_at || "").slice(0, 10);
+  }
+
+  function dayHistoryIndex(offsetDays) {
+    const target = tokyoDate(offsetDays);
+    let selectedIndex = -1;
+    let selectedDistance = Number.POSITIVE_INFINITY;
+    riverHistory.forEach((entry, index) => {
+      if (historyDateKey(entry) !== target.key) return;
+      const capturedAt = new Date(entry.captured_at).getTime();
+      const distance = Number.isFinite(capturedAt)
+        ? Math.abs(capturedAt - target.midnight)
+        : Number.POSITIVE_INFINITY;
+      if (distance < selectedDistance) {
+        selectedIndex = index;
+        selectedDistance = distance;
+      }
+    });
+    return selectedIndex;
+  }
+
+  function updateDayButtons() {
+    const names = new Map([[-2, "一昨日"], [-1, "昨日"], [0, "今日"]]);
+    riverHistoryDayButtons.forEach((button) => {
+      const offset = Number(button.dataset.riverDayOffset);
+      const target = tokyoDate(offset);
+      button.textContent = `${names.get(offset) || "日付"} ${target.label}`;
+      button.disabled = dayHistoryIndex(offset) < 0;
+    });
+  }
+
+  function updatePlaybackButton() {
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    const showingLatest = selectedIndex >= riverHistory.length;
+    riverHistoryPlayback.disabled = !riverHistory.length || (!riverPlaybackRunning && showingLatest);
+    riverHistoryPlayback.textContent = riverPlaybackRunning
+      ? "⏸ 一時停止"
+      : "▶ 現在位置から最新まで再生";
+  }
+
+  function stopPlayback() {
+    riverPlaybackRunning = false;
+    if (riverPlaybackTimer !== null) {
+      window.clearTimeout(riverPlaybackTimer);
+      riverPlaybackTimer = null;
+    }
+    updatePlaybackButton();
+  }
+
+  function showHistoryIndex(value) {
+    const index = Math.max(0, Math.min(Number(value) || 0, riverHistory.length));
+    riverHistorySlider.value = String(index);
+    const showingLatest = index === riverHistory.length;
+    if (showingLatest) {
+      riverPreviewImage.src = `${riverImageUrl}?v=${Date.now()}`;
+      riverHistorySelection.textContent = `最新：${formatUpdatedAt(currentRiverStatus?.updated_at)}`;
+    } else {
+      const entry = riverHistory[index];
+      riverPreviewImage.src = `${entry.url}?v=${encodeURIComponent(entry.captured_at)}`;
+      riverHistorySelection.textContent = `履歴 ${index + 1}/${riverHistory.length}：${formatUpdatedAt(entry.captured_at)}`;
+    }
+    riverPreviewFrame.classList.remove("d-none");
+    riverPreviewUnavailable.classList.add("d-none");
+    riverHistoryOlder.disabled = index <= 0;
+    riverHistoryNewer.disabled = showingLatest;
+    riverHistoryLatest.disabled = showingLatest;
+    updatePlaybackButton();
+  }
+
+  function nearestHistoryIndex(capturedAt) {
+    if (!riverHistory.length) return 0;
+    const target = new Date(capturedAt).getTime();
+    if (!Number.isFinite(target)) return riverHistory.length - 1;
+    let nearestIndex = 0;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    riverHistory.forEach((entry, index) => {
+      const entryTime = new Date(entry.captured_at).getTime();
+      const distance = Number.isFinite(entryTime) ? Math.abs(entryTime - target) : Number.POSITIVE_INFINITY;
+      if (distance < nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = distance;
+      }
+    });
+    return nearestIndex;
+  }
+
+  async function loadHistory({ preserveSelection = false, preserveCapturedAt = null, excludeFilename = null } = {}) {
+    const previousIndex = Number(riverHistorySlider.value) || 0;
+    const previousEntry = previousIndex < riverHistory.length ? riverHistory[previousIndex] : null;
+    const wasShowingLatest = previousIndex >= riverHistory.length;
+    const response = await fetch(riverHistoryUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    riverHistory = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => {
+      return !excludeFilename || entry.filename !== excludeFilename;
+    });
+    riverHistorySlider.min = "0";
+    riverHistorySlider.max = String(riverHistory.length);
+    riverHistorySlider.disabled = riverHistory.length === 0;
+    updateDayButtons();
+    riverHistoryHelp.textContent = riverHistory.length
+      ? `履歴を${riverHistory.length}件保存中です。直近30分は毎分、それ以前は5分間隔で、96時間を超えると自動削除します。`
+      : "履歴は直近30分を毎分、それ以前を5分ごとに蓄積します。";
+    const requestedCapturedAt = preserveCapturedAt || (preserveSelection ? previousEntry?.captured_at : null);
+    if (requestedCapturedAt && riverHistory.length) {
+      showHistoryIndex(nearestHistoryIndex(requestedCapturedAt));
+    } else if (preserveSelection && !wasShowingLatest && riverHistory.length) {
+      showHistoryIndex(Math.min(previousIndex, riverHistory.length - 1));
+    } else {
+      showHistoryIndex(riverHistory.length);
+    }
+  }
+
+  function preloadImage(url) {
+    return new Promise((resolve) => {
+      const image = new Image();
+      const timeout = window.setTimeout(resolve, 5000);
+      image.addEventListener("load", () => {
+        window.clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      image.addEventListener("error", () => {
+        window.clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      image.src = url;
+    });
+  }
+
+  async function advancePlayback() {
+    if (!riverPlaybackRunning) return;
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    const nextIndex = Math.min(selectedIndex + 1, riverHistory.length);
+    if (nextIndex < riverHistory.length) {
+      const entry = riverHistory[nextIndex];
+      await preloadImage(`${entry.url}?v=${encodeURIComponent(entry.captured_at)}`);
+      if (!riverPlaybackRunning) return;
+    }
+    showHistoryIndex(nextIndex);
+    if (nextIndex >= riverHistory.length) {
+      stopPlayback();
+      return;
+    }
+    riverPlaybackTimer = window.setTimeout(advancePlayback, riverPlaybackIntervalMs);
+  }
+
+  function startPlayback() {
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    if (!riverHistory.length || selectedIndex >= riverHistory.length) return;
+    riverPlaybackRunning = true;
+    updatePlaybackButton();
+    riverPlaybackTimer = window.setTimeout(advancePlayback, riverPlaybackIntervalMs);
+  }
+
+  async function refreshPreview() {
+    reloadRiverPreview.disabled = true;
+    riverPreviewStatus.textContent = "取得状態を確認中です。";
+    riverPreviewStatus.className = "river-history-meta";
+    try {
+      const response = await fetch(riverStatusUrl, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
+      currentRiverStatus = status;
+      if (!status.image_available) {
+        riverPreviewFrame.classList.add("d-none");
+        riverPreviewUnavailable.classList.remove("d-none");
+        riverPreviewStatus.textContent = status.message || "スクリーンショットを準備中です。";
+        return;
+      }
+      riverPreviewFrame.classList.remove("d-none");
+      riverPreviewUnavailable.classList.add("d-none");
+      const state = status.ok ? "取得正常" : "取得警告（保存済み画像を表示）";
+      riverPreviewStatus.textContent = `${state} ／ 最終更新：${formatUpdatedAt(status.updated_at)}`;
+      riverPreviewStatus.className = `river-history-meta ${status.ok ? "text-success" : "text-warning"}`;
+      await loadHistory();
+    } catch (error) {
+      riverPreviewStatus.textContent = `取得状態を読み込めませんでした。${error}`;
+      riverPreviewStatus.className = "river-history-meta text-danger";
+    } finally {
+      reloadRiverPreview.disabled = false;
+    }
+  }
+
+  function riverGeometry() {
+    try {
+      const parsed = new URL(riverMapUrl);
+      const centerLat = Number(parsed.searchParams.get("clat"));
+      const centerLng = Number(parsed.searchParams.get("clon"));
+      const zoom = Number(parsed.searchParams.get("zm"));
+      if (![centerLat, centerLng, zoom].every(Number.isFinite)) return null;
+      return { centerLat, centerLng, zoom, worldSize: 256 * (2 ** zoom) };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function worldCoordinates(lat, lng, worldSize) {
+    const safeLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+    const sinLat = Math.sin(safeLat * Math.PI / 180);
+    return {
+      x: (lng + 180) / 360 * worldSize,
+      y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * worldSize
+    };
+  }
+
+  function coordinatesToPixel(lat, lng) {
+    const geometry = riverGeometry();
+    if (!geometry) return null;
+    const center = worldCoordinates(geometry.centerLat, geometry.centerLng, geometry.worldSize);
+    const point = worldCoordinates(lat, lng, geometry.worldSize);
+    return { x: 960 + point.x - center.x, y: 686 + point.y - center.y };
+  }
+
+  function pointIsVisible(x, y) {
+    if (x < 22 || x >= 1348 || y < 171 || y >= 1058) return false;
+    return !(x >= 1093 && x <= 1392 && y >= 720);
+  }
+
+  function refreshPointMarkers() {
+    document.querySelectorAll(".rain-point-marker").forEach((marker) => {
+      const pixel = coordinatesToPixel(Number(marker.dataset.lat), Number(marker.dataset.lng));
+      if (!pixel || !pointIsVisible(pixel.x, pixel.y)) {
+        marker.classList.add("d-none");
+        return;
+      }
+      marker.style.left = `${pixel.x / 1920 * 100}%`;
+      marker.style.top = `${pixel.y / 1080 * 100}%`;
+      marker.classList.remove("d-none");
+    });
+  }
+
+  riverPreviewImage.addEventListener("load", refreshPointMarkers);
+  riverPreviewImage.addEventListener("error", async () => {
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    const failedEntry = selectedIndex < riverHistory.length ? riverHistory[selectedIndex] : null;
+    if (failedEntry && !riverImageRecoveryInProgress) {
+      riverImageRecoveryInProgress = true;
+      try {
+        await loadHistory({
+          preserveCapturedAt: failedEntry.captured_at,
+          excludeFilename: failedEntry.filename
+        });
+        return;
+      } catch (_error) {
+        // 履歴再取得にも失敗した場合だけ準備中表示へ切り替える。
+      } finally {
+        riverImageRecoveryInProgress = false;
+      }
+    }
+    riverPreviewFrame.classList.add("d-none");
+    riverPreviewUnavailable.classList.remove("d-none");
+  });
+  reloadRiverPreview.addEventListener("click", () => {
+    stopPlayback();
+    refreshPreview();
+  });
+  riverHistorySlider.addEventListener("input", () => {
+    stopPlayback();
+    showHistoryIndex(riverHistorySlider.value);
+  });
+  riverHistoryOlder.addEventListener("click", () => {
+    stopPlayback();
+    showHistoryIndex(Number(riverHistorySlider.value) - 1);
+  });
+  riverHistoryNewer.addEventListener("click", () => {
+    stopPlayback();
+    showHistoryIndex(Number(riverHistorySlider.value) + 1);
+  });
+  riverHistoryLatest.addEventListener("click", () => {
+    stopPlayback();
+    showHistoryIndex(riverHistory.length);
+  });
+  riverHistoryDayButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = dayHistoryIndex(Number(button.dataset.riverDayOffset));
+      if (index < 0) return;
+      stopPlayback();
+      showHistoryIndex(index);
+    });
+  });
+  riverHistoryPlayback.addEventListener("click", () => {
+    if (riverPlaybackRunning) stopPlayback();
+    else startPlayback();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopPlayback();
+  });
+
+  refreshPointMarkers();
+  refreshPreview();
+  window.setInterval(() => {
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    const showingLatest = selectedIndex >= riverHistory.length;
+    const refreshPromise = showingLatest
+      ? refreshPreview()
+      : loadHistory({ preserveSelection: true });
+    refreshPromise.catch(() => {
+      // 表示中の画像を維持して次回更新で再試行する。
+    });
+  }, 60 * 1000);
+})();
+</script>
+{% endblock %}

@@ -1,50 +1,655 @@
 {% extends "base.html" %}
-{% block title %}スピードテスト{% endblock %}
+{% block title %}アップロードスピードテスト{% endblock %}
 
 {% block content %}
-<div class="container d-flex justify-content-center">
-  <div class="card p-4 shadow-sm w-100" style="max-width: 500px;">
-    <h2 class="text-center mb-4">📡 アップロード速度テスト</h2>
+<style>
+  .speedtest-card {
+    max-width: 760px;
+    border: 0;
+    border-radius: 18px;
+  }
+  .speedtest-primary-result {
+    padding: 1.25rem;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #eef6ff, #f8fbff);
+    border: 1px solid #cfe3ff;
+  }
+  .speedtest-value {
+    font-size: clamp(2rem, 8vw, 3.25rem);
+    font-weight: 700;
+    line-height: 1;
+    color: #0d6efd;
+  }
+  .speedtest-metric {
+    height: 100%;
+    padding: .9rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fff;
+  }
+  .speedtest-metric-label {
+    color: #64748b;
+    font-size: .82rem;
+  }
+  .speedtest-metric-value {
+    margin-top: .2rem;
+    font-size: 1.15rem;
+    font-weight: 600;
+  }
+  .speedtest-size-table th,
+  .speedtest-size-table td {
+    vertical-align: middle;
+  }
+  .speedtest-history-card {
+    max-width: 1100px;
+    border: 0;
+    border-radius: 18px;
+  }
+  .speedtest-history-details summary {
+    cursor: pointer;
+    color: #0d6efd;
+  }
+  .speedtest-history-list {
+    display: grid;
+    gap: 1rem;
+  }
+  .speedtest-history-entry {
+    padding: 1rem;
+    border: 1px solid #dbe4ef;
+    border-radius: 16px;
+    background: #fff;
+  }
+  .speedtest-history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+  .speedtest-history-ip {
+    overflow-wrap: anywhere;
+  }
+  .speedtest-history-provider {
+    margin-top: .2rem;
+    color: #64748b;
+    font-size: .85rem;
+  }
+  .speedtest-history-speed {
+    color: #0d6efd;
+    font-size: clamp(1.65rem, 5vw, 2.35rem);
+    font-weight: 750;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .speedtest-history-speed-unit {
+    font-size: .9rem;
+    font-weight: 650;
+  }
+  .speedtest-history-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: .55rem;
+    margin-top: 1rem;
+  }
+  .speedtest-history-metric {
+    padding: .7rem .8rem;
+    border-radius: 11px;
+    background: #f5f8fc;
+  }
+  .speedtest-history-metric-label {
+    color: #64748b;
+    font-size: .75rem;
+  }
+  .speedtest-history-metric-value {
+    margin-top: .15rem;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+  .speedtest-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .7rem 1.2rem;
+    padding-top: .9rem;
+  }
+  .speedtest-history-details {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .speedtest-history-details summary {
+    list-style-position: inside;
+    font-weight: 600;
+  }
+  .speedtest-history-size-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: .5rem;
+    margin-top: .75rem;
+  }
+  .speedtest-history-size-item {
+    padding: .65rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #fafcff;
+  }
+  .speedtest-history-raw-table {
+    overflow-x: auto;
+    margin-top: .75rem;
+  }
+  @media (max-width: 767.98px) {
+    .speedtest-history-header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .speedtest-history-speed {
+      align-self: flex-start;
+    }
+    .speedtest-history-metrics,
+    .speedtest-history-size-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>
 
-    <button class="btn btn-primary w-100 mb-3" onclick="runSpeedTest()">スピードテスト実行（20回×3MB）</button>
-    <div id="result" class="text-center text-muted"></div>
+<div class="container d-flex justify-content-center py-3">
+  <div class="card speedtest-card shadow-sm w-100">
+    <div class="card-body p-3 p-md-4">
+      <div class="text-center mb-4">
+        <h2 class="mb-2">📡 アップロードスピードテスト</h2>
+        <p class="text-muted mb-0">
+          写真を想定した3・5・10・15MBを各3回、合計99MB送信します。
+        </p>
+      </div>
+
+      <div id="speedtestIdle">
+        <button id="speedtestStart" class="btn btn-primary btn-lg w-100" type="button">
+          測定を開始
+        </button>
+        <p class="small text-muted text-center mt-3 mb-0">
+          測定対象は、この端末からMFUサーバーまでの実効アップロード速度です。
+          モバイル回線では約99MBの通信量を使用します。
+        </p>
+      </div>
+
+      <div id="speedtestRunning" class="d-none" aria-live="polite">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span id="speedtestStatus" class="fw-semibold">準備中...</span>
+          <span id="speedtestProgressText" class="text-muted">0 / 12</span>
+        </div>
+        <div class="progress mb-3" style="height: 12px;">
+          <div id="speedtestProgress"
+               class="progress-bar progress-bar-striped progress-bar-animated"
+               role="progressbar"
+               style="width: 0%"
+               aria-valuemin="0"
+               aria-valuemax="100"
+               aria-valuenow="0"></div>
+        </div>
+        <button id="speedtestCancel" class="btn btn-outline-secondary w-100" type="button">
+          測定をキャンセル
+        </button>
+      </div>
+
+      <div id="speedtestResult" class="d-none" aria-live="polite">
+        <div class="speedtest-primary-result text-center mb-3">
+          <div class="text-muted mb-2">総合アップロード速度</div>
+          <div>
+            <span id="speedtestMbps" class="speedtest-value">--</span>
+            <span class="fs-5 fw-semibold">Mbps</span>
+          </div>
+        </div>
+
+        <div class="row g-2 mb-3">
+          <div class="col-6 col-md-3">
+            <div class="speedtest-metric">
+              <div class="speedtest-metric-label">Ping中央値</div>
+              <div id="speedtestPing" class="speedtest-metric-value">-- ms</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="speedtest-metric">
+              <div class="speedtest-metric-label">ジッター</div>
+              <div id="speedtestJitter" class="speedtest-metric-value">-- ms</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="speedtest-metric">
+              <div class="speedtest-metric-label">500MB推定時間</div>
+              <div id="speedtestEstimate" class="speedtest-metric-value">--</div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="speedtest-metric">
+              <div class="speedtest-metric-label">測定時間</div>
+              <div id="speedtestDuration" class="speedtest-metric-value">--</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-responsive mb-3">
+          <table class="table table-sm speedtest-size-table mb-0">
+            <thead>
+              <tr>
+                <th>写真サイズ</th>
+                <th class="text-end">中央値</th>
+                <th class="text-end">3回の範囲</th>
+              </tr>
+            </thead>
+            <tbody id="speedtestSizeResults"></tbody>
+          </table>
+        </div>
+
+        <div id="speedtestRetryNote" class="small text-warning mb-3 d-none"></div>
+        <div id="speedtestSaveNote" class="small mb-3 d-none" role="status"></div>
+        <button id="speedtestRestart" class="btn btn-outline-primary w-100" type="button">
+          もう一度測定
+        </button>
+        <p class="small text-muted text-center mt-3 mb-0">
+          総通信量99MB ／ MFUサーバーまでの測定結果
+        </p>
+      </div>
+
+      <div id="speedtestError" class="alert alert-danger mt-3 mb-0 d-none" role="alert"></div>
+    </div>
+  </div>
+</div>
+
+<div class="container d-flex justify-content-center pb-4">
+  <div class="card speedtest-history-card shadow-sm w-100">
+    <div class="card-body p-3 p-md-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h3 class="h5 mb-0">測定履歴</h3>
+        <span class="small text-muted">最新50件・保存期間{{ speedtest_history_retention_days }}日</span>
+      </div>
+
+      {% if speedtest_history_error %}
+        <div class="alert alert-warning mb-0">履歴を読み込めませんでした。</div>
+      {% elif not speedtest_history %}
+        <p class="text-muted mb-0">保存された測定履歴はまだありません。</p>
+      {% else %}
+        <div class="speedtest-history-list">
+          {% for item in speedtest_history %}
+            <article class="speedtest-history-entry">
+              <div class="speedtest-history-header">
+                <div>
+                  <div class="fw-semibold mb-1">{{ item.completed_at_jst }}</div>
+                  <code class="speedtest-history-ip">{{ item.ip_address }}</code>
+                  <div class="speedtest-history-provider">
+                    {{ item.provider_name }}{% if item.country %}（{{ item.country }}）{% endif %}
+                  </div>
+                </div>
+                <div class="speedtest-history-speed">
+                  {{ "%.2f"|format(item.overall_mbps) }}
+                  <span class="speedtest-history-speed-unit">Mbps</span>
+                </div>
+              </div>
+
+              <div class="speedtest-history-metrics">
+                <div class="speedtest-history-metric">
+                  <div class="speedtest-history-metric-label">Ping中央値</div>
+                  <div class="speedtest-history-metric-value">{{ "%.1f"|format(item.ping_median_ms) }} ms</div>
+                </div>
+                <div class="speedtest-history-metric">
+                  <div class="speedtest-history-metric-label">ジッター</div>
+                  <div class="speedtest-history-metric-value">{{ "%.1f"|format(item.jitter_ms) }} ms</div>
+                </div>
+                <div class="speedtest-history-metric">
+                  <div class="speedtest-history-metric-label">500MB推定時間</div>
+                  <div class="speedtest-history-metric-value">{{ "%.1f"|format(item.estimated_500mb_seconds) }} 秒</div>
+                </div>
+                <div class="speedtest-history-metric">
+                  <div class="speedtest-history-metric-label">測定時間</div>
+                  <div class="speedtest-history-metric-value">{{ "%.1f"|format(item.total_elapsed_ms / 1000) }} 秒</div>
+                </div>
+              </div>
+
+              {% if item.retry_count %}
+                <div class="mt-2"><span class="badge text-bg-warning">再試行 {{ item.retry_count }}回</span></div>
+              {% endif %}
+
+              <div class="speedtest-history-actions">
+                <details class="speedtest-history-details">
+                  <summary>サイズ別結果を表示</summary>
+                  <div class="speedtest-history-size-grid">
+                    {% for summary in item.size_summaries %}
+                      <div class="speedtest-history-size-item small">
+                        <div class="fw-semibold">{{ summary.size_mb }}MB × 3回</div>
+                        <div>{{ "%.2f"|format(summary.median_mbps) }} Mbps</div>
+                        <div class="text-muted">{{ "%.2f"|format(summary.minimum_mbps) }}～{{ "%.2f"|format(summary.maximum_mbps) }}</div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                </details>
+
+                <details class="speedtest-history-details">
+                  <summary>全測定値を表示</summary>
+                  <div class="mt-2 small">
+                    総通信量 {{ "%.1f"|format(item.total_bytes / 1024 / 1024) }} MB ／
+                    再試行 {{ item.retry_count }} 回
+                  </div>
+                  <div class="small fw-semibold mt-2">Ping個別値</div>
+                  <div class="small text-muted">
+                    {% for sample in item.ping_samples %}
+                      #{{ sample.sample_no }} {{ "%.3f"|format(sample.duration_ms) }} ms{% if not loop.last %} ／ {% endif %}
+                    {% endfor %}
+                  </div>
+                  <div class="speedtest-history-raw-table">
+                    <table class="table table-bordered table-sm small mb-0">
+                      <thead>
+                        <tr>
+                          <th>サイズ</th><th>回</th><th>送信量</th>
+                          <th>ブラウザ</th><th>サーバー</th><th>速度</th><th>再試行</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for sample in item.upload_samples %}
+                          <tr>
+                            <td>{{ sample.size_mb }} MB</td>
+                            <td>{{ sample.round_no }}</td>
+                            <td>{{ "%.1f"|format(sample.bytes_sent / 1024 / 1024) }} MB</td>
+                            <td>{{ "%.3f"|format(sample.client_duration_ms) }} ms</td>
+                            <td>{% if sample.server_elapsed_ms is not none %}{{ "%.3f"|format(sample.server_elapsed_ms) }} ms{% else %}-{% endif %}</td>
+                            <td>{{ "%.2f"|format(sample.mbps) }} Mbps</td>
+                            <td>{{ "あり" if sample.retried else "なし" }}</td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
   </div>
 </div>
 
 <script>
-async function runSpeedTest() {
-  const repeatCount = 20;
-  const blobSizeMB = 3;
-  const results = [];
-  const blob = new Blob([new Uint8Array(blobSizeMB * 1024 * 1024)], { type: "application/octet-stream" });
+(() => {
+  const TEST_SIZES_MB = [3, 5, 10, 15];
+  const TEST_ROUNDS = 3;
+  const TOTAL_TESTS = TEST_SIZES_MB.length * TEST_ROUNDS;
+  const CSRF_TOKEN = {{ csrf_token_value | tojson }};
 
-  const resultDiv = document.getElementById('result');
-  resultDiv.innerHTML = "<div class='text-info'>テスト中...しばらくお待ちください</div>";
+  const idle = document.getElementById("speedtestIdle");
+  const running = document.getElementById("speedtestRunning");
+  const result = document.getElementById("speedtestResult");
+  const errorBox = document.getElementById("speedtestError");
+  const startButton = document.getElementById("speedtestStart");
+  const cancelButton = document.getElementById("speedtestCancel");
+  const restartButton = document.getElementById("speedtestRestart");
+  const statusText = document.getElementById("speedtestStatus");
+  const progressText = document.getElementById("speedtestProgressText");
+  const progressBar = document.getElementById("speedtestProgress");
+  const saveNote = document.getElementById("speedtestSaveNote");
 
-  for (let i = 0; i < repeatCount; i++) {
-    const start = performance.now();
-    await fetch("/speedtest", {
-      method: "POST",
-      body: blob,
-    });
-    const end = performance.now();
+  let controller = null;
 
-    const durationSec = (end - start) / 1000;
-    const speedMbps = (blobSizeMB * 8) / durationSec;
-    const pingMs = end - start;
-
-    results.push({ speedMbps, pingMs });
+  function median(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
-  const avgSpeed = results.reduce((sum, r) => sum + r.speedMbps, 0) / results.length;
-  const avgPing = results.reduce((sum, r) => sum + r.pingMs, 0) / results.length;
-  const estimatedTimeSec = (500 * 8) / avgSpeed;
+  function jitter(values) {
+    if (values.length < 2) return 0;
+    const differences = [];
+    for (let index = 1; index < values.length; index += 1) {
+      differences.push(Math.abs(values[index] - values[index - 1]));
+    }
+    return differences.reduce((sum, value) => sum + value, 0) / differences.length;
+  }
 
-  resultDiv.innerHTML = `
-    <div class="text-success">✅ 平均アップロード速度：<strong>${avgSpeed.toFixed(2)} Mbps</strong></div>
-    <div class="text-info">📶 平均Ping（応答時間）：<strong>${avgPing.toFixed(1)} ms</strong></div>
-    <div class="text-primary">📤 500MB アップロード推定時間：<strong>${estimatedTimeSec.toFixed(1)} 秒</strong></div>
-  `;
-}
+  function makeRandomBlob(sizeMB) {
+    const bytes = new Uint8Array(sizeMB * 1024 * 1024);
+    const maxRandomChunk = 65536;
+    for (let offset = 0; offset < bytes.length; offset += maxRandomChunk) {
+      crypto.getRandomValues(bytes.subarray(offset, Math.min(offset + maxRandomChunk, bytes.length)));
+    }
+    return new Blob([bytes], { type: "application/octet-stream" });
+  }
+
+  async function checkedResponse(response) {
+    if (response.ok) return response;
+    let message = `HTTP ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data && data.message) message = data.message;
+    } catch (_) {
+      // HTML等のエラーレスポンスではHTTPステータスを使用する。
+    }
+    throw new Error(message);
+  }
+
+  async function measurePing(signal) {
+    for (let count = 0; count < 3; count += 1) {
+      await checkedResponse(await fetch(`/api/speedtest/ping?warmup=${Date.now()}-${count}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+        signal,
+      }));
+    }
+
+    const samples = [];
+    for (let count = 0; count < 10; count += 1) {
+      const started = performance.now();
+      await checkedResponse(await fetch(`/api/speedtest/ping?sample=${Date.now()}-${count}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+        signal,
+      }));
+      samples.push(performance.now() - started);
+    }
+    return samples;
+  }
+
+  async function uploadOnce(blob, signal) {
+    const started = performance.now();
+    const response = await fetch("/api/speedtest/upload", {
+      method: "POST",
+      body: blob,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-CSRF-Token": CSRF_TOKEN,
+        "X-Speedtest-Expected-Bytes": String(blob.size),
+      },
+      signal,
+    });
+    await checkedResponse(response);
+    const data = await response.json();
+    if (!data.ok || Number(data.received_bytes) !== blob.size) {
+      throw new Error("サーバーで受信サイズを確認できませんでした。");
+    }
+    return {
+      durationMs: performance.now() - started,
+      serverElapsedMs: Number.isFinite(Number(data.server_elapsed_ms))
+        ? Number(data.server_elapsed_ms)
+        : null,
+    };
+  }
+
+  async function uploadWithRetry(blob, signal) {
+    try {
+      return { ...(await uploadOnce(blob, signal)), retried: false };
+    } catch (error) {
+      if (error.name === "AbortError") throw error;
+      return { ...(await uploadOnce(blob, signal)), retried: true };
+    }
+  }
+
+  async function saveResult(testId, samples, pingSamples, totalElapsedMs) {
+    const response = await fetch("/api/speedtest/result", {
+      method: "POST",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": CSRF_TOKEN,
+      },
+      body: JSON.stringify({
+        test_id: testId,
+        ping_samples_ms: pingSamples,
+        total_elapsed_ms: totalElapsedMs,
+        upload_samples: samples.map((sample) => ({
+          round_no: sample.roundNo,
+          size_mb: sample.sizeMB,
+          bytes: sample.bytes,
+          duration_ms: sample.durationMs,
+          server_elapsed_ms: sample.serverElapsedMs,
+          retried: sample.retried,
+        })),
+      }),
+    });
+    await checkedResponse(response);
+    return response.json();
+  }
+
+  function formatDuration(seconds) {
+    if (seconds < 60) return `${seconds.toFixed(1)}秒`;
+    const minutes = Math.floor(seconds / 60);
+    const remaining = Math.round(seconds % 60);
+    return `${minutes}分${remaining}秒`;
+  }
+
+  function setProgress(completed, sizeMB, round) {
+    const percent = Math.round((completed / TOTAL_TESTS) * 100);
+    statusText.textContent = `${sizeMB}MBを測定中（${round}回目）`;
+    progressText.textContent = `${completed} / ${TOTAL_TESTS}`;
+    progressBar.style.width = `${percent}%`;
+    progressBar.setAttribute("aria-valuenow", String(percent));
+  }
+
+  function showError(message) {
+    idle.classList.remove("d-none");
+    running.classList.add("d-none");
+    result.classList.add("d-none");
+    errorBox.textContent = `測定に失敗しました：${message}`;
+    errorBox.classList.remove("d-none");
+    saveNote.classList.add("d-none");
+  }
+
+  function showResults(samples, pingSamples, totalElapsedMs, retryCount) {
+    const totalBytes = samples.reduce((sum, sample) => sum + sample.bytes, 0);
+    const totalUploadMs = samples.reduce((sum, sample) => sum + sample.durationMs, 0);
+    const overallMbps = (totalBytes * 8) / (totalUploadMs / 1000) / 1000000;
+    const pingMedian = median(pingSamples);
+    const pingJitter = jitter(pingSamples);
+    const estimatedSeconds = (500 * 8) / overallMbps;
+
+    document.getElementById("speedtestMbps").textContent = overallMbps.toFixed(2);
+    document.getElementById("speedtestPing").textContent = `${pingMedian.toFixed(1)} ms`;
+    document.getElementById("speedtestJitter").textContent = `${pingJitter.toFixed(1)} ms`;
+    document.getElementById("speedtestEstimate").textContent = formatDuration(estimatedSeconds);
+    document.getElementById("speedtestDuration").textContent = formatDuration(totalElapsedMs / 1000);
+
+    const rows = TEST_SIZES_MB.map((sizeMB) => {
+      const sizeSamples = samples.filter((sample) => sample.sizeMB === sizeMB);
+      const speeds = sizeSamples.map(
+        (sample) => (sample.bytes * 8) / (sample.durationMs / 1000) / 1000000
+      );
+      const minimum = Math.min(...speeds);
+      const maximum = Math.max(...speeds);
+      return `
+        <tr>
+          <th scope="row">${sizeMB}MB × 3回</th>
+          <td class="text-end fw-semibold">${median(speeds).toFixed(2)} Mbps</td>
+          <td class="text-end text-muted">${minimum.toFixed(2)}～${maximum.toFixed(2)}</td>
+        </tr>
+      `;
+    }).join("");
+    document.getElementById("speedtestSizeResults").innerHTML = rows;
+
+    const retryNote = document.getElementById("speedtestRetryNote");
+    if (retryCount > 0) {
+      retryNote.textContent = `${retryCount}回の通信を自動で再試行しました。`;
+      retryNote.classList.remove("d-none");
+    } else {
+      retryNote.classList.add("d-none");
+    }
+
+    idle.classList.add("d-none");
+    running.classList.add("d-none");
+    errorBox.classList.add("d-none");
+    result.classList.remove("d-none");
+  }
+
+  async function runSpeedTest() {
+    if (controller) return;
+    controller = new AbortController();
+    const { signal } = controller;
+    idle.classList.add("d-none");
+    result.classList.add("d-none");
+    errorBox.classList.add("d-none");
+    running.classList.remove("d-none");
+    statusText.textContent = "測定データを準備中...";
+    progressText.textContent = `0 / ${TOTAL_TESTS}`;
+    progressBar.style.width = "0%";
+    progressBar.setAttribute("aria-valuenow", "0");
+    saveNote.classList.add("d-none");
+
+    const testStarted = performance.now();
+    const testId = crypto.randomUUID();
+    try {
+      const blobs = new Map();
+      for (const sizeMB of TEST_SIZES_MB) {
+        blobs.set(sizeMB, makeRandomBlob(sizeMB));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      statusText.textContent = "Pingを測定中...";
+      const pingSamples = await measurePing(signal);
+      const samples = [];
+      let retryCount = 0;
+      let completed = 0;
+
+      for (let round = 1; round <= TEST_ROUNDS; round += 1) {
+        for (const sizeMB of TEST_SIZES_MB) {
+          setProgress(completed, sizeMB, round);
+          const upload = await uploadWithRetry(blobs.get(sizeMB), signal);
+          samples.push({
+            roundNo: round,
+            sizeMB,
+            bytes: blobs.get(sizeMB).size,
+            durationMs: upload.durationMs,
+            serverElapsedMs: upload.serverElapsedMs,
+            retried: upload.retried,
+          });
+          if (upload.retried) retryCount += 1;
+          completed += 1;
+          setProgress(completed, sizeMB, round);
+        }
+      }
+
+      const totalElapsedMs = performance.now() - testStarted;
+      showResults(samples, pingSamples, totalElapsedMs, retryCount);
+      try {
+        await saveResult(testId, samples, pingSamples, totalElapsedMs);
+        saveNote.textContent = "測定履歴に保存しました。履歴一覧は次回の再読み込み時に更新されます。";
+        saveNote.className = "small mb-3 text-success";
+      } catch (saveError) {
+        saveNote.textContent = `測定結果は有効ですが、履歴の保存に失敗しました：${saveError.message || String(saveError)}`;
+        saveNote.className = "small mb-3 text-danger";
+      }
+    } catch (error) {
+      if (error.name === "AbortError") {
+        showError("キャンセルされました。");
+      } else {
+        showError(error.message || String(error));
+      }
+    } finally {
+      controller = null;
+    }
+  }
+
+  startButton.addEventListener("click", runSpeedTest);
+  restartButton.addEventListener("click", runSpeedTest);
+  cancelButton.addEventListener("click", () => {
+    if (controller) controller.abort();
+  });
+})();
 </script>
 {% endblock %}

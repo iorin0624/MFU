@@ -23,11 +23,23 @@
       <label class="form-check-label" for="enable_download_url">ダウンロードURLを表示</label>
     </div>
 
-    <div class="form-check">
-      <input type="checkbox" class="form-check-input" name="require_password" id="require_password"
-             {% if mode_data and mode_data.require_password %}checked{% endif %}>
-      <label class="form-check-label" for="require_password">パスワードを発行</label>
-    </div>
+    {% set selected_auth = (mode_data.auth_method if mode_data and mode_data.auth_method else ('password' if mode_data and mode_data.require_password else 'none')) %}
+    <fieldset class="border rounded p-3 my-3">
+      <legend class="float-none w-auto px-2 fs-6 fw-bold">閲覧・ダウンロードの認証方式</legend>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="auth_method" id="auth_none" value="none" {% if selected_auth == 'none' %}checked{% endif %}>
+        <label class="form-check-label" for="auth_none">認証なし</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="auth_method" id="auth_password" value="password" {% if selected_auth == 'password' %}checked{% endif %}>
+        <label class="form-check-label" for="auth_password">パスワード認証</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="auth_method" id="auth_email_otp" value="email_otp" {% if selected_auth == 'email_otp' %}checked{% endif %}>
+        <label class="form-check-label" for="auth_email_otp">メールOTP認証</label>
+        <div class="form-text">アップロード完了画面からメール送信したToアドレスへ、閲覧時に6桁のPINを送ります。</div>
+      </div>
+    </fieldset>
 
     <div class="form-check">
       <input type="checkbox" class="form-check-input" name="enable_layer_upload_url" id="enable_layer_upload_url"

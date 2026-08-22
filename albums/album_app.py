@@ -13,8 +13,6 @@ album_bp = Blueprint('album', __name__, template_folder='templates')
 ALBUM_ROOT = '/mnt/maildata/mfu/albums'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic'}
 
-ADMIN_PASSWORD = 'adminpass'  # 簡易的な管理者用パスワード（後で強化可）
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 

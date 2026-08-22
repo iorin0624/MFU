@@ -174,7 +174,9 @@ def _get_admin_webhook_urls(cursor) -> list[str]:
         webhook_url = row.get("webhook_url") if isinstance(row, dict) else row[0]
         if webhook_url and webhook_url not in urls:
             urls.append(webhook_url)
-    return urls
+    from app.discord_notifications.repository import get_discord_webhook
+    resolved = get_discord_webhook("paypay_payout_expiry", urls[0] if urls else "")
+    return [resolved] if resolved else []
 
 
 def _post_discord_webhook(webhook_url: str, *, title: str, description: str, fields=(), color: int = 0xF1C40F) -> bool:

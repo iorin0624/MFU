@@ -55,6 +55,7 @@
                 <td>{{ key.last_used_at or '未使用' }}</td>
                 <td class="text-end">
                   <form method="post" action="{{ url_for('account.delete_passkey', passkey_id=key.id) }}" onsubmit="return confirm('このパスキーを削除しますか？');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
                     <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
                   </form>
                 </td>
@@ -72,8 +73,13 @@
 <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
 <script>
   const registerButton = document.getElementById("register-passkey");
+  document.querySelectorAll('form[action*="/account/passkeys/"][action$="/delete"]').forEach(form => {
+    const match = form.action.match(/\/account\/passkeys\/(\d+)\/delete$/);
+    if (match) form.dataset.adminPasskeyAction = `admin_passkey_delete:${match[1]}`;
+  });
   const passkeyError = document.getElementById("passkey-error");
   const passkeySuccess = document.getElementById("passkey-success");
+  const csrfToken = {{ csrf_token_value|tojson }};
 
   const showMessage = (target, message) => {
     target.textContent = message;
@@ -108,10 +114,13 @@
     const username = registerButton.dataset.username;
 
     try {
+      const operationToken = username === "admin"
+        ? await window.MFUAdminPasskey.authorize("admin_passkey_add")
+        : "";
       const optionsRes = await fetch("/webauthn/register/options", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username }),
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ username, csrf_token: csrfToken, admin_passkey_token: operationToken }),
       });
       const optionsData = await optionsRes.json();
       if (!optionsRes.ok) {
@@ -124,11 +133,11 @@
       });
       const verifyRes = await fetch("/webauthn/register/verify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
         body: JSON.stringify({
           username,
           credential: PasskeyUtils.serializeRegistrationCredential(credential),
-          label: buildLabel(),
+          label: buildLabel(), csrf_token: csrfToken,
         }),
       });
       const verifyData = await verifyRes.json();

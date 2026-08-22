@@ -10,6 +10,14 @@ from app.utils.db import get_db
 from app.utils.logs import write_login_log
 from app.utils.mail import send_mail
 from app.utils.totp_util import get_user_otp_secret, get_totp_status
+from app.utils.admin_auth import (
+    ADMIN_USERNAME,
+    audit,
+    establish_admin_session,
+    password_preauth_valid,
+    rate_limited,
+    record_attempt,
+)
 
 mfa_bp = Blueprint("mfa", __name__)
 
@@ -109,6 +117,8 @@ def _get_user_row(username: str) -> dict | None:
 
 
 def _preauth_valid(username: str) -> bool:
+    if username == ADMIN_USERNAME:
+        return password_preauth_valid(username)
     if session.get("preauth_user") != username:
         return False
 
@@ -131,6 +141,10 @@ def _clear_preauth() -> None:
 def _establish_login(username: str, *, tag: str) -> None:
     user = _get_user_row(username)
     if not user:
+        return
+    if username == ADMIN_USERNAME:
+        method = tag.removeprefix("LOGIN_").lower()
+        establish_admin_session(method=method, nickname=user.get("nickname"))
         return
     session["user"] = username
     session["nickname"] = user.get("nickname")
@@ -160,12 +174,17 @@ def create_preauth():
     if not username:
         return jsonify(ok=False, error="ユーザー名が必要です"), 400
 
+    if username == ADMIN_USERNAME and not password_preauth_valid(username):
+        audit("PREAUTH_REJECTED", details={"reason": "password_required"})
+        return jsonify(ok=False, error="IDとパスワードを先に確認してください。"), 401
+
     user = _get_user_row(username)
     if not user:
         return jsonify(ok=False, error="ユーザーが見つかりません"), 404
 
-    session["preauth_user"] = username
-    session["preauth_expires_at"] = _now() + timedelta(minutes=PREAUTH_TTL_MINUTES)
+    if username != ADMIN_USERNAME:
+        session["preauth_user"] = username
+        session["preauth_expires_at"] = _now() + timedelta(minutes=PREAUTH_TTL_MINUTES)
     session.pop("preauth_totp_attempts", None)
     session.pop("preauth_totp_locked_until", None)
 
@@ -183,6 +202,8 @@ def mfa_status():
     username = (payload.get("username") or "").strip()
     if not username:
         return jsonify(ok=False, error="ユーザー名が必要です"), 400
+    if username == ADMIN_USERNAME and not password_preauth_valid(username):
+        return jsonify(ok=False, error="IDとパスワードを先に確認してください。"), 401
 
     user = _get_user_row(username)
     if not user:
@@ -206,6 +227,12 @@ def verify_totp():
     if not _preauth_valid(username):
         return jsonify(ok=False, error="認証の有効期限が切れました"), 400
 
+    if username == ADMIN_USERNAME and rate_limited(
+        username, "totp", window_minutes=TOTP_LOCK_MINUTES, max_failures=TOTP_MAX_ATTEMPTS
+    ):
+        audit("TOTP_RATE_LIMIT")
+        return jsonify(ok=False, error="試行回数が多すぎます。しばらく待ってください。"), 429
+
     locked_until = _normalize_dt(session.get("preauth_totp_locked_until"))
     if locked_until and _now() < locked_until:
         return jsonify(ok=False, error="試行回数が多すぎます。時間をおいてください。"), 429
@@ -218,6 +245,9 @@ def verify_totp():
 
     totp = pyotp.TOTP(otp_secret)
     if not totp.verify(code, valid_window=1):
+        if username == ADMIN_USERNAME:
+            record_attempt(username, "totp", False)
+            audit("TOTP_FAILURE")
         attempts = int(session.get("preauth_totp_attempts") or 0) + 1
         session["preauth_totp_attempts"] = attempts
         if attempts >= TOTP_MAX_ATTEMPTS:
@@ -225,7 +255,10 @@ def verify_totp():
             return jsonify(ok=False, error="試行回数が多すぎます。時間をおいてください。"), 429
         return jsonify(ok=False, error="コードが一致しません"), 400
 
-    _clear_preauth()
+    if username == ADMIN_USERNAME:
+        record_attempt(username, "totp", True)
+    else:
+        _clear_preauth()
     _establish_login(username, tag="LOGIN_TOTP")
     return jsonify(ok=True, redirect=session.get("post_login_next") or "/upload")
 
@@ -239,6 +272,10 @@ def send_email_otp():
 
     if not _preauth_valid(username):
         return jsonify(ok=False, error="認証の有効期限が切れました"), 400
+
+    if username == ADMIN_USERNAME and not current_app.config.get("ADMIN_EMAIL_OTP_RECOVERY_ENABLED", False):
+        audit("EMAIL_OTP_REJECTED", details={"reason": "recovery_disabled"})
+        return jsonify(ok=False, error="管理者のメールOTPは緊急復旧時のみ利用できます。"), 403
 
     _ensure_email_otp_schema()
     user = _get_user_row(username)
@@ -323,6 +360,9 @@ def verify_email_otp():
     if not _preauth_valid(username):
         return jsonify(ok=False, error="認証の有効期限が切れました"), 400
 
+    if username == ADMIN_USERNAME and not current_app.config.get("ADMIN_EMAIL_OTP_RECOVERY_ENABLED", False):
+        return jsonify(ok=False, error="管理者のメールOTPは緊急復旧時のみ利用できます。"), 403
+
     _ensure_email_otp_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -384,6 +424,7 @@ def verify_email_otp():
     db.commit()
     db.close()
 
-    _clear_preauth()
+    if username != ADMIN_USERNAME:
+        _clear_preauth()
     _establish_login(username, tag="LOGIN_EMAIL_OTP")
     return jsonify(ok=True, redirect=session.get("post_login_next") or "/upload")

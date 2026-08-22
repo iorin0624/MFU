@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+SOURCE=/etc/asterisk/caller_whitelist.txt
+UPDATER=/usr/local/sbin/freepbx-whitelist-update
+BACKUP_DIR=/var/backups/mfu-phone-whitelist
+LOCK=/run/lock/mfu-whitelist-apply.lock
+MAX_BYTES=524288
+INPUT=$(mktemp)
+OLD=$(mktemp)
+HAD_OLD=0
+trap 'rm -f "$INPUT" "$OLD"' EXIT
+
+exec 8>"$LOCK"
+flock -w 20 8 || { echo "ERROR another update is running" >&2; exit 1; }
+
+dd of="$INPUT" bs=4096 count=129 status=none
+SIZE=$(stat -c %s "$INPUT")
+if (( SIZE > MAX_BYTES )); then
+  echo "ERROR payload exceeds $MAX_BYTES bytes" >&2
+  exit 1
+fi
+
+install -d -o root -g root -m 0700 "$BACKUP_DIR"
+if [[ -e "$SOURCE" ]]; then
+  cp -a "$SOURCE" "$OLD"
+  HAD_OLD=1
+else
+  printf '%s\n' '# Empty whitelist' > "$OLD"
+fi
+
+STAMP=$(date +%Y%m%d-%H%M%S)
+cp -a "$OLD" "$BACKUP_DIR/caller_whitelist.$STAMP.txt"
+install -o root -g asterisk -m 0640 "$INPUT" "$SOURCE"
+
+if OUTPUT=$("$UPDATER" 2>&1); then
+  WHITELIST_COUNT=$(grep -Ec '^[[:space:]]*[+]?[0-9]' "$SOURCE" || true)
+  BLACKLIST_COUNT=$(grep -Ec '^B\|[+]?[0-9]' "$SOURCE" || true)
+  logger -t mfu-whitelist "remote apply succeeded whitelist=$WHITELIST_COUNT blacklist=$BLACKLIST_COUNT"
+  echo "OK whitelist=$WHITELIST_COUNT blacklist=$BLACKLIST_COUNT"
+  exit 0
+fi
+
+if (( HAD_OLD )); then
+  install -o root -g asterisk -m 0640 "$OLD" "$SOURCE"
+else
+  printf '%s\n' '# Empty whitelist' > "$SOURCE"
+  chown root:asterisk "$SOURCE"
+  chmod 0640 "$SOURCE"
+fi
+if ! "$UPDATER" >/dev/null 2>&1; then
+  logger -p auth.crit -t mfu-whitelist "apply failed and rollback reload failed"
+fi
+logger -p auth.warning -t mfu-whitelist "apply rejected: $OUTPUT"
+echo "ERROR $OUTPUT" >&2
+exit 1

@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}ダウンロード履歴 - {{ upload.title }}{% endblock %}
+
+{% block head_extra %}
+<meta name="robots" content="noindex,nofollow">
+<style>
+  .download-history-page{--history-blue:#1267d6;--history-line:#dbe3ec;--history-muted:#64748b;color:#172033;margin-bottom:3.5rem}
+  .download-history-page *{box-sizing:border-box}
+  .download-history-page .history-topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+  .download-history-page h1{font-size:clamp(1.35rem,3vw,2rem);margin:0 0 5px}
+  .download-history-page .history-subtitle{margin:0;color:var(--history-muted)}
+  .download-history-page .history-back{display:inline-block;white-space:nowrap;padding:10px 14px;border:1px solid var(--history-blue);border-radius:9px;color:var(--history-blue);text-decoration:none;background:#fff;font-weight:700}
+  .download-history-page .history-filters{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px;background:#fff;border:1px solid var(--history-line);border-radius:14px;padding:14px;margin-bottom:16px}
+  .download-history-page .history-filters label{display:flex;flex-direction:column;gap:5px;color:#475569;font-size:.82rem;font-weight:700}
+  .download-history-page .history-filters input,
+  .download-history-page .history-filters select{width:100%;min-height:42px;border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;background:#fff;font:inherit}
+  .download-history-page .history-filter-actions{grid-column:1/-1;display:flex;gap:8px;justify-content:flex-end}
+  .download-history-page .history-filter-submit,
+  .download-history-page .history-filter-clear{border:1px solid var(--history-blue);border-radius:8px;padding:9px 16px;background:var(--history-blue);color:#fff;font-weight:700;text-decoration:none;cursor:pointer}
+  .download-history-page .history-filter-clear{background:#fff;color:#475569;border-color:#94a3b8}
+  .download-history-page .history-summary{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:10px 2px;color:#475569}
+  .download-history-page .history-empty{padding:48px 20px;text-align:center;background:#fff;border:1px solid var(--history-line);border-radius:14px;color:var(--history-muted)}
+  .download-history-page .history-card{background:#fff;border:1px solid var(--history-line);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 5px 18px rgba(15,23,42,.04)}
+  .download-history-page .history-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-bottom:13px}
+  .download-history-page .history-time{font-size:1.05rem;font-weight:800}
+  .download-history-page .history-ip{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#334155;overflow-wrap:anywhere}
+  .download-history-page .history-badge{display:inline-flex;align-items:center;border-radius:999px;padding:4px 9px;font-size:.78rem;font-weight:800;background:#e8f1ff;color:#0b57b7}
+  .download-history-page .history-badge.status-completed{background:#e5f7ec;color:#137a42}
+  .download-history-page .history-badge.status-started{background:#fff3d6;color:#8a5a00}
+  .download-history-page .history-badge.status-failed{background:#fee8e8;color:#b42318}
+  .download-history-page .history-file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px}
+  .download-history-page .history-file-card{min-width:0;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#f8fafc}
+  .download-history-page .history-file-card a{display:block;color:inherit;text-decoration:none}
+  .download-history-page .history-thumb,
+  .download-history-page .history-thumb-missing{width:100%;aspect-ratio:4/3;display:grid;place-items:center;background:#e8edf3}
+  .download-history-page .history-thumb{object-fit:cover}
+  .download-history-page .history-thumb-missing{color:#718096;font-size:.82rem;padding:8px;text-align:center}
+  .download-history-page .history-filename{display:block;padding:7px 8px;font-size:.76rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .download-history-page .deleted .history-filename{color:#94a3b8}
+  .download-history-page .history-pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:20px}
+  .download-history-page .history-pager a{padding:8px 13px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;text-decoration:none}
+  @media(max-width:800px){
+    .download-history-page .history-filters{grid-template-columns:1fr 1fr}
+    .download-history-page .history-topbar{flex-direction:column}
+    .download-history-page .history-filters label:last-of-type{grid-column:1/-1}
+  }
+  @media(max-width:480px){
+    .download-history-page .history-filters{grid-template-columns:1fr}
+    .download-history-page .history-filters label:last-of-type{grid-column:auto}
+    .download-history-page .history-card{padding:12px}
+    .download-history-page .history-file-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="download-history-page">
+  <header class="history-topbar">
+    <div>
+      <h1>ダウンロード履歴</h1>
+      <p class="history-subtitle">{{ upload.title }} ／ アップロード者のみ閲覧できます</p>
+    </div>
+    <a class="history-back" href="{{ url_for('upload_history.upload_list') }}">アップロード履歴へ戻る</a>
+  </header>
+
+  <form class="history-filters" method="get">
+    <label>開始日
+      <input type="date" name="date_from" value="{{ filters.date_from }}">
+    </label>
+    <label>終了日
+      <input type="date" name="date_to" value="{{ filters.date_to }}">
+    </label>
+    <label>IPアドレス
+      <input type="search" name="ip_address" value="{{ filters.ip_address }}" placeholder="IPv4・IPv6">
+    </label>
+    <label>ダウンロード方法
+      <select name="download_kind">
+        <option value="">すべて</option>
+        {% for value, label in kind_labels.items() %}
+          <option value="{{ value }}" {% if filters.download_kind == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>ファイル名
+      <input type="search" name="filename" value="{{ filters.filename }}" placeholder="写真名を検索">
+    </label>
+    <div class="history-filter-actions">
+      <a class="history-filter-clear" href="{{ url_for('view_upload_download_history', uuid=uuid) }}">条件を解除</a>
+      <button class="history-filter-submit" type="submit">絞り込む</button>
+    </div>
+  </form>
+
+  <div class="history-summary">
+    <strong>{{ history.total }}件</strong>
+    <span>{{ history.page }} / {{ history.page_count }}ページ</span>
+  </div>
+
+  {% if history.events %}
+    {% for event in history.events %}
+      <article class="history-card">
+        <header class="history-head">
+          <time class="history-time">{{ event.requested_at_jst.strftime('%Y年%m月%d日 %H:%M:%S') }}</time>
+          <span class="history-ip">IP：{{ event.ip_address }}</span>
+          <span class="history-badge">{{ event.kind_label }}</span>
+          <span class="history-badge status-{{ event.status }}">{{ event.status_label }}</span>
+          <span>{{ event.file_count }}枚</span>
+        </header>
+        <div class="history-file-grid">
+          {% for file in event.files %}
+            <div class="history-file-card{% if not file.available %} deleted{% endif %}">
+              {% if file.available and file.original_url %}
+                <a href="{{ file.original_url }}" target="_blank" rel="noopener">
+                  {% if file.thumbnail_url %}
+                    <img class="history-thumb" src="{{ file.thumbnail_url }}" alt="{{ file.filename }}" loading="lazy">
+                  {% else %}
+                    <span class="history-thumb-missing">サムネイルなし</span>
+                  {% endif %}
+                  <span class="history-filename" title="{{ file.filename }}">{{ file.filename }}</span>
+                </a>
+              {% else %}
+                <span class="history-thumb-missing">削除済み写真</span>
+                <span class="history-filename" title="{{ file.filename }}">{{ file.filename }}</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </article>
+    {% endfor %}
+  {% else %}
+    <div class="history-empty">該当するダウンロード履歴はありません。</div>
+  {% endif %}
+
+  {% if history.page_count > 1 %}
+    <nav class="history-pager" aria-label="ページ送り">
+      {% if history.page > 1 %}
+        <a href="{{ url_for('view_upload_download_history', uuid=uuid, page=history.page-1, date_from=filters.date_from, date_to=filters.date_to, ip_address=filters.ip_address, download_kind=filters.download_kind, filename=filters.filename) }}">前へ</a>
+      {% endif %}
+      <span>{{ history.page }} / {{ history.page_count }}</span>
+      {% if history.page < history.page_count %}
+        <a href="{{ url_for('view_upload_download_history', uuid=uuid, page=history.page+1, date_from=filters.date_from, date_to=filters.date_to, ip_address=filters.ip_address, download_kind=filters.download_kind, filename=filters.filename) }}">次へ</a>
+      {% endif %}
+    </nav>
+  {% endif %}
+</section>
+{% endblock %}

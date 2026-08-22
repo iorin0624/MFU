@@ -300,3 +300,48 @@ def get_nav_items_for_user(user_id: str | None) -> list[dict]:
         children.sort(key=lambda x: (x.get("order_no", 0), x["id"]))
         parent["children"] = children
     return parents
+
+
+def ensure_payment_navigation() -> None:
+    """決済管理の機能権限とナビゲーション項目を冪等に用意する。"""
+    ensure_feature_access_schema()
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            """
+            INSERT INTO mfu_features (feature_key, label, description, is_enabled_global)
+            VALUES (%s, %s, %s, 1)
+            ON DUPLICATE KEY UPDATE
+                label=VALUES(label),
+                description=VALUES(description),
+                is_enabled_global=1
+            """,
+            ("payment_admin", "決済管理", "イベント・請求書の決済管理"),
+        )
+        cur.execute("SELECT id FROM mfu_nav_items WHERE url=%s LIMIT 1", ("/payment/",))
+        row = cur.fetchone()
+        if row:
+            nav_id = row[0] if isinstance(row, tuple) else row.get("id")
+            cur.execute(
+                """
+                UPDATE mfu_nav_items
+                   SET label=%s, feature_key=%s, is_enabled=1,
+                       open_in_new_tab=0, is_external=0
+                 WHERE id=%s
+                """,
+                ("決済管理", "payment_admin", nav_id),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO mfu_nav_items
+                    (parent_id, label, url, order_no, is_enabled, feature_key,
+                     open_in_new_tab, is_external)
+                VALUES (NULL, %s, %s, 60, 1, %s, 0, 0)
+                """,
+                ("決済管理", "/payment/", "payment_admin"),
+            )
+        db.commit()
+    finally:
+        db.close()

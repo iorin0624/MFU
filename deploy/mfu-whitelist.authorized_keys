@@ -1,0 +1,1 @@
+restrict,command="/usr/local/sbin/mfu-whitelist-gateway" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaKd4Kp1odSiVbyx0kKeY1vgWzwkfZqq8G6yBVGmd8I mfu-phone-whitelist@server-103-16

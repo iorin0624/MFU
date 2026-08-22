@@ -10,7 +10,6 @@ import os
 import re
 import secrets
 import shutil
-import smtplib
 import subprocess
 import tempfile
 import threading
@@ -20,8 +19,6 @@ import zipfile
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date as date_cls, timedelta, timezone
-from email.mime.text import MIMEText
-from ipaddress import ip_address, ip_network
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -49,7 +46,7 @@ from werkzeug.utils import secure_filename, safe_join
 # 🛠️ アプリ内ユーティリティ（上段に集約）
 # =====================================
 from app.utils.auth import load_user
-from app.utils.db import get_db
+from app.utils.db import close_tracked_connections, get_db
 from app.utils.feature_access import (
     ensure_feature_access_schema,
     get_allowed_features,
@@ -61,33 +58,87 @@ from app.utils.file_ops import generate_thumbnail, create_zip
 from app.utils.upload_security import (
     DEFAULT_ALLOWED_EXTENSIONS,
     can_access_upload_record,
+    can_preview_upload_file,
     cleanup_legacy_view_auth_keys,
     detect_mime_from_bytes,
     ensure_upload_password_schema,
+    fetch_upload_file_record,
+    fetch_upload_thumbnail_source,
     fetch_upload_access_record,
     grant_view_auth,
     has_view_auth,
     hash_upload_password,
+    is_upload_owner,
     migrate_upload_password_if_needed,
+    normalize_upload_auth_method,
     resolve_upload_subpath,
     sanitize_filename,
     validate_upload_file,
     verify_upload_password,
+    upload_auth_method,
+    AUTH_EMAIL_OTP,
+    AUTH_PASSWORD,
+)
+from app.utils.upload_email_otp import (
+    UploadOtpError,
+    mask_email as mask_upload_otp_email,
+    replace_upload_otp_recipient,
+    send_upload_otp,
+    verify_upload_otp,
 )
 from app.utils.image import save_as_jpeg
-from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
+from app.utils.logs import (
+    get_fw_404_settings,
+    list_fw_auto_permanent_bans,
+    log_request_raw,
+    save_fw_404_settings,
+    unban_fw_auto_permanent,
+)
+from app.utils.fw_auto_ban import enforcement_enabled
+from app.utils.admin_logs_html import bind_runtime_csrf_token
 from app.utils.message import generate_message
 from app.utils.storage_info import get_storage_info
 from app.utils.thumbs import enqueue_thumb_job
 from app.utils.totp_util import get_totp_status
+from app.utils.admin_auth import (
+    ADMIN_USERNAME,
+    audit as audit_admin_auth,
+    begin_password_preauth,
+    clear_preauth,
+    ensure_schema as ensure_admin_auth_schema,
+    password_preauth_valid,
+    rate_limited as admin_auth_rate_limited,
+    recent_admin_mfa,
+    record_attempt as record_admin_auth_attempt,
+    revoke_current_admin_session,
+    validate_admin_session,
+)
+from app.utils.admin_session_cookie import MFUSecureCookieSessionInterface
+from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
 from app.receipt_ocr import receipt_ocr_bp
 from app.freee_api import freee_api_bp
+from app.etc_accounting import etc_accounting_bp
 from app.image_viewer import image_viewer_bp
 from app.utils.mail import send_mail
+from app.utils.speedtest import (
+    SPEEDTEST_UPLOAD_SIZES_MB,
+    SpeedtestPayloadError,
+    consume_upload as consume_speedtest_upload,
+    parse_expected_bytes as parse_speedtest_expected_bytes,
+    validate_content_length as validate_speedtest_content_length,
+)
 from app.utils.upload_notifications import send_discord_upload_notification
+from app.utils.upload_download_history import (
+    DOWNLOAD_KIND_LABELS,
+    ensure_upload_download_history_schema,
+    list_upload_download_history,
+    record_upload_download,
+    request_ip as download_request_ip,
+    track_upload_download_response,
+)
 from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
 from app.chat.socketio_ext import socketio
 
@@ -108,6 +159,7 @@ INAPP_BROWSER_SKIP_PATHS_KEY = "inapp_browser_skip_paths"
 INAPP_BROWSER_DEFAULT_ENABLED = "1"
 INAPP_BROWSER_DEFAULT_KEYWORDS = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
 INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES = ["https://t.co/"]
+EVENT_ALBUM_PREVIEW_UA_TOKENS = ("facebookexternalhit", "facebot", "twitterbot")
 INAPP_BROWSER_DEFAULT_SKIP_PATHS = [
     "/static",
     "/favicon",
@@ -197,9 +249,14 @@ def _resolve_socketio_message_queue():
 app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
 
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
+app.session_interface = MFUSecureCookieSessionInterface()
 
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["ADMIN_EMAIL_OTP_RECOVERY_ENABLED"] = os.environ.get(
+    "ADMIN_EMAIL_OTP_RECOVERY_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
 app.config["PAYOUT_PUBLIC_BASE_URL"] = os.environ.get("PAYOUT_PUBLIC_BASE_URL", "https://mfu.iori0624.jp").strip()
@@ -242,39 +299,58 @@ def _cleanup_legacy_view_auth_keys(current_uuid=None):
 
 def _grant_view_auth(uuid):
     """閲覧許可を単一キー配下のUUID配列で管理する。"""
-    grant_view_auth(uuid)
+    upload = uuid if isinstance(uuid, dict) else _get_upload_access_record(uuid)
+    if not upload:
+        return
+    grant_view_auth(str(upload["uuid"]), int(upload.get("auth_version") or 0))
 
 
 def _has_view_auth(uuid):
     """新旧のセッション形式を読み、必要なら新形式へ移行する。"""
-    return has_view_auth(uuid)
+    upload = uuid if isinstance(uuid, dict) else _get_upload_access_record(uuid)
+    if not upload:
+        return False
+    return has_view_auth(str(upload["uuid"]), int(upload.get("auth_version") or 0))
 
 
 CSRF_SESSION_KEY = "csrf_token"
 _UPLOAD_SECURITY_SCHEMA_LOCK = threading.Lock()
 _upload_security_schema_ready = False
 _CSRF_PROTECTED_PREFIXES = (
+    "/auth/",
+    "/mfa/",
+    "/webauthn/",
+    "/otp/",
+    "/account",
     "/admin/phone-whitelist",
+    "/admin/phone-diagnostics",
     "/admin/users",
     "/admin/user-features",
     "/admin/features",
     "/admin/nav",
     "/admin/logs/404-ban",
     "/admin/mail-delivery/refresh",
+    "/admin/mail-filters",
     "/admin/maintenance",
     "/admin/settings/inapp-browser",
     "/admin/ticket-price",
+    "/tdr/admin",
     "/admin/restart",
     "/admin/logs/export",
     "/payment/admin",
     "/payment/api",
     "/invoice/api/pay",
+    "/api/speedtest",
+    "/view/",
     "/templates",
     "/modes",
     "/upload_delete/",
     "/layer_upload_delete/",
+    "/layer_upload_list/",
 )
 _CSRF_PROTECTED_PATHS = {
+    "/login",
+    "/logout",
     "/submit_upload",
     "/submit_upload/mail",
     "/api/zip-prepare",
@@ -282,9 +358,7 @@ _CSRF_PROTECTED_PATHS = {
     "/mobile-download/api/jobs",
     "/admin/fw/ban",
 }
-_CSRF_EXEMPT_PATHS = {
-    "/login",
-}
+_CSRF_EXEMPT_PATHS = set()
 
 
 def _ensure_upload_security_schema_once():
@@ -295,6 +369,7 @@ def _ensure_upload_security_schema_once():
         if _upload_security_schema_ready:
             return
         ensure_upload_password_schema()
+        ensure_upload_download_history_schema()
         _upload_security_schema_ready = True
 
 
@@ -523,13 +598,33 @@ def delayed_restart():
     except Exception as e:
         print(f"[delayed_restart] ❌ 再起動中に予期せぬエラー: {e}")
 
-def is_maintenance_mode():
+_maintenance_settings_cache = {"expires_at": 0.0, "mode": None, "until": None}
+_maintenance_settings_cache_lock = threading.Lock()
+
+
+def _get_maintenance_settings_cached(ttl_seconds: float = 5.0):
+    now = time.monotonic()
+    with _maintenance_settings_cache_lock:
+        if _maintenance_settings_cache["expires_at"] > now:
+            return _maintenance_settings_cache["mode"], _maintenance_settings_cache["until"]
     db = get_db()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT value FROM settings WHERE `key` = 'maintenance_mode'")
-    row = cursor.fetchone()
+    cursor.execute(
+        "SELECT `key`, value FROM settings WHERE `key` IN ('maintenance_mode', 'maintenance_until')"
+    )
+    values = {row["key"]: row.get("value") for row in (cursor.fetchall() or [])}
     db.close()
-    return row and row["value"] == "on"
+    result = (values.get("maintenance_mode"), values.get("maintenance_until"))
+    with _maintenance_settings_cache_lock:
+        _maintenance_settings_cache.update(
+            expires_at=time.monotonic() + ttl_seconds, mode=result[0], until=result[1]
+        )
+    return result
+
+
+def is_maintenance_mode():
+    mode, _ = _get_maintenance_settings_cached()
+    return mode == "on"
 
 def _normalize_multiline_list(lines):
     normalized = []
@@ -618,6 +713,50 @@ def _is_inapp_browser_request(req):
         return True
 
     return req.cookies.get("InAppView") == "1"
+
+
+def _is_event_album_preview_request(req):
+    """Return True only for known preview crawlers targeting an event album."""
+    ua = (req.headers.get("User-Agent") or "").lower()
+    if not any(token in ua for token in EVENT_ALBUM_PREVIEW_UA_TOKENS):
+        return False
+
+    if (req.endpoint or "") not in {"album.album_home", "album.album_access"}:
+        return False
+
+    album_id = str((req.view_args or {}).get("album_id") or "").strip()
+    if not album_id:
+        return False
+
+    db = None
+    try:
+        db = get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT 1
+              FROM albums
+             WHERE id=%s
+               AND access_mode='event'
+               AND event_id IS NOT NULL
+             LIMIT 1
+            """,
+            (album_id,),
+        )
+        return bool(cursor.fetchone())
+    except Exception:
+        app.logger.warning(
+            "event album preview check failed album_id=%s",
+            album_id,
+            exc_info=True,
+        )
+        return False
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def write_login_log(username, ip, tag="LOGIN"):
@@ -845,7 +984,8 @@ def _resolve_relpath(rel: str):
 # =====================================
 # 🔁 起動時のメンテ自動スケジュール
 # =====================================
-schedule_restart_if_needed()
+if os.environ.get("MFU_LAN_UPLOADER_SERVICE") != "1":
+    schedule_restart_if_needed()
 
 # =====================================
 # ① 認証／トップ
@@ -882,39 +1022,20 @@ def login():
             return ""
         return raw
 
-    def _preauth_active():
-        preauth_user = session.get("preauth_user")
-        expires_at = session.get("preauth_expires_at")
-        if not preauth_user or not expires_at:
-            return None
-        if datetime.now() > expires_at:
-            session.pop("preauth_user", None)
-            session.pop("preauth_expires_at", None)
-            session.pop("preauth_totp_attempts", None)
-            session.pop("preauth_totp_locked_until", None)
-            return None
-        return preauth_user
-
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
         next_url = _safe_next_url(request.form.get("next") or session.get("post_login_next") or request.args.get("next"))
-        client_ip = ip_address(request.remote_addr)
-
-        # ローカル判定
-        is_local = (
-            client_ip in ip_network("192.168.103.0/24")
-            or client_ip in ip_network("fe80::/10")
-            or client_ip in ip_network("2404:7a81:bc40:2a00::/64")
-            or client_ip in ip_network("2404:7a81:8ac1:1000::/64")
-        )
+        csrf_token = session.get(CSRF_SESSION_KEY)
+        session.clear()
+        if csrf_token:
+            session[CSRF_SESSION_KEY] = csrf_token
+        if next_url:
+            session["post_login_next"] = next_url
 
         db = get_db()
         cursor = db.cursor(dictionary=True)
 
-        session.clear()
-        if next_url:
-            session["post_login_next"] = next_url
         cursor.execute(
             "SELECT password_hash, nickname, webhook_url FROM users WHERE username = %s",
             (username,),
@@ -922,9 +1043,35 @@ def login():
         row = cursor.fetchone()
         db.close()
 
-        if row and bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+        if username == ADMIN_USERNAME and admin_auth_rate_limited(
+            username, "password", window_minutes=15, max_failures=10
+        ):
+            record_admin_auth_attempt(username, "password", False)
+            return render_template(
+                "login.html",
+                error="ログイン試行が多すぎます。15分後に再試行してください。",
+                username=username,
+            ), 429
+
+        password_ok = bool(
+            row and password and bcrypt.checkpw(password.encode(), row["password_hash"].encode())
+        )
+        if password_ok:
+            if username == ADMIN_USERNAME:
+                record_admin_auth_attempt(username, "password", True)
+                audit_admin_auth("PASSWORD_VERIFIED")
+                begin_password_preauth(username)
+                return render_template(
+                    "login.html",
+                    preauth_active=True,
+                    preauth_username=username,
+                    info="パスワードを確認しました。追加認証を行ってください。",
+                    admin_mfa=True,
+                    admin_email_recovery=bool(app.config.get("ADMIN_EMAIL_OTP_RECOVERY_ENABLED", False)),
+                )
+
             totp_status = get_totp_status(username)
-            if totp_status.get("enabled") and totp_status.get("has_secret") and not is_local:
+            if totp_status.get("enabled") and totp_status.get("has_secret"):
                 session["preauth_user"] = username
                 session["preauth_expires_at"] = datetime.now() + timedelta(minutes=5)
                 session.pop("preauth_totp_attempts", None)
@@ -941,36 +1088,36 @@ def login():
             session.permanent = True
             write_login_log(username, request.remote_addr)
 
-            if username == "admin" and row.get("webhook_url"):
-                try:
-                    login_time = datetime.now().strftime("%Y/%m/%d %H:%M")
-                    login_ip = request.remote_addr
-                    message = (
-                        "👤 **管理者ログイン**\n"
-                        f"📅 ログイン日時: {login_time}\n"
-                        f"🌐 ログインIP: {login_ip}"
-                    )
-                    requests.post(row["webhook_url"], json={"content": message})
-                except Exception:
-                    pass
-
             session.pop("post_login_next", None)
             return redirect(next_url or url_for("upload"))
 
+        if username == ADMIN_USERNAME:
+            record_admin_auth_attempt(username, "password", False)
+            audit_admin_auth("PASSWORD_FAILURE")
         return render_template("login.html", error="ログイン失敗", username=username)
+
+    if request.args.get("reset") == "1":
+        had_valid_preauth = password_preauth_valid()
+        clear_preauth()
+        if had_valid_preauth:
+            audit_admin_auth("PREAUTH_RESET")
 
     next_url = _safe_next_url(request.args.get("next"))
     if next_url:
         session["post_login_next"] = next_url
-    preauth_user = _preauth_active()
+    preauth_user = ADMIN_USERNAME if password_preauth_valid() else None
     return render_template(
         "login.html",
         preauth_active=bool(preauth_user),
         preauth_username=preauth_user or "",
+        admin_mfa=bool(preauth_user),
+        admin_email_recovery=bool(app.config.get("ADMIN_EMAIL_OTP_RECOVERY_ENABLED", False)),
     )
 
-@app.route("/logout")
+@app.post("/logout")
 def logout():
+    if session.get("user") == ADMIN_USERNAME:
+        revoke_current_admin_session()
     session.clear()
     return redirect(url_for("login"))
 
@@ -1053,7 +1200,10 @@ def submit_upload():
     # =====================================
     uid = uuid4().hex
     # パスワードはモード設定に従う（未指定なら空）
-    password = secrets.token_hex(4) if mode_config.get("require_password") else ""
+    auth_method = normalize_upload_auth_method(
+        mode_config.get("auth_method"), require_password=mode_config.get("require_password")
+    )
+    password = secrets.token_hex(4) if auth_method == AUTH_PASSWORD else ""
     password_hash = hash_upload_password(password) if password else None
 
     # 保存ルート（設定優先、なければ既定）
@@ -1130,10 +1280,10 @@ def submit_upload():
     cur = db.cursor()
     cur.execute(
         """
-        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (uid, title, date, expire_at, mode, username, "", password, password_hash),
+        (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method),
     )
     upload_id = cur.lastrowid
     if filenames:
@@ -1212,7 +1362,7 @@ def submit_upload():
         uuid=uid, password=password, title=title,
         mode=mode, mode_label=mode_config.get("label", mode),
         date=date, message=message,
-        **_build_upload_done_mail_context({"title": title, "date": date}),
+        **_build_upload_done_mail_context({"title": title, "date": date, "auth_method": auth_method}),
     )
 
 
@@ -1389,6 +1539,7 @@ def _build_upload_done_mail_context(upload_row: dict) -> dict:
         "mail_subject": _build_upload_mail_subject(upload_row),
         "mail_sender_name": prefs["sender_name"],
         "mail_cc": prefs["cc_email"],
+        "email_otp_enabled": upload_auth_method(upload_row) == AUTH_EMAIL_OTP,
         "csrf_token_value": _get_csrf_token(),
     }
 
@@ -1576,7 +1727,10 @@ def submit_upload_start():
 
     uid = uuid.uuid4().hex
     expire_at = (datetime.now() + timedelta(days=60)).date()
-    password = secrets.token_hex(4) if mode_config.get("require_password") else ""
+    auth_method = normalize_upload_auth_method(
+        mode_config.get("auth_method"), require_password=mode_config.get("require_password")
+    )
+    password = secrets.token_hex(4) if auth_method == AUTH_PASSWORD else ""
     password_hash = hash_upload_password(password) if password else None
     base_dir, original_dir, thumb_dir = _upload_dirs(uid)
     os.makedirs(original_dir, exist_ok=True)
@@ -1589,10 +1743,10 @@ def submit_upload_start():
     cur = db.cursor()
     cur.execute(
         """
-        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (uid, title, date, expire_at, mode, username, "", password, password_hash),
+        (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method),
     )
     db.commit()
     db.close()
@@ -1794,6 +1948,15 @@ def submit_upload_mail():
     if not body:
         return jsonify({"ok": False, "error": "送信する本文が見つかりません。"}), 400
 
+    email_otp_enabled = upload_auth_method(upload_row) == AUTH_EMAIL_OTP
+    if email_otp_enabled:
+        body += (
+            "\n\n【メール認証について】\n"
+            "上記の閲覧リンクを開き、「認証コードを送信」を押してください。\n"
+            "このメールアドレスに届く6桁の認証コードを入力すると、"
+            "ファイルの閲覧・ダウンロードができます。"
+        )
+
     subject = _build_upload_mail_subject(upload_row)
     _save_upload_mail_preferences(
         upload_row.get("username") or session.get("user", "default"),
@@ -1814,18 +1977,50 @@ def submit_upload_mail():
         current_app.logger.exception("upload completion mail failed uid=%s to=%s", uid, to_email)
         return jsonify({"ok": False, "error": f"メール送信に失敗しました: {exc}"}), 500
 
+    if email_otp_enabled:
+        try:
+            replace_upload_otp_recipient(int(upload_row["id"]), to_email)
+        except Exception as exc:
+            current_app.logger.exception(
+                "upload OTP recipient registration failed uid=%s to=%s", uid, to_email
+            )
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "メールは送信されましたが、閲覧用メールアドレスの登録に"
+                    f"失敗しました: {exc}"
+                ),
+            }), 500
+
+        current_app.logger.info(
+            "UPLOAD_OTP_RECIPIENT_REGISTERED uuid=%s recipient=%s", uid, to_email
+        )
+
     return jsonify({
         "ok": True,
-        "message": "メールを送信しました。",
+        "message": (
+            "メールを送信し、このアドレスを閲覧用OTPの送信先に登録しました。"
+            if email_otp_enabled
+            else "メールを送信しました。"
+        ),
         "to_email": to_email,
         "cc_email": normalized_cc,
         "sender_name": sender_name,
         "subject": subject,
+        "otp_recipient_registered": email_otp_enabled,
     })
 
 # --- サムネ完了待ち → 通知（バックグラウンド） ---
 def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, context, gen_thumbs: bool):
     logger = getattr(app, "logger", None)
+
+    thumbnail_extensions = {
+        ".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif",
+        ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".dng",
+    }
+    thumbnail_filenames = [
+        name for name in filenames if Path(name).suffix.lower() in thumbnail_extensions
+    ]
 
     # ▼ サムネ生成OFFならキュー投入も待機もスキップ
     if not gen_thumbs:
@@ -1858,8 +2053,6 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
                         subject="ファイルアップロード通知",
                         body=msg,
                         event_uuid="notify",          # From: notify@mail.iori0624.jp
-                        smtp_host="192.168.103.15",
-                        smtp_port=25,
                         timeout=45,
                     )
                     (logger.info if logger else print)(f"メール通知送信完了 (uid={uid}, thumbs=off)")
@@ -1871,7 +2064,7 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
 
     def _count_ready():
         ready = 0
-        for name in filenames:
+        for name in thumbnail_filenames:
             base, _ext = os.path.splitext(name)
             cand1 = os.path.join(thumb_dir, name)
             cand2 = os.path.join(thumb_dir, base + ".webp")
@@ -1879,9 +2072,9 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
                 ready += 1
         return ready
 
-    expected = len(filenames)
+    expected = len(thumbnail_filenames)
     ready_at_start = _count_ready()
-    if ready_at_start < expected:
+    if expected and ready_at_start < expected:
         try:
             enqueue_thumb_job("upload", uid, "thumb")
             (logger.info if logger else print)(
@@ -1940,8 +2133,6 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
                     subject="ファイルアップロード通知",
                     body=msg,
                     event_uuid="notify",      # From: notify@mail.iori0624.jp
-                    smtp_host="192.168.103.15",
-                    smtp_port=25,
                     timeout=45,
                 )
                 (logger.info if logger else print)(f"メール通知送信完了 (uid={uid})")
@@ -1953,6 +2144,93 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
 # =====================================
 # ③ 表示／配信
 # =====================================
+def _render_upload_email_otp(upload, *, error=None, sent=False, status=200):
+    return (
+        render_template(
+            "view_email_otp.html",
+            upload=upload,
+            uuid=upload["uuid"],
+            masked_email=mask_upload_otp_email(upload.get("otp_email")),
+            recipient_configured=bool(str(upload.get("otp_email") or "").strip()),
+            error=error,
+            sent=sent,
+        ),
+        status,
+    )
+
+
+@app.post("/view/<uuid>/otp/send")
+def view_upload_otp_send(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        abort(404)
+    if upload_auth_method(upload) != AUTH_EMAIL_OTP:
+        abort(404)
+    if _can_access_upload_record(upload):
+        return redirect(url_for("view_upload", uuid=uuid))
+
+    forwarded = str(request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+    request_ip = forwarded or str(request.remote_addr or "")
+    try:
+        send_upload_otp(
+            upload,
+            request_ip=request_ip,
+            view_url=url_for("view_upload", uuid=uuid, _external=True),
+        )
+    except UploadOtpError as exc:
+        current_app.logger.warning(
+            "UPLOAD_OTP_SEND_REJECTED uuid=%s reason=%s ip=%s",
+            uuid,
+            exc.code,
+            request_ip,
+        )
+        return _render_upload_email_otp(upload, error=str(exc), status=exc.status)
+    except Exception:
+        current_app.logger.exception("UPLOAD_OTP_SEND_FAILED uuid=%s ip=%s", uuid, request_ip)
+        return _render_upload_email_otp(
+            upload,
+            error="認証コードの送信に失敗しました。時間をおいてお試しください。",
+            status=500,
+        )
+
+    current_app.logger.info("UPLOAD_OTP_SENT uuid=%s ip=%s", uuid, request_ip)
+    return _render_upload_email_otp(upload, sent=True)
+
+
+@app.post("/view/<uuid>/otp/verify")
+def view_upload_otp_verify(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        abort(404)
+    if upload_auth_method(upload) != AUTH_EMAIL_OTP:
+        abort(404)
+    if _can_access_upload_record(upload):
+        return redirect(url_for("view_upload", uuid=uuid))
+
+    try:
+        verified = verify_upload_otp(upload, request.form.get("code", ""))
+    except Exception:
+        current_app.logger.exception("UPLOAD_OTP_VERIFY_FAILED uuid=%s", uuid)
+        return _render_upload_email_otp(
+            upload,
+            error="認証処理に失敗しました。時間をおいてお試しください。",
+            sent=True,
+            status=500,
+        )
+    if not verified:
+        current_app.logger.warning("UPLOAD_OTP_INVALID uuid=%s", uuid)
+        return _render_upload_email_otp(
+            upload,
+            error="認証コードが違うか、有効期限が切れています。",
+            sent=True,
+            status=400,
+        )
+
+    _grant_view_auth(upload)
+    current_app.logger.info("UPLOAD_OTP_VERIFIED uuid=%s", uuid)
+    return redirect(url_for("view_upload", uuid=uuid, otp_verified="1"))
+
+
 @app.route("/view/<uuid>", methods=["GET", "POST"])
 def view_upload(uuid):
     upload = _get_upload_access_record(uuid)
@@ -1962,65 +2240,147 @@ def view_upload(uuid):
     if (upload.get("password") or "").strip() and not upload.get("password_hash"):
         migrate_upload_password_if_needed(upload)
 
+    auth_method = upload_auth_method(upload)
     if _can_access_upload_record(upload):
-        _grant_view_auth(uuid)
+        _grant_view_auth(upload)
 
     generate_thumbnails = bool(upload.get("generate_thumbnails"))
 
     # パス未認証ならパス画面へ
-    if request.method == "POST" and not _has_view_auth(uuid):
+    if request.method == "POST" and auth_method == AUTH_PASSWORD and not _has_view_auth(upload):
         input_pass = request.form.get("password", "")
         if not verify_upload_password(upload, input_pass):
             return render_template("view_password.html", uuid=uuid, error="パスワードが違います")
-        _grant_view_auth(uuid)
+        _grant_view_auth(upload)
 
-    if not _has_view_auth(uuid):
+    if auth_method == AUTH_EMAIL_OTP and not _has_view_auth(upload):
+        return _render_upload_email_otp(upload)
+
+    if not _has_view_auth(upload):
         return render_template("view_password.html", uuid=uuid)
 
-    # ファイル一覧
+    owner_management = is_upload_owner(upload)
+
+    # 一般閲覧者には公開中だけ、アップロード者には管理用として全件を返す。
     db = get_db()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT filename FROM files WHERE upload_id = %s ORDER BY filename ASC", (upload["id"],))
-    files = [row["filename"] for row in cursor.fetchall()]
+    cursor.execute(
+        """
+        SELECT id, filename, is_hidden
+          FROM files
+         WHERE upload_id = %s
+           AND (%s = 1 OR is_hidden = 0)
+         ORDER BY filename ASC
+        """,
+        (upload["id"], 1 if owner_management else 0),
+    )
+    file_rows = cursor.fetchall()
     db.close()
+    files = [row["filename"] for row in file_rows]
+    public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
+    hidden_count = sum(1 for row in file_rows if row.get("is_hidden"))
+
+    if not generate_thumbnails:
+        visible_rows = [row for row in file_rows if not row.get("is_hidden")]
+        original_dir = Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR)) / uuid / "original"
+        total_bytes = 0
+        for row in visible_rows:
+            candidate = original_dir / row["filename"]
+            try:
+                if candidate.is_file():
+                    total_bytes += candidate.stat().st_size
+            except OSError:
+                current_app.logger.warning(
+                    "download-only size check failed uuid=%s filename=%s",
+                    uuid,
+                    row["filename"],
+                )
+
+        size_value = float(total_bytes)
+        size_unit = "B"
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            size_unit = unit
+            if size_value < 1024 or unit == "TB":
+                break
+            size_value /= 1024
+        total_size_label = (
+            f"{int(size_value)} {size_unit}"
+            if size_unit == "B"
+            else f"{size_value:.1f} {size_unit}"
+        )
+
+        def display_date(value):
+            if all(hasattr(value, part) for part in ("year", "month", "day")):
+                return f"{value.year}年{value.month}月{value.day}日"
+            raw = str(value or "").strip()
+            try:
+                parsed = datetime.fromisoformat(raw[:10])
+                return f"{parsed.year}年{parsed.month}月{parsed.day}日"
+            except (TypeError, ValueError):
+                pass
+            return str(value or "-")
+
+        return render_template(
+            "view_download_only.html",
+            upload=upload,
+            uuid=uuid,
+            download_count=len(visible_rows),
+            hidden_count=hidden_count,
+            total_bytes=total_bytes,
+            total_size_label=total_size_label,
+            upload_date=display_date(upload.get("date")),
+            expire_date=display_date(upload.get("expire_at")),
+            download_url=url_for("download_zip_for_upload", uuid=uuid),
+        )
 
     # サムネ（存在するもののみ列挙）
     thumb_dir = f"/mnt/mfu/uploads/{uuid}/thumb"
     thumbnails = []
     if generate_thumbnails:
-        for f in files:
+        for row in file_rows:
+            f = row["filename"]
             base, _ = os.path.splitext(f)
             webp_path = os.path.join(thumb_dir, base + ".webp")
             if os.path.exists(webp_path):
                 thumbnails.append({
+                    "id": row["id"],
                     "webp": base + ".webp",
                     "fallback": f,
-                    "mobile_jpeg": Path(f).suffix.lower() in {".jpg", ".jpeg"},
+                    "mobile_jpeg": Path(f).suffix.lower() in {".jpg", ".jpeg", ".png", ".heic", ".heif"},
+                    "is_hidden": bool(row.get("is_hidden")),
                 })
             else:
                 fallback_path = os.path.join(thumb_dir, f)
                 if os.path.exists(fallback_path):
                     thumbnails.append({
+                        "id": row["id"],
                         "webp": None,
                         "fallback": f,
-                        "mobile_jpeg": Path(f).suffix.lower() in {".jpg", ".jpeg"},
+                        "mobile_jpeg": Path(f).suffix.lower() in {".jpg", ".jpeg", ".png", ".heic", ".heif"},
+                        "is_hidden": bool(row.get("is_hidden")),
                     })
 
     # ▼ サムネOFFのときはZIP一括DL（API方式）ボタンを表示
     show_zip_button = (not generate_thumbnails) and len(files) > 0
     # APIに渡す相対パス一覧（zip_stream.resolve_relpath が解決する仕様）
-    all_relpaths = [f"uploads/{uuid}/original/{name}" for name in files]
+    visible_filenames = [
+        row["filename"] for row in file_rows if not row.get("is_hidden")
+    ]
+    all_relpaths = [f"uploads/{uuid}/original/{name}" for name in visible_filenames]
     jpeg_relpaths = [
         f"uploads/{uuid}/original/{name}"
-        for name in files
-        if Path(name).suffix.lower() in {".jpg", ".jpeg"}
+        for name in visible_filenames
+        if Path(name).suffix.lower() in {".jpg", ".jpeg", ".png", ".heic", ".heif"}
     ]
     file_entries = [
         {
-            "name": name,
-            "url": url_for("uploaded_file", subpath=f"{uuid}/original/{name}"),
+            "id": row["id"],
+            "name": row["filename"],
+            "is_hidden": bool(row.get("is_hidden")),
+            "mobile_jpeg": Path(row["filename"]).suffix.lower() in {".jpg", ".jpeg", ".png", ".heic", ".heif"},
+            "url": url_for("uploaded_file", subpath=f"{uuid}/original/{row['filename']}"),
         }
-        for name in files
+        for row in file_rows
     ]
 
     return render_template(
@@ -2029,18 +2389,227 @@ def view_upload(uuid):
         files=files,
         thumbnails=thumbnails,
         image_count=len(files),
+        public_count=public_count,
+        hidden_count=hidden_count,
+        owner_management=owner_management,
         mode_label=upload["mode"],
         uuid=uuid,
         show_zip_button=show_zip_button,
         all_relpaths=all_relpaths,  # ← 追加
         jpeg_relpaths=jpeg_relpaths,
         jpeg_count=len(jpeg_relpaths),
-        mobile_download_enabled=(
-            os.environ.get("MFU_MOBILE_DOWNLOAD_ENABLED", "0").strip().lower()
-            in {"1", "true", "yes", "on"}
-        ),
+        mobile_download_enabled=True,
         file_entries=file_entries,
     )
+
+
+@app.get("/view/<uuid>/download-history")
+def view_upload_download_history(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        abort(404)
+    if not is_upload_owner(upload):
+        abort(403)
+
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+    filters = {
+        "ip_address": str(request.args.get("ip_address") or "").strip(),
+        "download_kind": str(request.args.get("download_kind") or "").strip(),
+        "filename": str(request.args.get("filename") or "").strip(),
+        "date_from": str(request.args.get("date_from") or "").strip(),
+        "date_to": str(request.args.get("date_to") or "").strip(),
+    }
+    history = list_upload_download_history(
+        upload_id=int(upload["id"]),
+        page=page,
+        per_page=30,
+        **filters,
+    )
+
+    upload_root = Path(UPLOAD_BASE_DIR) / uuid
+    for event in history["events"]:
+        for item in event["files"]:
+            filename = str(item.get("filename") or "")
+            current = bool(item.get("current_file_id"))
+            original_path = upload_root / "original" / filename
+            item["available"] = current and original_path.is_file()
+            item["original_url"] = (
+                url_for("uploaded_file", subpath=f"{uuid}/original/{filename}")
+                if item["available"]
+                else None
+            )
+            item["thumbnail_url"] = None
+            if not item["available"]:
+                continue
+            webp_name = f"{Path(filename).stem}.webp"
+            webp_path = upload_root / "thumb" / webp_name
+            fallback_path = upload_root / "thumb" / filename
+            if webp_path.is_file():
+                item["thumbnail_url"] = url_for(
+                    "uploaded_file",
+                    subpath=f"{uuid}/thumb/{webp_name}",
+                    source=filename,
+                )
+            elif fallback_path.is_file():
+                item["thumbnail_url"] = url_for(
+                    "uploaded_file",
+                    subpath=f"{uuid}/thumb/{filename}",
+                    source=filename,
+                )
+
+    return render_template(
+        "view_download_history.html",
+        upload=upload,
+        uuid=uuid,
+        history=history,
+        filters=filters,
+        kind_labels=DOWNLOAD_KIND_LABELS,
+    )
+
+
+def _purge_upload_zip_cache(uuid: str) -> None:
+    storage_root = Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR))
+    zip_dir = (storage_root / uuid / "zip").resolve()
+    upload_dir = (storage_root / uuid).resolve()
+    try:
+        if not zip_dir.is_relative_to(upload_dir):
+            return
+    except AttributeError:
+        if not str(zip_dir).startswith(str(upload_dir) + os.sep):
+            return
+    if not zip_dir.is_dir():
+        return
+    for candidate in zip_dir.iterdir():
+        if candidate.is_file():
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                app.logger.warning(
+                    "upload ZIP cache purge failed uuid=%s path=%s error=%r",
+                    uuid,
+                    candidate,
+                    exc,
+                )
+
+
+@app.post("/view/<uuid>/visibility")
+def update_upload_file_visibility(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
+    if not is_upload_owner(upload):
+        return jsonify({"ok": False, "message": "アップロードしたユーザーだけが変更できます。"}), 403
+
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("file_ids")
+    hidden = data.get("hidden")
+    if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 5000:
+        return jsonify({"ok": False, "message": "変更する写真を選択してください。"}), 400
+    if not isinstance(hidden, bool):
+        return jsonify({"ok": False, "message": "公開状態が不正です。"}), 400
+
+    try:
+        file_ids = sorted({int(value) for value in raw_ids if int(value) > 0})
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "写真の指定が不正です。"}), 400
+    if not file_ids:
+        return jsonify({"ok": False, "message": "変更する写真を選択してください。"}), 400
+
+    placeholders = ",".join(["%s"] * len(file_ids))
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"""
+            SELECT id
+              FROM files
+             WHERE upload_id=%s
+               AND id IN ({placeholders})
+             FOR UPDATE
+            """,
+            (upload["id"], *file_ids),
+        )
+        matched_ids = {int(row["id"]) for row in cursor.fetchall()}
+        if matched_ids != set(file_ids):
+            db.rollback()
+            return jsonify({"ok": False, "message": "対象にできない写真が含まれています。"}), 400
+
+        username = str(session.get("user") or "")
+        if hidden:
+            cursor.execute(
+                f"""
+                UPDATE files
+                   SET is_hidden=1, hidden_at=UTC_TIMESTAMP(), hidden_by=%s
+                 WHERE upload_id=%s
+                   AND id IN ({placeholders})
+                   AND is_hidden=0
+                """,
+                (username, upload["id"], *file_ids),
+            )
+        else:
+            cursor.execute(
+                f"""
+                UPDATE files
+                   SET is_hidden=0, hidden_at=NULL, hidden_by=NULL
+                 WHERE upload_id=%s
+                   AND id IN ({placeholders})
+                   AND is_hidden=1
+                """,
+                (upload["id"], *file_ids),
+            )
+        changed = int(cursor.rowcount or 0)
+        if changed:
+            cursor.execute(
+                "UPDATE uploads SET visibility_version=visibility_version+1 WHERE id=%s",
+                (upload["id"],),
+            )
+        cursor.execute(
+            """
+            SELECT
+                SUM(CASE WHEN is_hidden=0 THEN 1 ELSE 0 END) AS public_count,
+                SUM(CASE WHEN is_hidden=1 THEN 1 ELSE 0 END) AS hidden_count
+              FROM files
+             WHERE upload_id=%s
+            """,
+            (upload["id"],),
+        )
+        counts = cursor.fetchone() or {}
+        cursor.execute("SELECT visibility_version FROM uploads WHERE id=%s", (upload["id"],))
+        version_row = cursor.fetchone() or {}
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    if changed:
+        _purge_upload_zip_cache(uuid)
+        app.logger.info(
+            "upload visibility changed uuid=%s user=%s hidden=%s changed=%s",
+            uuid,
+            session.get("user"),
+            hidden,
+            changed,
+        )
+
+    return jsonify(
+        {
+            "ok": True,
+            "hidden": hidden,
+            "changed": changed,
+            "file_ids": file_ids,
+            "public_count": int(counts.get("public_count") or 0),
+            "hidden_count": int(counts.get("hidden_count") or 0),
+            "visibility_version": int(version_row.get("visibility_version") or 0),
+        }
+    )
+
 
 @app.route("/upload/<path:subpath>")
 @app.route("/uploads/<path:subpath>")
@@ -2059,6 +2628,37 @@ def uploaded_file(subpath: str):
             abort(404)
         if not _can_access_upload_record(upload):
             abort(403)
+        if upload_ref["kind"] == "original":
+            file_row = fetch_upload_file_record(upload["id"], upload_ref["filename"])
+            if not can_preview_upload_file(upload, file_row):
+                abort(404)
+        elif upload_ref["kind"] == "thumb":
+            source_name = str(request.args.get("source") or "").strip()
+            if source_name:
+                file_row = fetch_upload_file_record(upload["id"], source_name)
+                expected_thumb = (
+                    f"{Path(source_name).stem}.webp"
+                    if Path(upload_ref["filename"]).suffix.lower() == ".webp"
+                    else source_name
+                )
+                if expected_thumb != upload_ref["filename"]:
+                    abort(404)
+            else:
+                file_row = fetch_upload_thumbnail_source(upload["id"], upload_ref["filename"])
+            if not can_preview_upload_file(upload, file_row):
+                abort(404)
+        elif upload_ref["kind"] == "zip":
+            db = get_db()
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    "SELECT 1 FROM files WHERE upload_id=%s AND is_hidden=1 LIMIT 1",
+                    (upload["id"],),
+                )
+                if cur.fetchone():
+                    abort(404)
+            finally:
+                db.close()
         target = upload_ref["target"]
     else:
         normalized = (subpath or "").strip().lstrip("/")
@@ -2084,12 +2684,15 @@ def uploaded_file(subpath: str):
 
     # ZIPなどはダウンロードさせる（日本語名も維持）
     as_attachment = target.suffix.lower() in {".zip", ".7z", ".rar"}
-    return send_file(
+    response = send_file(
         target,
         as_attachment=as_attachment,
         conditional=True,            # Range/If-Modified-Since 等を有効化
         download_name=target.name    # 非ASCII名も適切にContent-Dispositionへ
     )
+    if upload_ref and upload_ref["kind"] in {"original", "thumb"}:
+        response.headers["Cache-Control"] = "private, no-cache, must-revalidate"
+    return response
 
 @app.route("/view/<uuid>/zip", methods=["GET"])
 def download_zip_for_upload(uuid):
@@ -2105,7 +2708,10 @@ def download_zip_for_upload(uuid):
     # ファイル一覧
     db = get_db()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT filename FROM files WHERE upload_id=%s ORDER BY filename ASC", (upload["id"],))
+    cursor.execute(
+        "SELECT id, filename FROM files WHERE upload_id=%s AND is_hidden=0 ORDER BY filename ASC",
+        (upload["id"],),
+    )
     rows = cursor.fetchall()
     db.close()
     filenames = [r["filename"] for r in rows]
@@ -2133,12 +2739,34 @@ def download_zip_for_upload(uuid):
                     # 画像は既に圧縮済みなのでZIP側では圧縮せず高速化する
                     zf.write(src, arcname=name, compress_type=zipfile.ZIP_STORED)
 
-    return send_file(
+    history_event_id = None
+    if request.method == "GET" and not request.headers.get("Range"):
+        try:
+            history_event_id = record_upload_download(
+                upload_id=int(upload["id"]),
+                event_key=f"all-zip:{secrets.token_hex(16)}",
+                download_kind="all_zip",
+                ip_address=download_request_ip(request),
+                user_agent=request.headers.get("User-Agent", ""),
+                files=[
+                    {"file_id": row["id"], "filename": row["filename"]}
+                    for row in rows
+                ],
+            )
+        except Exception:
+            app.logger.exception("upload download history insert failed uuid=%s", uuid)
+
+    response = send_file(
         zip_path,
         as_attachment=True,
         download_name=os.path.basename(zip_path),
         mimetype="application/zip",
         conditional=True,
+    )
+    return track_upload_download_response(
+        response,
+        history_event_id,
+        logger=app.logger,
     )
 
 
@@ -2206,6 +2834,9 @@ def admin_users_edit(username):
         return "ユーザーが見つかりません", 404
 
     if request.method == "POST":
+        if not recent_admin_mfa():
+            db.close()
+            return "この操作には直近の追加認証が必要です。再ログインしてください。", 403
         password = request.form["password"]
         confirm_password = request.form["confirm_password"]
         nickname = request.form["nickname"]
@@ -2217,6 +2848,12 @@ def admin_users_edit(username):
             if password != confirm_password:
                 db.close()
                 return "パスワードが一致しません", 400
+            if username == ADMIN_USERNAME:
+                db.close()
+                return "admin自身のパスワードはアカウント画面から変更してください。", 403
+            if len(password) < 10:
+                db.close()
+                return "パスワードは10文字以上にしてください。", 400
 
         if password:
             hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -2249,6 +2886,9 @@ def admin_users_edit(username):
 @app.post("/admin/users/<string:username>/delete", endpoint="admin_users_delete")
 @admin_required
 def admin_users_delete(username):
+    guard = require_admin_passkey(f"mfu_user_delete:{username}")
+    if guard:
+        return guard
     db = get_db()
     cursor = db.cursor()
     try:
@@ -3839,7 +4479,12 @@ def admin_logs_result():
     if st == "done":
         result_path = status_data.get("result_path") or _admin_logs_html_result_path(job_id)
         if result_path and os.path.exists(result_path):
-            return send_file(result_path, mimetype="text/html; charset=utf-8")
+            with open(result_path, "r", encoding="utf-8") as result_file:
+                result_html = result_file.read()
+            result_html = bind_runtime_csrf_token(result_html, _get_csrf_token())
+            response = Response(result_html, mimetype="text/html")
+            response.headers["Cache-Control"] = "no-store"
+            return response
         return Response("<h2>結果ファイルが見つかりません。</h2>", status=404, content_type="text/html; charset=utf-8")
 
     if st == "error":
@@ -3856,11 +4501,21 @@ def admin_logs_404_ban_settings():
     if request.method == "POST":
         try:
             payload = {
+                "mode": request.form.get("mode", "observe"),
+                "observe_until": request.form.get("observe_until", ""),
+                "sensitive_window_sec": request.form.get("sensitive_window_sec", ""),
+                "sensitive_threshold": request.form.get("sensitive_threshold", ""),
                 "short_window_sec": request.form.get("short_window_sec", ""),
                 "short_threshold": request.form.get("short_threshold", ""),
                 "ip_window_sec": request.form.get("ip_window_sec", ""),
                 "ip_threshold": request.form.get("ip_threshold", ""),
                 "cooldown_sec": request.form.get("cooldown_sec", ""),
+                "ban_duration_sec": request.form.get("ban_duration_sec", ""),
+                "repeat_ban_duration_sec": request.form.get("repeat_ban_duration_sec", ""),
+                "generic_third_ban_duration_sec": request.form.get("generic_third_ban_duration_sec", ""),
+                "sensitive_permanent_threshold": request.form.get("sensitive_permanent_threshold", "3"),
+                "generic_permanent_threshold": request.form.get("generic_permanent_threshold", "4"),
+                "repeat_window_sec": request.form.get("repeat_window_sec", ""),
                 "ipv4_prefix": request.form.get("ipv4_prefix", "24"),
             }
             save_fw_404_settings(payload)
@@ -3870,7 +4525,34 @@ def admin_logs_404_ban_settings():
         return redirect(url_for("admin_logs_404_ban_settings"))
 
     settings = get_fw_404_settings()
-    return render_template("admin_404_ban_settings.html", settings=settings)
+    effective_enforcement = enforcement_enabled(settings)
+    if settings.get("mode") == "enforce":
+        effective_mode_reason = "設定で自動遮断が有効になっています。"
+    elif effective_enforcement:
+        effective_mode_reason = "観察期間が終了したため、自動遮断へ移行しています。"
+    else:
+        effective_mode_reason = "検出結果を記録しますが、アプリからは遮断しません。"
+    permanent_bans = list_fw_auto_permanent_bans()
+    return render_template(
+        "admin_404_ban_settings.html",
+        settings=settings,
+        effective_enforcement=effective_enforcement,
+        effective_mode_reason=effective_mode_reason,
+        permanent_bans=permanent_bans,
+    )
+
+
+@app.post("/admin/logs/404-ban/permanent/<int:decision_id>/unban")
+@admin_required
+def admin_logs_404_ban_unban_permanent(decision_id: int):
+    actor = str(getattr(current_user, "username", "") or current_user.get_id() or "admin")
+    result = unban_fw_auto_permanent(decision_id, actor=actor)
+    if result.get("ok"):
+        flash(f"自動永久BANを解除しました: {result.get('target', '')}", "success")
+    else:
+        detail = result.get("message") or result.get("stderr") or result.get("status") or "不明なエラー"
+        flash(f"自動永久BANの解除に失敗しました: {detail}", "danger")
+    return redirect(url_for("admin_logs_404_ban_settings"))
 
 
 # =======================================
@@ -4046,6 +4728,24 @@ def admin_maintenance():
         square_env_payment = (request.form.get("square_env_payment") or "").upper()
         square_env_external = (request.form.get("square_env_external") or "").upper()
 
+        fallback_square_env = os.environ.get("SQUARE_ENV", "SANDBOX").upper()
+        cursor.execute("SELECT `value` FROM settings WHERE `key` = 'square_env_payment'")
+        previous_payment = ((cursor.fetchone() or {}).get("value") or fallback_square_env).upper()
+        cursor.execute("SELECT `value` FROM settings WHERE `key` = 'square_env_external'")
+        previous_external = ((cursor.fetchone() or {}).get("value") or fallback_square_env).upper()
+        square_changed = (
+            square_env_payment in ("SANDBOX", "PRODUCTION")
+            and square_env_payment != previous_payment
+        ) or (
+            square_env_external in ("SANDBOX", "PRODUCTION")
+            and square_env_external != previous_external
+        )
+        if square_changed:
+            guard = require_admin_passkey("square_environment_change")
+            if guard:
+                db.close()
+                return guard
+
         if until_raw:
             try:
                 until_dt = datetime.strptime(until_raw, "%Y-%m-%dT%H:%M")
@@ -4181,6 +4881,9 @@ def admin_inapp_browser_settings():
 @app.route("/admin/restart", methods=["POST"])
 @admin_required
 def admin_restart():
+    guard = require_admin_passkey("server_restart")
+    if guard:
+        return guard
     threading.Thread(target=delayed_restart).start()
     flash("サーバーの再起動を実行しました（約2秒後に反映されます）", "info")
     return redirect(url_for("admin_maintenance"))
@@ -4271,7 +4974,8 @@ def mode_add():
         label = request.form["label"]
         template_key = request.form["template_key"]
         enable_download_url = bool(request.form.get("enable_download_url"))
-        require_password = bool(request.form.get("require_password"))
+        auth_method = normalize_upload_auth_method(request.form.get("auth_method"))
+        require_password = auth_method == AUTH_PASSWORD
         enable_layer_upload_url = bool(request.form.get("enable_layer_upload_url"))
         generate_thumbnails = bool(request.form.get("generate_thumbnails"))
 
@@ -4280,10 +4984,10 @@ def mode_add():
         cursor.execute(
             """
             INSERT INTO upload_modes
-            (username, mode, label, enable_download_url, require_password, enable_layer_upload_url, generate_thumbnails, template_key)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, generate_thumbnails, template_key)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (session["user"], mode, label, enable_download_url, require_password, enable_layer_upload_url, generate_thumbnails, template_key),
+            (session["user"], mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, generate_thumbnails, template_key),
         )
         db.commit()
         db.close()
@@ -4315,24 +5019,26 @@ def mode_edit_combined(mode):
         label = request.form["label"]
         template_text = request.form["template"]
         enable_download_url = bool(request.form.get("enable_download_url"))
-        require_password = bool(request.form.get("require_password"))
+        auth_method = normalize_upload_auth_method(request.form.get("auth_method"))
+        require_password = auth_method == AUTH_PASSWORD
         enable_layer_upload_url = bool(request.form.get("enable_layer_upload_url"))
         generate_thumbnails = bool(request.form.get("generate_thumbnails"))
 
         cursor.execute(
             """
             INSERT INTO upload_modes
-            (username, mode, label, enable_download_url, require_password, enable_layer_upload_url, generate_thumbnails, template_key)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, generate_thumbnails, template_key)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 label = VALUES(label),
                 enable_download_url = VALUES(enable_download_url),
                 require_password = VALUES(require_password),
+                auth_method = VALUES(auth_method),
                 enable_layer_upload_url = VALUES(enable_layer_upload_url),
                 generate_thumbnails = VALUES(generate_thumbnails),
                 template_key = VALUES(template_key)
             """,
-            (username, mode, label, enable_download_url, require_password, enable_layer_upload_url, generate_thumbnails, mode),
+            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, generate_thumbnails, mode),
         )
 
         cursor.execute(
@@ -4375,7 +5081,42 @@ def mode_delete(mode):
 @app.route("/speedtest", methods=["GET"])
 @admin_required
 def speedtest_page():
-    return render_template("speedtest.html")
+    return render_template("speedtest.html", speedtest_sizes_mb=SPEEDTEST_UPLOAD_SIZES_MB)
+
+
+@app.route("/api/speedtest/ping", methods=["GET"])
+@admin_required
+def speedtest_ping():
+    response = app.response_class(status=204)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Speedtest-Server-Time"] = f"{time.time():.6f}"
+    return response
+
+
+@app.route("/api/speedtest/upload", methods=["POST"])
+@admin_required
+def speedtest_upload():
+    started_at = time.perf_counter()
+    try:
+        expected_bytes = parse_speedtest_expected_bytes(
+            request.headers.get("X-Speedtest-Expected-Bytes")
+        )
+        validate_speedtest_content_length(request.content_length, expected_bytes)
+        received_bytes = consume_speedtest_upload(request.stream, expected_bytes)
+    except SpeedtestPayloadError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+    response = jsonify(
+        {
+            "ok": True,
+            "received_bytes": received_bytes,
+            "server_elapsed_ms": round((time.perf_counter() - started_at) * 1000, 3),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
 
 @app.route("/api/vcgencmd")
 @admin_required
@@ -4512,6 +5253,13 @@ def temp_sensor():
 @app.before_request
 def before_every_request():
     g._req_start = time.time()
+    is_phone_action_link = request.path.startswith((
+        "/phone-blacklist/register",
+        "/phone-whitelist/register",
+        "/phone-click-to-call",
+        "/internal/phone-click-to-call/status",
+        "/internal/phone-call-through/status",
+    ))
 
     try:
         _ensure_upload_security_schema_once()
@@ -4523,6 +5271,17 @@ def before_every_request():
         if csrf_error:
             return csrf_error
 
+    # A signed Flask cookie is not sufficient for admin access.  Every admin
+    # request must also have a live, non-revoked server-side session.
+    if session.get("user") == ADMIN_USERNAME and not validate_admin_session():
+        app.logger.warning(
+            "[ADMIN_AUTH_SESSION_REJECTED] ip=%s path=%s", request.remote_addr, request.path
+        )
+        session.clear()
+        if request.is_json or request.path.startswith(("/api/", "/chat/api/")):
+            return jsonify(ok=False, error="admin_reauthentication_required"), 401
+        return redirect(url_for("login", next=request.full_path or request.path))
+
     # ★ 管理パス(/admin...) は admin 以外には 404 を返す
     #    - 未ログイン
     #    - 一般ユーザー
@@ -4531,23 +5290,17 @@ def before_every_request():
         if session.get("user") != "admin":
             abort(404)
 
-    db = get_db()
-    cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT value FROM settings WHERE `key` = 'maintenance_mode'")
-    mode = cursor.fetchone()
-    cursor.execute("SELECT value FROM settings WHERE `key` = 'maintenance_until'")
-    until_row = cursor.fetchone()
-    db.close()
+    maintenance_mode, maintenance_until = _get_maintenance_settings_cached()
 
     until_time = None
-    if until_row and until_row["value"]:
+    if maintenance_until:
         try:
-            utc_dt = dateutil_parser.isoparse(until_row["value"])
+            utc_dt = dateutil_parser.isoparse(maintenance_until)
             until_time = utc_dt.astimezone(JST)
         except Exception as e:
             app.logger.warning(f"[Timer Parse Error] {e}")
 
-    if mode and mode["value"] == "on":
+    if maintenance_mode == "on":
         now = datetime.utcnow().replace(tzinfo=timezone.utc)
         if until_time and now >= until_time.astimezone(timezone.utc):
             flag_path = "/tmp/mfu_restart.flag"
@@ -4559,8 +5312,21 @@ def before_every_request():
                 threading.Thread(target=auto_end_maintenance).start()
                 return "🌀 メンテナンス解除中...", 503
 
-        if session.get("user") != "admin" and not request.path.startswith(("/login", "/static", "/favicon", "/api", "/payout")):
+        if (
+            session.get("user") != "admin"
+            and not is_phone_action_link
+            and not request.path.startswith(("/login", "/static", "/favicon", "/api", "/payout"))
+        ):
             return render_template("maintenance.html", until_time=until_time), 503
+
+    # イベント連携アルバムでは、リンクプレビューに内容も案内画面も返さない。
+    if not is_phone_action_link and _is_event_album_preview_request(request):
+        g.mfu_access_log_marker = "[EVENT_ALBUM_PREVIEW_BLOCKED] アルバム未表示"
+        return Response(
+            "イベント参加者専用アルバムのプレビューは許可されていません。",
+            status=403,
+            content_type="text/plain; charset=utf-8",
+        )
 
     # アプリ内ブラウザ（LINE/X/Instagram）への警告
     if "user" not in session:
@@ -4569,14 +5335,24 @@ def before_every_request():
             _get_setting_value(INAPP_BROWSER_WARNING_ENABLED_KEY, INAPP_BROWSER_DEFAULT_ENABLED)
             or INAPP_BROWSER_DEFAULT_ENABLED
         ).strip()
-        if warning_enabled == "1" and _is_inapp_browser_request(request):
+        if warning_enabled == "1" and not is_phone_action_link and _is_inapp_browser_request(request):
+            if (request.endpoint or "").startswith("album."):
+                g.mfu_access_log_marker = "[INAPP_WARNING] アルバム未表示"
+            else:
+                g.mfu_access_log_marker = "[INAPP_WARNING] 本来の画面未表示"
             return render_template("inapp_warning.html"), 200
 
 @app.after_request
 def finalize_response(response):
     # --- 1) No-Cache ヘッダ ---
     try:
-        if (request.endpoint or "") != "static":
+        endpoint = request.endpoint or ""
+        if endpoint in {"image_viewer.thumbnail_file", "image_viewer.image_file"}:
+            max_age = 86400 if endpoint.endswith("thumbnail_file") else 3600
+            response.headers["Cache-Control"] = f"private, max-age={max_age}"
+            response.headers.pop("Pragma", None)
+            response.headers.pop("Expires", None)
+        elif endpoint != "static":
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -4589,7 +5365,22 @@ def finalize_response(response):
     except Exception as e:
         app.logger.warning(f"log_access failed: {e}")
 
+    if request.path == "/login" or request.path.startswith(("/auth/", "/mfa/", "/webauthn/")):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; "
+            "style-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        )
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
     return response
+
+
+@app.teardown_appcontext
+def release_pooled_database_connections(_error=None):
+    close_tracked_connections()
 
 # ─────────────────────────────────────────
 # 管理: ノードメトリクス集約表示（103.16 / 103.15）
@@ -4801,6 +5592,27 @@ app.register_blueprint(bp_service_logs)
 from app.routes.webauthn_routes import webauthn_bp
 app.register_blueprint(webauthn_bp)
 
+from app.routes.admin_qr_auth import admin_qr_auth_bp
+app.register_blueprint(admin_qr_auth_bp)
+
+from app.discord_notifications import (
+    discord_notifications_bp,
+    ensure_discord_notification_nav_item,
+    ensure_discord_notification_schema,
+)
+app.register_blueprint(discord_notifications_bp)
+
+try:
+    ensure_discord_notification_schema()
+    ensure_discord_notification_nav_item()
+except Exception as exc:
+    app.logger.warning(f"Discord notification schema/nav init skipped: {exc}")
+
+try:
+    ensure_admin_auth_schema()
+except Exception as exc:
+    app.logger.error("admin auth schema init failed: %s", exc)
+
 from app.utils.media_clipboard_auth import media_clipboard_bp
 app.register_blueprint(media_clipboard_bp)
 
@@ -4818,6 +5630,16 @@ from app.records import records_api_bp, records_bp
 app.register_blueprint(records_bp, url_prefix="/records")
 app.register_blueprint(records_api_bp)
 app.register_blueprint(freee_api_bp)
+app.register_blueprint(etc_accounting_bp)
+
+try:
+    from app.etc_accounting.repository import ensure_nav_item as ensure_etc_accounting_nav_item
+    from app.etc_accounting.repository import ensure_schema as ensure_etc_accounting_schema
+
+    ensure_etc_accounting_schema()
+    ensure_etc_accounting_nav_item()
+except Exception as exc:
+    app.logger.warning(f"ETC accounting schema/nav init skipped: {exc}")
 
 from app.invoice import invoice_bp
 app.register_blueprint(invoice_bp)
@@ -4854,6 +5676,22 @@ register_bank_account(app)
 from app.ticket_price_research import ticket_price_research_bp
 app.register_blueprint(ticket_price_research_bp)
 
+from app.tdr import tdr_bp
+from app.tdr.popcorn.repository import ensure_nav_item as ensure_tdr_nav_item
+from app.tdr.popcorn.repository import ensure_schema as ensure_tdr_schema
+app.register_blueprint(tdr_bp)
+
+from app.signage import signage_admin_bp, signage_bp, train_status_bp
+app.register_blueprint(signage_bp)
+app.register_blueprint(signage_admin_bp)
+app.register_blueprint(train_status_bp)
+
+try:
+    ensure_tdr_schema()
+    ensure_tdr_nav_item()
+except Exception as exc:
+    app.logger.warning(f"TDR popcorn schema/nav init skipped: {exc}")
+
 from app.phone_whitelist import (
     ensure_phone_whitelist_nav_item,
     ensure_phone_whitelist_schema,
@@ -4866,6 +5704,32 @@ try:
     ensure_phone_whitelist_nav_item()
 except Exception as exc:
     app.logger.warning(f"phone whitelist schema/nav init skipped: {exc}")
+
+from app.phone_diagnostics import (
+    ensure_phone_diagnostics_nav_item,
+    ensure_phone_diagnostics_schema,
+    phone_diagnostics_bp,
+)
+app.register_blueprint(phone_diagnostics_bp)
+
+try:
+    ensure_phone_diagnostics_schema()
+    ensure_phone_diagnostics_nav_item()
+except Exception as exc:
+    app.logger.warning(f"phone diagnostics schema/nav init skipped: {exc}")
+
+from app.mail_filters import (
+    ensure_mail_filter_nav_item,
+    ensure_mail_filter_schema,
+    mail_filters_bp,
+)
+app.register_blueprint(mail_filters_bp)
+
+try:
+    ensure_mail_filter_schema()
+    ensure_mail_filter_nav_item()
+except Exception as exc:
+    app.logger.warning(f"mail filter schema/nav init skipped: {exc}")
 
 try:
     _ensure_upload_security_schema_once()

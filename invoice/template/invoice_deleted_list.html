@@ -47,7 +47,7 @@
               <input type="hidden" name="csrf_token" value="{{ delete_csrf_token }}">
               <button class="btn btn-sm btn-outline-primary" type="submit">復元</button>
             </form>
-            <form method="post" action="{{ url_for('invoice.invoice_purge', invoice_id=invoice.id) }}" data-invoice-no="{{ invoice.invoice_no }}" onsubmit="return confirmInvoicePurge(this);">
+            <form method="post" action="{{ url_for('invoice.invoice_purge', invoice_id=invoice.id) }}" data-invoice-no="{{ invoice.invoice_no }}" data-admin-passkey-action="invoice_purge:{{ invoice.id }}" onsubmit="return confirmInvoicePurge(this);">
               <input type="hidden" name="csrf_token" value="{{ delete_csrf_token }}">
               <input type="hidden" name="confirm_invoice_no" value="">
               <button class="btn btn-sm btn-danger" type="submit">完全削除</button>

@@ -1,0 +1,628 @@
+{% extends "base.html" %}
+{% block title %}メールフィルター管理 - MFU{% endblock %}
+{% block head_extra %}
+<style>
+  .mf-shell{max-width:1200px;margin:0 auto 3rem}
+  .mf-hero,.mf-panel,.mf-rule{border:1px solid #dce5ef;border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  .mf-hero{padding:1.25rem;background:linear-gradient(135deg,#f7fbff,#eef7ff)}
+  .mf-panel{padding:1rem}
+  .mf-rule{padding:1rem;border-left:5px solid #0d6efd}
+  .mf-rule.is-disabled{opacity:.62;border-left-color:#adb5bd}
+  .mf-rule.is-raw{border-left-color:#6f42c1}
+  .mf-toolbar{position:sticky;top:.5rem;z-index:20}
+  .mf-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+  .mf-row{border:1px solid #e5e9ef;border-radius:10px;padding:.75rem;background:#fafbfd}
+  .mf-status{font-size:.88rem}
+  .mf-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.82rem;min-height:180px}
+  .cond-values{overflow-y:hidden;resize:none}
+  .mf-history{max-height:360px;overflow:auto}
+  .mf-manual-results{max-height:340px;overflow:auto}
+  @media(max-width:767px){.mf-grid{grid-template-columns:1fr}.mf-toolbar{position:static}}
+</style>
+{% endblock %}
+{% block content %}
+<main class="mf-shell">
+  <section class="mf-hero mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <div class="text-primary fw-semibold small">DOVECOT SIEVE</div>
+        <h1 class="h3 mb-1">メールフィルター管理</h1>
+        <p class="text-muted mb-0">Roundcubeを経由せず、メールサーバーの振り分け・転送・フラグ設定を管理します。</p>
+      </div>
+      <button id="refreshButton" class="btn btn-outline-primary" type="button">フォルダー一覧を再取得</button>
+    </div>
+  </section>
+
+  <div id="messageBox" class="alert d-none" role="alert"></div>
+
+  <section class="mf-panel mb-3">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-7">
+        <label class="form-label fw-semibold" for="mailboxSelect">メールボックス</label>
+        <select id="mailboxSelect" class="form-select"><option value="">読み込み中...</option></select>
+      </div>
+      <div class="col-md-5">
+        <div class="mf-status text-muted">
+          <div>取得元：<span id="documentSource">—</span></div>
+          <div>反映先：<span id="activeTarget">—</span></div>
+          <div>ハッシュ：<code id="remoteHash">—</code></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="row g-3">
+    <div class="col-lg-8">
+      <section class="mf-panel mf-toolbar mb-3">
+        <div class="d-flex flex-wrap gap-2">
+          <a href="{{ url_for('mail_filters.reorder') }}" class="btn btn-outline-primary">優先順位を並び替え</a>
+          <button id="addRuleButton" type="button" class="btn btn-primary">＋ ルール追加</button>
+          <button id="validateButton" type="button" class="btn btn-outline-success">構文確認</button>
+          <button id="saveButton" type="button" class="btn btn-success">保存して反映</button>
+          <button id="importButton" type="button" class="btn btn-outline-secondary">現在設定をMFUへ取り込む</button>
+        </div>
+      </section>
+      <div id="rulesContainer" class="d-grid gap-3"></div>
+      <div id="emptyRules" class="mf-panel text-center text-muted d-none">フィルターはありません。「ルール追加」から作成できます。</div>
+    </div>
+    <div class="col-lg-4">
+      <section class="mf-panel mb-3">
+        <h2 class="h6">利用可能なフォルダー</h2>
+        <div id="folderList" class="d-flex flex-wrap gap-1"></div>
+      </section>
+      <section class="mf-panel">
+        <h2 class="h6">変更履歴</h2>
+        <div id="historyList" class="mf-history small text-muted">履歴はありません。</div>
+      </section>
+    </div>
+  </div>
+
+  <details class="mf-panel mt-3">
+    <summary class="fw-semibold">生成されるSieveを確認</summary>
+    <textarea id="scriptPreview" class="form-control mf-code mt-3" readonly></textarea>
+  </details>
+</main>
+
+<div class="modal fade" id="manualRunModal" tabindex="-1" aria-labelledby="manualRunTitle" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title h5 mb-1" id="manualRunTitle">フィルターを手動実行</h2>
+          <div class="small text-muted" id="manualRunRuleName"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+      </div>
+      <div class="modal-body">
+        <div id="manualRunMessage" class="alert d-none" role="alert"></div>
+        <div class="row g-3 mb-3">
+          <div class="col-md-4">
+            <label class="form-label" for="manualSourceFolder">対象フォルダー</label>
+            <select id="manualSourceFolder" class="form-select"></select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="manualPeriodPreset">対象期間</label>
+            <select id="manualPeriodPreset" class="form-select">
+              <option value="1m" selected>過去1か月（今日まで）</option>
+              <option value="3m">過去3か月（今日まで）</option>
+              <option value="6m">過去6か月（今日まで）</option>
+              <option value="1y">過去1年（今日まで）</option>
+              <option value="2y">過去2年（今日まで）</option>
+              <option value="3y">過去3年（今日まで）</option>
+              <option value="4y">過去4年（今日まで）</option>
+              <option value="5y">過去5年（今日まで）</option>
+              <option value="6y">過去6年（今日まで）</option>
+              <option value="7y">過去7年（今日まで）</option>
+              <option value="8y">過去8年（今日まで）</option>
+              <option value="9y">過去9年（今日まで）</option>
+              <option value="10y">過去10年（今日まで）</option>
+              <option value="11y">過去11年（今日まで）</option>
+              <option value="12y">過去12年（今日まで）</option>
+              <option value="13y">過去13年（今日まで）</option>
+              <option value="14y">過去14年（今日まで）</option>
+              <option value="15y">過去15年（今日まで）</option>
+              <option value="16y">過去16年（今日まで）</option>
+              <option value="17y">過去17年（今日まで）</option>
+              <option value="18y">過去18年（今日まで）</option>
+              <option value="19y">過去19年（今日まで）</option>
+              <option value="20y">過去20年（今日まで）</option>
+            </select>
+            <div id="manualPeriodRange" class="form-text"></div>
+            <input id="manualDateFrom" type="hidden">
+            <input id="manualDateTo" type="hidden">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="manualMaxMatches">最大件数</label>
+            <div class="input-group">
+              <input id="manualMaxMatches" type="number" class="form-control" min="1" max="999" step="1" value="500" inputmode="numeric">
+              <span class="input-group-text">件</span>
+            </div>
+            <div class="form-text">1～999件を1件単位で指定できます。</div>
+          </div>
+          <div class="col-12">
+            <div class="form-check">
+              <input id="manualUnreadOnly" type="checkbox" class="form-check-input">
+              <label class="form-check-label" for="manualUnreadOnly">未読メールだけを対象にする</label>
+            </div>
+          </div>
+        </div>
+        <div id="manualDangerOptions" class="border rounded p-3 mb-3 d-none">
+          <div id="manualRedirectOption" class="form-check d-none">
+            <input id="manualAllowRedirect" type="checkbox" class="form-check-input">
+            <label class="form-check-label text-danger" for="manualAllowRedirect">既存メールを転送することを許可する（二重送信に注意）</label>
+          </div>
+          <div id="manualDiscardOption" class="form-check d-none">
+            <input id="manualAllowDiscard" type="checkbox" class="form-check-input">
+            <label class="form-check-label text-danger" for="manualAllowDiscard">破棄対象を完全削除せず、ごみ箱へ移動することを許可する</label>
+          </div>
+        </div>
+        <div id="manualSummary" class="alert alert-light border d-none"></div>
+        <div class="table-responsive mf-manual-results">
+          <table class="table table-sm align-middle mb-0">
+            <thead class="sticky-top bg-white"><tr><th>受信日時</th><th>送信元</th><th>件名</th><th>UID</th></tr></thead>
+            <tbody id="manualResultRows"><tr><td colspan="4" class="text-muted text-center py-4">プレビューを実行してください。</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">閉じる</button>
+        <button type="button" class="btn btn-outline-primary" id="manualPreviewButton">プレビュー</button>
+        <button type="button" class="btn btn-outline-danger" id="manualExecuteButton" disabled>先頭分を実行</button>
+        <button type="button" class="btn btn-danger d-none" id="manualExecuteAllButton" disabled>全件を実行</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  const state = {mailbox:"", folders:[], document:{requirements:[],rules:[],preamble:""}, remoteHash:"", history:[], loadedDocumentJson:""};
+  const manualState = {ruleIndex:-1, previewToken:"", fullPreviewToken:"", matchedCount:0, totalMatchedCount:0};
+  const csrfToken = {{ csrf_token_value|tojson }};
+  const $ = (id) => document.getElementById(id);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+  const conditionTypeLabels = {header:"ヘッダー",address:"メールアドレス",envelope:"配送先",body:"本文"};
+  const conditionFieldOptions = {
+    header:[["Subject","件名（Subject）"],["From","送信元（From）"],["To","宛先（To）"],["Cc","Cc"],["Reply-To","返信先（Reply-To）"],["List-Id","メーリングリスト（List-Id）"]],
+    address:[["From","送信元（From）"],["To","宛先（To）"],["Cc","Cc"],["Bcc","Bcc"],["Sender","実送信者（Sender）"],["Reply-To","返信先（Reply-To）"]],
+    envelope:[["from","SMTP差出人（from）"],["to","SMTP宛先（to）"]]
+  };
+  const operatorLabels = {contains:"含む",is:"完全一致",matches:"ワイルドカード",regex:"正規表現"};
+  const actionTypeLabels = {fileinto:"フォルダーへ移動",redirect:"転送",keep:"受信箱にも残す",stop:"後続ルールを停止",discard:"破棄",setflag:"フラグを設定",addflag:"フラグを追加",reject:"受信拒否"};
+  const mailFlags = [
+    {value:"\\Seen", label:"既読（Seen）"},
+    {value:"\\Flagged", label:"重要・スター（Flagged）"},
+    {value:"\\Answered", label:"返信済み（Answered）"},
+    {value:"\\Deleted", label:"削除済み（Deleted）"},
+    {value:"\\Draft", label:"下書き（Draft）"}
+  ];
+  const api = async (url, options={}) => {
+    options.headers = {...(options.headers || {}), "X-CSRF-Token": csrfToken};
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({ok:false,error:"応答を読み取れませんでした"}));
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  };
+  const showMessage = (text, kind="success") => {
+    const box = $("messageBox");
+    box.className = `alert alert-${kind}`;
+    box.textContent = text;
+    box.classList.remove("d-none");
+    window.scrollTo({top:0,behavior:"smooth"});
+  };
+  const splitLines = (value) => String(value || "").split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+  const folderLabel = (name) => String(name || "").replace(/^INBOX\./, "受信箱 ＞ ").replaceAll(".", " ＞ ");
+  const defaultFolder = () => state.folders.find(v => v !== "INBOX") || "INBOX";
+  const defaultConditionField = (type) => ({header:"Subject",address:"From",envelope:"to"}[type] || "");
+  const applyConditionDefaults = () => {
+    (state.document.rules || []).forEach(rule => {
+      if (rule.raw) return;
+      (rule.conditions || []).forEach(condition => {
+        if (condition.type === "body") {
+          condition.fields = [];
+          delete condition.customField;
+          return;
+        }
+        if ((condition.fields || []).filter(Boolean).length) return;
+        const field = defaultConditionField(condition.type);
+        if (field) condition.fields = [field];
+      });
+    });
+  };
+  const resizeConditionTextarea = (element) => {
+    element.style.height = "auto";
+    element.style.height = `${Math.ceil(element.scrollHeight) + 2}px`;
+  };
+  const resizeConditionTextareas = () => {
+    document.querySelectorAll(".cond-values").forEach(resizeConditionTextarea);
+  };
+
+  async function loadMailboxes() {
+    try {
+      const data = await api("{{ url_for('mail_filters.api_mailboxes') }}");
+      const select = $("mailboxSelect");
+      select.innerHTML = data.mailboxes.map(item =>
+        `<option value="${esc(item.mailbox)}">${esc(item.mailbox)}${item.has_filter ? "（設定あり）" : ""}</option>`
+      ).join("");
+      if (data.mailboxes.length) {
+        state.mailbox = data.mailboxes[0].mailbox;
+        select.value = state.mailbox;
+        await loadMailbox();
+      } else {
+        select.innerHTML = '<option value="">メールボックスがありません</option>';
+      }
+    } catch (error) { showMessage(error.message, "danger"); }
+  }
+
+  async function loadMailbox() {
+    if (!state.mailbox) return;
+    setBusy(true);
+    try {
+      const data = await api(`{{ url_for('mail_filters.api_mailbox') }}?mailbox=${encodeURIComponent(state.mailbox)}`);
+      state.folders = data.folders || [];
+      state.document = data.document || {requirements:[],rules:[],preamble:""};
+      state.document.rules ||= [];
+      applyConditionDefaults();
+      state.loadedDocumentJson = JSON.stringify(state.document);
+      state.remoteHash = data.script_hash || "";
+      state.history = data.history || [];
+      $("documentSource").textContent = data.document_source === "mfu" ? "MFU保存データ" : "メールサーバー";
+      $("activeTarget").textContent = data.active_target || "未設定";
+      $("remoteHash").textContent = state.remoteHash ? state.remoteHash.slice(0, 12) : "空";
+      renderFolders(); renderRules(); renderHistory();
+      $("scriptPreview").value = "";
+    } catch (error) { showMessage(error.message, "danger"); }
+    finally { setBusy(false); }
+  }
+
+  function renderFolders() {
+    $("folderList").innerHTML = state.folders.map(name =>
+      `<span class="badge text-bg-light border" title="${esc(name)}">${esc(folderLabel(name))}</span>`
+    ).join("") || '<span class="text-muted">フォルダーがありません</span>';
+  }
+
+  function conditionHtml(condition, ri, ci) {
+    const type = condition.type || "header";
+    const operator = condition.operator || "contains";
+    const choices = conditionFieldOptions[type] || [];
+    const currentFields = (condition.fields || []).filter(Boolean);
+    const currentField = currentFields.join(",");
+    const isKnownField = currentFields.length === 1 && choices.some(([value]) => value.toLowerCase() === currentField.toLowerCase());
+    const useCustomField = Boolean(condition.customField) || (currentFields.length > 0 && !isKnownField);
+    const targetControl = type === "body"
+      ? '<div class="form-control form-control-sm bg-light text-muted">本文全体</div>'
+      : `<select class="form-select form-select-sm cond-field-select" data-ri="${ri}" data-ci="${ci}" aria-label="検索対象">
+          ${choices.map(([value,label])=>`<option value="${esc(value)}" ${!useCustomField&&value.toLowerCase()===currentField.toLowerCase()?"selected":""}>${esc(label)}</option>`).join("")}
+          <option value="__custom__" ${useCustomField?"selected":""}>その他の対象項目を入力...</option>
+        </select>`;
+    const customControl = type !== "body" && useCustomField
+      ? `<div class="col-12"><input class="form-control form-control-sm cond-field-custom ${currentField?"":"is-invalid"}" data-ri="${ri}" data-ci="${ci}" value="${esc(currentField)}" placeholder="ヘッダー名を入力（例：X-Mailer）"></div>`
+      : "";
+    const help = type === "header"
+      ? "メールのヘッダー項目を文字列として調べます。例：From に @example.jp を含む。送信元アドレスだけを正確に調べる場合は「メールアドレス」を推奨します。"
+      : type === "address"
+        ? "From・To・Ccなどに含まれるメールアドレスを調べます。送信元で振り分ける場合に適しています。"
+        : type === "envelope"
+          ? "メール配送時の差出人・宛先を調べます。画面に表示されるFrom・Toとは異なる場合があります。"
+          : "メール本文の文字列を調べます。";
+    return `<div class="mf-row" data-condition>
+      <div class="row g-2">
+        <div class="col-md-3"><select class="form-select form-select-sm cond-type" data-ri="${ri}" data-ci="${ci}">
+          ${["header","address","envelope","body"].map(v=>`<option value="${v}" ${type===v?"selected":""}>${conditionTypeLabels[v]}</option>`).join("")}
+        </select></div>
+        <div class="col-md-3"><select class="form-select form-select-sm cond-op" data-ri="${ri}" data-ci="${ci}">
+          ${["contains","is","matches","regex"].map(v=>`<option value="${v}" ${operator===v?"selected":""}>${operatorLabels[v]}</option>`).join("")}
+        </select></div>
+        <div class="col-md-5">${targetControl}</div>
+        <div class="col-md-1 d-grid"><button class="btn btn-sm btn-outline-danger remove-condition" data-ri="${ri}" data-ci="${ci}" type="button">×</button></div>
+        ${customControl}
+        <div class="col-12"><textarea class="form-control form-control-sm cond-values" data-ri="${ri}" data-ci="${ci}" rows="2" placeholder="検索値（複数は改行）">${esc((condition.values||[]).join("\n"))}</textarea></div>
+        <div class="col-12"><div class="form-text">${esc(help)}</div></div>
+      </div>
+    </div>`;
+  }
+
+  function actionHtml(action, ri, ai) {
+    const type = action.type || "fileinto";
+    const folderOptions = state.folders.map(name=>`<option value="${esc(name)}" ${action.value===name?"selected":""}>${esc(folderLabel(name))}</option>`).join("");
+    const needsValue = !["keep","stop","discard"].includes(type);
+    const currentFlag = action.value || "\\Seen";
+    const knownFlag = mailFlags.some(item => item.value === currentFlag);
+    const flagOptions = [
+      ...mailFlags.map(item=>`<option value="${esc(item.value)}" ${currentFlag===item.value?"selected":""}>${esc(item.label)}</option>`),
+      ...(!knownFlag && currentFlag ? [`<option value="${esc(currentFlag)}" selected>現在の設定（${esc(currentFlag)}）</option>`] : [])
+    ].join("");
+    const valueControl = type === "fileinto"
+      ? `<select class="form-select form-select-sm action-value" data-ri="${ri}" data-ai="${ai}">${folderOptions}</select>`
+      : ["setflag","addflag"].includes(type)
+        ? `<select class="form-select form-select-sm action-value" data-ri="${ri}" data-ai="${ai}">${flagOptions}</select>`
+        : `<input class="form-control form-control-sm action-value" data-ri="${ri}" data-ai="${ai}" value="${esc(action.value||"")}" placeholder="値">`;
+    const actionCount = state.document.rules[ri]?.actions?.length || 0;
+    return `<div class="mf-row">
+      <div class="row g-2 align-items-center">
+        <div class="col-md-3"><select class="form-select form-select-sm action-type" data-ri="${ri}" data-ai="${ai}">
+          ${["fileinto","redirect","keep","stop","discard","setflag","addflag","reject"].map(v=>`<option value="${v}" ${type===v?"selected":""}>${actionTypeLabels[v]}</option>`).join("")}
+        </select></div>
+        <div class="col-md-5">${needsValue ? valueControl : '<span class="text-muted small">値は不要です</span>'}</div>
+        <div class="col-md-1">${["fileinto","redirect"].includes(type) ? `<label class="form-check"><input class="form-check-input action-copy" data-ri="${ri}" data-ai="${ai}" type="checkbox" ${action.copy?"checked":""}> コピー</label>` : ""}</div>
+        <div class="col-md-3 d-flex justify-content-md-end">
+          <div class="btn-group btn-group-sm" aria-label="処理の並び替えと削除">
+            <button class="btn btn-outline-secondary move-action-up" data-ri="${ri}" data-ai="${ai}" type="button" title="この処理を上へ" ${ai===0?"disabled":""}>↑</button>
+            <button class="btn btn-outline-secondary move-action-down" data-ri="${ri}" data-ai="${ai}" type="button" title="この処理を下へ" ${ai>=actionCount-1?"disabled":""}>↓</button>
+            <button class="btn btn-outline-danger remove-action" data-ri="${ri}" data-ai="${ai}" type="button" title="この処理を削除">×</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function ruleHtml(rule, ri) {
+    if (rule.raw) {
+      return `<article class="mf-rule is-raw ${rule.enabled===false?"is-disabled":""}">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+          <input class="form-control form-control-sm rule-name" data-ri="${ri}" value="${esc(rule.name||`ルール${ri+1}`)}" style="max-width:320px">
+          <span class="badge text-bg-purple bg-primary">高度なルール</span>
+          <label class="form-check ms-auto"><input class="form-check-input rule-enabled" data-ri="${ri}" type="checkbox" ${rule.enabled!==false?"checked":""}> 有効</label>
+          ${ruleButtons(ri,false)}
+        </div>
+        <textarea class="form-control mf-code raw-rule" data-ri="${ri}">${esc(rule.raw)}</textarea>
+        <div class="form-text">通知など高度な構文を原文のまま保持しています。保存前に必ず構文確認されます。</div>
+      </article>`;
+    }
+    return `<article class="mf-rule ${rule.enabled===false?"is-disabled":""}">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <input class="form-control form-control-sm rule-name" data-ri="${ri}" value="${esc(rule.name||`ルール${ri+1}`)}" style="max-width:320px">
+        <label class="form-check ms-auto"><input class="form-check-input rule-enabled" data-ri="${ri}" type="checkbox" ${rule.enabled!==false?"checked":""}> 有効</label>
+        ${ruleButtons(ri,true)}
+      </div>
+      <div class="d-flex align-items-center gap-2 mb-2"><strong>条件</strong>
+        <select class="form-select form-select-sm rule-mode" data-ri="${ri}" style="max-width:180px">
+          <option value="all" ${rule.mode!=="any"?"selected":""}>すべて一致</option>
+          <option value="any" ${rule.mode==="any"?"selected":""}>いずれか一致</option>
+        </select>
+        <button class="btn btn-sm btn-outline-primary add-condition" data-ri="${ri}" type="button">＋ 条件</button>
+      </div>
+      <div class="d-grid gap-2 mb-3">${(rule.conditions||[]).map((c,ci)=>conditionHtml(c,ri,ci)).join("")}</div>
+      <div class="d-flex align-items-center gap-2 mb-2"><strong>処理</strong>
+        <button class="btn btn-sm btn-outline-primary add-action" data-ri="${ri}" type="button">＋ 処理</button>
+      </div>
+      <div class="d-grid gap-2">${(rule.actions||[]).map((a,ai)=>actionHtml(a,ri,ai)).join("")}</div>
+    </article>`;
+  }
+  const ruleButtons = (ri, allowManual) => `<div class="btn-group btn-group-sm">
+    ${allowManual ? `<button class="btn btn-outline-success manual-run" data-ri="${ri}" type="button">手動実行</button>` : ""}
+    <button class="btn btn-outline-secondary move-up" data-ri="${ri}" type="button">↑</button>
+    <button class="btn btn-outline-secondary move-down" data-ri="${ri}" type="button">↓</button>
+    <button class="btn btn-outline-danger remove-rule" data-ri="${ri}" type="button">削除</button>
+  </div>`;
+
+  function renderRules() {
+    const rules = state.document.rules || [];
+    $("rulesContainer").innerHTML = rules.map(ruleHtml).join("");
+    $("emptyRules").classList.toggle("d-none", rules.length !== 0);
+    bindEditorEvents();
+  }
+
+  function bindEditorEvents() {
+    document.querySelectorAll(".rule-name").forEach(el=>el.addEventListener("input",()=>state.document.rules[+el.dataset.ri].name=el.value));
+    document.querySelectorAll(".rule-enabled").forEach(el=>el.addEventListener("change",()=>{state.document.rules[+el.dataset.ri].enabled=el.checked;renderRules();}));
+    document.querySelectorAll(".rule-mode").forEach(el=>el.addEventListener("change",()=>state.document.rules[+el.dataset.ri].mode=el.value));
+    document.querySelectorAll(".raw-rule").forEach(el=>el.addEventListener("input",()=>state.document.rules[+el.dataset.ri].raw=el.value));
+    document.querySelectorAll(".cond-type").forEach(el=>el.addEventListener("change",()=>{
+      const condition=state.document.rules[+el.dataset.ri].conditions[+el.dataset.ci];
+      condition.type=el.value;
+      const field=defaultConditionField(el.value);
+      condition.fields=field?[field]:[];
+      delete condition.customField;
+      renderRules();
+    }));
+    document.querySelectorAll(".cond-op").forEach(el=>el.addEventListener("change",()=>state.document.rules[+el.dataset.ri].conditions[+el.dataset.ci].operator=el.value));
+    document.querySelectorAll(".cond-field-select").forEach(el=>el.addEventListener("change",()=>{
+      const condition=state.document.rules[+el.dataset.ri].conditions[+el.dataset.ci];
+      if(el.value==="__custom__"){
+        condition.fields=[];
+        condition.customField=true;
+      }else{
+        condition.fields=[el.value];
+        delete condition.customField;
+      }
+      renderRules();
+    }));
+    document.querySelectorAll(".cond-field-custom").forEach(el=>el.addEventListener("input",()=>{
+      const condition=state.document.rules[+el.dataset.ri].conditions[+el.dataset.ci];
+      condition.fields=el.value.split(",").map(value=>value.trim()).filter(Boolean);
+      el.classList.toggle("is-invalid",!el.value.trim());
+    }));
+    document.querySelectorAll(".cond-values").forEach(el=>{
+      resizeConditionTextarea(el);
+      el.addEventListener("input",()=>{
+        state.document.rules[+el.dataset.ri].conditions[+el.dataset.ci].values=splitLines(el.value);
+        resizeConditionTextarea(el);
+      });
+    });
+    document.querySelectorAll(".action-value").forEach(el=>el.addEventListener("change",()=>state.document.rules[+el.dataset.ri].actions[+el.dataset.ai].value=el.value));
+    document.querySelectorAll(".action-value").forEach(el=>el.addEventListener("input",()=>state.document.rules[+el.dataset.ri].actions[+el.dataset.ai].value=el.value));
+    document.querySelectorAll(".action-copy").forEach(el=>el.addEventListener("change",()=>state.document.rules[+el.dataset.ri].actions[+el.dataset.ai].copy=el.checked));
+    document.querySelectorAll(".action-type").forEach(el=>el.addEventListener("change",()=>{
+      const action=state.document.rules[+el.dataset.ri].actions[+el.dataset.ai];action.type=el.value;
+      action.value=el.value==="fileinto"?defaultFolder():["setflag","addflag"].includes(el.value)?"\\Seen":"";action.copy=false;renderRules();
+    }));
+    document.querySelectorAll(".add-condition").forEach(el=>el.addEventListener("click",()=>{state.document.rules[+el.dataset.ri].conditions.push({type:"header",operator:"contains",fields:["Subject"],values:[""]});renderRules();}));
+    document.querySelectorAll(".add-action").forEach(el=>el.addEventListener("click",()=>{state.document.rules[+el.dataset.ri].actions.push({type:"fileinto",value:defaultFolder(),copy:false});renderRules();}));
+    document.querySelectorAll(".remove-condition").forEach(el=>el.addEventListener("click",()=>{const a=state.document.rules[+el.dataset.ri].conditions;if(a.length>1)a.splice(+el.dataset.ci,1);renderRules();}));
+    document.querySelectorAll(".remove-action").forEach(el=>el.addEventListener("click",()=>{const a=state.document.rules[+el.dataset.ri].actions;if(a.length>1)a.splice(+el.dataset.ai,1);renderRules();}));
+    document.querySelectorAll(".move-action-up").forEach(el=>el.addEventListener("click",()=>moveAction(+el.dataset.ri,+el.dataset.ai,-1)));
+    document.querySelectorAll(".move-action-down").forEach(el=>el.addEventListener("click",()=>moveAction(+el.dataset.ri,+el.dataset.ai,1)));
+    document.querySelectorAll(".remove-rule").forEach(el=>el.addEventListener("click",()=>{if(confirm("このルールを削除しますか？")){state.document.rules.splice(+el.dataset.ri,1);renderRules();}}));
+    document.querySelectorAll(".move-up").forEach(el=>el.addEventListener("click",()=>moveRule(+el.dataset.ri,-1)));
+    document.querySelectorAll(".move-down").forEach(el=>el.addEventListener("click",()=>moveRule(+el.dataset.ri,1)));
+    document.querySelectorAll(".manual-run").forEach(el=>el.addEventListener("click",()=>openManualRun(+el.dataset.ri)));
+  }
+  function moveRule(index, delta) { const next=index+delta,r=state.document.rules;if(next<0||next>=r.length)return;[r[index],r[next]]=[r[next],r[index]];renderRules(); }
+  function moveAction(ruleIndex, actionIndex, delta) {
+    const actions=state.document.rules[ruleIndex]?.actions || [];
+    const next=actionIndex+delta;
+    if(next<0||next>=actions.length)return;
+    [actions[actionIndex],actions[next]]=[actions[next],actions[actionIndex]];
+    renderRules();
+  }
+  let resizeFrame = 0;
+  window.addEventListener("resize", () => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(resizeConditionTextareas);
+  });
+  function addRule() {
+    state.document.rules.push({name:`新しいルール ${state.document.rules.length+1}`,enabled:true,mode:"all",
+      conditions:[{type:"header",operator:"contains",fields:["Subject"],values:[""]}],
+      actions:[{type:"fileinto",value:defaultFolder(),copy:false}],raw:null});
+    renderRules();
+  }
+
+  async function validateDocument(show=true) {
+    const data = await api("{{ url_for('mail_filters.api_validate') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox,document:state.document})});
+    $("scriptPreview").value=data.script||"";
+    if(show)showMessage(data.message||"Sieve構文は正常です","success");
+    return data;
+  }
+  async function deploy() {
+    if(!confirm(`${state.mailbox} のフィルターを保存して受信処理へ反映しますか？`))return;
+    setBusy(true);
+    try {
+      await validateDocument(false);
+      const data=await api("{{ url_for('mail_filters.api_deploy') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox,expected_hash:state.remoteHash,document:state.document})});
+      showMessage("フィルターを保存し、メールサーバーへ反映しました。","success");
+      state.remoteHash=data.script_hash;await loadMailbox();
+    } catch(error){showMessage(error.message,"danger");} finally{setBusy(false);}
+  }
+  async function importCurrent() {
+    setBusy(true);try{await api("{{ url_for('mail_filters.api_import') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mailbox:state.mailbox})});showMessage("現在のフィルターをMFUの履歴へ取り込みました。","success");await loadMailbox();}catch(error){showMessage(error.message,"danger");}finally{setBusy(false);}
+  }
+
+  const localDate = (date) => {
+    const year=date.getFullYear(), month=String(date.getMonth()+1).padStart(2,"0"), day=String(date.getDate()).padStart(2,"0");
+    return `${year}-${month}-${day}`;
+  };
+  const subtractCalendarPeriod = (date, months=0, years=0) => {
+    const day=date.getDate();
+    const target=new Date(date.getFullYear()-years,date.getMonth()-months,1);
+    const lastDay=new Date(target.getFullYear(),target.getMonth()+1,0).getDate();
+    target.setDate(Math.min(day,lastDay));
+    return target;
+  };
+  const applyManualPeriodPreset = () => {
+    const preset=$("manualPeriodPreset").value;
+    const match=/^(\d+)([my])$/.exec(preset);
+    const today=new Date();
+    const amount=match?+match[1]:1;
+    const from=match&&match[2]==="y"
+      ? subtractCalendarPeriod(today,0,amount)
+      : subtractCalendarPeriod(today,amount,0);
+    $("manualDateFrom").value=localDate(from);
+    $("manualDateTo").value=localDate(today);
+    $("manualPeriodRange").textContent=`対象日：${localDate(from)} ～ ${localDate(today)}`;
+  };
+  const manualScope = () => ({
+    source_folder:$("manualSourceFolder").value,
+    date_from:$("manualDateFrom").value,
+    date_to:$("manualDateTo").value,
+    unread_only:$("manualUnreadOnly").checked,
+    max_matches:+$("manualMaxMatches").value
+  });
+  const manualPayload = () => ({
+    mailbox:state.mailbox,
+    expected_hash:state.remoteHash,
+    rule_index:manualState.ruleIndex,
+    rule_name:state.document.rules[manualState.ruleIndex]?.name || "",
+    scope:manualScope()
+  });
+  const showManualMessage = (text,kind="danger") => {
+    const box=$("manualRunMessage");box.className=`alert alert-${kind}`;box.textContent=text;box.classList.remove("d-none");
+  };
+  const resetManualPreview = () => {
+    manualState.previewToken="";manualState.fullPreviewToken="";manualState.matchedCount=0;manualState.totalMatchedCount=0;
+    $("manualExecuteButton").disabled=true;$("manualExecuteAllButton").disabled=true;$("manualExecuteAllButton").classList.add("d-none");
+    $("manualSummary").classList.add("d-none");
+    $("manualResultRows").innerHTML='<tr><td colspan="4" class="text-muted text-center py-4">プレビューを実行してください。</td></tr>';
+  };
+  function openManualRun(ruleIndex) {
+    if(JSON.stringify(state.document)!==state.loadedDocumentJson){showMessage("手動実行の前に、編集中の変更を保存してください。","warning");return;}
+    const rule=state.document.rules[ruleIndex];
+    if(!rule||rule.raw||rule.enabled===false)return;
+    manualState.ruleIndex=ruleIndex;resetManualPreview();
+    $("manualRunMessage").classList.add("d-none");
+    $("manualRunRuleName").textContent=`${state.mailbox} ／ ${rule.name||`ルール${ruleIndex+1}`}`;
+    $("manualSourceFolder").innerHTML=state.folders.map(folder=>`<option value="${esc(folder)}">${esc(folderLabel(folder))}</option>`).join("");
+    $("manualSourceFolder").value=state.folders.includes("INBOX")?"INBOX":(state.folders[0]||"");
+    $("manualPeriodPreset").value="1m";applyManualPeriodPreset();
+    $("manualUnreadOnly").checked=false;$("manualMaxMatches").value="500";
+    $("manualAllowRedirect").checked=false;$("manualAllowDiscard").checked=false;
+    const hasRedirect=(rule.actions||[]).some(action=>action.type==="redirect");
+    const hasDiscard=(rule.actions||[]).some(action=>action.type==="discard");
+    $("manualDangerOptions").classList.toggle("d-none",!hasRedirect&&!hasDiscard);
+    $("manualRedirectOption").classList.toggle("d-none",!hasRedirect);
+    $("manualDiscardOption").classList.toggle("d-none",!hasDiscard);
+    bootstrap.Modal.getOrCreateInstance($("manualRunModal")).show();
+  }
+  async function previewManualRun() {
+    $("manualPreviewButton").disabled=true;$("manualExecuteButton").disabled=true;$("manualExecuteAllButton").disabled=true;$("manualRunMessage").classList.add("d-none");
+    try{
+      const data=await api("{{ url_for('mail_filters.api_manual_preview') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(manualPayload())});
+      manualState.previewToken=data.preview_token||"";manualState.fullPreviewToken=data.full_preview_token||"";manualState.matchedCount=+data.matched_count||0;manualState.totalMatchedCount=+data.total_matched_count||manualState.matchedCount;
+      const warnings=[];if(data.scan_truncated)warnings.push("検索件数が安全上限を超えています");if(data.match_truncated)warnings.push(`一致は全${+data.total_matched_count||manualState.matchedCount}件です。今回は先頭${manualState.matchedCount}件を処理できます`);
+      const showFull=data.match_truncated&&manualState.totalMatchedCount>manualState.matchedCount;
+      if(showFull&&!data.full_execute_allowed)warnings.push(`全件実行は${+data.full_execute_limit||10000}件までです`);
+      $("manualSummary").className=`alert ${warnings.length?"alert-warning":"alert-info"}`;
+      $("manualSummary").innerHTML=`検索 <strong>${+data.scanned_count||0}件</strong> ／ 今回の処理対象 <strong>${manualState.matchedCount}件</strong>${data.match_truncated?`（全${+data.total_matched_count||manualState.matchedCount}件）`:""}<br>処理: ${(data.actions||[]).map(esc).join("、")}${warnings.length?`<br>${warnings.map(esc).join("／")}`:""}`;
+      $("manualSummary").classList.remove("d-none");
+      $("manualResultRows").innerHTML=(data.items||[]).length?(data.items||[]).map(item=>`<tr><td class="text-nowrap">${esc(item.received_at||"")}</td><td>${esc(item.from||"")}</td><td>${esc(item.subject||"（件名なし）")}</td><td><code>${esc(item.uid)}</code></td></tr>`).join(""):'<tr><td colspan="4" class="text-muted text-center py-4">一致するメールはありません。</td></tr>';
+      $("manualExecuteButton").disabled=!manualState.previewToken||manualState.matchedCount===0||Boolean(data.scan_truncated);
+      $("manualExecuteButton").textContent=`先頭${manualState.matchedCount}件を実行`;
+      $("manualExecuteAllButton").classList.toggle("d-none",!showFull);
+      $("manualExecuteAllButton").textContent=`全件（${manualState.totalMatchedCount}件）を実行`;
+      $("manualExecuteAllButton").disabled=!showFull||!manualState.fullPreviewToken||!data.full_execute_allowed||Boolean(data.scan_truncated);
+    }catch(error){resetManualPreview();showManualMessage(error.message);}
+    finally{$("manualPreviewButton").disabled=false;}
+  }
+  async function executeManualRun(executeAll=false) {
+    const token=executeAll?manualState.fullPreviewToken:manualState.previewToken;
+    const targetCount=executeAll?manualState.totalMatchedCount:manualState.matchedCount;
+    if(!token||targetCount===0)return;
+    if(!confirm(`プレビューで一致した ${targetCount}件へ「${state.document.rules[manualState.ruleIndex]?.name||"フィルター"}」を実行しますか？`))return;
+    $("manualPreviewButton").disabled=true;$("manualExecuteButton").disabled=true;$("manualExecuteAllButton").disabled=true;
+    try{
+      const payload={...manualPayload(),preview_token:token,execute_all:executeAll,allow_redirect:$("manualAllowRedirect").checked,allow_discard:$("manualAllowDiscard").checked};
+      const data=await api("{{ url_for('mail_filters.api_manual_execute') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      const hasMore=+data.remaining_count>0;
+      showManualMessage(`${+data.executed_count||0}件へ手動実行しました。${hasMore?" 残りを処理する場合は、もう一度プレビューしてください。":""}`,`success`);manualState.previewToken="";manualState.fullPreviewToken="";manualState.matchedCount=0;manualState.totalMatchedCount=0;
+      $("manualSummary").innerHTML+=`<br><strong>実行完了: ${+data.executed_count||0}件</strong>${hasMore?"<br>残りの対象は、再プレビュー後に次の999件まで処理できます。":""}`;
+    }catch(error){showManualMessage(error.message);}
+    finally{$("manualPreviewButton").disabled=false;}
+  }
+  function renderHistory() {
+    $("historyList").innerHTML=state.history.length?state.history.map(row=>`<div class="border-bottom py-2">
+      <div class="fw-semibold">${esc(row.created_at||"")}</div><div>${esc(row.source)} / ${esc(row.deployed_by||"system")}</div>
+      <div><code>${esc((row.script_hash||"").slice(0,12))}</code></div>
+      <button class="btn btn-sm btn-outline-secondary mt-1 restore-version" data-id="${row.id}" type="button">この設定へ復元</button>
+    </div>`).join(""):"履歴はありません。";
+    document.querySelectorAll(".restore-version").forEach(el=>el.addEventListener("click",async()=>{
+      if(!confirm("選択した履歴へ復元しますか？"))return;setBusy(true);
+      try{await api("{{ url_for('mail_filters.api_restore') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({version_id:+el.dataset.id,expected_hash:state.remoteHash})});showMessage("以前のフィルターを復元しました。","success");await loadMailbox();}catch(error){showMessage(error.message,"danger");}finally{setBusy(false);}
+    }));
+  }
+  function setBusy(value){["refreshButton","addRuleButton","validateButton","saveButton","importButton","mailboxSelect"].forEach(id=>$(id).disabled=value);}
+  $("mailboxSelect").addEventListener("change",async e=>{state.mailbox=e.target.value;await loadMailbox();});
+  $("refreshButton").addEventListener("click",loadMailbox);
+  $("addRuleButton").addEventListener("click",addRule);
+  $("validateButton").addEventListener("click",async()=>{setBusy(true);try{await validateDocument();}catch(error){showMessage(error.message,"danger");}finally{setBusy(false);}});
+  $("saveButton").addEventListener("click",deploy);
+  $("importButton").addEventListener("click",importCurrent);
+  $("manualPreviewButton").addEventListener("click",previewManualRun);
+  $("manualExecuteButton").addEventListener("click",()=>executeManualRun(false));
+  $("manualExecuteAllButton").addEventListener("click",()=>executeManualRun(true));
+  $("manualPeriodPreset").addEventListener("change",()=>{applyManualPeriodPreset();resetManualPreview();});
+  ["manualSourceFolder","manualUnreadOnly","manualMaxMatches"].forEach(id=>$(id).addEventListener("change",resetManualPreview));
+  loadMailboxes();
+})();
+</script>
+{% endblock %}

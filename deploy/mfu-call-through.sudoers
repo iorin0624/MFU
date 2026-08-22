@@ -1,0 +1,3 @@
+asterisk ALL=(root) NOPASSWD: /usr/local/sbin/mfu-call-through authorize *
+asterisk ALL=(root) NOPASSWD: /usr/local/sbin/mfu-call-through invalidate *
+asterisk ALL=(root) NOPASSWD: /usr/local/sbin/mfu-call-through status *

@@ -37,9 +37,17 @@
     <td>{{ item.expire_at }}</td>
     <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
     <td>{{ '有効' if item.password_hash else 'なし' }}</td>
-    <td><a href="{{ url_for('view_upload', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary" target="_blank">表示</a></td>
     <td>
-      <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post" onsubmit="return confirm('本当に削除しますか？');">
+      <div class="d-flex flex-wrap gap-1">
+        <a href="{{ url_for('view_upload', uuid=item.uuid) }}"
+           class="btn btn-sm btn-outline-primary"
+           target="_blank">表示</a>
+        <a href="{{ url_for('view_upload_download_history', uuid=item.uuid) }}"
+           class="btn btn-sm btn-outline-secondary">ダウンロード履歴</a>
+      </div>
+    </td>
+    <td>
+      <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post" data-admin-passkey-action="upload_delete:{{ item.uuid }}" onsubmit="return confirm('本当に削除しますか？');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
         <button class="btn btn-sm btn-danger">削除</button>
       </form>

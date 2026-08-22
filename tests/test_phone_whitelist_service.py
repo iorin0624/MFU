@@ -43,6 +43,11 @@ class PhoneWhitelistServiceTest(unittest.TestCase):
                 {"phone_number": "08093242655", "name": "自分の電話番号"},
                 {"phone_number": "09000000000", "name": "テスト会社"},
             ],
+            blacklist_numbers=[
+                {"phone_number": "+81 43 625 2137", "name": "千葉南警察署　鎌取駅前交番"},
+                {"phone_number": "0436252137", "name": "千葉南警察署　鎌取駅前交番"},
+                "09011112222",
+            ],
             whitelist_disabled_until=123,
             anonymous_allowed_until=456,
         )
@@ -52,7 +57,9 @@ class PhoneWhitelistServiceTest(unittest.TestCase):
             "# MFU_WHITELIST_DISABLED_UNTIL=123\n"
             "# MFU_ANONYMOUS_ALLOWED_UNTIL=456\n"
             "08093242655|6Ieq5YiG44Gu6Zu76Kmx55Wq5Y+3\n"
-            "09000000000|44OG44K544OI5Lya56S+\n",
+            "09000000000|44OG44K544OI5Lya56S+\n"
+            "B|0436252137|5Y2D6JGJ5Y2X6K2m5a+f572y44CA6Y6M5Y+W6aeF5YmN5Lqk55Wq\n"
+            "B|09011112222|\n",
         )
 
     def test_sanitize_sip_caller_name(self):

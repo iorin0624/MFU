@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh ETC tollgate reference daily
+
+[Timer]
+OnCalendar=*-*-* 12:05:00 Asia/Tokyo
+Persistent=true
+Unit=mfu-etc-tollgate-refresh.service
+
+[Install]
+WantedBy=timers.target

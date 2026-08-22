@@ -8,6 +8,8 @@ from app.utils.totp_util import (
 import pyotp
 import qrcode
 import io
+from app.utils.admin_auth import ADMIN_USERNAME, audit, recent_admin_mfa
+from app.utils.admin_passkey_stepup import require_admin_passkey
 
 # Blueprintの定義（これを最初に！）
 otp_bp = Blueprint("otp", __name__, url_prefix="/otp")
@@ -22,12 +24,18 @@ def _generate_qr_response(username: str, otp_secret: str):
     return send_file(buf, mimetype="image/png")
 
 
-@otp_bp.route("/setup")
+@otp_bp.post("/setup")
 def setup_otp():
     # 互換維持: /otp/setup は /otp/qr と同じ挙動
     username = session.get("user")
     if not username:
         return "ログインしてください", 401
+    if username == ADMIN_USERNAME:
+        guard = require_admin_passkey("admin_totp_setup")
+        if guard:
+            return guard
+    if False and username == ADMIN_USERNAME and not recent_admin_mfa():
+        return "管理者の再認証が必要です。", 403
 
     otp_secret = assign_otp_secret_to_user(username)
     return _generate_qr_response(username, otp_secret)
@@ -38,8 +46,12 @@ def qr_otp():
     username = session.get("user")
     if not username:
         return "ログインしてください", 401
+    if username == ADMIN_USERNAME and not recent_admin_mfa():
+        return "管理者の再認証が必要です。", 403
 
-    otp_secret = assign_otp_secret_to_user(username)
+    otp_secret = get_user_otp_secret(username)
+    if not otp_secret:
+        return "TOTPが未設定です。アカウント画面から設定してください。", 409
     return _generate_qr_response(username, otp_secret)
 
 @otp_bp.route("/input", methods=["GET"])
@@ -69,6 +81,12 @@ def reset_otp():
     username = session.get("user")
     if not username:
         return jsonify(ok=False, error="ログインしてください"), 401
+    if username == ADMIN_USERNAME:
+        audit("TOTP_RESET_REJECTED", details={"reason": "recovery_procedure_required"})
+        if request.is_json:
+            return jsonify(ok=False, error="管理者TOTPの再発行は緊急復旧手順でのみ実行できます。"), 403
+        flash("管理者TOTPの再発行は、ロックアウト防止のため緊急復旧手順でのみ実行できます。", "danger")
+        return redirect(url_for("account.manage_account"))
 
     payload = request.get_json(silent=True) or {}
     confirm = request.form.get("confirm") or payload.get("confirm")
@@ -101,6 +119,12 @@ def disable_otp():
     username = session.get("user")
     if not username:
         return jsonify(ok=False, error="ログインしてください"), 401
+    if username == ADMIN_USERNAME:
+        audit("TOTP_DISABLE_REJECTED")
+        if request.is_json:
+            return jsonify(ok=False, error="管理者のTOTPは無効化できません。"), 403
+        flash("管理者のTOTPは無効化できません。", "danger")
+        return redirect(url_for("account.manage_account"))
 
     payload = request.get_json(silent=True) or {}
     confirm = request.form.get("confirm") or payload.get("confirm")

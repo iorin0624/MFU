@@ -134,19 +134,17 @@ def _build_contact_lines(invoice: dict[str, Any]) -> list[str]:
         ]
         if part
     )
-    if organization:
-        lines.append(organization)
-
-    person = " ".join(
-        part
-        for part in [
-            (invoice.get("contact_person_snapshot") or "").strip(),
-            (invoice.get("contact_honorific_snapshot") or "").strip(),
-        ]
-        if part
-    )
-    if person:
-        lines.append(person)
+    person_name = (invoice.get("contact_person_snapshot") or "").strip()
+    honorific = (invoice.get("contact_honorific_snapshot") or "").strip()
+    if person_name:
+        if organization:
+            lines.append(organization)
+        lines.append(" ".join(part for part in (person_name, honorific) if part))
+    elif organization:
+        # 担当者名がない場合は、敬称だけが次の行へ分離しないようにする。
+        lines.append(" ".join(part for part in (organization, honorific) if part))
+    elif honorific:
+        lines.append(honorific)
 
     if invoice.get("contact_email_snapshot"):
         lines.append(f"Email: {invoice['contact_email_snapshot']}")

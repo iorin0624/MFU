@@ -1,0 +1,639 @@
+{% extends "base.html" %}
+{% block title %}交通情報サイネージ設定{% endblock %}
+{% block content %}
+<main class="container" style="max-width: 860px">
+  <h1 class="mb-3">交通情報サイネージ設定</h1>
+  <div class="alert {{ 'alert-success' if configured else 'alert-warning' }}">
+    Google Maps APIキー：{{ '設定済み' if configured else '未設定' }}
+  </div>
+  <form method="post" id="traffic-config-form" class="card card-body shadow-sm mb-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+    <input type="hidden" name="action" value="save_traffic_config">
+    <h2 class="h4 mb-3">地図・表示時間</h2>
+
+    <p class="text-muted">上から順番に表示します。矢印で入れ替えでき、最後の地図の表示後は通常サイネージへ戻ります。</p>
+    <div id="traffic-view-list">
+    {% for view in traffic_config.views %}
+      <section class="traffic-view-card border rounded p-3 mb-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+          <h3 class="traffic-view-heading h5 mb-0">地図{{ loop.index }}：{{ view.name }}</h3>
+          <div class="btn-group btn-group-sm" role="group" aria-label="地図の操作">
+            <button type="button" class="btn btn-outline-secondary move-up" title="一つ上へ">↑</button>
+            <button type="button" class="btn btn-outline-secondary move-down" title="一つ下へ">↓</button>
+            <button type="button" class="btn btn-outline-danger remove-view">削除</button>
+          </div>
+        </div>
+        <label class="form-label fw-bold">タイトル</label>
+        <input name="view_name" type="text" maxlength="80" class="view-name form-control mb-3"
+               value="{{ view.name }}" required>
+        <label class="form-label fw-bold">GoogleマップURL</label>
+        <input name="map_url" type="url" class="form-control"
+               value="{{ view.map_url }}" required>
+        <div class="form-text">
+          Googleマップで希望の画角にして、アドレス欄のURLをそのまま貼り付けます。
+          現在：緯度 {{ view.center.lat }} ／ 経度 {{ view.center.lng }} ／ ズーム {{ view.zoom }}
+        </div>
+
+        <label class="duration-label form-label fw-bold mt-3">
+          表示時間
+        </label>
+        <div class="input-group" style="max-width: 240px">
+          <input name="duration_seconds"
+                 type="number" min="5" max="180" step="1" class="form-control"
+                 value="{{ view.duration_seconds }}" required>
+          <span class="input-group-text">秒</span>
+        </div>
+      </section>
+    {% endfor %}
+    </div>
+
+    <button type="button" id="add-traffic-view" class="btn btn-outline-primary mb-3">＋ 地図を追加</button>
+
+    <div class="alert alert-info py-2">
+      現在の道路情報表示時間：合計 <span id="traffic-total-seconds">{{ traffic_config.views | sum(attribute='duration_seconds') }}</span> 秒
+    </div>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-primary">地図設定を保存</button>
+      <a href="/signage/traffic" target="_blank" rel="noopener" class="btn btn-outline-secondary">表示を確認</a>
+    </div>
+  </form>
+
+  <form method="post" class="card card-body shadow-sm mb-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+    <input type="hidden" name="action" value="save_river_config">
+    <h2 class="h4 mb-3">川の防災情報</h2>
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" role="switch" id="river-enabled"
+             name="enabled" value="1"{% if river_config.enabled %} checked{% endif %}>
+      <label class="form-check-label fw-bold" for="river-enabled">天気予報後に表示する</label>
+    </div>
+    <label for="river-url" class="form-label fw-bold">表示URL</label>
+    <input id="river-url" name="river_url" type="url" class="form-control"
+           value="{{ river_config.url }}" required>
+    <div class="form-text">国土交通省「川の防災情報」のPC版地図URLを指定します。</div>
+    <label for="river-display-seconds" class="form-label fw-bold mt-3">表示時間</label>
+    <div class="input-group" style="max-width: 240px">
+      <input id="river-display-seconds" name="display_seconds" type="number"
+             min="5" max="180" step="1" class="form-control"
+             value="{{ river_config.display_seconds }}" required>
+      <span class="input-group-text">秒</span>
+    </div>
+    <div class="mt-3 d-flex gap-2">
+      <button type="submit" class="btn btn-primary">川情報設定を保存</button>
+      <a href="{{ river_config.url }}" target="_blank" rel="noopener" class="btn btn-outline-secondary">表示を確認</a>
+    </div>
+
+    <section class="mt-4 pt-3 border-top" aria-labelledby="river-preview-heading">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+        <div>
+          <h3 id="river-preview-heading" class="h5 mb-1">取得済みスクリーンショット</h3>
+          <div id="river-preview-status" class="small text-muted" aria-live="polite">取得状態を確認中です。</div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          <a href="{{ url_for('signage_admin.river_history_viewer') }}" class="btn btn-sm btn-outline-primary">
+            専用ページで表示
+          </a>
+          <button type="button" id="reload-river-preview" class="btn btn-sm btn-outline-secondary">
+            最新画像を再読み込み
+          </button>
+        </div>
+      </div>
+      <div id="river-preview-frame" class="ratio ratio-16x9 rounded border bg-light overflow-hidden position-relative">
+        <img id="river-preview-image"
+             src="{{ url_for('signage.river_image') }}?v=initial"
+             alt="取得済みの川の防災情報"
+             class="w-100 h-100"
+             style="object-fit: contain; background: #eef2f6;">
+        {% for point in rain_alert_config.points %}
+        <span class="rain-point-marker d-none position-absolute translate-middle rounded-circle border border-3 border-white"
+              data-point-index="{{ loop.index0 }}"
+              title="{{ point.name }}"
+              style="width: 22px; height: 22px; background: {{ '#dc3545' if loop.index0 == 0 else '#6f42c1' }}; box-shadow: 0 0 0 2px rgba(0,0,0,.65); z-index: 3; pointer-events: none;"></span>
+        {% endfor %}
+      </div>
+      <div id="river-preview-unavailable" class="alert alert-warning mt-2 mb-0 d-none">
+        スクリーンショットはまだ準備できていません。
+      </div>
+      <div class="mt-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+          <label for="river-history-slider" class="form-label fw-bold mb-0">過去96時間の履歴</label>
+          <span id="river-history-selection" class="small text-muted">履歴を読み込み中です。</span>
+        </div>
+        <input id="river-history-slider" type="range" class="form-range"
+               min="0" max="0" step="1" value="0" disabled
+               aria-label="川の防災情報の履歴日時">
+        <div class="d-flex flex-wrap gap-2">
+          <button type="button" id="river-history-older" class="btn btn-sm btn-outline-secondary" disabled>
+            ← 1つ前
+          </button>
+          <button type="button" id="river-history-newer" class="btn btn-sm btn-outline-secondary" disabled>
+            1つ後 →
+          </button>
+          <button type="button" id="river-history-latest" class="btn btn-sm btn-outline-primary" disabled>
+            最新に戻る
+          </button>
+        </div>
+        <div id="river-history-help" class="form-text">
+          直近30分は毎分、それ以前は5分ごとにWebPで保存し、96時間を超えた履歴は自動削除します。
+        </div>
+      </div>
+    </section>
+  </form>
+
+  <form method="post" id="rain-alert-config-form" class="card card-body shadow-sm mb-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+    <input type="hidden" name="action" value="save_rain_alert_config">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+      <div>
+        <h2 class="h4 mb-1">雨雲の接近・雨上がり通知</h2>
+        <p class="text-muted mb-0">毎分の画像を比較し、地点ごとにDiscordへ通知します。</p>
+      </div>
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" role="switch" id="rain-alert-enabled"
+               name="rain_alert_enabled" value="1"{% if rain_alert_config.enabled %} checked{% endif %}>
+        <label class="form-check-label fw-bold" for="rain-alert-enabled">解析・通知を有効にする</label>
+      </div>
+    </div>
+
+    <div class="alert {{ 'alert-success' if discord_configured else 'alert-warning' }} py-2">
+      Discord Webhook：{{ 'adminアカウントに設定済み' if discord_configured else '未設定（adminアカウント設定で登録してください）' }}
+    </div>
+    <div id="rain-alert-selection-status" class="alert alert-info py-2 d-none" aria-live="polite"></div>
+
+    {% for point in rain_alert_config.points %}
+    <section class="rain-point-card border rounded p-3 mb-3" data-point-index="{{ loop.index0 }}">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h3 class="h5 mb-0">
+          <span class="badge rounded-pill" style="background: {{ '#dc3545' if loop.index0 == 0 else '#6f42c1' }};">{{ loop.index }}</span>
+          地点{{ loop.index }}
+        </h3>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" role="switch" id="point-enabled-{{ loop.index0 }}"
+                 name="point_enabled_{{ loop.index0 }}" value="1"{% if point.enabled %} checked{% endif %}>
+          <label class="form-check-label" for="point-enabled-{{ loop.index0 }}">この地点を使用</label>
+        </div>
+      </div>
+
+      <label for="point-name-{{ loop.index0 }}" class="form-label fw-bold">地点名</label>
+      <input id="point-name-{{ loop.index0 }}" name="point_name_{{ loop.index0 }}" type="text"
+             maxlength="40" class="form-control mb-3" value="{{ point.name }}" required>
+
+      <div class="row g-2 align-items-end mb-2">
+        <div class="col-md-5">
+          <label for="point-lat-{{ loop.index0 }}" class="form-label fw-bold">緯度</label>
+          <input id="point-lat-{{ loop.index0 }}" name="point_lat_{{ loop.index0 }}" type="number"
+                 min="-90" max="90" step="0.0000001" class="form-control point-lat"
+                 value="{{ point.lat }}" required>
+        </div>
+        <div class="col-md-5">
+          <label for="point-lng-{{ loop.index0 }}" class="form-label fw-bold">経度</label>
+          <input id="point-lng-{{ loop.index0 }}" name="point_lng_{{ loop.index0 }}" type="number"
+                 min="-180" max="180" step="0.0000001" class="form-control point-lng"
+                 value="{{ point.lng }}" required>
+        </div>
+        <div class="col-md-2 d-grid">
+          <button type="button" class="btn btn-outline-primary select-rain-point" data-point-index="{{ loop.index0 }}">
+            画像で指定
+          </button>
+        </div>
+      </div>
+      <div class="form-text mb-3">「画像で指定」を押してから、上の最新スクリーンショット上の地点をクリックできます。</div>
+
+      <div class="row g-3">
+        <div class="col-sm-6">
+          <label class="form-label fw-bold">通知時間帯</label>
+          <div class="input-group">
+            <input name="point_notify_start_{{ loop.index0 }}" type="time" class="form-control"
+                   value="{{ point.notify_start }}" required>
+            <span class="input-group-text">～</span>
+            <input name="point_notify_end_{{ loop.index0 }}" type="time" class="form-control"
+                   value="{{ point.notify_end }}" required>
+          </div>
+          <div class="form-text">開始と終了が同じ場合は24時間。日をまたぐ指定にも対応します。</div>
+        </div>
+        <div class="col-sm-3">
+          <label class="form-label fw-bold">降りそう</label>
+          <div class="input-group">
+            <input name="point_rain_minutes_{{ loop.index0 }}" type="number" min="5" max="120" step="1"
+                   class="form-control" value="{{ point.rain_minutes }}" required>
+            <span class="input-group-text">分以内</span>
+          </div>
+        </div>
+        <div class="col-sm-3">
+          <label class="form-label fw-bold">止みそう</label>
+          <div class="input-group">
+            <input name="point_stop_minutes_{{ loop.index0 }}" type="number" min="5" max="120" step="1"
+                   class="form-control" value="{{ point.stop_minutes }}" required>
+            <span class="input-group-text">分以内</span>
+          </div>
+        </div>
+      </div>
+      <div id="rain-point-status-{{ loop.index0 }}" class="small text-muted mt-3" aria-live="polite">
+        解析状態を読み込み中です。
+      </div>
+    </section>
+    {% endfor %}
+
+    <div class="alert alert-secondary py-2 small">
+      同じ判定が3回連続したときだけ通知し、同じ雨イベントの重複通知は行いません。通知時間外も解析は続け、時間帯に入った時点で有効な判定のみ通知します。
+    </div>
+    <button type="submit" class="btn btn-primary align-self-start">雨雲通知設定を保存</button>
+  </form>
+
+  <form method="post" class="card card-body shadow-sm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+    <input type="hidden" name="action" value="save_api_key">
+    <h2 class="h4 mb-3">Google Maps APIキー</h2>
+    <label for="google-maps-api-key" class="form-label fw-bold">新しいAPIキー</label>
+    <input id="google-maps-api-key" name="google_maps_api_key" type="password"
+           class="form-control" autocomplete="off" required>
+    <div class="form-text">値は保存後に再表示しません。</div>
+    <div class="mt-3 d-flex gap-2">
+      <button type="submit" class="btn btn-primary">保存</button>
+    </div>
+  </form>
+</main>
+
+<template id="traffic-view-template">
+  <section class="traffic-view-card border rounded p-3 mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <h3 class="traffic-view-heading h5 mb-0"></h3>
+      <div class="btn-group btn-group-sm" role="group" aria-label="地図の操作">
+        <button type="button" class="btn btn-outline-secondary move-up" title="一つ上へ">↑</button>
+        <button type="button" class="btn btn-outline-secondary move-down" title="一つ下へ">↓</button>
+        <button type="button" class="btn btn-outline-danger remove-view">削除</button>
+      </div>
+    </div>
+    <label class="form-label fw-bold">タイトル</label>
+    <input name="view_name" type="text" maxlength="80" class="view-name form-control mb-3"
+           value="新しい地図" required>
+    <label class="form-label fw-bold">GoogleマップURL</label>
+    <input name="map_url" type="url" class="form-control" placeholder="https://www.google.co.jp/maps/@..." required>
+    <div class="form-text">Googleマップで希望の画角にして、アドレス欄のURLをそのまま貼り付けます。</div>
+    <label class="duration-label form-label fw-bold mt-3">表示時間</label>
+    <div class="input-group" style="max-width: 240px">
+      <input name="duration_seconds" type="number" min="5" max="180" step="1"
+             class="form-control" value="20" required>
+      <span class="input-group-text">秒</span>
+    </div>
+  </section>
+</template>
+
+<script>
+(() => {
+  const riverPreviewImage = document.getElementById("river-preview-image");
+  const riverPreviewStatus = document.getElementById("river-preview-status");
+  const riverPreviewFrame = document.getElementById("river-preview-frame");
+  const riverPreviewUnavailable = document.getElementById("river-preview-unavailable");
+  const reloadRiverPreview = document.getElementById("reload-river-preview");
+  const riverHistorySlider = document.getElementById("river-history-slider");
+  const riverHistorySelection = document.getElementById("river-history-selection");
+  const riverHistoryOlder = document.getElementById("river-history-older");
+  const riverHistoryNewer = document.getElementById("river-history-newer");
+  const riverHistoryLatest = document.getElementById("river-history-latest");
+  const riverHistoryHelp = document.getElementById("river-history-help");
+  const riverImageUrl = {{ url_for('signage.river_image') | tojson }};
+  const riverStatusUrl = {{ url_for('signage.river_image_status') | tojson }};
+  const riverHistoryUrl = {{ url_for('signage_admin.river_history') | tojson }};
+  const rainAlertStatusUrl = {{ url_for('signage_admin.rain_alert_status') | tojson }};
+  let riverHistory = [];
+  let currentRiverStatus = null;
+  let selectingRainPoint = null;
+  let riverImageRecoveryInProgress = false;
+
+  function formatRiverUpdatedAt(value) {
+    if (!value) return "更新日時不明";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    }).format(date);
+  }
+
+  function showRiverHistoryIndex(value) {
+    const index = Math.max(0, Math.min(Number(value) || 0, riverHistory.length));
+    riverHistorySlider.value = String(index);
+    const showingLatest = index === riverHistory.length;
+    if (showingLatest) {
+      riverPreviewImage.src = `${riverImageUrl}?v=${Date.now()}`;
+      riverHistorySelection.textContent = `最新：${formatRiverUpdatedAt(currentRiverStatus?.updated_at)}`;
+    } else {
+      const entry = riverHistory[index];
+      riverPreviewImage.src = `${entry.url}?v=${encodeURIComponent(entry.captured_at)}`;
+      riverHistorySelection.textContent = `履歴 ${index + 1}/${riverHistory.length}：${formatRiverUpdatedAt(entry.captured_at)}`;
+    }
+    riverPreviewFrame.classList.remove("d-none");
+    riverPreviewUnavailable.classList.add("d-none");
+    riverHistoryOlder.disabled = index <= 0;
+    riverHistoryNewer.disabled = showingLatest;
+    riverHistoryLatest.disabled = showingLatest;
+  }
+
+  function nearestRiverHistoryIndex(capturedAt) {
+    if (!riverHistory.length) return 0;
+    const target = new Date(capturedAt).getTime();
+    if (!Number.isFinite(target)) return riverHistory.length - 1;
+    let nearestIndex = 0;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    riverHistory.forEach((entry, index) => {
+      const entryTime = new Date(entry.captured_at).getTime();
+      const distance = Number.isFinite(entryTime) ? Math.abs(entryTime - target) : Number.POSITIVE_INFINITY;
+      if (distance < nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = distance;
+      }
+    });
+    return nearestIndex;
+  }
+
+  async function loadRiverHistory({ preserveSelection = false, preserveCapturedAt = null, excludeFilename = null } = {}) {
+    const previousIndex = Number(riverHistorySlider.value) || 0;
+    const previousEntry = previousIndex < riverHistory.length ? riverHistory[previousIndex] : null;
+    const wasShowingLatest = previousIndex >= riverHistory.length;
+    const response = await fetch(riverHistoryUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    riverHistory = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => {
+      return !excludeFilename || entry.filename !== excludeFilename;
+    });
+    riverHistorySlider.min = "0";
+    riverHistorySlider.max = String(riverHistory.length);
+    riverHistorySlider.disabled = riverHistory.length === 0;
+    riverHistoryHelp.textContent = riverHistory.length
+      ? `履歴を${riverHistory.length}件保存中です。直近30分は毎分、それ以前は5分間隔で、96時間を超えると自動削除します。`
+      : "履歴は直近30分を毎分、それ以前を5分ごとに蓄積します。";
+    const requestedCapturedAt = preserveCapturedAt || (preserveSelection ? previousEntry?.captured_at : null);
+    if (requestedCapturedAt && riverHistory.length) {
+      showRiverHistoryIndex(nearestRiverHistoryIndex(requestedCapturedAt));
+    } else if (preserveSelection && !wasShowingLatest && riverHistory.length) {
+      showRiverHistoryIndex(Math.min(previousIndex, riverHistory.length - 1));
+    } else {
+      showRiverHistoryIndex(riverHistory.length);
+    }
+  }
+
+  async function refreshRiverPreview() {
+    reloadRiverPreview.disabled = true;
+    riverPreviewStatus.textContent = "取得状態を確認中です。";
+    riverPreviewStatus.className = "small text-muted";
+    try {
+      const response = await fetch(riverStatusUrl, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
+      currentRiverStatus = status;
+      if (!status.image_available) {
+        riverPreviewFrame.classList.add("d-none");
+        riverPreviewUnavailable.classList.remove("d-none");
+        riverPreviewStatus.textContent = status.message || "スクリーンショットを準備中です。";
+        return;
+      }
+      riverPreviewFrame.classList.remove("d-none");
+      riverPreviewUnavailable.classList.add("d-none");
+      const state = status.ok ? "取得正常" : "取得警告（保存済み画像を表示）";
+      riverPreviewStatus.textContent = `${state} ／ 最終更新：${formatRiverUpdatedAt(status.updated_at)}`;
+      riverPreviewStatus.className = `small ${status.ok ? "text-success" : "text-warning"}`;
+      await loadRiverHistory();
+    } catch (error) {
+      riverPreviewStatus.textContent = `取得状態を読み込めませんでした。${error}`;
+      riverPreviewStatus.className = "small text-danger";
+    } finally {
+      reloadRiverPreview.disabled = false;
+    }
+  }
+
+  riverPreviewImage.addEventListener("error", async () => {
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    const failedEntry = selectedIndex < riverHistory.length ? riverHistory[selectedIndex] : null;
+    if (failedEntry && !riverImageRecoveryInProgress) {
+      riverImageRecoveryInProgress = true;
+      try {
+        await loadRiverHistory({
+          preserveCapturedAt: failedEntry.captured_at,
+          excludeFilename: failedEntry.filename
+        });
+        return;
+      } catch (_error) {
+        // 履歴の再取得にも失敗した場合だけ、従来の準備中表示へ切り替える。
+      } finally {
+        riverImageRecoveryInProgress = false;
+      }
+    }
+    riverPreviewFrame.classList.add("d-none");
+    riverPreviewUnavailable.classList.remove("d-none");
+  });
+  reloadRiverPreview.addEventListener("click", refreshRiverPreview);
+  riverHistorySlider.addEventListener("input", () => showRiverHistoryIndex(riverHistorySlider.value));
+  riverHistoryOlder.addEventListener("click", () => showRiverHistoryIndex(Number(riverHistorySlider.value) - 1));
+  riverHistoryNewer.addEventListener("click", () => showRiverHistoryIndex(Number(riverHistorySlider.value) + 1));
+  riverHistoryLatest.addEventListener("click", () => showRiverHistoryIndex(riverHistory.length));
+
+  function riverGeometry() {
+    try {
+      const parsed = new URL(document.getElementById("river-url").value);
+      const centerLat = Number(parsed.searchParams.get("clat"));
+      const centerLng = Number(parsed.searchParams.get("clon"));
+      const zoom = Number(parsed.searchParams.get("zm"));
+      if (![centerLat, centerLng, zoom].every(Number.isFinite)) return null;
+      return { centerLat, centerLng, zoom, worldSize: 256 * (2 ** zoom) };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function worldCoordinates(lat, lng, worldSize) {
+    const safeLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+    const sinLat = Math.sin(safeLat * Math.PI / 180);
+    return {
+      x: (lng + 180) / 360 * worldSize,
+      y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * worldSize
+    };
+  }
+
+  function coordinatesToPixel(lat, lng) {
+    const geometry = riverGeometry();
+    if (!geometry) return null;
+    const center = worldCoordinates(geometry.centerLat, geometry.centerLng, geometry.worldSize);
+    const point = worldCoordinates(lat, lng, geometry.worldSize);
+    return { x: 960 + point.x - center.x, y: 686 + point.y - center.y };
+  }
+
+  function pixelToCoordinates(x, y) {
+    const geometry = riverGeometry();
+    if (!geometry) return null;
+    const center = worldCoordinates(geometry.centerLat, geometry.centerLng, geometry.worldSize);
+    const worldX = center.x + x - 960;
+    const worldY = center.y + y - 686;
+    const lng = worldX / geometry.worldSize * 360 - 180;
+    const n = Math.PI - (2 * Math.PI * worldY / geometry.worldSize);
+    const lat = Math.atan(Math.sinh(n)) * 180 / Math.PI;
+    return { lat, lng };
+  }
+
+  function pointIsSelectable(x, y) {
+    if (x < 22 || x >= 1348 || y < 171 || y >= 1058) return false;
+    return !(x >= 1093 && x <= 1392 && y >= 720);
+  }
+
+  function refreshRainPointMarkers() {
+    document.querySelectorAll(".rain-point-card").forEach((card) => {
+      const index = card.dataset.pointIndex;
+      const lat = Number(card.querySelector(".point-lat").value);
+      const lng = Number(card.querySelector(".point-lng").value);
+      const marker = document.querySelector(`.rain-point-marker[data-point-index="${index}"]`);
+      const pixel = coordinatesToPixel(lat, lng);
+      if (!marker || !pixel || !pointIsSelectable(pixel.x, pixel.y)) {
+        marker?.classList.add("d-none");
+        return;
+      }
+      marker.style.left = `${pixel.x / 1920 * 100}%`;
+      marker.style.top = `${pixel.y / 1080 * 100}%`;
+      marker.title = card.querySelector('[name^="point_name_"]').value;
+      marker.classList.remove("d-none");
+    });
+  }
+
+  document.querySelectorAll(".select-rain-point").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectingRainPoint = button.dataset.pointIndex;
+      const status = document.getElementById("rain-alert-selection-status");
+      status.textContent = `地点${Number(selectingRainPoint) + 1}を指定します。上のスクリーンショット内の地図をクリックしてください。`;
+      status.classList.remove("d-none", "alert-danger");
+      status.classList.add("alert-info");
+      riverPreviewFrame.style.cursor = "crosshair";
+      riverPreviewFrame.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+
+  riverPreviewFrame.addEventListener("click", (event) => {
+    if (selectingRainPoint === null) return;
+    const rect = riverPreviewFrame.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / rect.width * 1920;
+    const y = (event.clientY - rect.top) / rect.height * 1080;
+    const status = document.getElementById("rain-alert-selection-status");
+    if (!pointIsSelectable(x, y)) {
+      status.textContent = "その位置は地図範囲外または操作パネル上です。地図が見えている位置を選んでください。";
+      status.classList.remove("alert-info");
+      status.classList.add("alert-danger");
+      return;
+    }
+    const coordinates = pixelToCoordinates(x, y);
+    if (!coordinates) {
+      status.textContent = "川の防災情報URLから座標を計算できません。URLを確認してください。";
+      status.classList.remove("alert-info");
+      status.classList.add("alert-danger");
+      return;
+    }
+    const card = document.querySelector(`.rain-point-card[data-point-index="${selectingRainPoint}"]`);
+    card.querySelector(".point-lat").value = coordinates.lat.toFixed(7);
+    card.querySelector(".point-lng").value = coordinates.lng.toFixed(7);
+    status.textContent = `地点${Number(selectingRainPoint) + 1}の座標を入力しました。設定を保存すると反映されます。`;
+    status.classList.remove("alert-danger");
+    status.classList.add("alert-info");
+    selectingRainPoint = null;
+    riverPreviewFrame.style.cursor = "";
+    refreshRainPointMarkers();
+  });
+
+  document.getElementById("rain-alert-config-form").addEventListener("input", refreshRainPointMarkers);
+  document.getElementById("river-url").addEventListener("input", refreshRainPointMarkers);
+
+  async function loadRainAlertStatus() {
+    try {
+      const response = await fetch(rainAlertStatusUrl, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      for (let index = 0; index < 2; index += 1) {
+        const target = document.getElementById(`rain-point-status-${index}`);
+        const point = Array.isArray(data.points) ? data.points.find((item) => item.id === `point-${index + 1}`) : null;
+        if (!point) {
+          target.textContent = data.enabled ? "次回の毎分取得後に解析結果を表示します。" : "雨雲解析は無効です。";
+          target.className = "small text-muted mt-3";
+          continue;
+        }
+        const eta = Number.isFinite(point.eta_minutes) ? ` ／ 予測 ${point.eta_minutes}分` : "";
+        const confidence = Number.isFinite(point.confidence) ? ` ／ 確度 ${point.confidence}%` : "";
+        const confirmation = point.confirmation_required
+          ? ` ／ 判定 ${point.confirmation_count || 0}/${point.confirmation_required}`
+          : "";
+        target.textContent = `${point.state_label || point.state}${eta}${confidence}${confirmation} — ${point.message || ""}`;
+        target.className = `small mt-3 ${point.state === "unknown" ? "text-warning" : "text-success"}`;
+      }
+    } catch (error) {
+      document.querySelectorAll('[id^="rain-point-status-"]').forEach((target) => {
+        target.textContent = `解析状態を読み込めませんでした。${error}`;
+        target.className = "small text-danger mt-3";
+      });
+    }
+  }
+
+  riverPreviewImage.addEventListener("load", refreshRainPointMarkers);
+  refreshRainPointMarkers();
+  loadRainAlertStatus();
+  refreshRiverPreview();
+  window.setInterval(() => {
+    const selectedIndex = Number(riverHistorySlider.value) || 0;
+    const showingLatest = selectedIndex >= riverHistory.length;
+    const refreshPromise = showingLatest
+      ? refreshRiverPreview()
+      : loadRiverHistory({ preserveSelection: true });
+    refreshPromise.catch(() => {
+      // 表示中の画像を維持し、次回の自動更新または手動再読み込みで再試行する。
+    });
+  }, 60 * 1000);
+
+  const list = document.getElementById("traffic-view-list");
+  const template = document.getElementById("traffic-view-template");
+  const addButton = document.getElementById("add-traffic-view");
+  const maxViews = 12;
+
+  function cards() {
+    return Array.from(list.querySelectorAll(".traffic-view-card"));
+  }
+
+  function refreshCards() {
+    const allCards = cards();
+    allCards.forEach((card, index) => {
+      const title = card.querySelector(".view-name").value.trim() || "名称未設定";
+      card.querySelector(".traffic-view-heading").textContent = `地図${index + 1}：${title}`;
+      card.querySelector(".duration-label").textContent = index === allCards.length - 1
+        ? "通常サイネージへ戻るまで"
+        : "次の地図へ切り替えるまで";
+      card.querySelector(".move-up").disabled = index === 0;
+      card.querySelector(".move-down").disabled = index === allCards.length - 1;
+      card.querySelector(".remove-view").disabled = allCards.length === 1;
+    });
+    addButton.disabled = allCards.length >= maxViews;
+    const total = allCards.reduce((sum, card) => {
+      return sum + (Number(card.querySelector('[name="duration_seconds"]').value) || 0);
+    }, 0);
+    document.getElementById("traffic-total-seconds").textContent = total;
+  }
+
+  list.addEventListener("input", refreshCards);
+  list.addEventListener("click", (event) => {
+    const card = event.target.closest(".traffic-view-card");
+    if (!card) return;
+    if (event.target.closest(".move-up") && card.previousElementSibling) {
+      list.insertBefore(card, card.previousElementSibling);
+    } else if (event.target.closest(".move-down") && card.nextElementSibling) {
+      list.insertBefore(card.nextElementSibling, card);
+    } else if (event.target.closest(".remove-view") && cards().length > 1) {
+      card.remove();
+    } else {
+      return;
+    }
+    refreshCards();
+  });
+
+  addButton.addEventListener("click", () => {
+    if (cards().length >= maxViews) return;
+    list.appendChild(template.content.cloneNode(true));
+    refreshCards();
+    cards().at(-1).querySelector(".view-name").focus();
+  });
+
+  refreshCards();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+
+import requests
+
+from app.utils.db import get_db
+
+from .repository import claim_pending_record_notifications, finish_record_notifications
+
+
+LOGGER = logging.getLogger(__name__)
+DISCORD_CONTENT_LIMIT = 2000
+DISCORD_MAX_EMBEDS = 10
+ETC_ACCOUNTING_URL = "https://mfu.iori0624.jp/etc-accounting/"
+DISCORD_COLOR_SUMMARY = 0x3498DB
+DISCORD_COLOR_PENDING = 0xF59E0B
+DISCORD_COLOR_FINAL = 0x22C55E
+
+
+def get_admin_discord_webhook() -> str:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT webhook_url FROM users
+            WHERE username='admin' AND webhook_url IS NOT NULL AND webhook_url <> ''
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone() or {}
+        return str(row.get("webhook_url") or "").strip()
+    finally:
+        db.close()
+
+
+def _record_embed(record: dict) -> dict:
+    used_at = record.get("used_at")
+    if isinstance(used_at, datetime):
+        used_at_text = used_at.strftime("%Y/%m/%d %H:%M")
+    else:
+        used_at_text = str(used_at or "日時不明")
+
+    entry_ic = str(record.get("entry_ic") or "入口記録なし")
+    exit_ic = str(record.get("exit_ic") or "出口記録なし")
+    is_pending = "確認中" in str(record.get("remarks") or "")
+    status_text = "🟠 確認中" if is_pending else "🟢 確定"
+    embed = {
+        "title": f"🚗 {entry_ic} → {exit_ic}"[:256],
+        "color": DISCORD_COLOR_PENDING if is_pending else DISCORD_COLOR_FINAL,
+        "fields": [
+            {"name": "利用日時", "value": used_at_text[:1024], "inline": True},
+            {"name": "料金", "value": f"**¥{int(record.get('amount') or 0):,}**", "inline": True},
+            {"name": "状態", "value": status_text, "inline": True},
+        ],
+    }
+    record_id = int(record.get("record_id") or 0)
+    if record_id > 0:
+        embed["footer"] = {"text": f"ETC明細 ID: {record_id}"}
+    return embed
+
+
+def _record_order_key(record: dict) -> tuple[bool, str, int]:
+    used_at = record.get("used_at")
+    record_id = int(record.get("record_id") or record.get("notification_id") or 0)
+    return used_at is None, str(used_at or ""), record_id
+
+
+def _discord_batches(records: list[dict]) -> list[tuple[list[dict], dict]]:
+    if not records:
+        return []
+
+    ordered_records = sorted(records, key=_record_order_key)
+    total = sum(int(record.get("amount") or 0) for record in ordered_records)
+    summary = {
+        "title": "🚗 ETCの新しい明細を取得しました",
+        "url": ETC_ACCOUNTING_URL,
+        "description": f"**{len(ordered_records)}件**の明細を取得しました\n合計 **¥{total:,}**",
+        "color": DISCORD_COLOR_SUMMARY,
+        "footer": {"text": "タイトルをクリックするとMFUのETC明細を開きます"},
+    }
+
+    record_groups: list[list[dict]] = []
+    remaining = list(ordered_records)
+    first_capacity = DISCORD_MAX_EMBEDS - 1
+    record_groups.append(remaining[:first_capacity])
+    remaining = remaining[first_capacity:]
+    while remaining:
+        record_groups.append(remaining[:DISCORD_MAX_EMBEDS])
+        remaining = remaining[DISCORD_MAX_EMBEDS:]
+
+    batches: list[tuple[list[dict], dict]] = []
+    page_total = len(record_groups)
+    for page_index, group in enumerate(record_groups, start=1):
+        embeds = [_record_embed(record) for record in group]
+        payload = {
+            "embeds": ([summary] if page_index == 1 else []) + embeds,
+            "allowed_mentions": {"parse": []},
+        }
+        if page_index > 1:
+            payload["content"] = f"🚗 ETC新規明細（続き {page_index}/{page_total}）"
+        batches.append((group, payload))
+    return batches
+
+
+def _post_discord(webhook_url: str, payload: dict) -> None:
+    if not webhook_url:
+        raise RuntimeError("管理者のDiscord Webhookが設定されていません。")
+    response = requests.post(
+        webhook_url,
+        params={"wait": "true"},
+        json=payload,
+        timeout=10,
+    )
+    if not response.ok:
+        detail = (response.text or "").replace("\n", " ")[:300]
+        raise RuntimeError(f"Discord通知に失敗しました（HTTP {response.status_code}: {detail}）")
+
+
+def dispatch_pending_new_record_notifications() -> dict:
+    records = claim_pending_record_notifications(100)
+    if not records:
+        return {"status": "empty", "count": 0}
+    notification_ids = [int(record["notification_id"]) for record in records]
+    sent_ids: set[int] = set()
+    try:
+        webhook_url = get_admin_discord_webhook()
+        for batch_records, payload in _discord_batches(records):
+            batch_ids = [int(record["notification_id"]) for record in batch_records]
+            _post_discord(webhook_url, payload)
+            finish_record_notifications(batch_ids)
+            sent_ids.update(batch_ids)
+        LOGGER.info("ETC new-record Discord notification sent: count=%s", len(records))
+        return {"status": "sent", "count": len(records)}
+    except Exception as exc:
+        unsent_ids = [notification_id for notification_id in notification_ids if notification_id not in sent_ids]
+        finish_record_notifications(unsent_ids, error=str(exc))
+        LOGGER.exception("ETC new-record Discord notification failed: count=%s", len(records))
+        raise
+
+
+def send_test_notification() -> None:
+    now = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
+    _post_discord(
+        get_admin_discord_webhook(),
+        {
+            "content": "✅ ETC定期取得のDiscordテスト通知です",
+            "embeds": [
+                {
+                    "title": "ETC通知カードの表示テスト",
+                    "url": ETC_ACCOUNTING_URL,
+                    "description": (
+                        f"送信日時: **{now}**\n"
+                        "新しい明細が見つかった場合、明細ごとにカードで通知します。"
+                    ),
+                    "color": DISCORD_COLOR_SUMMARY,
+                }
+            ],
+            "allowed_mentions": {"parse": []},
+        },
+    )

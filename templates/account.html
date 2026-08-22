@@ -34,7 +34,8 @@
             {% endif %}
           {% endwith %}
 
-          <form method="post" class="account-form" novalidate>
+          <form method="post" class="account-form" novalidate data-admin-passkey-action="admin_password_change" data-admin-passkey-if-field="password">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
             <div class="mb-3">
               <label class="form-label">ニックネーム</label>
               <input type="text" name="nickname" class="form-control" value="{{ user.nickname or '' }}">
@@ -75,33 +76,49 @@
               </div>
 
               <div class="d-flex flex-column gap-2">
-                <a href="{{ url_for('otp.qr_otp') }}"
-                   class="btn btn-outline-secondary"
-                   target="_blank" rel="noopener">
-                  QR表示
-                </a>
+                {% if totp_configured %}
+                  <a href="{{ url_for('otp.qr_otp') }}"
+                     class="btn btn-outline-secondary"
+                     target="_blank" rel="noopener">QR表示</a>
+                {% else %}
+                  <button type="submit" class="btn btn-outline-secondary w-100"
+                          formaction="{{ url_for('otp.setup_otp') }}" formmethod="post"
+                          data-admin-passkey-action="admin_totp_setup"
+                          formtarget="_blank">TOTPを設定してQR表示</button>
+                {% endif %}
 
-                <form method="post"
-                      action="{{ url_for('otp.reset_otp') }}"
-                      onsubmit="return confirm('TOTPを再発行します。よろしいですか？');">
-                  <input type="hidden" name="confirm" value="1">
-                  <button type="submit" class="btn btn-outline-warning w-100">
+                {% if username != 'admin' %}
+                <div>
+                  <button type="submit" class="btn btn-outline-warning w-100"
+                          formaction="{{ url_for('otp.reset_otp') }}" formmethod="post"
+                          name="confirm" value="1"
+                          onclick="return confirm('TOTPを再発行します。よろしいですか？');">
                     再発行（更新）
                   </button>
-                </form>
+                </div>
 
-                <form method="post"
-                      action="{{ url_for('otp.disable_otp') }}"
-                      onsubmit="return confirm('TOTPを無効化します。よろしいですか？');">
-                  <input type="hidden" name="confirm" value="1">
-                  <button type="submit" class="btn btn-outline-danger w-100">
+                <div>
+                  <button type="submit" class="btn btn-outline-danger w-100"
+                          formaction="{{ url_for('otp.disable_otp') }}" formmethod="post"
+                          name="confirm" value="1"
+                          onclick="return confirm('TOTPを無効化します。よろしいですか？');">
                     無効化
                   </button>
-                </form>
+                </div>
+                {% else %}
+                <div class="alert alert-secondary mb-0 small">
+                  管理者のTOTPは無効化できません。再発行はロックアウト防止の緊急復旧手順で行います。
+                </div>
+                {% endif %}
               </div>
             </div>
 
             <hr class="my-4">
+
+            <div class="mb-3">
+              <label class="form-label">現在のパスワード（パスワード変更時は必須）</label>
+              <input type="password" name="current_password" class="form-control" autocomplete="current-password">
+            </div>
 
             <div class="mb-3">
               <label class="form-label">新しいパスワード</label>
