@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from flask import Blueprint, current_app, jsonify, render_template, request, session
+
+from .repository import (
+    get_version,
+    latest_version,
+    list_versions,
+    record_version,
+    update_sync_state,
+)
+from .service import (
+    MailFilterAgentError,
+    deploy_script,
+    get_mailbox,
+    list_mailboxes,
+    normalize_mailbox,
+    validate_script,
+)
+from .sieve import SieveRuleError, generate_script, parse_script, script_hash
+
+
+mail_filters_bp = Blueprint(
+    "mail_filters",
+    __name__,
+    url_prefix="/admin/mail-filters",
+    template_folder="templates",
+)
+
+
+def _json_error(message: str, status: int = 400):
+    return jsonify({"ok": False, "error": message}), status
+
+
+def _actor() -> str:
+    return str(session.get("user") or "")[:128]
+
+
+def _serialize_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        for key, value in list(item.items()):
+            if isinstance(value, datetime):
+                item[key] = value.strftime("%Y-%m-%d %H:%M:%S")
+        output.append(item)
+    return output
+
+
+def _validate_structured_folder_actions(document: dict[str, Any], folders: list[str]) -> None:
+    folder_set = {str(item) for item in folders}
+    for rule in document.get("rules") or []:
+        if not isinstance(rule, dict) or rule.get("raw") or not rule.get("enabled", True):
+            continue
+        for action in rule.get("actions") or []:
+            if str(action.get("type") or "").lower() != "fileinto":
+                continue
+            destination = str(action.get("value") or "")
+            if destination not in folder_set:
+                raise SieveRuleError(
+                    f"振り分け先「{destination}」がメールボックスに存在しません。"
+                    "フォルダー一覧を再取得してください。"
+                )
+
+
+@mail_filters_bp.before_request
+def _require_admin():
+    if session.get("user") != "admin":
+        return jsonify({"ok": False, "error": "管理者のみアクセス可能です"}), 403
+    return None
+
+
+@mail_filters_bp.get("")
+@mail_filters_bp.get("/")
+def index():
+    return render_template("mail_filters/index.html")
+
+
+@mail_filters_bp.get("/api/mailboxes")
+def api_mailboxes():
+    try:
+        mailboxes = list_mailboxes()
+        return jsonify({"ok": True, "mailboxes": mailboxes})
+    except MailFilterAgentError as exc:
+        current_app.logger.warning("mail filter mailbox list failed: %s", exc)
+        return _json_error(str(exc), 502)
+
+
+@mail_filters_bp.get("/api/mailbox")
+def api_mailbox():
+    try:
+        mailbox = normalize_mailbox(request.args.get("mailbox"))
+        remote = get_mailbox(mailbox)
+        remote_hash = str(remote.get("script_hash") or "")
+        latest = latest_version(mailbox)
+        if (
+            latest
+            and latest.get("document")
+            and str(latest.get("script_hash") or "") == remote_hash
+        ):
+            document = latest["document"]
+            document_source = "mfu"
+        else:
+            document = parse_script(str(remote.get("script") or ""))
+            document_source = "server"
+        update_sync_state(
+            mailbox=mailbox,
+            remote_hash=remote_hash,
+            result="synced",
+            updated_by=_actor(),
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "mailbox": mailbox,
+                "folders": remote.get("folders") or [],
+                "script_hash": remote_hash,
+                "active_target": remote.get("active_target") or "",
+                "document": document,
+                "document_source": document_source,
+                "history": _serialize_history(list_versions(mailbox)),
+            }
+        )
+    except (MailFilterAgentError, SieveRuleError) as exc:
+        current_app.logger.warning("mail filter mailbox load failed: %s", exc)
+        return _json_error(str(exc), 502 if isinstance(exc, MailFilterAgentError) else 400)
+
+
+@mail_filters_bp.post("/api/import")
+def api_import():
+    payload = request.get_json(silent=True) or {}
+    try:
+        mailbox = normalize_mailbox(payload.get("mailbox"))
+        remote = get_mailbox(mailbox)
+        script = str(remote.get("script") or "")
+        remote_hash = str(remote.get("script_hash") or script_hash(script))
+        document = parse_script(script)
+        existing = latest_version(mailbox)
+        if existing and str(existing.get("script_hash") or "") == remote_hash:
+            return jsonify({"ok": True, "version_id": existing["id"], "already_imported": True})
+        version_id = record_version(
+            mailbox=mailbox,
+            document=document,
+            script_text=script,
+            script_hash=remote_hash,
+            remote_hash_before=remote_hash,
+            source="roundcube_import",
+            result="ok",
+            message="既存SieveフィルターをMFUへ取り込みました",
+            deployed_by=_actor(),
+        )
+        current_app.logger.info(
+            "MAIL_FILTER_IMPORT mailbox=%s version_id=%s script_hash=%s actor=%s",
+            mailbox,
+            version_id,
+            remote_hash,
+            _actor(),
+        )
+        return jsonify({"ok": True, "version_id": version_id, "already_imported": False})
+    except (MailFilterAgentError, SieveRuleError) as exc:
+        return _json_error(str(exc), 502 if isinstance(exc, MailFilterAgentError) else 400)
+
+
+@mail_filters_bp.post("/api/validate")
+def api_validate():
+    payload = request.get_json(silent=True) or {}
+    try:
+        mailbox = normalize_mailbox(payload.get("mailbox"))
+        document = payload.get("document") or {}
+        remote = get_mailbox(mailbox)
+        _validate_structured_folder_actions(document, list(remote.get("folders") or []))
+        script = generate_script(document)
+        result = validate_script(mailbox, script)
+        return jsonify(
+            {
+                "ok": True,
+                "script": script,
+                "script_hash": result.get("script_hash") or script_hash(script),
+                "message": result.get("message") or "Sieve構文は正常です",
+            }
+        )
+    except SieveRuleError as exc:
+        return _json_error(str(exc), 400)
+    except MailFilterAgentError as exc:
+        return _json_error(str(exc), 502)
+
+
+@mail_filters_bp.post("/api/deploy")
+def api_deploy():
+    payload = request.get_json(silent=True) or {}
+    try:
+        mailbox = normalize_mailbox(payload.get("mailbox"))
+        expected_hash = str(payload.get("expected_hash") or "")
+        document = payload.get("document") or {}
+        remote = get_mailbox(mailbox)
+        if str(remote.get("script_hash") or "") != expected_hash:
+            return _json_error(
+                "メールサーバー側のフィルターが更新されています。再取得してから保存してください。",
+                409,
+            )
+        _validate_structured_folder_actions(document, list(remote.get("folders") or []))
+        script = generate_script(document)
+        deploy_result = deploy_script(
+            mailbox,
+            script,
+            expected_hash=expected_hash,
+            actor=_actor(),
+        )
+        new_hash = str(deploy_result.get("script_hash") or script_hash(script))
+        version_id = record_version(
+            mailbox=mailbox,
+            document=document,
+            script_text=script,
+            script_hash=new_hash,
+            remote_hash_before=expected_hash,
+            source="mfu",
+            result="ok",
+            message="MFUからフィルターを反映しました",
+            deployed_by=_actor(),
+        )
+        current_app.logger.info(
+            "MAIL_FILTER_DEPLOY mailbox=%s version_id=%s old_hash=%s new_hash=%s actor=%s",
+            mailbox,
+            version_id,
+            expected_hash,
+            new_hash,
+            _actor(),
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "version_id": version_id,
+                "script_hash": new_hash,
+                "backup": deploy_result.get("backup") or "",
+                "active_target": deploy_result.get("active_target") or "",
+            }
+        )
+    except SieveRuleError as exc:
+        return _json_error(str(exc), 400)
+    except MailFilterAgentError as exc:
+        status = 409 if "更新されています" in str(exc) else 502
+        return _json_error(str(exc), status)
+
+
+@mail_filters_bp.post("/api/restore")
+def api_restore():
+    payload = request.get_json(silent=True) or {}
+    try:
+        version_id = int(payload.get("version_id") or 0)
+        expected_hash = str(payload.get("expected_hash") or "")
+    except (TypeError, ValueError):
+        return _json_error("履歴IDが不正です")
+    version = get_version(version_id)
+    if not version or not version.get("document"):
+        return _json_error("復元対象の履歴が見つかりません", 404)
+    mailbox = str(version["mailbox"])
+    try:
+        remote = get_mailbox(mailbox)
+        if str(remote.get("script_hash") or "") != expected_hash:
+            return _json_error(
+                "メールサーバー側のフィルターが更新されています。再取得してください。",
+                409,
+            )
+        script = str(version.get("script_text") or generate_script(version["document"]))
+        deploy_result = deploy_script(
+            mailbox,
+            script,
+            expected_hash=expected_hash,
+            actor=_actor(),
+        )
+        new_hash = str(deploy_result.get("script_hash") or script_hash(script))
+        new_version_id = record_version(
+            mailbox=mailbox,
+            document=version["document"],
+            script_text=script,
+            script_hash=new_hash,
+            remote_hash_before=expected_hash,
+            source="restore",
+            result="ok",
+            message=f"履歴ID {version_id} を復元しました",
+            deployed_by=_actor(),
+        )
+        current_app.logger.info(
+            "MAIL_FILTER_RESTORE mailbox=%s source_version=%s new_version=%s actor=%s",
+            mailbox,
+            version_id,
+            new_version_id,
+            _actor(),
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "version_id": new_version_id,
+                "script_hash": new_hash,
+            }
+        )
+    except (MailFilterAgentError, SieveRuleError) as exc:
+        return _json_error(str(exc), 502 if isinstance(exc, MailFilterAgentError) else 400)

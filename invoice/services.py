@@ -2288,7 +2288,9 @@ def get_invoice_discord_webhook_url() -> str | None:
         row = cur.fetchone()
         if not row:
             return None
-        return row[0] if isinstance(row, tuple) else row.get("webhook_url")
+        legacy = row[0] if isinstance(row, tuple) else row.get("webhook_url")
+        from app.discord_notifications.repository import get_discord_webhook
+        return get_discord_webhook("invoice_payment", legacy) or None
     except Exception:
         logging.exception("failed to load invoice discord webhook url")
         return None

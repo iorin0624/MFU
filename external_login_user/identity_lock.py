@@ -47,14 +47,19 @@ def lock_deleted_identity(
     return identity_hash
 
 
-def is_deleted_identity_locked(cur, *, provider: str, social_id: str) -> bool:
+def get_deleted_identity_lock(
+    cur,
+    *,
+    provider: str,
+    social_id: str,
+) -> tuple[bool, int | None]:
     normalized_provider = (provider or "").strip().lower()
     identity_hash = social_identity_hash(normalized_provider, social_id)
     if not identity_hash:
-        return False
+        return False, None
     cur.execute(
         """
-        SELECT 1
+        SELECT original_user_id
           FROM external_login_deleted_identity
          WHERE provider=%s
            AND identity_hash=%s
@@ -62,4 +67,21 @@ def is_deleted_identity_locked(cur, *, provider: str, social_id: str) -> bool:
         """,
         (normalized_provider, identity_hash),
     )
-    return cur.fetchone() is not None
+    row = cur.fetchone()
+    if row is None:
+        return False, None
+
+    if isinstance(row, dict):
+        original_user_id = row.get("original_user_id")
+    else:
+        original_user_id = row[0]
+    return True, int(original_user_id) if original_user_id is not None else None
+
+
+def is_deleted_identity_locked(cur, *, provider: str, social_id: str) -> bool:
+    locked, _original_user_id = get_deleted_identity_lock(
+        cur,
+        provider=provider,
+        social_id=social_id,
+    )
+    return locked

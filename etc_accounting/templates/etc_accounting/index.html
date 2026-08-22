@@ -1,0 +1,646 @@
+{% extends "base.html" %}
+{% block title %}ETC利用証明書{% endblock %}
+{% block head_extra %}
+<style>
+  .etc-card { border: 1px solid #dbe3ec; border-radius: 14px; box-shadow: 0 4px 14px rgba(25, 45, 70, .07); }
+  .etc-card-deleted { background: #f8f9fa; border-color: #adb5bd; }
+  .etc-route { font-size: 1.05rem; font-weight: 700; }
+  .etc-route-time { color: #52657a; font-size: .92em; font-weight: 650; white-space: nowrap; }
+  .etc-travel-duration { color: #607080; font-size: .86rem; margin-top: .15rem; }
+  .etc-amount { font-size: 1.35rem; font-weight: 700; }
+  .etc-meta { color: #607080; font-size: .9rem; }
+  .etc-batch-toolbar { position: sticky; top: .5rem; z-index: 20; }
+  .etc-batch-select { border-bottom: 1px solid #edf1f5; margin: -0.15rem 0 .75rem; padding-bottom: .55rem; }
+  .etc-batch-select .form-check-input { width: 1.2rem; height: 1.2rem; }
+  .etc-travel-select { border-bottom: 1px solid #dbeafe; margin: -.15rem 0 .75rem; padding-bottom: .55rem; }
+  .etc-travel-select .form-check-input { width: 1.2rem; height: 1.2rem; }
+  .etc-travel-selected { border-color: #0dcaf0; box-shadow: 0 0 0 3px rgba(13, 202, 240, .16), 0 4px 14px rgba(25, 45, 70, .07); }
+  .etc-travel-highlight { animation: etc-travel-highlight 1.25s ease; }
+  .etc-travel-summary-panel {
+    bottom: 1rem;
+    left: 50%;
+    max-width: 900px;
+    position: fixed;
+    transform: translateX(-50%);
+    width: calc(100vw - 1.5rem);
+    z-index: 1050;
+  }
+  .etc-travel-summary-details { max-height: min(32vh, 260px); overflow-y: auto; }
+  body.etc-travel-summary-open { padding-bottom: min(48vh, 390px); }
+  @keyframes etc-travel-highlight {
+    0%, 100% { background-color: transparent; }
+    35% { background-color: rgba(13, 202, 240, .16); }
+  }
+</style>
+{% endblock %}
+{% block content %}
+{% macro route_time(value) -%}
+  {%- if value -%}{{ value.month }}/{{ value.day }} {{ value.strftime('%H:%M') }}{%- endif -%}
+{%- endmacro %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-1">ETC利用証明書</h1>
+    <div class="text-muted">1件ずつの確認登録に加え、登録可能な明細はまとめてfreee APIへ登録できます。</div>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <span class="badge {{ 'bg-success' if freee_connected else 'bg-danger' }} align-self-center">freee {{ '接続済み' if freee_connected else '未接続' }}</span>
+    <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.settings') }}">freee・自動ログイン設定</a>
+    {% if is_admin %}
+    <form method="post" action="{{ url_for('etc_accounting.discord_test') }}" onsubmit="return confirm('管理者に設定されているDiscord Webhookへテスト通知を1通送信します。よろしいですか？');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-outline-info" type="submit">Discordテスト通知</button>
+    </form>
+    {% endif %}
+    <button class="btn btn-outline-primary" type="button" id="etcLoginButton">ETCブラウザー（VNC）</button>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-5">
+        <label class="form-label">ETCログイン状態</label>
+        <div id="etcLoginStatus" class="form-control bg-light">確認前</div>
+        <div id="etcBrowserWarning" class="alert alert-warning py-2 px-3 mt-2 mb-0 d-none" role="alert"></div>
+      </div>
+      <div class="col-md-4">
+        <form method="post" action="{{ url_for('etc_accounting.refresh') }}" class="row g-2" id="etcRefreshForm">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="col-7">
+            <label class="form-label" for="month">取得対象月</label>
+            <select class="form-select" id="month" name="month" required>
+              {% for option in month_options %}
+              <option value="{{ option.value }}">{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-5 d-flex align-items-end"><button class="btn btn-primary w-100" id="etcRefreshButton">取得開始</button></div>
+          <div class="col-12 d-none" id="etcRefreshProgress" role="status" aria-live="polite"></div>
+        </form>
+      </div>
+      <div class="col-md-3 small text-muted">定期処理では当月と前月を確認し、未取得分だけ保存します。</div>
+    </div>
+    <div class="small text-muted text-end mt-2">
+      最終自動更新：{% if scheduled_fetch_state and scheduled_fetch_state.last_completed_at %}{{ scheduled_fetch_state.last_completed_at.strftime('%Y年%m月%d日 %H:%M') }}{% else %}未実行{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+  {% for value, label in [('', 'すべて'), ('pending', '登録待ち'), ('error', 'エラー'), ('registered', '登録済み'), ('deleted', '削除された明細')] %}
+    <a class="btn btn-sm {{ ('btn-danger' if value == 'deleted' else 'btn-primary') if selected_status == value else ('btn-outline-danger' if value == 'deleted' else 'btn-outline-primary') }}" href="{{ url_for('etc_accounting.index', status=value, date_from=selected_date_from, date_to=selected_date_to, operator=selected_operator) }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+{% if selected_status == 'deleted' %}
+<div class="alert alert-secondary">
+  ETC利用照会サービス側から削除された明細です。MFUでは確認用にデータとPDFを保持し、照会サービスへ復活した場合は通常一覧へ自動的に戻します。
+</div>
+{% endif %}
+
+<form method="get" class="card mb-3">
+  <div class="card-body row g-3 align-items-end">
+    <input type="hidden" name="status" value="{{ selected_status }}">
+    <div class="col-sm-6 col-lg-3">
+      <label class="form-label" for="dateFrom">利用日（開始）</label>
+      <input class="form-control" type="date" id="dateFrom" name="date_from" value="{{ selected_date_from }}">
+    </div>
+    <div class="col-sm-6 col-lg-3">
+      <label class="form-label" for="dateTo">利用日（終了）</label>
+      <input class="form-control" type="date" id="dateTo" name="date_to" value="{{ selected_date_to }}">
+    </div>
+    <div class="col-lg-4">
+      <label class="form-label" for="operatorFilter">管轄会社</label>
+      <select class="form-select" id="operatorFilter" name="operator">
+        <option value="">すべて</option>
+        {% for operator_name in operator_options %}
+        <option value="{{ operator_name }}" {{ 'selected' if selected_operator == operator_name else '' }}>{{ operator_name }}</option>
+        {% endfor %}
+        <option value="__unmatched__" {{ 'selected' if selected_operator == '__unmatched__' else '' }}>未特定・候補複数</option>
+      </select>
+    </div>
+    <div class="col-lg-2 d-flex gap-2">
+      <button class="btn btn-primary flex-fill" type="submit">絞り込み</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index', status=selected_status) }}">クリア</a>
+    </div>
+  </div>
+</form>
+
+<div class="d-flex flex-wrap justify-content-end align-items-center gap-2 mb-3">
+  <span class="small text-muted">CSVは利用日時の古い順で出力します。</span>
+  <div class="dropdown">
+    <button class="btn btn-outline-success dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+      CSVダウンロード
+    </button>
+    <ul class="dropdown-menu dropdown-menu-end">
+      <li>
+        <a class="dropdown-item" href="{{ url_for('etc_accounting.export_csv', scope='filtered', status=selected_status, date_from=selected_date_from, date_to=selected_date_to, operator=selected_operator) }}">
+          現在の絞り込み結果
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item" href="{{ url_for('etc_accounting.export_csv', scope='all') }}">
+          全件
+        </a>
+      </li>
+    </ul>
+  </div>
+</div>
+
+{% if selected_status != 'deleted' %}
+<div class="card border-info-subtle mb-3" id="travelAggregationToolbar">
+  <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+    <strong>走行時間集計</strong>
+    <span class="small text-muted" id="travelEligibleCount"></span>
+    <button class="btn btn-sm btn-outline-info ms-md-auto" type="button" id="travelAggregationToggle">
+      走行時間を集計
+    </button>
+    <div class="d-none flex-wrap gap-2" id="travelAggregationControls">
+      <button class="btn btn-sm btn-outline-primary" type="button" id="selectAllTravelRecords">表示中を全選択</button>
+      <button class="btn btn-sm btn-outline-secondary" type="button" id="clearTravelRecords">選択解除</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if is_admin and selected_status != 'deleted' %}
+<form id="etcBatchSelectionForm" method="post" action="{{ url_for('etc_accounting.batch_confirm') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+</form>
+<div class="etc-batch-toolbar card border-primary-subtle shadow-sm mb-3">
+  <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+    <strong>一括登録</strong>
+    <button class="btn btn-sm btn-outline-primary" type="button" id="selectEligibleBatch">登録可能な明細を全選択</button>
+    <button class="btn btn-sm btn-outline-secondary" type="button" id="clearBatchSelection">選択解除</button>
+    <span class="text-muted small" id="batchSelectionCount">0件選択</span>
+    <button class="btn btn-sm btn-success ms-md-auto" id="batchConfirmButton" type="submit" form="etcBatchSelectionForm" disabled>
+      選択した明細をfreeeへ一括登録
+    </button>
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-3">
+  {% for record in records %}
+  <div class="col-12 col-xl-6">
+    <article class="etc-card h-100 p-3{% if record.source_deleted %} etc-card-deleted{% endif %}" id="etc-record-{{ record.id }}">
+      {% if record.source_deleted %}
+      <div class="alert alert-secondary py-2 mb-3 small">
+        <strong>ETC利用照会サービスから削除済み</strong>
+        {% if record.source_deleted_at %}<br>検出日時：{{ record.source_deleted_at.strftime('%Y年%m月%d日 %H:%M') }}{% endif %}
+      </div>
+      {% endif %}
+      {% if not record.source_deleted %}
+      <div class="etc-travel-select d-none align-items-center gap-2">
+        <input
+          class="form-check-input etc-travel-checkbox m-0"
+          type="checkbox"
+          id="travel-record-{{ record.id }}"
+          value="{{ record.id }}"
+          aria-label="明細 {{ record.id }} を走行時間集計に使用する"
+          {% if record.travel_duration_minutes is none %}disabled{% endif %}
+          {% if record.travel_duration_minutes is not none %}
+          data-record-id="{{ record.id }}"
+          data-duration-minutes="{{ record.travel_duration_minutes }}"
+          data-sort-key="{{ record.entry_at.strftime('%Y%m%d%H%M') }}"
+          data-exit-sort-key="{{ record.exit_at.strftime('%Y%m%d%H%M') }}"
+          data-entry-ic="{{ record.entry_ic or '入口記録なし' }}"
+          data-entry-display="{{ record.entry_at.strftime('%Y/%m/%d %H:%M') }}"
+          data-exit-ic="{{ record.exit_ic or '出口記録なし' }}"
+          data-exit-display="{{ record.exit_at.strftime('%Y/%m/%d %H:%M') }}"
+          {% endif %}
+        >
+        <label for="travel-record-{{ record.id }}" class="small {{ 'text-info-emphasis' if record.travel_duration_minutes is not none else 'text-muted' }}">
+          {{ '走行時間集計に選択' if record.travel_duration_minutes is not none else '入出時刻不足のため集計不可' }}
+        </label>
+      </div>
+      {% endif %}
+      {% if is_admin and not record.source_deleted %}
+      <div class="etc-batch-select d-flex align-items-center gap-2">
+        <input
+          class="form-check-input etc-batch-checkbox m-0"
+          type="checkbox"
+          name="record_ids"
+          value="{{ record.id }}"
+          form="etcBatchSelectionForm"
+          aria-label="明細 {{ record.id }} を一括登録対象にする"
+          {% if not record.batch_eligible %}disabled{% endif %}
+        >
+        <span class="small {{ 'text-success' if record.batch_eligible else 'text-muted' }}">
+          {{ '一括登録可能' if record.batch_eligible else record.batch_reason }}
+        </span>
+      </div>
+      {% endif %}
+      <div class="d-flex justify-content-between gap-3 mb-2">
+        <div>
+          <div class="etc-meta">
+            {{ record.used_at.strftime('%Y年%m月%d日' if record.entry_at or record.exit_at else '%Y年%m月%d日 %H:%M') }}
+          </div>
+          <div class="etc-route">
+            {{ record.entry_ic or '入口記録なし' }}
+            {% if record.entry_at %}<span class="etc-route-time">{{ route_time(record.entry_at) }}</span>{% endif %}
+            <span class="text-muted">→</span>
+            {{ record.exit_ic or '出口記録なし' }}
+            {% if record.exit_at %}<span class="etc-route-time">{{ route_time(record.exit_at) }}</span>{% endif %}
+          </div>
+          {% if record.travel_duration %}
+          <div class="etc-travel-duration">走行時間 {{ record.travel_duration }}</div>
+          {% endif %}
+        </div>
+        <div class="etc-amount">¥{{ '{:,}'.format(record.amount) }}</div>
+      </div>
+      <div class="etc-meta mb-3">{{ record.remarks or '' }}{% if record.card_mask %} ／ {{ record.card_mask }}{% endif %}</div>
+      {% if record.tollgate_match_status == 'matched' %}
+      <div class="small text-muted mb-2">
+        管轄：{{ record.tollgate_operator_name }}
+        {% if record.tollgate_road_name %} ／ {{ record.tollgate_road_name }}{% endif %}
+      </div>
+      {% elif record.tollgate_match_status %}
+      <div class="small text-warning-emphasis mb-2">
+        管轄会社：未特定{% if record.tollgate_match_status == 'ambiguous' %}（候補複数）{% endif %}
+      </div>
+      {% endif %}
+      {% if record.invoice_registration_number %}
+      <div class="small text-muted mb-2">
+        登録番号：{{ record.invoice_registration_number }}
+        {% if record.invoice_issuer_name %} ／ {{ record.invoice_issuer_name }}{% endif %}
+        {% if record.registration_mapping_ready %}
+          <br>freee：{{ record.registration_mapping.partner_name }} ／ {{ record.registration_mapping.item_name }}
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        {% if record.source_deleted %}<span class="badge bg-secondary">照会サービスから削除</span>{% endif %}
+        {% if record.status == 'registered' %}<span class="badge bg-success">freee登録済み</span>
+        {% elif record.status == 'updating' %}<span class="badge bg-warning text-dark">freee更新中</span>
+        {% elif record.is_provisional %}<span class="badge bg-warning text-dark">料金確認中</span>
+        {% elif record.status == 'error' %}<span class="badge bg-danger">登録エラー</span>
+        {% elif record.status == 'registering' %}<span class="badge bg-warning text-dark">登録処理中</span>
+        {% else %}<span class="badge bg-secondary">登録待ち</span>{% endif %}
+        {% if record.pdf_path %}<a class="btn btn-sm btn-outline-secondary" target="_blank" href="{{ url_for('etc_accounting.pdf', record_id=record.id) }}">PDF確認</a>{% endif %}
+        {% if not record.source_deleted and record.status == 'registered' and record.registration_mapping_ready %}
+        <form method="post" action="{{ url_for('etc_accounting.update_freee', record_id=record.id) }}" class="ms-auto" onsubmit="return confirm('既存のfreee取引を最新の取引先・品目で更新します。freee側で削除済みの場合だけ新規再登録します。実行しますか？');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="confirm" value="1">
+          <input type="hidden" name="return_status" value="{{ selected_status }}">
+          <button class="btn btn-sm btn-outline-success">freee登録内容を更新</button>
+        </form>
+        {% elif not record.source_deleted and record.status == 'registered' and not record.registration_mapping_ready %}
+        <a class="btn btn-sm btn-warning ms-auto" href="{{ url_for('etc_accounting.settings') }}#registration-mappings">取引先・品目を設定</a>
+        {% elif not record.source_deleted and record.is_provisional %}
+        <button class="btn btn-sm btn-outline-secondary ms-auto" type="button" disabled>料金確定後に登録可</button>
+        {% elif not record.source_deleted and record.status != 'registered' and not record.pdf_path %}
+        <button class="btn btn-sm btn-outline-secondary ms-auto" type="button" disabled>PDF取得待ち</button>
+        {% elif not record.source_deleted and record.status != 'registered' and not record.registration_mapping_ready %}
+        <a class="btn btn-sm btn-warning ms-auto" href="{{ url_for('etc_accounting.settings') }}#registration-mappings">取引先・品目を設定</a>
+        {% elif not record.source_deleted and record.status != 'registered' and record.pdf_path %}
+        <form method="post" action="{{ url_for('etc_accounting.register', record_id=record.id) }}" class="ms-auto" onsubmit="return confirm('このETC明細とPDFをfreeeへ登録しますか？');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="confirm" value="1">
+          <input type="hidden" name="return_status" value="{{ selected_status }}">
+          <button class="btn btn-sm btn-success">freeeへ登録</button>
+        </form>
+        {% endif %}
+      </div>
+      {% if record.freee_deal_id %}<div class="small text-muted mt-2">取引ID: {{ record.freee_deal_id }} ／ 証憑ID: {{ record.freee_receipt_id }}</div>{% endif %}
+      {% if record.freee_error %}<div class="alert alert-danger py-2 mt-2 mb-0 small">{{ record.freee_error }}</div>{% endif %}
+    </article>
+  </div>
+  {% else %}
+  <div class="col-12"><div class="alert alert-light border">対象のETC明細はありません。</div></div>
+  {% endfor %}
+</div>
+
+<div class="etc-travel-summary-panel d-none" id="travelSummaryPanel" aria-live="polite">
+  <div class="card border-info shadow-lg">
+    <div class="card-header bg-info-subtle d-flex flex-wrap align-items-center gap-2">
+      <strong>走行時間集計</strong>
+      <span class="badge text-bg-info" id="travelSelectedCount">0件選択</span>
+      <strong class="ms-auto" id="travelTotalDuration">選択範囲の経過時間 —</strong>
+    </div>
+    <div class="card-body p-2">
+      <div class="small text-muted px-2 pb-2" id="travelSummaryMessage">2件以上選択してください。</div>
+      <div class="list-group list-group-flush etc-travel-summary-details" id="travelSummaryDetails"></div>
+    </div>
+  </div>
+</div>
+
+<details class="mt-4">
+  <summary>取得履歴</summary>
+  <div class="table-responsive mt-2">
+    <table class="table table-sm"><thead><tr><th>開始</th><th>対象月</th><th>状態</th><th>件数</th><th>内容</th></tr></thead><tbody>
+      {% for run in runs %}<tr><td>{{ run.started_at }}</td><td>{{ run.statement_month }}</td><td>{{ run.status }}</td><td>{{ run.downloaded_count }}/{{ run.found_count }}</td><td class="small">{{ run.error_text or '' }}</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</details>
+
+{% if is_admin and batch_jobs %}
+<details class="mt-3">
+  <summary>一括登録履歴</summary>
+  <div class="table-responsive mt-2">
+    <table class="table table-sm align-middle">
+      <thead><tr><th>開始</th><th>状態</th><th>成功</th><th>失敗</th><th></th></tr></thead>
+      <tbody>
+      {% for job in batch_jobs %}
+        <tr>
+          <td>{{ job.created_at }}</td>
+          <td>{{ job.status }}</td>
+          <td>{{ job.success_count }}/{{ job.total_count }}</td>
+          <td>{{ job.failure_count + job.skipped_count }}</td>
+          <td><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('etc_accounting.batch_progress', job_id=job.id) }}">詳細</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+
+<script>
+(() => {
+  const form = document.getElementById('etcRefreshForm');
+  const button = document.getElementById('etcRefreshButton');
+  const progress = document.getElementById('etcRefreshProgress');
+  if (!form || !button || !progress) return;
+
+  const statusUrlTemplate = {{ url_for('etc_accounting.refresh_job_status', job_id='__JOB_ID__')|tojson }};
+  const setProgress = (message, level = 'info') => {
+    progress.textContent = message;
+    progress.className = `col-12 alert alert-${level} py-2 px-3 mb-0`;
+  };
+  const finishWithoutReload = (message, level) => {
+    setProgress(message, level);
+    button.disabled = false;
+    button.textContent = '取得開始';
+  };
+  const resultSummary = (result) => {
+    const parts = [];
+    if (Number(result.new_count || 0)) parts.push(`新規 ${result.new_count}件`);
+    if (Number(result.finalized_count || 0)) parts.push(`料金確定 ${result.finalized_count}件`);
+    if (Number(result.updated_count || 0)) parts.push(`更新 ${result.updated_count}件`);
+    if (Number(result.deleted_count || 0)) parts.push(`削除 ${result.deleted_count}件`);
+    if (Number(result.restored_count || 0)) parts.push(`復活 ${result.restored_count}件`);
+    return parts.join('、');
+  };
+  const poll = async (jobId) => {
+    try {
+      const response = await fetch(statusUrlTemplate.replace('__JOB_ID__', jobId), {
+        headers: {'Accept': 'application/json'},
+        cache: 'no-store',
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (data.status === 'pending' || data.status === 'running') {
+        setProgress(data.status === 'pending' ? '取得処理の開始を待っています…' : 'ETC明細を取得しています…', 'info');
+        window.setTimeout(() => poll(jobId), 2000);
+        return;
+      }
+      if (data.status === 'success') {
+        const result = data.result || {};
+        const changeCount = Number(result.change_count || 0);
+        const summary = resultSummary(result);
+        const discordWarning = data.notificationError ? ` Discord通知エラー: ${data.notificationError}` : '';
+        if (changeCount > 0) {
+          setProgress(`取得完了：${summary || `${changeCount}件更新`}。画面を更新します。${discordWarning}`, data.notificationError ? 'warning' : 'success');
+          window.setTimeout(() => window.location.reload(), 1000);
+        } else {
+          finishWithoutReload(`取得完了：更新された明細はありません。${discordWarning}`, data.notificationError ? 'warning' : 'success');
+        }
+        return;
+      }
+      if (data.status === 'maintenance') {
+        finishWithoutReload(data.result?.message || 'ETC側メンテナンス中です。', 'info');
+        return;
+      }
+      finishWithoutReload(data.result?.error || data.error || 'ETC明細の取得に失敗しました。', 'danger');
+    } catch (error) {
+      finishWithoutReload(`取得状態を確認できませんでした: ${error}`, 'danger');
+    }
+  };
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    button.textContent = '取得中…';
+    setProgress('取得処理を開始しています…', 'info');
+    try {
+      const response = await fetch(form.action, {
+        method: 'POST',
+        headers: {'Accept': 'application/json'},
+        body: new FormData(form),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      poll(data.jobId);
+    } catch (error) {
+      finishWithoutReload(`取得を開始できませんでした: ${error}`, 'danger');
+    }
+  });
+})();
+
+(() => {
+  const token = {{ csrf_token|tojson }};
+  const status = document.getElementById('etcLoginStatus');
+  const warning = document.getElementById('etcBrowserWarning');
+  function showWarning(message) {
+    if (!warning) return;
+    warning.textContent = message || '';
+    warning.classList.toggle('d-none', !message);
+  }
+  async function refreshStatus() {
+    try {
+      const response = await fetch({{ url_for('etc_accounting.browser_status')|tojson }});
+      const data = await response.json();
+      status.textContent = data.ok
+        ? (data.loggedIn ? 'ログイン済み（自動ログイン有効）' : (data.error || '再ログインが必要です'))
+        : (data.error || '確認失敗');
+      status.className = 'form-control ' + (data.loggedIn ? 'bg-success-subtle' : (data.maintenance ? 'bg-info-subtle' : 'bg-warning-subtle'));
+      showWarning(data.maintenance ? '' : (data.warning || ''));
+    } catch (error) {
+      status.textContent = '確認失敗: ' + error;
+      showWarning('ETCログイン状態を確認できませんでした。');
+    }
+  }
+  document.getElementById('etcLoginButton').addEventListener('click', async () => {
+    const vncWindow = window.open('about:blank', '_blank');
+    if (!vncWindow) {
+      alert('VNC画面を開けませんでした。ブラウザーのポップアップを許可してください。');
+      return;
+    }
+    vncWindow.opener = null;
+    try {
+      const response = await fetch({{ url_for('etc_accounting.browser_start')|tojson }}, {method:'POST', headers:{'X-CSRF-Token':token}});
+      const data = await response.json();
+      if (!data.ok) {
+        vncWindow.close();
+        alert(data.error || 'ETCブラウザーを開始できません。');
+        return;
+      }
+      vncWindow.location.replace(data.url);
+      showWarning(data.maintenance ? '' : (data.warning || ''));
+      refreshStatus();
+    } catch (error) {
+      vncWindow.close();
+      alert('ETCブラウザーを開始できませんでした: ' + error);
+    }
+  });
+  refreshStatus();
+})();
+
+(() => {
+  const toggle = document.getElementById('travelAggregationToggle');
+  const controls = document.getElementById('travelAggregationControls');
+  const panel = document.getElementById('travelSummaryPanel');
+  const eligibleCount = document.getElementById('travelEligibleCount');
+  const selectedCount = document.getElementById('travelSelectedCount');
+  const totalDuration = document.getElementById('travelTotalDuration');
+  const message = document.getElementById('travelSummaryMessage');
+  const details = document.getElementById('travelSummaryDetails');
+  const selectAll = document.getElementById('selectAllTravelRecords');
+  const clear = document.getElementById('clearTravelRecords');
+  const selectionRows = Array.from(document.querySelectorAll('.etc-travel-select'));
+  const checkboxes = Array.from(document.querySelectorAll('.etc-travel-checkbox'));
+  const eligible = checkboxes.filter((checkbox) => !checkbox.disabled);
+  if (!toggle || !controls || !panel || !eligibleCount || !selectedCount || !totalDuration || !message || !details || !selectAll || !clear) return;
+
+  let active = false;
+  const formatDuration = (totalMinutes) => {
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const remaining = totalMinutes % (24 * 60);
+    const hours = Math.floor(remaining / 60);
+    const minutes = remaining % 60;
+    const clock = `${hours}:${String(minutes).padStart(2, '0')}`;
+    return days > 0 ? `${days}日 ${clock}` : clock;
+  };
+  const compactDateToMinutes = (value) => {
+    const text = String(value || '');
+    if (!/^\d{12}$/.test(text)) return Number.NaN;
+    return Date.UTC(
+      Number(text.slice(0, 4)),
+      Number(text.slice(4, 6)) - 1,
+      Number(text.slice(6, 8)),
+      Number(text.slice(8, 10)),
+      Number(text.slice(10, 12)),
+    ) / 60000;
+  };
+  const selectedRecords = () => eligible
+    .filter((checkbox) => checkbox.checked)
+    .sort((left, right) => left.dataset.sortKey.localeCompare(right.dataset.sortKey));
+  const scrollToRecord = (recordId) => {
+    const card = document.getElementById(`etc-record-${recordId}`);
+    if (!card) return;
+    card.scrollIntoView({behavior: 'smooth', block: 'center'});
+    card.classList.remove('etc-travel-highlight');
+    window.setTimeout(() => card.classList.add('etc-travel-highlight'), 20);
+    window.setTimeout(() => card.classList.remove('etc-travel-highlight'), 1400);
+  };
+  const update = () => {
+    const selected = selectedRecords();
+    selectedCount.textContent = `${selected.length}件選択`;
+    details.replaceChildren();
+    checkboxes.forEach((checkbox) => {
+      checkbox.closest('.etc-card')?.classList.toggle('etc-travel-selected', checkbox.checked);
+    });
+
+    selected.forEach((checkbox, index) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'list-group-item list-group-item-action text-start';
+
+      const route = document.createElement('div');
+      route.className = 'fw-semibold';
+      route.textContent = `${index + 1}. ${checkbox.dataset.entryIc} ${checkbox.dataset.entryDisplay} → ${checkbox.dataset.exitIc} ${checkbox.dataset.exitDisplay}`;
+
+      const duration = document.createElement('div');
+      duration.className = 'small text-muted mt-1';
+      duration.textContent = `走行時間 ${formatDuration(Number(checkbox.dataset.durationMinutes))}`;
+
+      item.append(route, duration);
+      item.addEventListener('click', () => scrollToRecord(checkbox.dataset.recordId));
+      details.append(item);
+    });
+
+    if (selected.length >= 2) {
+      const earliest = selected.reduce(
+        (current, checkbox) => checkbox.dataset.sortKey < current.dataset.sortKey ? checkbox : current,
+        selected[0],
+      );
+      const latest = selected.reduce(
+        (current, checkbox) => checkbox.dataset.exitSortKey > current.dataset.exitSortKey ? checkbox : current,
+        selected[0],
+      );
+      const elapsedMinutes = Math.max(
+        0,
+        compactDateToMinutes(latest.dataset.exitSortKey)
+          - compactDateToMinutes(earliest.dataset.sortKey),
+      );
+      totalDuration.textContent = `選択範囲の経過時間 ${formatDuration(elapsedMinutes)}`;
+      message.textContent = `計算範囲：${earliest.dataset.entryIc} ${earliest.dataset.entryDisplay} → ${latest.dataset.exitIc} ${latest.dataset.exitDisplay}（途中の空き時間を含みます）`;
+    } else if (selected.length === 1) {
+      totalDuration.textContent = '選択範囲の経過時間 —';
+      message.textContent = 'あと1件選択してください。';
+    } else {
+      totalDuration.textContent = '選択範囲の経過時間 —';
+      message.textContent = '2件以上選択してください。';
+    }
+  };
+  const setActive = (enabled) => {
+    active = enabled;
+    selectionRows.forEach((row) => {
+      row.classList.toggle('d-none', !active);
+      row.classList.toggle('d-flex', active);
+    });
+    controls.classList.toggle('d-none', !active);
+    controls.classList.toggle('d-flex', active);
+    panel.classList.toggle('d-none', !active);
+    document.body.classList.toggle('etc-travel-summary-open', active);
+    toggle.textContent = active ? '集計を終了' : '走行時間を集計';
+    if (!active) {
+      checkboxes.forEach((checkbox) => { checkbox.checked = false; });
+    }
+    update();
+  };
+
+  eligibleCount.textContent = `集計可能 ${eligible.length}件`;
+  toggle.disabled = eligible.length < 2;
+  if (eligible.length < 2) {
+    toggle.title = '入出時刻が揃った明細が2件以上必要です。';
+  }
+  toggle.addEventListener('click', () => setActive(!active));
+  selectAll.addEventListener('click', () => {
+    eligible.forEach((checkbox) => { checkbox.checked = true; });
+    update();
+  });
+  clear.addEventListener('click', () => {
+    checkboxes.forEach((checkbox) => { checkbox.checked = false; });
+    update();
+  });
+  checkboxes.forEach((checkbox) => checkbox.addEventListener('change', update));
+  update();
+})();
+
+(() => {
+  const checkboxes = Array.from(document.querySelectorAll('.etc-batch-checkbox:not(:disabled)'));
+  const count = document.getElementById('batchSelectionCount');
+  const submit = document.getElementById('batchConfirmButton');
+  const selectAll = document.getElementById('selectEligibleBatch');
+  const clear = document.getElementById('clearBatchSelection');
+  if (!count || !submit || !selectAll || !clear) return;
+  const update = () => {
+    const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
+    count.textContent = `${selected}件選択`;
+    submit.disabled = selected === 0;
+  };
+  checkboxes.forEach((checkbox) => checkbox.addEventListener('change', update));
+  selectAll.addEventListener('click', () => {
+    checkboxes.slice(0, {{ 50 }}).forEach((checkbox) => { checkbox.checked = true; });
+    update();
+  });
+  clear.addEventListener('click', () => {
+    checkboxes.forEach((checkbox) => { checkbox.checked = false; });
+    update();
+  });
+  update();
+})();
+</script>
+{% endblock %}

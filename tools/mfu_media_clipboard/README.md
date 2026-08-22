@@ -1,6 +1,6 @@
 # MFU Media Clipboard
 
-Instagram / X の投稿 URL をクリップボードから検出し、MFU Image Viewer に遠隔保存する Windows 常駐アプリです。
+Instagramの投稿・ストーリー / Threads / X の URL をクリップボードから検出し、MFU Image Viewer に遠隔保存する Windows 常駐アプリです。
 
 ## 使い方
 
@@ -9,10 +9,13 @@ Instagram / X の投稿 URL をクリップボードから検出し、MFU Image 
    - 普段使っている Chrome で認可画面を開きます。
    - Chrome でログイン後、「MFU Media Clipboard を許可しますか？」画面で許可します。
    - アプリは `127.0.0.1` の一時 callback で専用APIトークンを受け取ります。
-3. Instagram / X の投稿 URL をコピーします。
+3. Instagramの投稿・ストーリー / Threads / X の URL をコピーします。
 4. タスクトレイ通知をクリックし、確認画面から取得します。
 
+タスクトレイの「URLを指定して取得」では、Instagram / Threads / X のURLを改行区切りで最大20件まで指定できます。複数URLはサーバー負荷を抑えるため1件ずつ順番に取得し、各URLの選択・保存が終わると次へ進みます。クリップボード内の複数URLも同じように認識します。
+
 画像は保存先フォルダー、開始番号、桁数を指定して保存できます。開始番号は Web 版と同じ API で自動取得します。動画は Web 版と同じ動画保存 API を使います。
+「動画を写真で取得」では、動画の先頭付近のフレームをJPEGとして保存できます。
 
 ## 開発起動
 

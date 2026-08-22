@@ -21,9 +21,24 @@ DEFAULT_ALLOWED_EXTENSIONS = {
     ".png": "image/png",
     ".gif": "image/gif",
     ".pdf": "application/pdf",
+    ".heic": "image/heif-bmff",
+    ".heif": "image/heif-bmff",
+    ".cr2": "image/x-canon-cr2",
+    ".cr3": "image/x-canon-cr3",
+    ".nef": "image/tiff-raw",
+    ".nrw": "image/tiff-raw",
+    ".arw": "image/tiff-raw",
+    ".dng": "image/tiff-raw",
+    ".zip": "application/zip",
 }
 
+AUTH_NONE = "none"
+AUTH_PASSWORD = "password"
+AUTH_EMAIL_OTP = "email_otp"
+UPLOAD_AUTH_METHODS = {AUTH_NONE, AUTH_PASSWORD, AUTH_EMAIL_OTP}
+
 VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
+VIEW_AUTH_VERSION_SESSION_KEY = "view_auth_versions"
 VIEW_AUTH_MAX_ITEMS = 50
 _UUID32_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -88,7 +103,30 @@ def detect_mime_from_bytes(head: bytes) -> str:
         return "image/gif"
     if head.startswith(b"%PDF"):
         return "application/pdf"
+    if head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return "application/zip"
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12].lower()
+        compatible = head[8:64].lower()
+        if brand in {b"crx ", b"cr3 "} or b"crx " in compatible:
+            return "image/x-canon-cr3"
+        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"}:
+            return "image/heif-bmff"
+    if head.startswith((b"II*\x00", b"MM\x00*")):
+        if len(head) >= 12 and head[8:12] == b"CR\x02\x00":
+            return "image/x-canon-cr2"
+        return "image/tiff-raw"
     return "application/octet-stream"
+
+
+def normalize_upload_auth_method(value: object, *, require_password: object = False) -> str:
+    method = str(value or "").strip().lower()
+    if method in UPLOAD_AUTH_METHODS:
+        return method
+    password_enabled = str(require_password or "").strip().lower() in {
+        "1", "true", "t", "yes", "y", "on"
+    }
+    return AUTH_PASSWORD if password_enabled else AUTH_NONE
 
 
 def validate_upload_file(
@@ -126,27 +164,39 @@ def cleanup_legacy_view_auth_keys(current_uuid: str | None = None) -> None:
     for key in list(session.keys()):
         if not key.startswith("view_auth_"):
             continue
+        if key in {VIEW_AUTH_SESSION_KEY, VIEW_AUTH_VERSION_SESSION_KEY}:
+            continue
         if current_uuid and key == f"view_auth_{current_uuid}":
             continue
         session.pop(key, None)
 
 
-def grant_view_auth(uuid: str) -> None:
+def grant_view_auth(uuid: str, auth_version: int = 0) -> None:
     cleanup_legacy_view_auth_keys(current_uuid=uuid)
     allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
     if uuid in allowed:
-        return
-    session[VIEW_AUTH_SESSION_KEY] = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
+        session[VIEW_AUTH_SESSION_KEY] = allowed
+    else:
+        session[VIEW_AUTH_SESSION_KEY] = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
+    versions = dict(session.get(VIEW_AUTH_VERSION_SESSION_KEY) or {})
+    versions[uuid] = int(auth_version or 0)
+    allowed_now = set(session.get(VIEW_AUTH_SESSION_KEY) or [])
+    session[VIEW_AUTH_VERSION_SESSION_KEY] = {
+        key: value for key, value in versions.items() if key in allowed_now
+    }
 
 
-def has_view_auth(uuid: str) -> bool:
+def has_view_auth(uuid: str, auth_version: int | None = None) -> bool:
     allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
     if uuid in allowed:
-        return True
+        if auth_version is None:
+            return True
+        versions = session.get(VIEW_AUTH_VERSION_SESSION_KEY) or {}
+        return int(versions.get(uuid, -1)) == int(auth_version or 0)
 
     legacy_key = f"view_auth_{uuid}"
     if session.get(legacy_key):
-        grant_view_auth(uuid)
+        grant_view_auth(uuid, auth_version or 0)
         session.pop(legacy_key, None)
         return True
     return False
@@ -158,7 +208,8 @@ def hash_upload_password(password: str) -> str:
 
 def ensure_upload_password_schema() -> None:
     """
-    uploads.password_hash を追加し、legacy の平文 password を安全にハッシュ移行する。
+    uploads の認証列と files の公開状態列を追加し、
+    legacy の平文 password を安全にハッシュ移行する。
     再実行しても壊れないようにする。
     """
     db = get_db()
@@ -168,10 +219,82 @@ def ensure_upload_password_schema() -> None:
         columns = {row["Field"] for row in cur.fetchall()}
         if "password_hash" not in columns:
             cur.execute("ALTER TABLE uploads ADD COLUMN password_hash VARCHAR(255) NULL AFTER password")
+        if "auth_method" not in columns:
+            cur.execute(
+                "ALTER TABLE uploads ADD COLUMN auth_method VARCHAR(20) NOT NULL DEFAULT 'none' AFTER password_hash"
+            )
+        if "otp_email" not in columns:
+            cur.execute("ALTER TABLE uploads ADD COLUMN otp_email VARCHAR(320) NULL AFTER auth_method")
+        if "auth_version" not in columns:
+            cur.execute(
+                "ALTER TABLE uploads ADD COLUMN auth_version BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER otp_email"
+            )
         if "upload_deleted_at" not in columns:
             cur.execute("ALTER TABLE uploads ADD COLUMN upload_deleted_at DATETIME NULL AFTER created_at")
         if "layer_deleted_at" not in columns:
             cur.execute("ALTER TABLE uploads ADD COLUMN layer_deleted_at DATETIME NULL AFTER upload_deleted_at")
+        if "visibility_version" not in columns:
+            cur.execute(
+                "ALTER TABLE uploads "
+                "ADD COLUMN visibility_version BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER layer_deleted_at"
+            )
+
+        cur.execute("SHOW COLUMNS FROM upload_modes")
+        mode_columns = {row["Field"] for row in cur.fetchall()}
+        if "auth_method" not in mode_columns:
+            cur.execute(
+                "ALTER TABLE upload_modes ADD COLUMN auth_method VARCHAR(20) NULL AFTER require_password"
+            )
+        cur.execute(
+            """
+            UPDATE upload_modes
+               SET auth_method=CASE WHEN require_password=1 THEN 'password' ELSE 'none' END
+             WHERE auth_method IS NULL OR auth_method NOT IN ('none','password','email_otp')
+            """
+        )
+        cur.execute(
+            """
+            UPDATE uploads
+               SET auth_method='password'
+             WHERE auth_method='none'
+               AND (COALESCE(password_hash, '') <> '' OR COALESCE(password, '') <> '')
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS upload_email_otps (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                upload_id BIGINT NOT NULL,
+                email VARCHAR(320) NOT NULL,
+                code_hash CHAR(64) NOT NULL,
+                request_ip VARCHAR(64) NULL,
+                attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                expires_at DATETIME NOT NULL,
+                used_at DATETIME NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_upload_email_otps_upload_created (upload_id, created_at),
+                INDEX idx_upload_email_otps_ip_created (request_ip, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+
+        cur.execute("SHOW COLUMNS FROM files")
+        file_columns = {row["Field"] for row in cur.fetchall()}
+        if "is_hidden" not in file_columns:
+            cur.execute(
+                "ALTER TABLE files "
+                "ADD COLUMN is_hidden TINYINT(1) NOT NULL DEFAULT 0 AFTER filename"
+            )
+        if "hidden_at" not in file_columns:
+            cur.execute(
+                "ALTER TABLE files "
+                "ADD COLUMN hidden_at DATETIME NULL AFTER is_hidden"
+            )
+        if "hidden_by" not in file_columns:
+            cur.execute(
+                "ALTER TABLE files "
+                "ADD COLUMN hidden_by VARCHAR(255) NULL AFTER hidden_at"
+            )
         db.commit()
 
         if "password" not in columns:
@@ -226,6 +349,15 @@ def upload_password_required(upload: dict | None) -> bool:
     return require_password or has_secret
 
 
+def upload_auth_method(upload: dict | None) -> str:
+    if not upload:
+        return AUTH_NONE
+    return normalize_upload_auth_method(
+        upload.get("auth_method"),
+        require_password=upload_password_required(upload),
+    )
+
+
 def verify_upload_password(upload: dict, input_password: str) -> bool:
     if not upload_password_required(upload):
         return True
@@ -256,9 +388,101 @@ def can_access_upload_record(upload: dict | None, *, has_view_auth_func=None) ->
         return True
     if username and username == upload.get("username"):
         return True
-    if has_view_auth_func and has_view_auth_func(upload.get("uuid")):
+    if has_view_auth_func and has_view_auth_func(upload):
         return True
-    return not upload_password_required(upload)
+    return upload_auth_method(upload) == AUTH_NONE
+
+
+def is_upload_owner(upload: dict | None) -> bool:
+    """The uploader is the signed-in MFU account recorded on the upload."""
+    if not upload:
+        return False
+    username = str(session.get("user") or "")
+    owner = str(upload.get("username") or "")
+    return bool(username and owner and username == owner)
+
+
+def upload_file_is_hidden(file_row: dict | None) -> bool:
+    if not file_row:
+        return False
+    value = file_row.get("is_hidden")
+    return str(value or "0").strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def can_preview_upload_file(upload: dict | None, file_row: dict | None) -> bool:
+    """Hidden originals remain previewable only by their uploader."""
+    if not upload or not file_row:
+        return False
+    return not upload_file_is_hidden(file_row) or is_upload_owner(upload)
+
+
+def fetch_upload_file_record(upload_id: int, filename: str) -> Optional[dict]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, upload_id, filename, is_hidden, hidden_at, hidden_by
+              FROM files
+             WHERE upload_id=%s AND filename=%s
+             LIMIT 1
+            """,
+            (upload_id, filename),
+        )
+        return cur.fetchone()
+    finally:
+        db.close()
+
+
+def fetch_upload_thumbnail_source(upload_id: int, thumbnail_name: str) -> Optional[dict]:
+    """
+    Resolve a thumbnail back to its original DB row.
+
+    WebP thumbnails use the original stem. Existing uploads may theoretically
+    contain the same stem with different extensions, so a public candidate wins;
+    otherwise the first stable file id is returned for uploader-only preview.
+    """
+    thumb_path = Path(thumbnail_name or "")
+    if not thumb_path.name:
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        if thumb_path.suffix.lower() != ".webp":
+            cur.execute(
+                """
+                SELECT id, upload_id, filename, is_hidden, hidden_at, hidden_by
+                  FROM files
+                 WHERE upload_id=%s AND filename=%s
+                 LIMIT 1
+                """,
+                (upload_id, thumb_path.name),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, upload_id, filename, is_hidden, hidden_at, hidden_by
+                  FROM files
+                 WHERE upload_id=%s
+                   AND LEFT(
+                         filename,
+                         CHAR_LENGTH(filename) - CHAR_LENGTH(SUBSTRING_INDEX(filename, '.', -1)) - 1
+                       )=%s
+                 ORDER BY is_hidden ASC, id ASC
+                 LIMIT 1
+                """,
+                (upload_id, thumb_path.stem),
+            )
+        return cur.fetchone()
+    finally:
+        db.close()
+
+
+def current_upload_visibility_version(upload: dict | None) -> int:
+    try:
+        return max(0, int((upload or {}).get("visibility_version") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def fetch_upload_access_record(uuid: str) -> Optional[dict]:
@@ -275,7 +499,7 @@ def fetch_upload_access_record(uuid: str) -> Optional[dict]:
 
         cur.execute(
             """
-            SELECT require_password, generate_thumbnails
+            SELECT require_password, auth_method, generate_thumbnails
               FROM upload_modes
              WHERE username=%s AND mode=%s
              LIMIT 1
@@ -284,6 +508,11 @@ def fetch_upload_access_record(uuid: str) -> Optional[dict]:
         )
         mode_row = cur.fetchone() or {}
         upload["require_password"] = mode_row.get("require_password")
+        if not upload.get("auth_method"):
+            upload["auth_method"] = normalize_upload_auth_method(
+                mode_row.get("auth_method"),
+                require_password=mode_row.get("require_password"),
+            )
         upload["generate_thumbnails"] = mode_row.get("generate_thumbnails")
         return upload
     finally:

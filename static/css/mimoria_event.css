@@ -1,0 +1,411 @@
+:root {
+  --mimoria-bg: #f4f7fb;
+  --mimoria-surface: #ffffff;
+  --mimoria-border: #dfe7f1;
+  --mimoria-text: #172033;
+  --mimoria-muted: #66758a;
+  --mimoria-primary: #2468d8;
+  --mimoria-primary-dark: #174fa9;
+  --mimoria-soft-blue: #eaf3ff;
+  --mimoria-radius: 16px;
+  --mimoria-shadow: 0 8px 28px rgba(28, 51, 84, .08);
+}
+
+html {
+  background: var(--mimoria-bg);
+}
+
+body.mimoria-page {
+  width: min(100%, 1120px);
+  max-width: 1120px !important;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 1.25rem !important;
+  color: var(--mimoria-text);
+  background: var(--mimoria-bg);
+}
+
+.mimoria-page > .navbar,
+.mimoria-brandbar {
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--mimoria-border) !important;
+  border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(28, 51, 84, .06);
+}
+
+.mimoria-page .navbar-brand,
+.mimoria-brandbar__brand {
+  color: #18355e;
+  font-weight: 800;
+  letter-spacing: .02em;
+  text-decoration: none;
+}
+
+.mimoria-brandbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 58px;
+  padding: .75rem 1rem;
+  background: #fff;
+}
+
+.mimoria-page .card,
+.mimoria-login-card,
+.mimoria-event-hero,
+.mimoria-album-hero {
+  border: 1px solid var(--mimoria-border);
+  border-radius: var(--mimoria-radius);
+  box-shadow: var(--mimoria-shadow);
+}
+
+.mimoria-page .card {
+  overflow: hidden;
+}
+
+.mimoria-page .card-body {
+  padding: 1.25rem;
+}
+
+.mimoria-page .btn {
+  min-height: 44px;
+  border-radius: 10px;
+  font-weight: 650;
+}
+
+.mimoria-page .btn-sm {
+  min-height: 38px;
+}
+
+.mimoria-page .btn-primary {
+  background: var(--mimoria-primary);
+  border-color: var(--mimoria-primary);
+}
+
+.mimoria-page .btn-primary:hover,
+.mimoria-page .btn-primary:focus {
+  background: var(--mimoria-primary-dark);
+  border-color: var(--mimoria-primary-dark);
+}
+
+.mimoria-page .alert {
+  border-radius: 12px;
+}
+
+.mimoria-page .text-muted {
+  color: var(--mimoria-muted) !important;
+}
+
+.mimoria-login-card {
+  max-width: 720px;
+  margin: 2.25rem auto;
+  padding: clamp(1.25rem, 4vw, 2.25rem);
+  background: var(--mimoria-surface);
+  text-align: center;
+}
+
+.mimoria-login-card__icon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 1rem;
+  place-items: center;
+  border-radius: 18px;
+  background: var(--mimoria-soft-blue);
+  font-size: 1.75rem;
+}
+
+.mimoria-login-card h1 {
+  margin-bottom: .65rem;
+  font-size: clamp(1.45rem, 4vw, 2rem);
+  font-weight: 800;
+}
+
+.mimoria-login-card__summary {
+  max-width: 560px;
+  margin: 0 auto 1.35rem;
+  color: var(--mimoria-muted);
+}
+
+.mimoria-login-card .btn-line {
+  min-height: 54px;
+  font-size: 1.05rem;
+}
+
+.mimoria-login-card__alternative {
+  min-height: 48px;
+  background: #fff;
+  white-space: normal;
+}
+
+.mimoria-event-hero,
+.mimoria-album-hero {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 1rem;
+  padding: clamp(1.1rem, 3vw, 1.75rem);
+  background: linear-gradient(135deg, #fff 0%, #edf5ff 100%);
+}
+
+.mimoria-event-hero::before,
+.mimoria-album-hero::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: var(--mimoria-primary);
+  content: "";
+}
+
+.mimoria-eyebrow {
+  margin-bottom: .45rem;
+  color: var(--mimoria-primary-dark);
+  font-size: .78rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.mimoria-event-title {
+  margin: 0;
+  font-size: clamp(1.35rem, 4vw, 2rem);
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.mimoria-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem 1rem;
+  margin-top: .65rem;
+  color: var(--mimoria-muted);
+}
+
+.mimoria-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-top: 1rem;
+}
+
+.mimoria-status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: .25rem .7rem;
+  border: 1px solid var(--mimoria-border);
+  border-radius: 999px;
+  background: #fff;
+  font-size: .86rem;
+  font-weight: 700;
+}
+
+.mimoria-status-chip--ok {
+  border-color: #a9dfc3;
+  background: #eaf8f0;
+  color: #146c43;
+}
+
+.mimoria-status-chip--wait {
+  border-color: #e5d4a0;
+  background: #fff7df;
+  color: #755700;
+}
+
+.mimoria-status-chip--danger {
+  border-color: #f2b8bd;
+  background: #fff0f1;
+  color: #a61e2d;
+}
+
+.mimoria-hero-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: .65rem;
+  margin-top: 1rem;
+}
+
+.mimoria-action-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+}
+
+.mimoria-action-list > div {
+  margin: 0 !important;
+}
+
+.mimoria-action-list .btn {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  padding: .65rem .8rem;
+  background: #fff;
+}
+
+.mimoria-section-title {
+  margin-bottom: 1rem;
+  color: #263752;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.mimoria-page .accordion {
+  --bs-accordion-border-color: var(--mimoria-border);
+  --bs-accordion-border-radius: 14px;
+  --bs-accordion-inner-border-radius: 13px;
+}
+
+.mimoria-page .accordion-item {
+  margin-bottom: .75rem;
+  overflow: hidden;
+  border: 1px solid var(--mimoria-border);
+  border-radius: 14px !important;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(28, 51, 84, .05);
+}
+
+.mimoria-page .accordion-button {
+  min-height: 54px;
+  font-weight: 800;
+}
+
+.mimoria-page .accordion-button:not(.collapsed) {
+  background: var(--mimoria-soft-blue);
+  color: #183f78;
+  box-shadow: none;
+}
+
+.mimoria-album-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin: 1rem 0;
+}
+
+.mimoria-album-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+}
+
+.mimoria-child-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: .75rem;
+  align-items: center;
+  padding: .8rem;
+  border: 0;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.mimoria-child-row:last-child {
+  border-bottom: 0;
+}
+
+.mimoria-child-link {
+  display: flex !important;
+  min-width: 0;
+  align-items: center;
+  margin: 0 !important;
+  padding: .7rem .8rem;
+  overflow-wrap: anywhere;
+}
+
+.mimoria-child-actions .dropdown-toggle {
+  width: 44px;
+  padding-inline: 0;
+}
+
+.mimoria-child-actions .dropdown-menu {
+  min-width: 180px;
+  padding: .4rem;
+  border-color: var(--mimoria-border);
+  border-radius: 12px;
+  box-shadow: var(--mimoria-shadow);
+}
+
+.mimoria-child-actions .dropdown-item {
+  min-height: 42px;
+  border-radius: 8px;
+}
+
+.mimoria-footer {
+  padding: 1rem 0 .5rem;
+  color: var(--mimoria-muted);
+  font-size: .82rem;
+  text-align: center;
+}
+
+@media (max-width: 767.98px) {
+  body.mimoria-page {
+    padding: .75rem !important;
+  }
+
+  .mimoria-page > .navbar,
+  .mimoria-brandbar {
+    margin-bottom: .85rem;
+  }
+
+  .mimoria-page .card-body {
+    padding: 1rem;
+  }
+
+  .mimoria-login-card {
+    margin: 1rem auto;
+  }
+
+  .mimoria-action-list {
+    grid-template-columns: 1fr;
+  }
+
+  .mimoria-child-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .mimoria-child-row > .badge-mode {
+    grid-row: 2;
+    grid-column: 1;
+    width: fit-content;
+    margin: 0 !important;
+  }
+
+  .mimoria-child-actions {
+    grid-row: 1 / span 2;
+    grid-column: 2;
+  }
+
+  .mimoria-page .btn-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mimoria-page .btn-group > .btn {
+    width: 100%;
+    margin-left: 0 !important;
+    border-radius: 9px !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .mimoria-event-meta {
+    flex-direction: column;
+    gap: .3rem;
+  }
+
+  .mimoria-hero-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .mimoria-album-tools {
+    align-items: stretch;
+  }
+
+  .mimoria-album-tools > .d-flex {
+    width: 100%;
+  }
+
+  .mimoria-album-tools .btn {
+    flex: 1 1 0;
+  }
+}

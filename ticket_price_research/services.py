@@ -7,11 +7,14 @@ import re
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
 from flask import current_app, has_app_context
+
+from .repository import get_shop_locations, save_shop_locations
 
 
 USER_AGENT = (
@@ -21,6 +24,8 @@ USER_AGENT = (
 )
 HEADERS = {"User-Agent": USER_AGENT}
 CACHE_SECONDS = 5 * 60
+SHOP_LOCATION_SUCCESS_CACHE_DAYS = 30
+SHOP_LOCATION_ERROR_CACHE_DAYS = 1
 
 _cache_lock = threading.Lock()
 _cache_payload: dict | None = None
@@ -52,7 +57,7 @@ def format_date(str_val):
         year = int(match_end.group(1))
         month = int(match_end.group(2))
         day = calendar.monthrange(year, month)[1]
-        return f"{year}年{month}月末", f"{year:04d}-{month:02d}-{day:02d}"
+        return f"{year}年{month}月{day}日", f"{year:04d}-{month:02d}-{day:02d}"
 
     return str_val, "9999-99-99"
 
@@ -73,7 +78,147 @@ def _normalize_item(item: dict) -> dict:
         "expiry_sort": item.get("有効期限_ソート") or "9999-99-99",
         "shop_name": item.get("店舗名") or "",
         "shop_url": item.get("店舗リンク") or "",
+        "shop_area": item.get("店舗所在地") or "",
     }
+
+
+def _official_shop_details(box, base_url: str) -> tuple[str, str]:
+    detail_node = next(
+        (
+            link
+            for link in box.select(".shop a[href]")
+            if "spot/detail" in str(link.get("href") or "")
+        ),
+        None,
+    )
+    if not detail_node:
+        return "", ""
+    detail_url = urllib.parse.urljoin(base_url, detail_node.get("href") or "")
+    parsed = urllib.parse.urlparse(detail_url)
+    shop_code = (urllib.parse.parse_qs(parsed.query).get("code") or [""])[0]
+    if parsed.scheme == "http":
+        detail_url = urllib.parse.urlunparse(parsed._replace(scheme="https"))
+    return str(shop_code or "")[:64], detail_url
+
+
+def _extract_area_from_shop_page(html: str) -> tuple[str, str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+
+    # 公式店舗ページのパンくずは「検索トップ > 都道府県 > 市区町村 > 店舗名」。
+    # 住所表記より揺れが少ないため、所在地表示にはこちらを優先する。
+    for node in soup.select(".widget, [class*=bread], [id*=bread]"):
+        parts = [part.strip() for part in node.get_text(" ", strip=True).split(">")]
+        parts = [part for part in parts if part]
+        if len(parts) >= 4 and parts[0] == "検索トップ":
+            area = f"{parts[1]}{parts[2]}"
+            if re.match(r"^(?:北海道|東京都|大阪府|京都府|.{2,3}県).+", area):
+                return area, ""
+
+    page_text = " ".join(soup.stripped_strings)
+    address_match = re.search(
+        r"〒\s*\d{3}-?\d{4}\s*((?:北海道|東京都|大阪府|京都府|.{2,3}県)[^\s,、]+)",
+        page_text,
+    )
+    if not address_match:
+        return "", ""
+
+    full_address = address_match.group(1).strip()
+    area_match = re.match(
+        r"((?:北海道|東京都|大阪府|京都府|.{2,3}県)"
+        r"(?:[^0-9０-９\s]+?市[^0-9０-９\s]+?区|[^0-9０-９\s]+?郡[^0-9０-９\s]+?[町村]|[^0-9０-９\s]+?[市区町村]))",
+        full_address,
+    )
+    return (area_match.group(1) if area_match else ""), full_address
+
+
+def _fetch_shop_location(shop: dict) -> dict:
+    response = requests.get(shop["detail_url"], headers=HEADERS, timeout=8)
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or response.encoding
+    area, full_address = _extract_area_from_shop_page(response.text)
+    if not area:
+        raise ValueError("公式店舗ページから所在地を判別できませんでした")
+    return {"area": area, "full_address": full_address}
+
+
+def _cache_is_fresh(row: dict) -> bool:
+    checked_at = row.get("checked_at")
+    if not isinstance(checked_at, datetime):
+        return False
+    age_seconds = max(0.0, (datetime.now() - checked_at).total_seconds())
+    ttl_days = (
+        SHOP_LOCATION_SUCCESS_CACHE_DAYS
+        if row.get("fetch_status") == "ok" and row.get("area")
+        else SHOP_LOCATION_ERROR_CACHE_DAYS
+    )
+    return age_seconds < ttl_days * 86400
+
+
+def _resolve_shop_locations(shops: dict[str, dict]) -> dict[str, str]:
+    if not shops:
+        return {}
+    try:
+        cached = get_shop_locations(shops)
+    except Exception:
+        _logger().warning("店舗所在地キャッシュの読み込みに失敗しました", exc_info=True)
+        cached = {}
+
+    areas = {
+        code: str(row.get("area") or "")
+        for code, row in cached.items()
+        if row.get("area")
+    }
+    refresh_codes = [
+        code for code in shops if code not in cached or not _cache_is_fresh(cached[code])
+    ]
+    if not refresh_codes:
+        return areas
+
+    cache_updates = []
+    with ThreadPoolExecutor(max_workers=min(4, len(refresh_codes))) as executor:
+        futures = {
+            executor.submit(_fetch_shop_location, shops[code]): code
+            for code in refresh_codes
+        }
+        for future in as_completed(futures):
+            code = futures[future]
+            shop = shops[code]
+            try:
+                location = future.result()
+                areas[code] = location["area"]
+                cache_updates.append(
+                    {
+                        "shop_code": code,
+                        "shop_name": shop["shop_name"],
+                        "detail_url": shop["detail_url"],
+                        "full_address": location["full_address"],
+                        "area": location["area"],
+                        "fetch_status": "ok",
+                    }
+                )
+            except Exception as exc:
+                _logger().warning(
+                    "店舗所在地の取得に失敗しました shop=%s code=%s",
+                    shop.get("shop_name"),
+                    code,
+                    exc_info=True,
+                )
+                cache_updates.append(
+                    {
+                        "shop_code": code,
+                        "shop_name": shop["shop_name"],
+                        "detail_url": shop["detail_url"],
+                        "full_address": str((cached.get(code) or {}).get("full_address") or ""),
+                        "area": str((cached.get(code) or {}).get("area") or ""),
+                        "fetch_status": "error",
+                        "last_error": str(exc),
+                    }
+                )
+    try:
+        save_shop_locations(cache_updates)
+    except Exception:
+        _logger().warning("店舗所在地キャッシュの保存に失敗しました", exc_info=True)
+    return areas
 
 
 def get_kakuyasu_stock(item_id):
@@ -103,6 +248,7 @@ def fetch_daikoku():
     url = "https://ticket.e-daikoku.com/goods/list?_category1Id=4&_category2Id=MC0000006&sort=price+ASC#ticketList"
     base_url = "https://ticket.e-daikoku.com/"
     items = []
+    shops = {}
 
     response = requests.get(url, headers=HEADERS, timeout=10)
     response.raise_for_status()
@@ -123,6 +269,7 @@ def fetch_daikoku():
         shop_node = box.select_one(".shop ul li")
         price_text = price_node.get_text(strip=True) if price_node else ""
         shop = shop_node.get_text(strip=True) if shop_node else ""
+        shop_code, official_shop_url = _official_shop_details(box, base_url)
 
         if price_text == "問合せください":
             continue
@@ -144,6 +291,11 @@ def fetch_daikoku():
         if title != "不明" and price_num is not None and shop:
             display_date, sort_date = format_date(raw_expiry)
             search_query = urllib.parse.quote(f"チケット大黒屋 {shop}")
+            if shop_code and official_shop_url:
+                shops[shop_code] = {
+                    "shop_name": shop,
+                    "detail_url": official_shop_url,
+                }
             items.append(
                 {
                     "商品名": title,
@@ -153,9 +305,13 @@ def fetch_daikoku():
                     "有効期限_ソート": sort_date,
                     "店舗名": shop,
                     "店舗リンク": f"https://www.google.com/maps/search/?api=1&query={search_query}",
+                    "店舗コード": shop_code,
                 }
             )
 
+    shop_areas = _resolve_shop_locations(shops)
+    for item in items:
+        item["店舗所在地"] = shop_areas.get(item.get("店舗コード") or "", "")
     return [_normalize_item(item) for item in items]
 
 

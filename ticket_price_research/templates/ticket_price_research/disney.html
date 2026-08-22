@@ -29,6 +29,15 @@
     font-size: .92rem;
     margin: .75rem 0;
   }
+  .ticket-shop-search {
+    max-width: 560px;
+    margin: 0 0 1rem;
+  }
+  .ticket-shop-search label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: .35rem;
+  }
   .ticket-warning-list {
     margin: .75rem 0 0;
     padding-left: 1.2rem;
@@ -119,6 +128,12 @@
     min-height: 32px;
     line-height: 1.35;
   }
+  .ticket-shop-area {
+    color: #667085;
+    font-size: .84rem;
+    line-height: 1.45;
+    margin-top: .2rem;
+  }
   .ticket-price {
     font-weight: 700;
     white-space: nowrap;
@@ -129,6 +144,59 @@
     font-size: .88rem;
     line-height: 1.7;
     margin-top: 1rem;
+  }
+  .ticket-mail-panel {
+    margin-top: 1.5rem;
+    border: 1px solid #d8e1eb;
+    border-radius: .65rem;
+    background: #fff;
+    padding: 1rem;
+  }
+  .ticket-mail-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    margin-bottom: .75rem;
+  }
+  .ticket-mail-heading h2 {
+    font-size: 1.15rem;
+    margin: 0;
+  }
+  .ticket-mail-address {
+    border-radius: .4rem;
+    background: #eef5fc;
+    color: #173f68;
+    font-weight: 700;
+    padding: .45rem .65rem;
+  }
+  .ticket-mail-add {
+    display: flex;
+    gap: .5rem;
+    margin: .75rem 0 1rem;
+  }
+  .ticket-mail-add input { max-width: 420px; }
+  .ticket-mail-list {
+    display: grid;
+    gap: .65rem;
+  }
+  .ticket-mail-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr) auto;
+    gap: .75rem;
+    align-items: center;
+    border-top: 1px solid #e6ebf0;
+    padding-top: .65rem;
+  }
+  .ticket-mail-meta {
+    color: #667085;
+    font-size: .82rem;
+    line-height: 1.5;
+  }
+  .ticket-mail-error {
+    color: #b42318;
+    overflow-wrap: anywhere;
   }
   @media (max-width: 767.98px) {
     .ticket-tool-header {
@@ -188,6 +256,9 @@
       text-align: left;
       font-size: 1.2rem;
     }
+    .ticket-mail-add { display: grid; }
+    .ticket-mail-add input { max-width: none; }
+    .ticket-mail-row { grid-template-columns: 1fr; }
   }
 </style>
 {% endblock %}
@@ -207,6 +278,13 @@
   <button type="button" id="sortPriceButton" class="btn btn-outline-secondary">価格が安い順</button>
   <button type="button" id="sortExpiryButton" class="btn btn-outline-secondary">有効期限が近い順</button>
   <button type="button" id="resetSortButton" class="btn btn-outline-secondary">初期表示に戻す</button>
+  <a class="btn btn-outline-primary" href="{{ url_for('ticket_price_research.disney_pdf') }}" target="_blank" rel="noopener">PDFで表示</a>
+</div>
+
+<div class="ticket-shop-search">
+  <label for="shopSearchInput">店舗・所在地で検索</label>
+  <input type="search" id="shopSearchInput" class="form-control"
+         placeholder="店舗名・都道府県・市区町村を入力" autocomplete="off">
 </div>
 
 <div id="statusMessage" class="alert alert-secondary" role="status">
@@ -264,6 +342,53 @@
   ※本機能は公開ページの情報を一覧化する補助機能です。購入可否や価格を保証するものではありません。
 </p>
 
+<section class="ticket-mail-panel" aria-labelledby="ticketMailHeading">
+  <div class="ticket-mail-heading">
+    <div>
+      <h2 id="ticketMailHeading">空メールで価格一覧を受け取る</h2>
+      <p class="text-muted small mb-0">登録済みアドレスから空メールを送ると、HTML本文とPDF添付で返信します。</p>
+    </div>
+    <div class="ticket-mail-address">
+      <span id="requestAddress">{{ request_address }}</span>
+      <button type="button" id="copyRequestAddress" class="btn btn-sm btn-outline-primary ms-2">コピー</button>
+    </div>
+  </div>
+
+  <form id="recipientAddForm" class="ticket-mail-add">
+    <label class="visually-hidden" for="recipientEmail">許可するメールアドレス</label>
+    <input id="recipientEmail" name="email" type="email" class="form-control" maxlength="320"
+           placeholder="許可するメールアドレス" required autocomplete="email">
+    <button type="submit" class="btn btn-primary">登録</button>
+  </form>
+  <div id="recipientMessage" class="alert d-none" role="status"></div>
+
+  <div class="ticket-mail-list" id="recipientList">
+    {% for recipient in mail_recipients %}
+      <div class="ticket-mail-row" data-recipient-id="{{ recipient.id }}">
+        <div>
+          <strong>{{ recipient.email }}</strong>
+          {% if recipient.last_error %}
+            <div class="ticket-mail-meta ticket-mail-error">{{ recipient.last_error }}</div>
+          {% endif %}
+        </div>
+        <label class="form-check form-switch mb-0">
+          <input class="form-check-input recipient-active" type="checkbox"
+                 {% if recipient.is_active %}checked{% endif %}>
+          <span class="form-check-label">{{ "有効" if recipient.is_active else "無効" }}</span>
+        </label>
+        <div class="ticket-mail-meta">
+          最終受信: {{ recipient.last_received_at or "-" }}<br>
+          最終送信: {{ recipient.last_sent_at or "-" }} ／ 送信回数: {{ recipient.send_count }}回<br>
+          最終結果: {{ recipient.last_result or "-" }}
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-danger recipient-delete">削除</button>
+      </div>
+    {% else %}
+      <div class="text-muted" id="recipientEmpty">許可済みメールアドレスはありません。</div>
+    {% endfor %}
+  </div>
+</section>
+
 <script>
 (function() {
   const fetchUrl = {{ url_for("ticket_price_research.disney_fetch")|tojson }};
@@ -271,6 +396,7 @@
   const sortPriceButton = document.getElementById("sortPriceButton");
   const sortExpiryButton = document.getElementById("sortExpiryButton");
   const resetSortButton = document.getElementById("resetSortButton");
+  const shopSearchInput = document.getElementById("shopSearchInput");
   const priceFilterButton = document.getElementById("priceFilterButton");
   const expiryFilterButton = document.getElementById("expiryFilterButton");
   const filterPopover = document.getElementById("filterPopover");
@@ -286,10 +412,18 @@
   const warningBox = document.getElementById("warningBox");
   const warningList = document.getElementById("warningList");
   const ticketRows = document.getElementById("ticketRows");
+  const recipientAddUrl = {{ url_for("ticket_price_research.disney_mail_recipient_add")|tojson }};
+  const recipientAddForm = document.getElementById("recipientAddForm");
+  const recipientEmail = document.getElementById("recipientEmail");
+  const recipientMessage = document.getElementById("recipientMessage");
+  const recipientList = document.getElementById("recipientList");
+  const copyRequestAddress = document.getElementById("copyRequestAddress");
+  const requestAddress = document.getElementById("requestAddress");
   let initialItems = [];
   let currentItems = [];
   let activeSort = "initial";
   let activeFilterType = "";
+  let shopQuery = "";
   const filters = {
     price: null,
     expiry: null
@@ -339,7 +473,7 @@
   }
 
   function hasActiveFilters() {
-    return Boolean(filters.price || filters.expiry);
+    return Boolean(filters.price || filters.expiry || shopQuery);
   }
 
   function makeLinkOrText(text, href, className) {
@@ -392,6 +526,12 @@
       const shopTd = document.createElement("td");
       shopTd.setAttribute("data-label", "店舗名");
       shopTd.appendChild(makeLinkOrText(item.shop_name, item.shop_url, "ticket-shop-link"));
+      if (item.shop_area) {
+        const area = document.createElement("div");
+        area.className = "ticket-shop-area";
+        area.textContent = item.shop_area;
+        shopTd.appendChild(area);
+      }
 
       tr.appendChild(titleTd);
       tr.appendChild(priceTd);
@@ -420,6 +560,12 @@
     return initialItems.filter((item) => {
       if (filters.price && !filters.price.has(priceFilterKey(item))) return false;
       if (filters.expiry && !filters.expiry.has(expiryFilterKey(item))) return false;
+      if (shopQuery) {
+        const target = `${item.shop_name || ""} ${item.shop_area || ""}`
+          .normalize("NFKC")
+          .toLocaleLowerCase("ja-JP");
+        if (!target.includes(shopQuery)) return false;
+      }
       return true;
     });
   }
@@ -539,6 +685,7 @@
       renderWarnings(data.warnings || []);
       filters.price = null;
       filters.expiry = null;
+      shopQuery = shopSearchInput.value.trim().normalize("NFKC").toLocaleLowerCase("ja-JP");
       activeSort = "initial";
       applyItems(items);
 
@@ -568,7 +715,14 @@
   resetSortButton.addEventListener("click", () => {
     filters.price = null;
     filters.expiry = null;
+    shopQuery = "";
+    shopSearchInput.value = "";
     activeSort = "initial";
+    refreshItems();
+  });
+
+  shopSearchInput.addEventListener("input", () => {
+    shopQuery = shopSearchInput.value.trim().normalize("NFKC").toLocaleLowerCase("ja-JP");
     refreshItems();
   });
 
@@ -605,6 +759,89 @@
   });
 
   window.addEventListener("resize", closeFilterPopover);
+
+  function setRecipientMessage(message, kind) {
+    recipientMessage.className = `alert alert-${kind}`;
+    recipientMessage.textContent = message;
+  }
+
+  recipientAddForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submitButton = recipientAddForm.querySelector("button[type='submit']");
+    submitButton.disabled = true;
+    try {
+      const body = new FormData();
+      body.set("email", recipientEmail.value);
+      const response = await fetch(recipientAddUrl, {method: "POST", body});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "登録できませんでした");
+      setRecipientMessage("メールアドレスを登録しました。", "success");
+      window.location.reload();
+    } catch (error) {
+      setRecipientMessage(error.message || "登録できませんでした。", "danger");
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+
+  recipientList.addEventListener("change", async (event) => {
+    const input = event.target.closest(".recipient-active");
+    if (!input) return;
+    const row = input.closest("[data-recipient-id]");
+    const label = row.querySelector(".form-check-label");
+    input.disabled = true;
+    try {
+      const response = await fetch(
+        `${recipientAddUrl}/${row.dataset.recipientId}/active`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({is_active: input.checked})
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "変更できませんでした");
+      label.textContent = input.checked ? "有効" : "無効";
+      setRecipientMessage("利用状態を変更しました。", "success");
+    } catch (error) {
+      input.checked = !input.checked;
+      setRecipientMessage(error.message || "変更できませんでした。", "danger");
+    } finally {
+      input.disabled = false;
+    }
+  });
+
+  recipientList.addEventListener("click", async (event) => {
+    const button = event.target.closest(".recipient-delete");
+    if (!button) return;
+    const row = button.closest("[data-recipient-id]");
+    if (!window.confirm("このメールアドレスの許可を削除しますか？")) return;
+    button.disabled = true;
+    try {
+      const response = await fetch(
+        `${recipientAddUrl}/${row.dataset.recipientId}`,
+        {method: "DELETE"}
+      );
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "削除できませんでした");
+      row.remove();
+      setRecipientMessage("メールアドレスを削除しました。", "success");
+    } catch (error) {
+      setRecipientMessage(error.message || "削除できませんでした。", "danger");
+      button.disabled = false;
+    }
+  });
+
+  copyRequestAddress.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(requestAddress.textContent.trim());
+      const original = copyRequestAddress.textContent;
+      copyRequestAddress.textContent = "コピー済み";
+      setTimeout(() => { copyRequestAddress.textContent = original; }, 1500);
+    } catch (_) {
+      setRecipientMessage("コピーできませんでした。アドレスを手動で選択してください。", "warning");
+    }
+  });
 })();
 </script>
 {% endblock %}

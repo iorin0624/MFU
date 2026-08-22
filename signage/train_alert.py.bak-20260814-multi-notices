@@ -1,0 +1,488 @@
+"""Selected-route change detection and Discord embed notifications."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import tempfile
+import time
+import unicodedata
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+import requests
+
+
+TRANSIT_HOST = "transit.yahoo.co.jp"
+TRANSIT_PATH_RE = re.compile(r"^/diainfo/\d+/\d+/?$")
+DISCORD_EMBEDS_PER_MESSAGE = 10
+# Discord permits at most 6,000 characters across every embed in one message.
+# Leave a little headroom for Discord-side counting differences.
+DISCORD_EMBED_CHARS_PER_MESSAGE = 5_800
+DISCORD_RATE_LIMIT_RETRIES = 4
+
+
+def now_iso(now: datetime | None = None) -> str:
+    return (now or datetime.now().astimezone()).isoformat(timespec="seconds")
+
+
+def read_json_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def atomic_json_write(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(value, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary_name, 0o640)
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
+def canonical_route_url(value: object) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != TRANSIT_HOST:
+        return None
+    if not TRANSIT_PATH_RE.fullmatch(parsed.path):
+        return None
+    path = parsed.path.rstrip("/")
+    return urlunsplit(("https", TRANSIT_HOST, path, "", ""))
+
+
+def catalog_route_map(payload: dict | None) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    lines = payload.get("lines", []) if isinstance(payload, dict) else []
+    if not isinstance(lines, list):
+        return result
+    for raw in lines:
+        if not isinstance(raw, dict):
+            continue
+        url = canonical_route_url(raw.get("url"))
+        name = str(raw.get("line_name") or "").strip()
+        group = str(raw.get("group") or "kanto").strip()
+        if not url or not name or group not in {"kanto", "shinkansen"}:
+            continue
+        result[url] = {"url": url, "line_name": name, "group": group}
+    return result
+
+
+def route_setting_key(url: str) -> str:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    return f"SIGNAGE_TRAIN_ALERT_ROUTE_{digest}"
+
+
+def _signature(*, normal: bool, status: str, message: str) -> str:
+    canonical = json.dumps(
+        {"normal": bool(normal), "status": status, "message": message},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _route_name_key(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.translate(str.maketrans({"[": "(", "]": ")", "〜": "~", "～": "~"}))
+    return re.sub(r"\s+", "", text).strip()
+
+
+def _current_route_states(
+    catalog: dict[str, dict], raw_payload: dict, summary_payload: dict | None = None
+) -> tuple[dict[str, dict], list[str]]:
+    if raw_payload.get("area_parse_ok") is not True:
+        raise ValueError("関東エリアの取得結果が完全ではないため、更新判定を中止しました。")
+
+    raw_by_url: dict[str, dict] = {}
+    for raw in raw_payload.get("lines", []):
+        if not isinstance(raw, dict):
+            continue
+        url = canonical_route_url(raw.get("url"))
+        if url:
+            raw_by_url[url] = raw
+
+    # The display summary also contains affected routes that are mentioned by
+    # another route's detail page.  Those routes may legitimately be absent
+    # from raw_by_url and must not be mistaken for recovered/normal service.
+    summary_by_name: dict[str, dict] = {}
+    summary_lines = summary_payload.get("lines", []) if isinstance(summary_payload, dict) else []
+    if isinstance(summary_lines, list):
+        for summary in summary_lines:
+            if not isinstance(summary, dict):
+                continue
+            key = _route_name_key(summary.get("line_name"))
+            if key and (summary.get("status") or summary.get("message")):
+                summary_by_name[key] = summary
+
+    current: dict[str, dict] = {}
+    unavailable: list[str] = []
+    checked_at = now_iso()
+    for url, route in catalog.items():
+        raw = raw_by_url.get(url)
+        summary = summary_by_name.get(_route_name_key(route.get("line_name")))
+
+        if route["group"] == "kanto":
+            if raw is not None and raw.get("error") and summary is None:
+                unavailable.append(url)
+                continue
+            source = raw if raw is not None and not raw.get("error") else summary
+            if raw is not None and source is raw and not (
+                raw.get("status") or raw.get("message")
+            ):
+                source = summary
+            if raw is not None and source is None:
+                unavailable.append(url)
+                continue
+            status = str((source or {}).get("status") or "").strip()
+            message = str((source or {}).get("message") or "").strip()
+            update_time_text = str((source or {}).get("update_time_text") or "").strip()
+            normal = source is None
+        else:
+            # 新幹線は個別ページを毎回取得し、情報が空なら平常扱い。
+            if raw is None:
+                unavailable.append(url)
+                continue
+            status = str(raw.get("status") or "").strip()
+            message = str(raw.get("message") or "").strip()
+            update_time_text = str(raw.get("update_time_text") or "").strip()
+            normal = not (status or message)
+
+        current[url] = {
+            "url": url,
+            "line_name": route["line_name"],
+            "group": route["group"],
+            "normal": normal,
+            "status": "平常運転" if normal else (status or "運行情報"),
+            "message": "" if normal else message,
+            "update_time_text": update_time_text,
+            "signature": _signature(normal=normal, status=status, message=message),
+            "checked_at": checked_at,
+        }
+    return current, unavailable
+
+
+def _event_for(previous: dict, current: dict) -> str | None:
+    if previous.get("signature") == current.get("signature"):
+        return None
+    if current.get("normal") and not previous.get("normal"):
+        return "recovered"
+    if not current.get("normal"):
+        return "new" if previous.get("normal") else "updated"
+    return None
+
+
+def _colour(status: str, event: str) -> int:
+    if event == "recovered":
+        return 0x2ECC71
+    text = str(status or "")
+    if "運転見合わせ" in text:
+        return 0xE74C3C
+    if any(word in text for word in ("遅延", "運転変更", "運転計画")):
+        return 0xF39C12
+    return 0x3498DB
+
+
+def _status_icon(route: dict, event: str) -> str:
+    # Classification is based on Yahoo!'s status label only.  The explanatory
+    # message often mentions prior delays or suspensions and must not change the icon.
+    status = str(route.get("status") or "")
+    if "運転見合わせ" in status:
+        return "❌"
+    if event == "recovered" or "運転再開" in status:
+        return "➡️"
+    if "列車遅延" in status or "遅延" in status:
+        return "🕒"
+    return "🪧"
+
+
+def _status_priority(route: dict, event: str) -> int:
+    return {
+        "❌": 0,
+        "➡️": 1,
+        "🕒": 2,
+        "🪧": 3,
+    }.get(_status_icon(route, event), 3)
+
+
+def build_embed(change: dict, page_url: str, timestamp: str) -> dict:
+    route = change["current"]
+    event = change["event"]
+    icon = _status_icon(route, event)
+    if event == "recovered":
+        title = f"{icon} {route['line_name']}：平常運転に戻りました"
+        description = "運行情報の掲載終了を確認しました。"
+    elif event == "new":
+        title = f"{icon} {route['line_name']}：{route['status']}"
+        description = route.get("message") or "新しい運行情報を確認しました。"
+    else:
+        title = f"{icon} {route['line_name']}：{route['status']}"
+        description = route.get("message") or "運行情報が更新されました。"
+
+    fields = [
+        {"name": "路線", "value": route["line_name"], "inline": True},
+        {"name": "現在の状態", "value": route["status"], "inline": True},
+    ]
+    if route.get("update_time_text"):
+        fields.append(
+            {"name": "Yahoo!更新時刻", "value": route["update_time_text"], "inline": True}
+        )
+    fields.append(
+        {"name": "MFU", "value": f"[運行情報一覧を開く]({page_url})", "inline": False}
+    )
+    return {
+        "title": title[:256],
+        "description": description[:4000],
+        "url": route["url"],
+        "color": _colour(route["status"], event),
+        "fields": fields,
+        "footer": {"text": "Yahoo!路線情報を10分ごとに確認しています。"},
+        "timestamp": timestamp,
+    }
+
+
+def _embed_character_count(embed: dict) -> int:
+    total = len(str(embed.get("title") or ""))
+    total += len(str(embed.get("description") or ""))
+    total += len(str((embed.get("footer") or {}).get("text") or ""))
+    total += len(str((embed.get("author") or {}).get("name") or ""))
+    for field in embed.get("fields") or []:
+        total += len(str(field.get("name") or ""))
+        total += len(str(field.get("value") or ""))
+    return total
+
+
+def _notification_batches(changes: list[dict], page_url: str, timestamp: str):
+    batch_changes: list[dict] = []
+    batch_embeds: list[dict] = []
+    batch_chars = 0
+
+    for change in changes:
+        embed = build_embed(change, page_url, timestamp)
+        embed_chars = _embed_character_count(embed)
+        if batch_embeds and (
+            len(batch_embeds) >= DISCORD_EMBEDS_PER_MESSAGE
+            or batch_chars + embed_chars > DISCORD_EMBED_CHARS_PER_MESSAGE
+        ):
+            yield batch_changes, batch_embeds
+            batch_changes = []
+            batch_embeds = []
+            batch_chars = 0
+        batch_changes.append(change)
+        batch_embeds.append(embed)
+        batch_chars += embed_chars
+
+    if batch_embeds:
+        yield batch_changes, batch_embeds
+
+
+def send_discord_embeds(webhook_url: str, embeds: list[dict]) -> bool:
+    if not webhook_url or not embeds:
+        return False
+    for attempt in range(DISCORD_RATE_LIMIT_RETRIES + 1):
+        response = requests.post(
+            webhook_url,
+            params={"wait": "true"},
+            json={"embeds": embeds, "allowed_mentions": {"parse": []}},
+            timeout=15,
+        )
+        if response.status_code != 429:
+            response.raise_for_status()
+            try:
+                message = response.json()
+            except (TypeError, ValueError, requests.RequestException) as exc:
+                raise RuntimeError("Discordの送信結果を確認できませんでした。") from exc
+            message_id = str(message.get("id") or "").strip()
+            returned_count = len(message.get("embeds") or [])
+            if not message_id or returned_count != len(embeds):
+                raise RuntimeError(
+                    "Discordの送信カード数が一致しません。"
+                    f" sent={len(embeds)} returned={returned_count}"
+                )
+
+            # A successful POST alone was not sufficient to diagnose a missing batch.
+            # Fetch the created message by ID and confirm that every embed exists.
+            verify_response = requests.get(
+                f"{webhook_url.rstrip('/')}/messages/{message_id}", timeout=15
+            )
+            verify_response.raise_for_status()
+            try:
+                verified_count = len((verify_response.json() or {}).get("embeds") or [])
+            except (TypeError, ValueError, requests.RequestException) as exc:
+                raise RuntimeError("Discordメッセージを再確認できませんでした。") from exc
+            if verified_count != len(embeds):
+                raise RuntimeError(
+                    "Discord上のカード数が一致しません。"
+                    f" sent={len(embeds)} verified={verified_count}"
+                )
+            return True
+        if attempt >= DISCORD_RATE_LIMIT_RETRIES:
+            response.raise_for_status()
+        try:
+            retry_after = float((response.json() or {}).get("retry_after") or 1)
+        except (TypeError, ValueError, requests.RequestException):
+            retry_after = 1
+        time.sleep(max(0.25, min(retry_after, 10.0)))
+    return False
+
+
+def send_test_alert(webhook_url: str, page_url: str) -> bool:
+    payload = {
+        "title": "🧪 鉄道運行情報：テスト通知",
+        "description": "Discordカード通知は正常に設定されています。",
+        "url": page_url,
+        "color": 0x3498DB,
+        "fields": [
+            {"name": "確認間隔", "value": "10分", "inline": True},
+            {"name": "通知形式", "value": "Discord Embed", "inline": True},
+        ],
+        "footer": {"text": "MFU 鉄道運行情報通知"},
+        "timestamp": now_iso(),
+    }
+    return send_discord_embeds(webhook_url, [payload])
+
+
+def run_train_alert(
+    *,
+    config: dict,
+    raw_payload: dict,
+    summary_payload: dict | None = None,
+    catalog_payload: dict,
+    state_path: Path,
+    status_path: Path,
+    webhook_url: str,
+    page_url: str,
+    logger,
+    sender=send_discord_embeds,
+    now: datetime | None = None,
+) -> dict:
+    checked_at = now_iso(now)
+    old_state = read_json_object(state_path) or {"routes": {}}
+    old_status = read_json_object(status_path) or {}
+    previous_routes = old_state.get("routes")
+    if not isinstance(previous_routes, dict):
+        previous_routes = {}
+
+    selected = {
+        url
+        for raw_url in config.get("selected_urls", [])
+        if (url := canonical_route_url(raw_url))
+    }
+    status = {
+        "checked_at": checked_at,
+        "enabled": bool(config.get("enabled")),
+        "discord_configured": bool(webhook_url),
+        "selected_count": len(selected),
+        "available_count": 0,
+        "unavailable_count": 0,
+        "changes_detected": 0,
+        "notified_count": 0,
+        "last_notification_at": old_status.get("last_notification_at"),
+        "error": None,
+    }
+
+    if not config.get("enabled") or not selected:
+        atomic_json_write(status_path, status)
+        return status
+
+    catalog_all = catalog_route_map(catalog_payload)
+    selected_catalog = {url: catalog_all[url] for url in selected if url in catalog_all}
+    missing_catalog = selected - set(selected_catalog)
+    if missing_catalog:
+        status["unavailable_count"] += len(missing_catalog)
+    if not selected_catalog:
+        status["error"] = "選択した路線を路線カタログから確認できません。"
+        atomic_json_write(status_path, status)
+        return status
+
+    try:
+        current_routes, unavailable = _current_route_states(
+            selected_catalog, raw_payload, summary_payload
+        )
+    except Exception as exc:
+        status["error"] = str(exc)[:500]
+        atomic_json_write(status_path, status)
+        return status
+
+    status["available_count"] = len(current_routes)
+    status["unavailable_count"] += len(unavailable)
+    next_routes = {
+        url: previous_routes[url]
+        for url in selected
+        if url in previous_routes and url not in current_routes
+    }
+    changes = []
+    for url, current_route in current_routes.items():
+        previous = previous_routes.get(url)
+        if not isinstance(previous, dict):
+            # 初回と新規選択は基準値だけを保存し、既存障害を大量通知しない。
+            next_routes[url] = current_route
+            continue
+        event = _event_for(previous, current_route)
+        if event:
+            changes.append(
+                {"url": url, "event": event, "previous": previous, "current": current_route}
+            )
+            # 通知成功までは前回値を保持し、送信失敗時に同じ差分を再試行する。
+            next_routes[url] = previous
+        else:
+            next_routes[url] = current_route
+
+    status["changes_detected"] = len(changes)
+    # Keep both live alerts and split Discord messages in the requested severity order.
+    # Python's sort is stable, so routes within the same category retain source order.
+    changes.sort(
+        key=lambda change: _status_priority(change["current"], change["event"])
+    )
+    state = {
+        "version": 1,
+        "updated_at": checked_at,
+        "selected_urls": sorted(selected),
+        "routes": next_routes,
+    }
+
+    if changes and not webhook_url:
+        status["error"] = "adminのDiscord Webhookが未設定です。"
+    elif changes:
+        batches = list(_notification_batches(changes, page_url, checked_at))
+        for batch_index, (chunk, embeds) in enumerate(batches):
+            try:
+                sender(webhook_url, embeds)
+            except Exception as exc:
+                logger.exception("鉄道運行情報のDiscord通知に失敗しました。")
+                status["error"] = f"Discord通知失敗: {type(exc).__name__}: {exc}"[:500]
+                break
+            for change in chunk:
+                state["routes"][change["url"]] = change["current"]
+            status["notified_count"] += len(chunk)
+            status["last_notification_at"] = checked_at
+            # 先に送信済みのカードを次回重複送信しないよう、チャンクごとに確定する。
+            atomic_json_write(state_path, state)
+            if batch_index + 1 < len(batches):
+                # Consecutive webhook calls can otherwise hit Discord's burst limit.
+                time.sleep(1.0)
+
+    atomic_json_write(state_path, state)
+    atomic_json_write(status_path, status)
+    return status

@@ -37,6 +37,7 @@ deletion = _load_module_without_app_dependencies(
     "utils/upload_deletion.py",
     "testable_upload_deletion",
     get_db=_unused,
+    purge_upload_download_history=lambda *args, **kwargs: 0,
 )
 expiry = _load_module_without_app_dependencies(
     "utils/upload_expiry.py",

@@ -531,6 +531,9 @@ def _fetch_admin_contacts() -> tuple[str | None, str | None]:
     if not admin_email:
         admin_email = (current_app.config.get("ADMIN_EMAIL") or os.environ.get("ADMIN_EMAIL") or "").strip() or None
 
+    from app.discord_notifications.repository import get_discord_webhook
+    admin_webhook = get_discord_webhook("event_management", admin_webhook) or None
+
     return admin_email, admin_webhook
 
 
@@ -654,6 +657,7 @@ def _notify_payment_to_admin_and_acl(
         )
     if admin_webhook:
         _post_discord(admin_webhook, discord_text)
+    sent_webhooks = {admin_webhook} if admin_webhook else set()
 
     # --- ACLへ（adminは除外済み）---
     for rcpt in acl:
@@ -665,8 +669,10 @@ def _notify_payment_to_admin_and_acl(
                 event_uuid=event_uuid_str or ev.get("event_uuid_str"),
                 from_display_name=from_display_name,
             )
-        if rcpt.get("webhook_url"):
-            _post_discord(rcpt["webhook_url"], discord_text)
+        rcpt_webhook = (rcpt.get("webhook_url") or "").strip()
+        if rcpt_webhook and rcpt_webhook not in sent_webhooks:
+            _post_discord(rcpt_webhook, discord_text)
+            sent_webhooks.add(rcpt_webhook)
 
 
 # ============================================================

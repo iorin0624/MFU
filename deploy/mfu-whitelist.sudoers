@@ -1,0 +1,5 @@
+mfu-whitelist ALL=(root) NOPASSWD: /usr/local/sbin/mfu-whitelist-apply
+mfu-whitelist ALL=(root) NOPASSWD: /usr/local/sbin/mfu-rtp-diagnostics *
+mfu-whitelist ALL=(root) NOPASSWD: /usr/local/sbin/mfu-click-to-call start *
+mfu-whitelist ALL=(root) NOPASSWD: /usr/local/sbin/mfu-call-through reserve *
+mfu-whitelist ALL=(root) NOPASSWD: /usr/local/sbin/mfu-call-through cancel *

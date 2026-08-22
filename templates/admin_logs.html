@@ -644,8 +644,232 @@ code { white-space: pre-wrap; word-break: break-word; }
     return '';
   }
 
+  const resultBadge = (result) => {
+    const normalized = String(result || '').toLowerCase();
+    const label = normalized === 'ok' ? '成功' : (normalized === 'error' ? '失敗' : (result || '結果不明'));
+    const cls = normalized === 'ok' ? 'bg-success' : (normalized === 'error' ? 'bg-danger' : 'bg-secondary');
+    return badge(label, cls);
+  };
+
+  const parseJsonAudit = (t, prefix) => {
+    if (!t.startsWith(prefix + ' ')) return null;
+    try {
+      return JSON.parse(t.slice(prefix.length).trim());
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const auditEntity = (details) => {
+    if (!details || typeof details !== 'object') return {};
+    return details.after || details.before || details;
+  };
+
+  const appendPhoneEntity = (line, entity) => {
+    if (!entity || typeof entity !== 'object') return line;
+    if (entity.phone_number) line += ' <span class="mono fw-semibold">' + esc(entity.phone_number) + '</span>';
+    if (entity.name) line += ' <span class="ms-2">' + esc(entity.name) + '</span>';
+    if (entity.note) line += ' <span class="text-muted ms-2">備考: ' + esc(entity.note) + '</span>';
+    return line;
+  };
+
   // ====== “見やすい表示” 生成 ======
   function prettify(t){
+    if (/\[LINE_LOGIN_BLOCKED\]/.test(t)) {
+      const originalUserId = (t.match(/\boriginal_user_id=(\d+)/)?.[1]) || '';
+      let line = badge('LINEログイン拒否', 'bg-danger');
+      line += ' ' + badge('退会済みアカウント', 'bg-dark');
+      if (originalUserId) {
+        line += ' ' + badge('元ユーザーID ' + originalUserId, 'bg-light text-dark border');
+      }
+      line += ' <span>退会済みLINEアカウントからのログインを拒否しました</span>';
+      return line;
+    }
+
+    const loginVariant = t.match(/\[(LOGIN_PASSKEY|PIN_LOGIN|LOGIN_EMAIL_OTP|LOGIN_TOTP)\]/)?.[1] || '';
+    if (loginVariant) {
+      const labels = {
+        LOGIN_PASSKEY: 'パスキー認証',
+        PIN_LOGIN: 'PINログイン',
+        LOGIN_EMAIL_OTP: 'メールOTP認証',
+        LOGIN_TOTP: '認証アプリ（TOTP）',
+      };
+      const id = pickLineNumericId(t);
+      const displayName = pickLineDisplayName(t);
+      const loginUser = pickLoginUser(t);
+      const who = displayName
+        ? ((id ? '#' + id + '　' : '') + displayName)
+        : (loginUser || '（不明）');
+
+      let line = badge(labels[loginVariant] || loginVariant, 'bg-primary');
+      line += ' ' + badge('ログイン成功', 'bg-success');
+      line += ' <span>ユーザー: ' + esc(who) + '</span>';
+      return line;
+    }
+
+    const phoneWhitelist = parseJsonAudit(t, 'PHONE_WHITELIST');
+    if (phoneWhitelist) {
+      const action = String(phoneWhitelist.action || '');
+      const actionLabels = {
+        add: 'ホワイトリスト追加',
+        edit: 'ホワイトリスト編集',
+        delete: 'ホワイトリスト削除',
+        sync: '電話システム同期',
+        setting_change: '設定変更',
+        auto_expire: '一時許可の自動終了',
+        blacklist_add: 'ブラックリスト追加',
+        blacklist_delete: 'ブラックリスト削除',
+        blacklist_token_apply: '拒否登録リンク適用',
+        blacklist_token_inspect: '拒否登録リンク確認',
+      };
+      const details = phoneWhitelist.details || {};
+      const entity = auditEntity(details);
+
+      let line = badge('電話番号リスト', 'bg-primary');
+      line += ' ' + badge(actionLabels[action] || action || '操作不明', 'bg-info text-dark');
+      line += ' ' + resultBadge(phoneWhitelist.result);
+      line = appendPhoneEntity(line, entity);
+
+      if (details.setting) {
+        line += ' <span class="mono ms-2">' + esc(details.setting) + '</span>';
+        if (Object.prototype.hasOwnProperty.call(details, 'before') ||
+            Object.prototype.hasOwnProperty.call(details, 'after')) {
+          line += ' <span class="text-muted ms-1">' +
+                  esc(JSON.stringify(details.before)) + ' → ' +
+                  esc(JSON.stringify(details.after)) + '</span>';
+        }
+      }
+      if (details.entry_count !== undefined) {
+        line += ' ' + badge('登録件数 ' + details.entry_count, 'bg-light text-dark border');
+      }
+      if (details.input) line += ' <span class="mono ms-2">入力: ' + esc(details.input) + '</span>';
+      if (details.phone_number && !entity.phone_number) {
+        line += ' <span class="mono ms-2">' + esc(details.phone_number) + '</span>';
+      }
+      if (phoneWhitelist.error) {
+        line += ' <span class="text-danger ms-2">エラー: ' + esc(phoneWhitelist.error) + '</span>';
+      }
+      return line;
+    }
+
+    const phoneDiagnostics = parseJsonAudit(t, 'PHONE_DIAGNOSTICS');
+    if (phoneDiagnostics) {
+      const action = String(phoneDiagnostics.action || '');
+      const actionLabels = {
+        detail_start: '詳細診断開始',
+        detail_stop: '詳細診断終了',
+      };
+      const details = phoneDiagnostics.details || {};
+
+      let line = badge('電話診断', 'bg-info text-dark');
+      line += ' ' + badge(actionLabels[action] || action || '操作不明', 'bg-primary');
+      line += ' ' + resultBadge(phoneDiagnostics.result);
+      if (details.session_id) {
+        line += ' <span class="mono ms-2">セッション: ' + esc(details.session_id) + '</span>';
+      }
+      if (details.contact_ip) {
+        line += ' <span class="mono ms-2">対象IP: ' + esc(details.contact_ip) + '</span>';
+      }
+      if (phoneDiagnostics.error) {
+        line += ' <span class="text-danger ms-2">エラー: ' + esc(phoneDiagnostics.error) + '</span>';
+      }
+      return line;
+    }
+
+    if (/^\[SUCAL\]/.test(t)) {
+      const matched = t.match(/^\[SUCAL\]\s+([A-Z0-9_]+)\s*(.*)$/);
+      const action = matched?.[1] || '';
+      const detail = matched?.[2] || '';
+      const actionLabels = {
+        API_SYNC_OUTLOOK_6M: 'Outlook 6か月同期',
+        UPSERT: '予定更新',
+        SYNC_OUTLOOK_RANGE: 'Outlook範囲同期',
+        API_QUICK_ADD: 'API簡易追加',
+        SYNC_OUTLOOK: 'Outlook同期',
+        BULK: '一括更新',
+        QUICK_ADD: '簡易追加',
+        API_SYNC_6M: 'API 6か月同期',
+      };
+      let line = badge('カレンダー', 'bg-info text-dark');
+      line += ' ' + badge(actionLabels[action] || action || '処理', 'bg-primary');
+      if (detail) line += ' <span class="mono">' + esc(detail) + '</span>';
+      return line;
+    }
+
+    if (/^\[ALERT\]/.test(t)) {
+      const country = (t.match(/\bCC=([^\s]+)/)?.[1]) || '';
+      const count = (t.match(/\bcnt=(\d+)/)?.[1]) || '';
+      const path = (t.match(/\bpath=([^\s]+)/)?.[1]) || '';
+      let line = badge('セキュリティ警告', 'bg-danger');
+      if (/404 burst/i.test(t)) line += ' ' + badge('404バースト', 'bg-warning text-dark');
+      if (country) line += ' ' + badge('国 ' + country, 'bg-light text-dark border');
+      if (count) line += ' ' + badge(count + '回', 'bg-light text-dark border');
+      if (path) line += ' <span class="mono fw-semibold">' + esc(path) + '</span>';
+      return line;
+    }
+
+    if (/^\[UA\]/.test(t)) {
+      const matched = t.match(/^\[UA\]\s+(.+?)(?:\s+\|\s+Path:\s*(.*))?$/);
+      const ua = matched?.[1] || '';
+      const path = matched?.[2] || '';
+      let line = badge('UA記録', 'bg-secondary');
+      if (path) line += ' <span class="mono fw-semibold">' + esc(path) + '</span>';
+      if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return line;
+    }
+
+    if (/\[EVENT_ALBUM_PREVIEW_BLOCKED\]/.test(t)) {
+      const status = (t.match(/\b(GET|HEAD)\s+\S+\s+(\d{3})\b/)?.[2]) || '403';
+      const path = (t.match(/\b(?:GET|HEAD)\s+([^\s"]+)/)?.[1]) || '';
+      const ua = (t.match(/\bUA="([^"]+)"/i)?.[1]) || '';
+
+      let line = badge('プレビュー拒否', 'bg-danger');
+      line += ' ' + badge('アルバム未表示', 'bg-secondary');
+      line += ' ' + badge('HTTP ' + status, statusClass(status));
+      if (path) line += ' <span class="fw-semibold mono">' + esc(path) + '</span>';
+      if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return line;
+    }
+
+    if (/\[INAPP_WARNING\]/.test(t)) {
+      const status = (t.match(/\b(GET|POST|HEAD)\s+\S+\s+(\d{3})\b/)?.[2]) || '200';
+      const path = (t.match(/\b(?:GET|POST|HEAD)\s+([^\s"]+)/)?.[1]) || '';
+      const ua = (t.match(/\bUA="([^"]+)"/i)?.[1]) || '';
+      const albumNotShown = /アルバム未表示/.test(t);
+
+      let line = badge('アプリ内ブラウザ案内', 'bg-warning text-dark');
+      line += ' ' + badge(
+        albumNotShown ? 'アルバム未表示' : '本来の画面未表示',
+        'bg-secondary'
+      );
+      line += ' ' + badge('HTTP ' + status + '（案内画面）', 'bg-info text-dark');
+      if (path) line += ' <span class="fw-semibold mono">' + esc(path) + '</span>';
+      if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return line;
+    }
+
+    if (/\[ALBUM_VIEW_GRANTED\]/.test(t)) {
+      const albumId = (t.match(/\balbum_id=([^\s]+)/)?.[1]) || '';
+      const eventId = (t.match(/\bevent_id=([^\s]+)/)?.[1]) || '';
+      const auth = (t.match(/\bauth=([^\s]+)/)?.[1]) || '';
+      const user = (t.match(/\buser="([^"]*)"/i)?.[1]) || '';
+      const authLabels = {
+        admin: '管理者',
+        owner: 'アルバム所有者',
+        event_session: 'イベント認証',
+      };
+
+      let line = badge('アルバム閲覧許可', 'bg-success');
+      if (eventId) line += ' ' + badge('イベントID ' + eventId, 'bg-primary');
+      if (auth) line += ' ' + badge(authLabels[auth] || auth, 'bg-info text-dark');
+      if (user) line += ' ' + badge(user, 'bg-dark');
+      if (albumId) {
+        line += ' <span class="ms-1 text-muted">アルバム:</span> ' +
+                '<span class="mono">' + esc(albumId) + '</span>';
+      }
+      return line;
+    }
+
     const mKind = t.match(/\[(LOGIN|LINE_LOGIN|SMTP)\]/);
     const kind = mKind ? mKind[1] : '';
 
@@ -725,11 +949,15 @@ code { white-space: pre-wrap; word-break: break-word; }
       const target = (t.match(/\btarget=([^\s]+)/)?.[1]) || '';
       const path = (t.match(/\bpath=([^\s]+)/)?.[1]) || '';
       const count = (t.match(/\bcount=(\d+)/)?.[1]) || '';
+      const distinct = (t.match(/\bdistinct=(\d+)/)?.[1]) || '';
+      const duration = (t.match(/\bduration=(\d+)/)?.[1]) || '';
+      const samples = (t.match(/\bsamples=(.*)$/)?.[1]) || '';
       const reason = (t.match(/\breason=([^\s]+)/)?.[1]) || '';
       const status = (t.match(/\bstatus=([^\s]+)/)?.[1]) || '';
 
-      let line = badge('FW_BAN', 'bg-danger');
-      if (mode) line += ' ' + badge(mode, 'bg-warning text-dark');
+      const observe = mode.toUpperCase() === 'OBSERVE';
+      let line = badge(observe ? 'BAN判定のみ' : '自動BAN', observe ? 'bg-warning text-dark' : 'bg-danger');
+      if (mode && !observe) line += ' ' + badge(mode, 'bg-warning text-dark');
 
       if (status) {
         const s = status.toLowerCase();
@@ -737,7 +965,11 @@ code { white-space: pre-wrap; word-break: break-word; }
         line += ' ' + badge('status=' + status, stCls);
       }
       if (reason) {
-        const jaReason = reason === 'short' ? '短時間バースト' : (reason === 'ip' ? 'IP累積' : reason);
+        const jaReason = reason === 'sensitive'
+          ? '秘密情報・攻撃パス'
+          : (reason === 'short'
+              ? '異なる404パスの短時間探索'
+              : ((reason === 'ip' || reason === 'cumulative') ? '異なる404パスの累積探索' : reason));
         line += ' ' + badge('判定=' + jaReason, 'bg-info text-dark');
       }
 
@@ -745,8 +977,30 @@ code { white-space: pre-wrap; word-break: break-word; }
       if (target) line += ' <span class="mono ms-2">target=' + esc(target) + '</span>';
       if (path) line += ' <span class="mono ms-2">path=' + esc(path) + '</span>';
       if (count) line += ' <span class="badge bg-light text-dark border ms-2">count=' + esc(count) + '</span>';
+      if (distinct) line += ' <span class="badge bg-light text-dark border ms-2">異なるパス=' + esc(distinct) + '</span>';
+      if (duration) line += ' <span class="badge bg-light text-dark border ms-2">BAN期間=' + esc(duration) + '秒</span>';
+      if (samples) line += ' <span class="text-muted ms-2 small">根拠: ' + esc(samples) + '</span>';
 
       return line;
+    }
+
+    // 未知のタグ付きログも、見やすい表示で空欄にしない。
+    const genericBracketTag = t.match(/^\[([A-Z][A-Z0-9_]+)\](?:\[([^\]]+)\])?\s*(.*)$/);
+    if (genericBracketTag) {
+      let line = badge(genericBracketTag[1], 'bg-secondary');
+      if (genericBracketTag[2]) {
+        line += ' ' + badge(genericBracketTag[2], 'bg-light text-dark border');
+      }
+      if (genericBracketTag[3]) {
+        line += ' <span class="text-break">' + esc(genericBracketTag[3]) + '</span>';
+      }
+      return line;
+    }
+
+    const genericNamedTag = t.match(/^([A-Z][A-Z0-9_]+)\s+(.+)$/);
+    if (genericNamedTag && !/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|AUDIT)$/.test(genericNamedTag[1])) {
+      return badge(genericNamedTag[1], 'bg-secondary') +
+             ' <span class="text-break">' + esc(genericNamedTag[2]) + '</span>';
     }
 
     // ---- 通常Webログ ----
@@ -864,9 +1118,13 @@ code { white-space: pre-wrap; word-break: break-word; }
     btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
 
     try {
+      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
       const res = await fetch('/admin/fw/ban', {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: {
+          'Content-Type':'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
         body: JSON.stringify({ ip })   // サーバ側でIPv4/IPv6を判定して正規化
       });
       const data = await res.json().catch(() => ({}));

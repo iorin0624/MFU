@@ -1,0 +1,470 @@
+import logging
+import re
+import smtplib
+import ssl
+from email import encoders
+from email.header import Header
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr, formatdate, getaddresses, parseaddr
+from pathlib import Path
+
+from app.utils.logs import write_smtp_log
+from app.utils.mail_delivery import generate_message_id, record_mail_submission
+
+
+EXTERNAL_UNREAD_REMINDER_SUBJECT = "【お知らせ】未読があるのでご確認よろしくお願いします。"
+EXTERNAL_UNREAD_REMINDER_BODY = """こんにちは、いおりん写真室です！
+
+イベント管理システムにて、未読になっているチャットまたは通知が1件以上あります！
+お知らせがある可能性もあるため、ご確認よろしくお願いします。
+
+https://mfu.iori0624.jp/external-login/
+
+【プッシュ通知のお願い】
+Androidご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）からプッシュ通知の有効で問題無いです。
+iPhoneご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）をホーム画面に追加して欲しいです。
+やり方はリンクがありますのでご確認よろしくお願いします。
+ホーム画面に追加後、プッシュ通知の有効をお願い致します。
+
+よろしくお願いします。"""
+
+
+# 署名ファイルのパス（このファイルと同じディレクトリ）
+SIGNATURE_FILE = Path(__file__).parent / "signature.txt"
+
+# モジュール読み込み時に署名を1回だけ読み込む
+try:
+    DEFAULT_SIGNATURE = SIGNATURE_FILE.read_text(encoding="utf-8").rstrip("\n")
+    if DEFAULT_SIGNATURE:
+        DEFAULT_SIGNATURE = "\n\n" + DEFAULT_SIGNATURE.lstrip("\n")
+except Exception as e:
+    DEFAULT_SIGNATURE = ""
+    logging.getLogger("mfu.smtp").warning(
+        f"署名ファイルの読み込みに失敗しました: {SIGNATURE_FILE} - {e}"
+    )
+
+
+def send_mail(
+    to,
+    subject: str,
+    body: str,
+    *,
+    cc: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    event_uuid: str | None = None,    # 後方互換性のため残す
+    event_name: str | None = None,
+    from_display_name: str | None = None,
+    smtp_host: str = "192.168.103.15",
+    smtp_port: int = 25,
+    timeout: int = 45,
+    debug: bool = False,
+    starttls: bool | None = None,
+    ignore_quit_errors: bool = True,
+    external_login_user_id: int | None = None,
+    mail_kind: str | None = None,
+    append_signature: bool = True,
+    attachments: list[dict] | None = None,
+) -> None:
+    """
+    メール送信ユーティリティ。
+
+    - From: noreply@mail.iori0624.jp（表示名はイベント名 or システム名）
+    - Reply-To: admin@mail.iori0624.jp（固定）
+    - 本文末尾に signature.txt の内容を自動追加（存在する場合）
+    """
+    log = logging.getLogger("mfu.smtp")
+
+    def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
+        status = "OK" if ok else "NG"
+        msg = f'送信{status}: to="{to_text}" subj="{subj}"'
+        if extra:
+            msg += f" detail={extra}"
+
+        log.info(msg)
+        line = f"[SMTP] {msg}"
+        print(line)
+        try:
+            write_smtp_log(line)
+        except Exception:
+            log.warning("write_smtp_log failed", exc_info=True)
+
+    from_address = "noreply@mail.iori0624.jp"
+
+    def _coerce_addresses(addresses) -> list[str]:
+        if not addresses:
+            return []
+        if isinstance(addresses, (list, tuple, set)):
+            raw_values = [str(x).strip() for x in addresses if str(x).strip()]
+        else:
+            raw_values = [str(addresses).strip()]
+        parsed = getaddresses(raw_values)
+        result: list[str] = []
+        seen: set[str] = set()
+        for _display, addr in parsed:
+            normalized = (addr or "").strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized)
+        return result
+
+    # 宛先処理
+    to_list = _coerce_addresses(to)
+    to_header = ", ".join(to_list)
+    cc_list = [addr for addr in _coerce_addresses(cc) if addr.lower() not in {to_addr.lower() for to_addr in to_list}]
+    cc_header = ", ".join(cc_list)
+
+    if not to_list:
+        _summary_log(False, "(none)", subject or "", "no recipients")
+        return
+
+    # 表示名の決定
+    is_event = event_uuid or event_name
+    display_name = None
+
+    if from_display_name:
+        display_name = Header(str(from_display_name).strip(), "utf-8").encode()
+    elif is_event:
+        # 【【講座】テストイベント0002】のような複合形式に対応
+        m = re.match(r"^(【[^】]*】[^】]*】)", subject or "")
+        if m:
+            display_name = Header(m.group(1), "utf-8").encode()
+        else:
+            m = re.match(r"^【([^】]+)】", subject or "")
+            if m:
+                display_name = Header(m.group(1), "utf-8").encode()
+            else:
+                display_name = Header(event_name or "イベント", "utf-8").encode()
+    else:
+        display_name = Header("IORI0624_MFUシステム", "utf-8").encode()
+
+    # 本文に署名を追加
+    final_body = body + DEFAULT_SIGNATURE if append_signature else body
+
+    # メッセージ作成（添付があれば multipart）
+    has_attachments = bool(attachments)
+    if has_attachments:
+        msg = MIMEMultipart()
+        msg.attach(MIMEText(final_body, "plain", "utf-8"))
+        for idx, att in enumerate(attachments or []):
+            if not isinstance(att, dict):
+                raise ValueError(f"attachments[{idx}] must be dict")
+            filename = str(att.get("filename") or "").strip()
+            data = att.get("data")
+            content_type = str(att.get("content_type") or "application/octet-stream").strip()
+            if not filename:
+                raise ValueError(f"attachments[{idx}].filename is required")
+            if not isinstance(data, (bytes, bytearray)):
+                raise ValueError(f"attachments[{idx}].data must be bytes")
+
+            maintype, subtype = ("application", "octet-stream")
+            if "/" in content_type:
+                mt, st = content_type.split("/", 1)
+                maintype = (mt or "application").strip() or "application"
+                subtype = (st or "octet-stream").strip() or "octet-stream"
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(bytes(data))
+            encoders.encode_base64(part)
+            part.add_header("Content-Type", content_type)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+    else:
+        msg = MIMEText(final_body, "plain", "utf-8")
+    msg["Subject"] = subject or ""
+    msg["From"] = formataddr((display_name, from_address))
+    msg["To"] = to_header
+    if cc_header:
+        msg["Cc"] = cc_header
+    msg["Reply-To"] = "admin@mail.iori0624.jp"  # 固定
+    msg["Date"] = formatdate(localtime=True)
+    mfu_mail_uuid, message_id = generate_message_id()
+    message_id_header = f"<{message_id}>"
+    if msg.get("Message-ID"):
+        msg.replace_header("Message-ID", message_id_header)
+    else:
+        msg["Message-ID"] = message_id_header
+    if msg.get("X-MFU-Mail-ID"):
+        msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
+    else:
+        msg["X-MFU-Mail-ID"] = mfu_mail_uuid
+
+    # STARTTLS 自動判定
+    if starttls is None:
+        starttls = (smtp_port == 587)
+
+    smtp = None
+    sent_ok = False
+    try:
+        smtp = smtplib.SMTP(
+            host=smtp_host,
+            port=smtp_port,
+            timeout=timeout,
+            local_hostname="se02.local"
+        )
+        if debug:
+            smtp.set_debuglevel(1)
+
+        code, resp = smtp.ehlo()
+        if debug:
+            print("[SMTP] EHLO:", code, resp.decode() if isinstance(resp, bytes) else resp)
+
+        if starttls:
+            code, resp = smtp.starttls(context=ssl.create_default_context())
+            if debug:
+                print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
+            code, resp = smtp.ehlo()
+            if debug:
+                print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
+
+        result = smtp.sendmail(from_address, [*to_list, *cc_list], msg.as_string())
+        if result:
+            detail = "; ".join(f"{rcpt}:{info}" for rcpt, info in result.items())
+            _summary_log(False, to_header, subject or "", detail)
+            raise smtplib.SMTPRecipientsRefused(result)
+
+        sent_ok = True
+        _summary_log(True, to_header, subject or "")
+        try:
+            record_mail_submission(
+                mfu_mail_uuid=mfu_mail_uuid,
+                message_id=message_id,
+                to_addresses=to_header,
+                cc_addresses=cc_list,
+                subject=subject or "",
+                submit_status="sent",
+                last_delivery_status="queued",
+                external_login_user_id=external_login_user_id,
+                mail_kind=mail_kind,
+            )
+        except Exception:
+            log.warning("mail submission log failed", exc_info=True)
+
+        try:
+            smtp.quit()
+        except Exception as e_quit:
+            if ignore_quit_errors and sent_ok:
+                log.info(f"SMTP QUIT error ignored: {e_quit}")
+            else:
+                raise
+
+    except smtplib.SMTPException as e:
+        if sent_ok and ignore_quit_errors:
+            log.info(f"SMTP post-send error ignored: {e}")
+        else:
+            _summary_log(False, to_header, subject or "", repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=to_header,
+                    cc_addresses=cc_list,
+                    subject=subject or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                    external_login_user_id=external_login_user_id,
+                    mail_kind=mail_kind,
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
+            raise
+    except Exception as e:
+        if sent_ok and ignore_quit_errors:
+            log.info(f"SMTP post-send generic error ignored: {e}")
+        else:
+            _summary_log(False, to_header, subject or "", repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=to_header,
+                    cc_addresses=cc_list,
+                    subject=subject or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                    external_login_user_id=external_login_user_id,
+                    mail_kind=mail_kind,
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
+            raise
+    finally:
+        if smtp is not None:
+            try:
+                smtp.close()
+            except Exception:
+                pass
+
+
+def send_external_unread_reminder_mail(email: str, *, external_login_user_id: int) -> None:
+    send_mail(
+        email,
+        EXTERNAL_UNREAD_REMINDER_SUBJECT,
+        EXTERNAL_UNREAD_REMINDER_BODY,
+        external_login_user_id=external_login_user_id,
+        mail_kind="external_unread_reminder",
+        append_signature=False,
+    )
+
+
+def send_mime(
+    msg,
+    *,
+    smtp_host: str = "192.168.103.15",
+    smtp_port: int = 25,
+    timeout: int = 45,
+    debug: bool = False,
+    starttls: bool | None = None,
+    ignore_quit_errors: bool = True,
+) -> None:
+    """構築済みのMIMEメッセージをそのまま送信（署名は追加しない）"""
+    log = logging.getLogger("mfu.smtp")
+
+    def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
+        status = "OK" if ok else "NG"
+        s = f'送信{status}: to="{to_text}" subj="{subj}"'
+        if extra:
+            s += f" detail={extra}"
+        log.info(s)
+        line = f"[SMTP] {s}"
+        print(line)
+        try:
+            write_smtp_log(line)
+        except Exception:
+            log.warning("write_smtp_log failed", exc_info=True)
+
+    envelope_from = parseaddr(msg.get("From", ""))[1] or "noreply@mail.iori0624.jp"
+
+    mfu_mail_uuid, message_id = generate_message_id()
+    message_id_header = f"<{message_id}>"
+    if msg.get("Message-ID"):
+        msg.replace_header("Message-ID", message_id_header)
+    else:
+        msg["Message-ID"] = message_id_header
+    if msg.get("X-MFU-Mail-ID"):
+        msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
+    else:
+        msg["X-MFU-Mail-ID"] = mfu_mail_uuid
+
+    to_rcpts = [
+        addr.strip() for _, addr in getaddresses([msg.get("To")]) if addr and addr.strip()
+    ] if msg.get("To") else []
+    cc_rcpts = [
+        addr.strip() for _, addr in getaddresses([msg.get("Cc")]) if addr and addr.strip()
+    ] if msg.get("Cc") else []
+    bcc_rcpts = [
+        addr.strip() for _, addr in getaddresses([msg.get("Bcc")]) if addr and addr.strip()
+    ] if msg.get("Bcc") else []
+    rcpts: list[str] = [*to_rcpts, *cc_rcpts, *bcc_rcpts]
+    recipient_text = ", ".join(rcpts)
+
+    if "Bcc" in msg:
+        del msg["Bcc"]
+
+    subj = msg.get("Subject", "")
+
+    if not rcpts:
+        _summary_log(False, "(none)", subj, "no recipients")
+        return
+
+    if starttls is None:
+        starttls = (smtp_port == 587)
+
+    smtp = None
+    sent_ok = False
+    try:
+        smtp = smtplib.SMTP(host=smtp_host, port=smtp_port, timeout=timeout)
+        if debug:
+            smtp.set_debuglevel(1)
+
+        code, resp = smtp.ehlo()
+        if debug:
+            print("[SMTP] EHLO:", code, resp.decode() if isinstance(resp, bytes) else resp)
+
+        if starttls:
+            code, resp = smtp.starttls(context=ssl.create_default_context())
+            if debug:
+                print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
+            code, resp = smtp.ehlo()
+            if debug:
+                print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
+
+        result = smtp.sendmail(envelope_from, rcpts, msg.as_string())
+        if result:
+            raise smtplib.SMTPRecipientsRefused(result)
+
+        sent_ok = True
+        _summary_log(True, recipient_text, subj)
+        try:
+            record_mail_submission(
+                mfu_mail_uuid=mfu_mail_uuid,
+                message_id=message_id,
+                to_addresses=to_rcpts,
+                cc_addresses=cc_rcpts,
+                bcc_addresses=bcc_rcpts,
+                subject=subj or "",
+                submit_status="queued",
+                last_delivery_status="queued",
+            )
+        except Exception:
+            log.warning("mail submission log failed", exc_info=True)
+
+        try:
+            smtp.quit()
+        except Exception as e_quit:
+            if ignore_quit_errors and sent_ok:
+                log.info(f"SMTP QUIT error ignored: {e_quit}")
+            else:
+                raise
+
+    except smtplib.SMTPException as e:
+        if sent_ok and ignore_quit_errors:
+            log.info(f"SMTP post-send error ignored: {e}")
+        else:
+            _summary_log(False, recipient_text, subj, repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=to_rcpts,
+                    cc_addresses=cc_rcpts,
+                    bcc_addresses=bcc_rcpts,
+                    subject=subj or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
+            raise
+    except Exception as e:
+        if sent_ok and ignore_quit_errors:
+            log.info(f"SMTP post-send generic error ignored: {e}")
+        else:
+            _summary_log(False, recipient_text, subj, repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=to_rcpts,
+                    cc_addresses=cc_rcpts,
+                    bcc_addresses=bcc_rcpts,
+                    subject=subj or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
+            raise
+    finally:
+        if smtp is not None:
+            try:
+                smtp.close()
+            except Exception:
+                pass

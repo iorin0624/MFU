@@ -32,6 +32,7 @@ from flask import (
     session, abort, Response, url_for
 )
 from app.utils.mail import send_mail
+from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.external_login_user.payments import _notify_payment_to_admin_and_acl
 from app.external_login_user.utils import _uuid_bytes_to_str
 from .bulk_refund_logic import (
@@ -460,7 +461,9 @@ def _get_discord_webhook_url(conn, username: str = "admin") -> str | None:
         row = cur.fetchone()
         if not row:
             return None
-        return row[0] if not isinstance(row, dict) else row.get("webhook_url")
+        legacy = row[0] if not isinstance(row, dict) else row.get("webhook_url")
+        from app.discord_notifications.repository import get_discord_webhook
+        return get_discord_webhook("square_payment", legacy) or None
     except Exception:
         logging.exception("failed to load discord webhook url by username")
         return None
@@ -3281,6 +3284,9 @@ def admin_bulk_refund_preview_recalc(event_id: int):
 @bp.post("/admin/events/<int:event_id>/bulk-refund/execute")
 @admin_required
 def admin_bulk_refund_execute(event_id: int):
+    guard = require_admin_passkey(f"square_bulk_refund:{event_id}")
+    if guard:
+        return guard
     _ensure_schema()
     submitted_hash = (request.form.get("preview_hash") or "").strip()
     selected_ids = [x for x in (request.form.get("selected_csv") or "").split(",") if x.strip()]
@@ -3597,6 +3603,9 @@ def admin_event_toggle(event_id: int):
 @bp.post("/admin/refund/<int:payment_row_id>")
 @admin_required
 def admin_refund(payment_row_id: int):
+    guard = require_admin_passkey(f"square_refund:{payment_row_id}")
+    if guard:
+        return guard
     amount_form = (request.form.get("amount_yen") or "").strip()
     reason = (request.form.get("reason") or "").strip() or None
 

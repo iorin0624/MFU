@@ -28,6 +28,14 @@
   });
 
   const socket = io({ transports: ['websocket', 'polling'] });
+  let forceLogoutHandled = false;
+  socket.on('force_logout', (payload) => {
+    if (forceLogoutHandled) return;
+    forceLogoutHandled = true;
+    try { socket.disconnect(); } catch (_error) {}
+    const redirectUrl = String(payload?.redirect || '/external-login/');
+    window.location.replace(redirectUrl);
+  });
   socket.emit('chat_join', { event_id: eventId });
 
   socket.on('chat_message', (msg) => {

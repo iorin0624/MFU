@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Discord通知設定{% endblock %}
+{% block content %}
+<div class="container-fluid px-3 px-lg-4 py-3" style="max-width: 1180px;">
+  <div class="mb-4">
+    <h1 class="h3 mb-2">Discord通知設定</h1>
+    <p class="text-muted mb-0">機能ごとに通知先を独立して管理します。導入時のWebhook URLは従来の設定から複製されています。</p>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="閉じる"></button>
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="row g-3">
+    {% for item in settings %}
+      <div class="col-12 col-xl-6" id="{{ item.feature_key }}">
+        <section class="card h-100 shadow-sm border-0">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+              <div>
+                <h2 class="h5 mb-1">{{ loop.index }}. {{ item.label }}</h2>
+                <div class="text-muted small">{{ item.description }}</div>
+              </div>
+              <span class="badge {{ 'bg-success' if item.enabled else 'bg-secondary' }}">{{ '有効' if item.enabled else '無効' }}</span>
+            </div>
+            <form method="post" action="{{ url_for('discord_notifications.save', feature_key=item.feature_key) }}">
+              <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" role="switch" id="enabled-{{ item.feature_key }}" name="enabled" value="1" {% if item.enabled %}checked{% endif %}>
+                <label class="form-check-label" for="enabled-{{ item.feature_key }}">この通知を有効にする</label>
+              </div>
+              <label class="form-label" for="webhook-{{ item.feature_key }}">Webhook URL</label>
+              <div class="input-group mb-2">
+                <input class="form-control font-monospace" type="password" id="webhook-{{ item.feature_key }}" name="webhook_url" value="{{ item.webhook_url or '' }}" autocomplete="off">
+                <button class="btn btn-outline-secondary" type="button" data-toggle-webhook="webhook-{{ item.feature_key }}">表示</button>
+              </div>
+              <div class="small text-muted mb-3">
+                最終送信：{{ item.last_sent_at.strftime('%Y年%m月%d日 %H:%M:%S') if item.last_sent_at else 'まだありません' }}
+                {% if item.last_status %}／結果：{{ '成功' if item.last_status == 'success' else '失敗' }}{% endif %}
+                {% if item.last_error %}<div class="text-danger mt-1">{{ item.last_error }}</div>{% endif %}
+              </div>
+              <div class="d-flex gap-2 justify-content-end">
+                <button class="btn btn-primary" type="submit">保存</button>
+              </div>
+            </form>
+            <form method="post" action="{{ url_for('discord_notifications.test', feature_key=item.feature_key) }}" class="mt-2 text-end">
+              <button class="btn btn-outline-success" type="submit">テスト通知</button>
+            </form>
+          </div>
+        </section>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+<script>
+document.querySelectorAll('[data-toggle-webhook]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const input = document.getElementById(button.dataset.toggleWebhook);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    button.textContent = show ? '隠す' : '表示';
+  });
+});
+</script>
+{% endblock %}

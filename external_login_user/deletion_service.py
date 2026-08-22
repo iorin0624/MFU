@@ -9,6 +9,7 @@ from flask import current_app
 
 from app.utils.db import get_db
 from .identity_lock import lock_deleted_identity
+from .session_revocation import revoke_external_user_sessions
 
 _AVATAR_ROOT = Path("/mnt/mfu/avatars")
 
@@ -61,6 +62,14 @@ def anonymize_external_user(*, user_id: int, executed_by: str, reason: str | Non
         user_cols = _table_columns(cur, "external_login_user")
         if int(user.get("is_deleted") or 0) == 1:
             db.commit()
+            try:
+                revoke_external_user_sessions(int(user_id))
+            except Exception:
+                current_app.logger.warning(
+                    "external user already-deleted session revoke failed user_id=%s",
+                    user_id,
+                    exc_info=True,
+                )
             return {
                 "ok": True,
                 "already_deleted": True,
@@ -240,6 +249,14 @@ def anonymize_external_user(*, user_id: int, executed_by: str, reason: str | Non
         executed_by,
         changed,
     )
+    try:
+        revoke_external_user_sessions(int(user_id))
+    except Exception:
+        current_app.logger.warning(
+            "external user session revoke failed user_id=%s",
+            user_id,
+            exc_info=True,
+        )
     return {
         "ok": True,
         "already_deleted": False,

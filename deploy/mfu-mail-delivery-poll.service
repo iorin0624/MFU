@@ -1,0 +1,25 @@
+[Unit]
+Description=MFU mail delivery poll (Postfix status)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+ExecStart=/mnt/mfu/venv/bin/python /mnt/mfu/app/utils/poll_mail_delivery.py
+Environment=PYTHONPATH=/mnt/mfu
+Environment=PYTHONUNBUFFERED=1
+Environment=MFU_POSTFIX_STATUS_API_BASE_URL=http://192.168.103.15:18080
+Environment=MFU_MAIL_STATUS_POLL_LIMIT_HOURS=168
+Environment=MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC=30
+Environment=MFU_MAIL_STATUS_POLL_MAX_ROWS=200
+Environment="GRAPH_TENANT_ID=__dummy__"
+Environment="GRAPH_CLIENT_ID=__dummy__"
+Environment="GRAPH_CLIENT_SECRET=__dummy__"
+Environment="OUTLOOK_SYNC_UPN=__dummy__"
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=MFU ETC tollgate reference refresh
+After=network-online.target mysql.service mfu.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/mnt/mfu/venv/bin/python -m app.etc_accounting.tollgate_cli
+TimeoutStartSec=5min
+NoNewPrivileges=yes

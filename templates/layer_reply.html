@@ -92,12 +92,12 @@
     <div class="info-box">
       <p><strong>タイトル:</strong> {{ info.title }}</p>
       <p><strong>コメント:</strong> {{ info.comment or '（なし）' }}</p>
-      <p><strong>アップロード日時:</strong> {{ info.created }}</p>
+      <p><strong>アップロード日時:</strong> {{ info.posted_at.strftime('%Y-%m-%d %H:%M:%S') if info.posted_at else '不明' }}</p>
     </div>
 
     <h5>📸 アップロードされた写真</h5>
     <div class="gallery">
-      {% for fname in info.filenames %}
+      {% for fname in info.images %}
         <a href="/uploads/layer_uploads/{{ uuid }}/{{ reply_uuid }}/original/{{ fname }}"
            data-caption="{{ fname }}">
           <img src="/uploads/layer_uploads/{{ uuid }}/{{ reply_uuid }}/original/{{ fname }}"

@@ -12,12 +12,36 @@
     h1,h2,p{ margin:0 0 .8em 0; } .info{ margin-bottom:1.2em; text-align:center; }
 
     .gallery{ display:flex; flex-wrap:wrap; gap:.9em; justify-content:center; }
-    .item{ text-align:center; width:120px; }
+    .item{ text-align:center; width:120px; position:relative; }
     .pick{ display:inline-flex; align-items:center; gap:.5em; font-size:1rem; color:#333; margin-bottom:.35em; user-select:none; }
     .pick input[type="checkbox"]{ width:22px; height:22px; transform:scale(1.4); transform-origin:left center; accent-color:#007bff; }
 
     .gallery a img{ width:110px; height:auto; border-radius:6px; border:1px solid #ccc; transition:transform .2s; }
     .gallery a:hover img{ transform:scale(1.05); }
+    .item.is-hidden img{ opacity:.38; filter:grayscale(.45); }
+    .visibility-badge{
+      display:none; position:absolute; top:2.2em; left:50%; transform:translateX(-50%);
+      z-index:2; padding:.25em .55em; border-radius:999px; background:rgba(45,55,72,.92);
+      color:#fff; font-size:.78rem; font-weight:700; white-space:nowrap; pointer-events:none;
+    }
+    .item.is-hidden .visibility-badge{ display:inline-block; }
+    .visibility-manage-panel{
+      margin:.8em 0 1.2em; padding:.9em; border:1px solid #cfe0f5; border-radius:10px;
+      background:#f5f9ff;
+    }
+    .visibility-manage-panel button{
+      border:1px solid #1672d4; background:#fff; color:#1264b4; border-radius:9px;
+      padding:.65em 1em; font-weight:700; cursor:pointer;
+    }
+    .visibility-filters{ display:flex; flex-wrap:wrap; gap:.45em; justify-content:center; margin-top:.7em; }
+    .visibility-filters[hidden]{ display:none; }
+    .visibility-filters button{ border-color:#d3dce8; color:#334155; padding:.45em .8em; }
+    .visibility-filters button.active{ background:#1267d6; border-color:#1267d6; color:#fff; }
+    .file-only-card{
+      min-height:100px; border:1px solid #d9e1ea; border-radius:8px; padding:.65em;
+      display:flex; flex-direction:column; justify-content:center; overflow-wrap:anywhere;
+    }
+    .file-only-card.is-hidden{ background:#f1f3f5; color:#667085; }
 
     /* ▼ 下部固定ツールバー */
     .zip-toolbar{
@@ -26,10 +50,53 @@
       -webkit-backdrop-filter:saturate(180%) blur(8px); backdrop-filter:saturate(180%) blur(8px);
       border:1px solid #e6e6e6; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
       padding:.8em 1em; position:fixed; left:50%; transform:translateX(-50%);
-      width:calc(min(100vw - 2rem, 820px));
+      width:calc(min(100vw - 1.2rem, 980px));
       bottom:max(8px, env(safe-area-inset-bottom)); z-index:1000;
     }
     .zip-toolbar.hidden{ display:none !important; }
+    .visibility-toolbar{
+      display:flex; flex-wrap:wrap; gap:.6em; justify-content:center; align-items:center;
+      background:rgba(255,255,255,.96); -webkit-backdrop-filter:saturate(180%) blur(8px);
+      backdrop-filter:saturate(180%) blur(8px); border:1px solid #cfd8e3; border-radius:10px;
+      box-shadow:0 2px 12px rgba(0,0,0,.1); padding:.8em 1em; position:fixed;
+      left:50%; transform:translateX(-50%); width:calc(min(100vw - 1.2rem, 980px));
+      bottom:max(8px, env(safe-area-inset-bottom)); z-index:1001;
+    }
+    .visibility-toolbar.hidden{ display:none !important; }
+    .visibility-toolbar button{
+      padding:.7em .9em; border-radius:9px; border:1px solid #ccd4df; background:#fff;
+      cursor:pointer; font-weight:700;
+    }
+    .visibility-toolbar .hide-action{ background:#4b5563; color:#fff; border-color:#374151; }
+    .visibility-toolbar .show-action{ background:#1267d6; color:#fff; border-color:#0d56b6; }
+    .visibility-toolbar button:disabled{ opacity:.5; cursor:not-allowed; }
+    .visibility-selection-count{ flex:1 1 100%; text-align:center; color:#475569; font-size:.9rem; }
+    body.lightbox-open .zip-toolbar,
+    body.lightbox-open .visibility-toolbar{ display:none !important; }
+    .visibility-toast{
+      position:fixed; left:50%; bottom:calc(max(8px, env(safe-area-inset-bottom)) + 88px);
+      transform:translateX(-50%); z-index:1100; background:#1f2937; color:#fff;
+      padding:.7em 1em; border-radius:9px; box-shadow:0 4px 14px rgba(0,0,0,.2);
+      max-width:calc(100vw - 2rem); text-align:center;
+    }
+    .visibility-toast[hidden]{ display:none; }
+    .lightbox-visibility-control{
+      position:fixed; left:50%; bottom:max(22px, env(safe-area-inset-bottom));
+      transform:translateX(-50%); z-index:1000010; display:flex; align-items:center; gap:.75em;
+      padding:.65em .9em; border-radius:999px; background:rgba(20,27,38,.92);
+      color:#fff; box-shadow:0 4px 18px rgba(0,0,0,.35); font-size:.92rem;
+    }
+    .lightbox-visibility-control[hidden]{ display:none; }
+    .lightbox-visibility-switch{
+      min-width:6.8em; border:1px solid rgba(255,255,255,.5); border-radius:999px;
+      padding:.52em .8em; color:#fff; background:#4b5563; font-weight:700; cursor:pointer;
+    }
+    .lightbox-visibility-switch[aria-checked="true"]{ background:#1267d6; }
+    .lightbox-visibility-switch:disabled{ opacity:.55; cursor:wait; }
+    .lightbox-visibility-shortcut{
+      border:1px solid rgba(255,255,255,.45); border-bottom-width:2px; border-radius:5px;
+      padding:.1em .4em; background:rgba(255,255,255,.12); font:700 .78rem monospace;
+    }
     #zip-bottom-spacer{ height:0; }
 
     .zip-toolbar button,
@@ -42,8 +109,13 @@
     .zip-toolbar .primary:hover{ background:#1f933d; }
     .zip-toolbar .app-action{ background:#1267d6; color:#fff; border-color:#0d56b6; }
     .zip-toolbar .app-action:hover{ background:#0f5fc9; }
+    .zip-toolbar .sel-count{
+      font-weight:700; font-size:.95rem; color:#333; background:#f0f0f0;
+      padding:.45em .75em; border-radius:999px; white-space:nowrap;
+    }
     .zip-toolbar button:hover, .zip-toolbar a.btn:hover{ filter:brightness(.98); }
     .zip-toolbar button:disabled{ opacity:.6; cursor:not-allowed; }
+    .zip-toolbar a[aria-disabled="true"]{ opacity:.55; pointer-events:none; }
 
     /* 進行率バー */
     .zip-progress{ flex:1 1 100%; display:flex; align-items:center; gap:.6em; margin-top:.2em; }
@@ -70,6 +142,8 @@
       .zip-toolbar button, .zip-toolbar a.btn{ font-size:.92rem; padding:.55em .8em; min-width:7.3em; border-radius:8px; }
       .zip-progress .bar{ height:8px; } .zip-progress .txt{ font-size:.8rem; }
       .gallery a img{ width:120px; } .item{ width:130px; }
+      .visibility-toolbar{ gap:.45em; padding:.55em; width:calc(min(100vw - 1rem, 820px)); }
+      .visibility-toolbar button{ padding:.58em .7em; font-size:.88rem; }
     }
   </style>
 </head>
@@ -81,7 +155,22 @@
         {% set y = upload.date.year %}{% set m = '%02d' % upload.date.month %}{% set d = '%02d' % upload.date.day %}
         {{ y }}年{{ m }}月{{ d }}日
       </p>
-      <p>{{ image_count }}枚の画像があります。</p>
+      {% if owner_management %}
+        <p id="image-count-text">公開中 {{ public_count }}枚 ／ 非公開 {{ hidden_count }}枚</p>
+        <div class="visibility-manage-panel">
+          <button id="visibility-manage-start" type="button">公開状態を管理</button>
+          <p style="margin:.65em 0 0; color:#526173; font-size:.88rem;">
+            Shift＋クリックで、最後に選んだ写真から連続選択できます。
+          </p>
+          <div id="visibility-filters" class="visibility-filters" hidden aria-label="写真の公開状態で絞り込み">
+            <button type="button" class="active" data-filter="all">すべて</button>
+            <button type="button" data-filter="public">公開中</button>
+            <button type="button" data-filter="hidden">非公開</button>
+          </div>
+        </div>
+      {% else %}
+        <p>{{ image_count }}枚の画像があります。</p>
+      {% endif %}
 
       {# ▼ サムネイル無しモードのときは誘導文を追記 #}
       {% if show_zip_button %}
@@ -93,27 +182,54 @@
     {% if thumbnails and thumbnails|length > 0 %}
     <div class="gallery">
       {% for thumb in thumbnails %}
-        <div class="item">
+        <div class="item{% if thumb.is_hidden %} is-hidden{% endif %}"
+             data-file-id="{{ thumb.id }}"
+             data-hidden="{{ 1 if thumb.is_hidden else 0 }}">
           <label class="pick" title="この写真を選択">
             <input
               type="checkbox"
               class="pick-file"
+              data-file-id="{{ thumb.id }}"
+              data-hidden="{{ 1 if thumb.is_hidden else 0 }}"
               data-path="{{ upload.uuid + '/original/' + thumb.fallback }}"
               {% if thumb.mobile_jpeg %}data-mobile-path="{{ upload.uuid + '/original/' + thumb.fallback }}"{% endif %}
+              {% if thumb.is_hidden %}disabled{% endif %}
             >
             <span>選択</span>
           </label>
+          <span class="visibility-badge">非公開</span>
 
           <a href="{{ url_for('uploaded_file', subpath=upload.uuid + '/original/' + thumb.fallback) }}" data-caption="{{ thumb.fallback }}">
             {% if thumb.webp %}
               <picture>
-                <source srcset="{{ url_for('uploaded_file', subpath=upload.uuid + '/thumb/' + thumb.webp) }}" type="image/webp">
-                <img src="{{ url_for('uploaded_file', subpath=upload.uuid + '/thumb/' + thumb.fallback) }}" alt="{{ thumb.fallback }}" loading="lazy" width="110" height="80">
+                <source srcset="{{ url_for('uploaded_file', subpath=upload.uuid + '/thumb/' + thumb.webp, source=thumb.fallback) }}" type="image/webp">
+                <img src="{{ url_for('uploaded_file', subpath=upload.uuid + '/thumb/' + thumb.fallback, source=thumb.fallback) }}" alt="{{ thumb.fallback }}" loading="lazy" width="110" height="80">
               </picture>
             {% else %}
-              <img src="{{ url_for('uploaded_file', subpath=upload.uuid + '/thumb/' + thumb.fallback) }}" alt="{{ thumb.fallback }}" loading="lazy" width="110" height="80">
+              <img src="{{ url_for('uploaded_file', subpath=upload.uuid + '/thumb/' + thumb.fallback, source=thumb.fallback) }}" alt="{{ thumb.fallback }}" loading="lazy" width="110" height="80">
             {% endif %}
           </a>
+        </div>
+      {% endfor %}
+    </div>
+    {% elif owner_management and file_entries %}
+    <div class="gallery">
+      {% for file in file_entries %}
+        <div class="item file-only-card{% if file.is_hidden %} is-hidden{% endif %}"
+             data-file-id="{{ file.id }}"
+             data-hidden="{{ 1 if file.is_hidden else 0 }}">
+          <label class="pick" title="この写真を選択">
+            <input type="checkbox"
+                   class="pick-file"
+                   data-file-id="{{ file.id }}"
+                   data-hidden="{{ 1 if file.is_hidden else 0 }}"
+                   data-path="{{ upload.uuid + '/original/' + file.name }}"
+                   {% if file.mobile_jpeg %}data-mobile-path="{{ upload.uuid + '/original/' + file.name }}"{% endif %}
+                   {% if file.is_hidden %}disabled{% endif %}>
+            <span>選択</span>
+          </label>
+          <span class="visibility-badge">非公開</span>
+          <a href="{{ file.url }}" data-caption="{{ file.name }}">{{ file.name }}</a>
         </div>
       {% endfor %}
     </div>
@@ -123,12 +239,19 @@
     <div id="zip-bottom-spacer" aria-hidden="true"></div>
 
     {# ▼ 下部固定ツールバー #}
+    {% if image_count > 0 %}
     <div class="zip-toolbar" aria-label="ダウンロードツールバー（下部固定）" role="group">
       {% if show_zip_button %}
         <!-- サムネ無し：ブラウザ標準ダウンロード（サーバー側キャッシュ再利用） -->
-        <a id="btn-zip-all-direct" class="btn primary" href="{{ url_for('download_zip_for_upload', uuid=uuid) }}" aria-describedby="zip-status">ZIP一括ダウンロード</a>
+        <button id="btn-all-direct" type="button">全選択</button>
+        <button id="btn-none-direct" type="button">全解除</button>
+        <span id="sel-count-direct" class="sel-count" aria-live="polite">{{ public_count }}枚選択中</span>
+        <a id="btn-zip-all-direct"
+           class="btn primary"
+           {% if public_count > 0 %}href="{{ url_for('download_zip_for_upload', uuid=uuid) }}"{% else %}aria-disabled="true"{% endif %}
+           aria-describedby="zip-status">ZIPでDL</a>
         {% if mobile_download_enabled and jpeg_count > 0 %}
-        <button id="btn-app-all" class="app-action" type="button">全画像をアプリに保存</button>
+        <button id="btn-app-all" class="app-action" type="button" data-mfu-shortcut-button hidden style="display:none">SCでDL</button>
         {% endif %}
         <div id="zip-progress" class="zip-progress" hidden>
           <div class="bar"><span id="zip-progress-fill" class="fill"></span></div>
@@ -139,9 +262,10 @@
         <!-- サムネ有り：選択UI＋ZIP生成 -->
         <button id="btn-all"  type="button">全選択</button>
         <button id="btn-none" type="button">全解除</button>
-        <button id="btn-zip"  class="primary" type="button" aria-describedby="zip-status" disabled>0枚をZIPダウンロード</button>
+        <span id="sel-count" class="sel-count" aria-live="polite">0枚選択中</span>
+        <button id="btn-zip"  class="primary" type="button" aria-describedby="zip-status" disabled>ZIPでDL</button>
         {% if mobile_download_enabled and jpeg_count > 0 %}
-        <button id="btn-app" class="app-action" type="button" disabled>0枚を写真アプリに保存</button>
+        <button id="btn-app" class="app-action" type="button" data-mfu-shortcut-button hidden style="display:none" disabled>SCでDL</button>
         {% endif %}
 
         <div id="zip-progress" class="zip-progress" hidden>
@@ -151,14 +275,33 @@
         <span id="zip-status" class="sr-only" aria-live="polite"></span>
       {% endif %}
     </div>
+    {% endif %}
+
+    {% if owner_management %}
+    <div id="visibility-toolbar"
+         class="visibility-toolbar hidden"
+         aria-label="写真の公開状態管理"
+         role="group">
+      <div id="visibility-selection-count" class="visibility-selection-count">0枚を選択中</div>
+      <button id="visibility-all" type="button">表示中を全選択</button>
+      <button id="visibility-none" type="button">全解除</button>
+      <button id="visibility-hide" class="hide-action" type="button" disabled>非公開にする</button>
+      <button id="visibility-show" class="show-action" type="button" disabled>公開に戻す</button>
+      <button id="visibility-manage-end" type="button">管理終了</button>
+    </div>
+    <div id="visibility-toast" class="visibility-toast" hidden aria-live="polite"></div>
+    {% endif %}
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
     <script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/mfu_shortcut_download.js', v='20260821-2') }}"></script>
 
     <script>
       // 下部バーの余白確保は常時
       function setupBottomSpacer() {
-        const bottomBar = document.querySelector('.zip-toolbar');
+        const bottomBar = document.body.classList.contains('visibility-managing')
+          ? document.querySelector('.visibility-toolbar')
+          : document.querySelector('.zip-toolbar');
         const bottomSp  = document.getElementById('zip-bottom-spacer');
         if (!bottomBar || !bottomSp) return;
         bottomSp.style.height = (bottomBar.offsetHeight + 12) + 'px';
@@ -190,7 +333,7 @@
           body: JSON.stringify({ upload_uuid: UPLOAD_UUID, paths }),
         });
         const data = await response.json().catch(() => null);
-        if (!response.ok || !data?.ok || !data?.app_url) {
+        if (!response.ok || !data?.ok || !data?.shortcut_url) {
           throw new Error(data?.error || 'mobile_download_job_failed');
         }
         return data;
@@ -214,7 +357,15 @@
       {% if not show_zip_button %}
       // ===== サムネ有り時のみ：ギャラリー＆選択ZIP =====
       window.addEventListener('DOMContentLoaded', () => {
-        baguetteBox.run('.gallery', { animation: 'fadeIn', noScrollbars: true });
+        baguetteBox.run('.gallery', {
+          animation: 'fadeIn',
+          noScrollbars: true,
+          afterShow: () => window.MFUUploadVisibility?.lightboxAfterShow?.(),
+          afterHide: () => window.MFUUploadVisibility?.lightboxAfterHide?.(),
+          onChange: (currentIndex, imagesCount) => {
+            window.MFUUploadVisibility?.lightboxChange?.(currentIndex, imagesCount);
+          },
+        });
 
         bindToolbarButtons();
         setupBottomSpacer();
@@ -231,6 +382,7 @@
         const btnNone = document.getElementById('btn-none');
         const btnZip  = document.getElementById('btn-zip');
         const btnApp  = document.getElementById('btn-app');
+        const countEl = document.getElementById('sel-count');
         const statusEl = document.getElementById('zip-status');
 
         let resetTimer = null;
@@ -244,13 +396,14 @@
 
         const updateSelectedCount = () => {
           const cnt = $$('.pick-file:checked').length;
+          if (countEl) countEl.textContent = `${cnt}枚選択中`;
           if (!inflight) {
-            setBtnText(`${cnt}枚をZIPダウンロード`);
+            setBtnText('ZIPでDL');
           }
           if (btnZip) btnZip.disabled = inflight || cnt === 0;
           const jpegCount = $$('.pick-file:checked[data-mobile-path]').length;
           if (btnApp) {
-            btnApp.textContent = `${jpegCount}枚を写真アプリに保存`;
+            btnApp.textContent = 'SCでDL';
             btnApp.disabled = inflight || jpegCount === 0;
           }
         };
@@ -264,18 +417,18 @@
         btnApp?.addEventListener('click', async () => {
           if (inflight) return;
           const paths = $$('.pick-file:checked[data-mobile-path]').map(el => el.dataset.mobilePath).filter(Boolean);
-          if (!paths.length) { alert('JPEG画像を選択してください'); return; }
+          if (!paths.length) { alert('ショートカットで保存できる写真を選択してください'); return; }
           inflight = true;
           [btnZip, btnApp, btnAll, btnNone].forEach(b => { if (b) b.disabled = true; });
           btnApp.classList.add('btn-busy');
-          btnApp.textContent = 'アプリを準備中…';
+          btnApp.textContent = 'SC準備中…';
           try {
             const data = await createMobileDownloadJob(paths);
-            btnApp.textContent = 'アプリを開きます';
-            window.location.assign(data.app_url);
+            btnApp.textContent = 'SCを開きます';
+            await MFUShortcutDownload.launch(data);
           } catch (error) {
             console.error(error);
-            alert('アプリ用ダウンロードの準備に失敗しました。');
+            alert('ショートカット用ダウンロードの準備に失敗しました。');
           } finally {
             inflight = false;
             btnApp.classList.remove('btn-busy');
@@ -343,11 +496,11 @@
       }
 
       function setupToolbarVisibilityWithLightbox() {
-        const bar = document.querySelector('.zip-toolbar');
-        if (!bar) return;
-
-        const hide = () => bar.classList.add('hidden');
-        const show = () => { bar.classList.remove('hidden'); setupBottomSpacer(); };
+        const hide = () => document.body.classList.add('lightbox-open');
+        const show = () => {
+          document.body.classList.remove('lightbox-open');
+          setupBottomSpacer();
+        };
 
         document.querySelector('.gallery')?.addEventListener('click', (e) => { if (e.target.closest('a')) hide(); });
 
@@ -378,23 +531,367 @@
       window.addEventListener('DOMContentLoaded', () => {
         setupBottomSpacer();
         const btnAppAll = document.getElementById('btn-app-all');
+        const btnAllDirect = document.getElementById('btn-all-direct');
+        const btnNoneDirect = document.getElementById('btn-none-direct');
+        const btnZipDirect = document.getElementById('btn-zip-all-direct');
+        const countDirect = document.getElementById('sel-count-direct');
+        let directSelected = true;
+        const updateDirectButtons = () => {
+          btnZipDirect?.setAttribute('aria-disabled', directSelected ? 'false' : 'true');
+          if (btnAppAll) btnAppAll.disabled = !directSelected;
+          if (countDirect) countDirect.textContent = `${directSelected ? ALL_PATHS.length : 0}枚選択中`;
+        };
+        btnAllDirect?.addEventListener('click', () => { directSelected = true; updateDirectButtons(); });
+        btnNoneDirect?.addEventListener('click', () => { directSelected = false; updateDirectButtons(); });
+        btnZipDirect?.addEventListener('click', (event) => { if (!directSelected) event.preventDefault(); });
+        updateDirectButtons();
         btnAppAll?.addEventListener('click', async () => {
           btnAppAll.disabled = true;
           btnAppAll.classList.add('btn-busy');
-          btnAppAll.textContent = 'アプリを準備中…';
+          btnAppAll.textContent = 'SC準備中…';
           try {
             const data = await createMobileDownloadJob(JPEG_PATHS);
-            btnAppAll.textContent = 'アプリを開きます';
-            window.location.assign(data.app_url);
+            btnAppAll.textContent = 'SCを開きます';
+            await MFUShortcutDownload.launch(data);
           } catch (error) {
             console.error(error);
-            alert('アプリ用ダウンロードの準備に失敗しました。');
+            alert('ショートカット用ダウンロードの準備に失敗しました。');
             btnAppAll.disabled = false;
             btnAppAll.classList.remove('btn-busy');
-            btnAppAll.textContent = '全画像をアプリに保存';
+            btnAppAll.textContent = 'SCでDL';
           }
         });
       });
+      {% endif %}
+
+      // Shift＋クリックで、現在表示されている写真を連続選択する。
+      (() => {
+        let lastRangeAnchor = null;
+        const rangeCheckboxes = () => Array.from(
+          document.querySelectorAll('.gallery .pick-file[data-file-id]')
+        ).filter((input) => !input.disabled && input.closest('.item')?.style.display !== 'none');
+
+        document.querySelectorAll('.gallery .pick-file[data-file-id]').forEach((input) => {
+          input.addEventListener('click', (event) => {
+            if (event.shiftKey && lastRangeAnchor) {
+              const visible = rangeCheckboxes();
+              const start = visible.indexOf(lastRangeAnchor);
+              const end = visible.indexOf(input);
+              if (start >= 0 && end >= 0) {
+                const checked = input.checked;
+                const lower = Math.min(start, end);
+                const upper = Math.max(start, end);
+                visible.slice(lower, upper + 1).forEach((candidate) => {
+                  if (candidate === input || candidate.checked === checked) return;
+                  candidate.checked = checked;
+                  candidate.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+              }
+            }
+            lastRangeAnchor = input;
+          });
+        });
+      })();
+
+      {% if owner_management %}
+      // ===== アップロード者専用：写真の公開状態管理 =====
+      (() => {
+        const startButton = document.getElementById('visibility-manage-start');
+        const endButton = document.getElementById('visibility-manage-end');
+        const toolbar = document.getElementById('visibility-toolbar');
+        const filters = document.getElementById('visibility-filters');
+        const allButton = document.getElementById('visibility-all');
+        const noneButton = document.getElementById('visibility-none');
+        const hideButton = document.getElementById('visibility-hide');
+        const showButton = document.getElementById('visibility-show');
+        const countText = document.getElementById('visibility-selection-count');
+        const imageCountText = document.getElementById('image-count-text');
+        const toast = document.getElementById('visibility-toast');
+        let currentFilter = 'all';
+        let visibilityBusy = false;
+        let visibilityChanged = false;
+        let lightboxChanged = false;
+        let lightboxIndex = -1;
+        let lightboxControl = null;
+        let lightboxSwitch = null;
+        let toastTimer = null;
+        const scrollStorageKey = `mfu-view-scroll-${UPLOAD_UUID}`;
+
+        const items = () => Array.from(document.querySelectorAll('.gallery .item[data-file-id]'));
+        const checkboxes = () => Array.from(document.querySelectorAll('.pick-file[data-file-id]'));
+        const selected = () => checkboxes().filter((input) => input.checked);
+        const isHidden = (input) => String(input.dataset.hidden || '0') === '1';
+
+        function itemMatchesFilter(item) {
+          const hidden = String(item.dataset.hidden || '0') === '1';
+          if (currentFilter === 'public') return !hidden;
+          if (currentFilter === 'hidden') return hidden;
+          return true;
+        }
+
+        function applyFilter() {
+          items().forEach((item) => {
+            item.style.display = itemMatchesFilter(item) ? '' : 'none';
+          });
+          updateSelection();
+        }
+
+        function updateSelection() {
+          const chosen = selected();
+          const publicSelected = chosen.filter((input) => !isHidden(input)).length;
+          const hiddenSelected = chosen.filter(isHidden).length;
+          countText.textContent = `${chosen.length}枚を選択中`;
+          hideButton.textContent = publicSelected ? `${publicSelected}枚を非公開` : '非公開にする';
+          showButton.textContent = hiddenSelected ? `${hiddenSelected}枚を公開に戻す` : '公開に戻す';
+          hideButton.disabled = visibilityBusy || publicSelected === 0;
+          showButton.disabled = visibilityBusy || hiddenSelected === 0;
+          allButton.disabled = visibilityBusy;
+          noneButton.disabled = visibilityBusy || chosen.length === 0;
+          endButton.disabled = visibilityBusy;
+        }
+
+        function setManagementMode(enabled) {
+          document.body.classList.toggle('visibility-managing', enabled);
+          toolbar.classList.toggle('hidden', !enabled);
+          filters.hidden = !enabled;
+          startButton.textContent = enabled ? '公開状態を管理中' : '公開状態を管理';
+          startButton.disabled = enabled;
+          if (!enabled) {
+            currentFilter = 'all';
+            filters.querySelectorAll('button[data-filter]').forEach((button) => {
+              button.classList.toggle('active', button.dataset.filter === 'all');
+            });
+            checkboxes().forEach((input) => { input.checked = false; });
+            items().forEach((item) => { item.style.display = ''; });
+          }
+          checkboxes().forEach((input) => {
+            input.disabled = !enabled && isHidden(input);
+          });
+          if (!enabled && checkboxes()[0]) {
+            checkboxes()[0].dispatchEvent(new Event('change'));
+          }
+          updateSelection();
+          requestAnimationFrame(setupBottomSpacer);
+        }
+
+        function showToast(message) {
+          if (toastTimer) clearTimeout(toastTimer);
+          toast.textContent = message;
+          toast.hidden = false;
+          toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
+        }
+
+        function updateCardState(fileIds, hidden) {
+          const idSet = new Set(fileIds.map(String));
+          items().forEach((item) => {
+            if (!idSet.has(String(item.dataset.fileId))) return;
+            item.dataset.hidden = hidden ? '1' : '0';
+            item.classList.toggle('is-hidden', hidden);
+            const input = item.querySelector('.pick-file[data-file-id]');
+            if (input) {
+              input.dataset.hidden = hidden ? '1' : '0';
+              input.checked = false;
+            }
+          });
+        }
+
+        async function submitVisibility(fileIds, hidden) {
+          const response = await fetch(`/view/${encodeURIComponent(UPLOAD_UUID)}/visibility`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': CSRF_TOKEN,
+            },
+            body: JSON.stringify({ file_ids: fileIds, hidden }),
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data?.ok) {
+            throw new Error(data?.message || `HTTP ${response.status}`);
+          }
+          updateCardState(data.file_ids || fileIds, hidden);
+          visibilityChanged = visibilityChanged || Number(data.changed || 0) > 0;
+          imageCountText.textContent = `公開中 ${data.public_count}枚 ／ 非公開 ${data.hidden_count}枚`;
+          applyFilter();
+          showToast(
+            hidden
+              ? `${data.changed}枚を非公開にしました`
+              : `${data.changed}枚を公開に戻しました`
+          );
+          return data;
+        }
+
+        async function changeVisibility(hidden) {
+          if (visibilityBusy) return;
+          const targets = selected().filter((input) => isHidden(input) !== hidden);
+          if (!targets.length) return;
+          const fileIds = targets.map((input) => Number(input.dataset.fileId)).filter(Number.isInteger);
+          const message = hidden
+            ? `選択した${fileIds.length}枚を非公開にします。\n閲覧画面、直接URL、ZIP、ショートカット保存から除外されます。\n後から公開に戻せます。`
+            : `選択した${fileIds.length}枚を公開します。\n閲覧者が表示・ダウンロードできるようになります。`;
+          if (!window.confirm(message)) return;
+
+          visibilityBusy = true;
+          updateSelection();
+          const actionButton = hidden ? hideButton : showButton;
+          const originalText = actionButton.textContent;
+          actionButton.textContent = '変更中…';
+          try {
+            await submitVisibility(fileIds, hidden);
+          } catch (error) {
+            console.error(error);
+            window.alert(`公開状態の変更に失敗しました。\n${error.message || error}`);
+          } finally {
+            visibilityBusy = false;
+            actionButton.textContent = originalText;
+            updateSelection();
+          }
+        }
+
+        const lightboxItems = () => Array.from(
+          document.querySelectorAll('.gallery .item[data-file-id] a[data-caption]')
+        ).map((anchor) => anchor.closest('.item')).filter(Boolean);
+
+        function ensureLightboxControl() {
+          if (lightboxControl) return;
+          lightboxControl = document.createElement('div');
+          lightboxControl.className = 'lightbox-visibility-control';
+          lightboxControl.hidden = true;
+          lightboxControl.innerHTML = `
+            <span>公開状態</span>
+            <button type="button"
+                    class="lightbox-visibility-switch"
+                    role="switch"
+                    aria-keyshortcuts="E"
+                    title="クリックまたはEキーで切り替え"
+                    aria-checked="true">公開中</button>
+            <span class="lightbox-visibility-shortcut" aria-hidden="true">E</span>
+          `;
+          lightboxSwitch = lightboxControl.querySelector('.lightbox-visibility-switch');
+          lightboxControl.addEventListener('click', (event) => event.stopPropagation());
+          lightboxSwitch.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleCurrentLightboxVisibility();
+          });
+          document.body.appendChild(lightboxControl);
+        }
+
+        async function toggleCurrentLightboxVisibility() {
+          if (visibilityBusy || !lightboxControl || lightboxControl.hidden) return;
+          const item = lightboxItems()[lightboxIndex];
+          if (!item) return;
+          const currentlyHidden = String(item.dataset.hidden || '0') === '1';
+          const nextHidden = !currentlyHidden;
+
+          visibilityBusy = true;
+          lightboxSwitch.disabled = true;
+          lightboxSwitch.textContent = '変更中…';
+          updateSelection();
+          try {
+            const data = await submitVisibility([Number(item.dataset.fileId)], nextHidden);
+            lightboxChanged = lightboxChanged || Number(data.changed || 0) > 0;
+            syncLightboxControl();
+          } catch (error) {
+            console.error(error);
+            window.alert(`公開状態の変更に失敗しました。\n${error.message || error}`);
+            syncLightboxControl();
+          } finally {
+            visibilityBusy = false;
+            lightboxSwitch.disabled = false;
+            syncLightboxControl();
+            updateSelection();
+          }
+        }
+
+        function syncLightboxControl() {
+          ensureLightboxControl();
+          const item = lightboxItems()[lightboxIndex];
+          if (!item) {
+            lightboxControl.hidden = true;
+            return;
+          }
+          const hidden = String(item.dataset.hidden || '0') === '1';
+          lightboxControl.hidden = false;
+          lightboxSwitch.setAttribute('aria-checked', hidden ? 'false' : 'true');
+          lightboxSwitch.textContent = hidden ? '非公開' : '公開中';
+          lightboxSwitch.disabled = visibilityBusy;
+        }
+
+        function reloadAtCurrentScroll() {
+          try { sessionStorage.setItem(scrollStorageKey, String(window.scrollY)); } catch (_) {}
+          window.location.reload();
+        }
+
+        window.MFUUploadVisibility = {
+          lightboxAfterShow() {
+            ensureLightboxControl();
+            syncLightboxControl();
+          },
+          lightboxChange(currentIndex) {
+            lightboxIndex = Number(currentIndex);
+            syncLightboxControl();
+          },
+          lightboxAfterHide() {
+            if (lightboxControl) lightboxControl.hidden = true;
+            if (lightboxChanged) reloadAtCurrentScroll();
+          },
+        };
+
+        startButton?.addEventListener('click', () => setManagementMode(true));
+        endButton?.addEventListener('click', () => {
+          if (visibilityChanged) {
+            reloadAtCurrentScroll();
+            return;
+          }
+          setManagementMode(false);
+        });
+        allButton?.addEventListener('click', () => {
+          items().filter(itemMatchesFilter).forEach((item) => {
+            const input = item.querySelector('.pick-file[data-file-id]');
+            if (input) input.checked = true;
+          });
+          updateSelection();
+        });
+        noneButton?.addEventListener('click', () => {
+          checkboxes().forEach((input) => { input.checked = false; });
+          updateSelection();
+        });
+        hideButton?.addEventListener('click', () => changeVisibility(true));
+        showButton?.addEventListener('click', () => changeVisibility(false));
+        filters?.querySelectorAll('button[data-filter]').forEach((button) => {
+          button.addEventListener('click', () => {
+            currentFilter = button.dataset.filter || 'all';
+            filters.querySelectorAll('button[data-filter]').forEach((candidate) => {
+              candidate.classList.toggle('active', candidate === button);
+            });
+            checkboxes().forEach((input) => { input.checked = false; });
+            applyFilter();
+          });
+        });
+        checkboxes().forEach((input) => input.addEventListener('change', updateSelection));
+        document.addEventListener('keydown', (event) => {
+          if (event.repeat || event.code !== 'KeyE') return;
+          const target = event.target;
+          if (
+            target instanceof HTMLElement
+            && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
+          ) {
+            return;
+          }
+          if (!lightboxControl || lightboxControl.hidden) return;
+          event.preventDefault();
+          event.stopPropagation();
+          toggleCurrentLightboxVisibility();
+        });
+        try {
+          const savedScroll = Number(sessionStorage.getItem(scrollStorageKey));
+          if (Number.isFinite(savedScroll) && savedScroll >= 0) {
+            sessionStorage.removeItem(scrollStorageKey);
+            requestAnimationFrame(() => window.scrollTo({ top: savedScroll, behavior: 'auto' }));
+          }
+        } catch (_) {}
+      })();
       {% endif %}
     </script>
   </div>

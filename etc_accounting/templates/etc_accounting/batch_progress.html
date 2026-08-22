@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}ETC一括登録の進捗{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-1">freee一括登録の進捗</h1>
+    <div class="text-muted">画面を閉じてもサーバー側の処理は継続します。</div>
+  </div>
+  <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index') }}">明細一覧へ戻る</a>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+      <strong id="batchStatus">{{ job.status }}</strong>
+      <span id="batchCounts">成功 {{ job.success_count }}／失敗 {{ job.failure_count }}／除外 {{ job.skipped_count }}／全 {{ job.total_count }}</span>
+    </div>
+    <div class="progress" role="progressbar" aria-label="一括登録進捗">
+      <div class="progress-bar" id="batchProgressBar" style="width: 0%">0%</div>
+    </div>
+    <div class="alert alert-danger mt-3 mb-0 d-none" id="batchError"></div>
+  </div>
+</div>
+
+<div class="list-group" id="batchItems">
+{% for item in items %}
+  <div class="list-group-item" data-item-id="{{ item.id }}">
+    <div class="d-flex flex-wrap justify-content-between gap-2">
+      <span>{{ item.used_at.strftime('%Y年%m月%d日 %H:%M') }}　{{ item.entry_ic or '入口記録なし' }} → {{ item.exit_ic or '出口記録なし' }}</span>
+      <span class="badge bg-secondary batch-item-status">{{ item.status }}</span>
+    </div>
+    <div class="small text-muted mt-1">¥{{ '{:,}'.format(item.amount) }} ／ {{ item.invoice_registration_number or '登録番号なし' }}</div>
+    <div class="small text-danger mt-1 batch-item-error">{{ item.error_text or '' }}</div>
+  </div>
+{% endfor %}
+</div>
+
+<script>
+(() => {
+  const statusUrl = {{ url_for('etc_accounting.batch_status', job_id=job.id)|tojson }};
+  const finished = new Set(['completed', 'partial', 'failed']);
+  const labels = {queued:'待機中', running:'処理中', success:'成功', failed:'失敗', skipped:'除外'};
+  const badgeClasses = {queued:'bg-secondary', running:'bg-warning text-dark', success:'bg-success', failed:'bg-danger', skipped:'bg-warning text-dark'};
+  async function refresh() {
+    try {
+      const response = await fetch(statusUrl, {headers:{'Accept':'application/json'}});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const job = data.job;
+      const done = job.success_count + job.failure_count + job.skipped_count;
+      const percent = job.total_count ? Math.round(done * 100 / job.total_count) : 0;
+      document.getElementById('batchStatus').textContent = labels[job.status] || job.status;
+      document.getElementById('batchCounts').textContent = `成功 ${job.success_count}／失敗 ${job.failure_count}／除外 ${job.skipped_count}／全 ${job.total_count}`;
+      const bar = document.getElementById('batchProgressBar');
+      bar.style.width = `${percent}%`;
+      bar.textContent = `${percent}%`;
+      const error = document.getElementById('batchError');
+      error.textContent = job.error_text || '';
+      error.classList.toggle('d-none', !job.error_text);
+      data.items.forEach((item) => {
+        const row = document.querySelector(`[data-item-id="${item.id}"]`);
+        if (!row) return;
+        const badge = row.querySelector('.batch-item-status');
+        badge.textContent = labels[item.status] || item.status;
+        badge.className = `badge batch-item-status ${badgeClasses[item.status] || 'bg-secondary'}`;
+        row.querySelector('.batch-item-error').textContent = item.error || (item.deal_id ? `取引ID: ${item.deal_id}` : '');
+      });
+      if (!finished.has(job.status)) window.setTimeout(refresh, 2000);
+    } catch (error) {
+      document.getElementById('batchError').textContent = `進捗を取得できません: ${error}`;
+      document.getElementById('batchError').classList.remove('d-none');
+      window.setTimeout(refresh, 5000);
+    }
+  }
+  refresh();
+})();
+</script>
+{% endblock %}

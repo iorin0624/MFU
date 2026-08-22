@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import hmac
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+
+JOB_DIR = Path("/var/lib/asterisk/mfu_click_to_call_jobs")
+OUTGOING_DIR = Path("/var/spool/asterisk/outgoing")
+ENV_FILE = Path("/etc/asterisk/mfu-click-to-call.env")
+ENDPOINTS = {"10601", "10602", "10610", "10620"}
+ACTIVE = {"phone_ringing", "phone_answered", "external_ringing", "call_started"}
+TERMINAL = {"phone_no_answer", "external_failed", "call_ended", "failed"}
+
+
+def fail(message: str, code: int = 2) -> None:
+    print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+    raise SystemExit(code)
+
+
+def load_env() -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return values
+
+
+def job_path(job_id: str) -> Path:
+    return JOB_DIR / f"{job_id}.json"
+
+
+def locked():
+    JOB_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
+    try:
+        import grp
+        import pwd
+        os.chown(JOB_DIR, pwd.getpwnam("asterisk").pw_uid, grp.getgrnam("asterisk").gr_gid)
+    except (KeyError, PermissionError):
+        pass
+    lock = (JOB_DIR / ".state.lock").open("a+", encoding="utf-8")
+    os.chmod(lock.name, 0o660)
+    try:
+        import grp
+        import pwd
+        os.chown(lock.name, pwd.getpwnam("asterisk").pw_uid, grp.getgrnam("asterisk").gr_gid)
+    except (KeyError, PermissionError):
+        pass
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    return lock
+
+
+def read_job(job_id: str) -> dict:
+    try:
+        return json.loads(job_path(job_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_job(item: dict) -> None:
+    target = job_path(str(item["job_id"]))
+    fd, temp_name = tempfile.mkstemp(prefix=f".{item['job_id']}.", dir=JOB_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(item, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o660)
+        try:
+            import grp
+            import pwd
+            os.chown(temp_name, pwd.getpwnam("asterisk").pw_uid, grp.getgrnam("asterisk").gr_gid)
+        except (KeyError, PermissionError):
+            pass
+        os.replace(temp_name, target)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
+def notify(item: dict) -> None:
+    env = load_env()
+    secret = env.get("PHONE_CLICK_TO_CALL_SECRET", "")
+    callback_url = env.get(
+        "PHONE_CLICK_TO_CALL_CALLBACK_URL",
+        "http://192.168.103.16:8080/internal/phone-click-to-call/status",
+    )
+    if not secret:
+        return
+    body = json.dumps(
+        {
+            "job_id": item["job_id"],
+            "status": item["status"],
+            "detail": item.get("detail", ""),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    timestamp = str(int(time.time()))
+    signature = hmac.new(
+        secret.encode("utf-8"), timestamp.encode("ascii") + b"." + body, hashlib.sha256,
+    ).hexdigest()
+    request = urllib.request.Request(
+        callback_url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-MFU-Timestamp": timestamp,
+            "X-MFU-Signature": signature,
+        },
+    )
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=4) as response:
+                response.read(1024)
+            return
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+
+
+def update_state(job_id: str, requested_status: str, detail: str = "") -> dict:
+    with locked():
+        item = read_job(job_id)
+        if not item:
+            fail("job not found")
+        current = str(item.get("status") or "")
+        if current in TERMINAL:
+            return item
+        status = requested_status
+        if requested_status == "ended":
+            status = "call_ended" if current == "call_started" else "external_failed"
+        if status not in ACTIVE | TERMINAL:
+            fail("invalid status")
+        item["status"] = status
+        item["detail"] = str(detail or "")[:255]
+        item["updated_at"] = int(time.time())
+        write_job(item)
+    notify(item)
+    return item
+
+
+def validate_start(job_id: str, payload: dict) -> tuple[str, str]:
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        fail("invalid job id")
+    if str(payload.get("job_id") or "") != job_id:
+        fail("job id mismatch")
+    endpoint = str(payload.get("endpoint") or "")
+    number = str(payload.get("phone_number") or "")
+    if endpoint not in ENDPOINTS:
+        fail("invalid endpoint")
+    if str(payload.get("trunk") or "") != "brastel":
+        fail("trunk unavailable")
+    if not re.fullmatch(r"0\d{9,10}", number):
+        fail("invalid phone number")
+    return endpoint, number
+
+
+def start(job_id: str) -> None:
+    raw = sys.stdin.buffer.read(4097)
+    if len(raw) > 4096:
+        fail("payload too large")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("invalid payload")
+    if not isinstance(payload, dict):
+        fail("invalid payload")
+    endpoint, number = validate_start(job_id, payload)
+
+    now = int(time.time())
+    with locked():
+        for path in JOB_DIR.glob("*.json"):
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (
+                existing.get("endpoint") == endpoint
+                and existing.get("status") in ACTIVE
+                and now - int(existing.get("created_at") or 0) < 900
+            ):
+                fail("endpoint already has an active call")
+        item = {
+            "job_id": job_id,
+            "phone_number": number,
+            "endpoint": endpoint,
+            "trunk": "brastel",
+            "status": "phone_ringing",
+            "detail": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+        write_job(item)
+
+    notify(item)
+    call_file = "\n".join(
+        [
+            f"Channel: PJSIP/{endpoint}",
+            'CallerID: "外線発信" <10321>',
+            "WaitTime: 30",
+            "MaxRetries: 0",
+            "RetryTime: 1",
+            "Context: custom-mfu-click-to-call",
+            f"Extension: {number}",
+            "Priority: 1",
+            f"Setvar: __MFU_C2C_JOB={job_id}",
+            f"Setvar: __MFU_C2C_NUMBER={number}",
+            "Setvar: __MFU_C2C_TRUNK=brastel",
+            "Archive: yes",
+            "",
+        ]
+    )
+    spool_temp_dir = OUTGOING_DIR.parent / "tmp"
+    spool_temp_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".mfu-c2c-{job_id}.", dir=spool_temp_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(call_file)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o640)
+        try:
+            import grp
+            import pwd
+            os.chown(temp_name, pwd.getpwnam("asterisk").pw_uid, grp.getgrnam("asterisk").gr_gid)
+        except KeyError:
+            fail("asterisk user not found")
+        os.replace(temp_name, OUTGOING_DIR / f"mfu-c2c-{job_id}.call")
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+    with open(os.devnull, "rb") as devnull_in, open(os.devnull, "ab") as devnull_out:
+        subprocess.Popen(
+            [sys.executable, __file__, "monitor", job_id],
+            stdin=devnull_in,
+            stdout=devnull_out,
+            stderr=devnull_out,
+            start_new_session=True,
+            close_fds=True,
+        )
+    print(json.dumps({"ok": True, "job_id": job_id, "status": "phone_ringing"}))
+
+
+def monitor(job_id: str) -> None:
+    time.sleep(35)
+    item = read_job(job_id)
+    if item.get("status") == "phone_ringing":
+        update_state(job_id, "phone_no_answer", "30秒以内に電話機が応答しませんでした")
+
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        fail("usage: mfu-click-to-call start|state|monitor job_id [status] [detail]")
+    action, job_id = sys.argv[1], sys.argv[2]
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        fail("invalid job id")
+    if action == "start" and len(sys.argv) == 3:
+        start(job_id)
+        return
+    if action == "monitor" and len(sys.argv) == 3:
+        monitor(job_id)
+        return
+    if action == "state" and 4 <= len(sys.argv) <= 5:
+        item = update_state(job_id, sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else "")
+        print(json.dumps({"ok": True, "status": item["status"]}))
+        return
+    fail("invalid arguments")
+
+
+if __name__ == "__main__":
+    main()

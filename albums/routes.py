@@ -30,6 +30,9 @@ import shlex
 
 from mysql.connector import errors as MySQLErrors
 from app.utils.db import get_db  #
+from app.utils.logs import log_request_raw
+from app.utils.mail import send_mail
+from app.utils.admin_passkey_stepup import require_admin_passkey
 
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
 from app.albums.photo_namer import get_datetime_from_image
@@ -132,6 +135,62 @@ def _get_ext_user_nickname() -> str | None:
 
 def _is_ext_logged_in() -> bool:
     return bool(session.get("ext_user_social_id"))
+
+
+def _access_log_username() -> str:
+    ext_user_id = session.get("ext_user_id")
+    nickname = (session.get("ext_user_nickname") or "").strip()
+
+    if ext_user_id is None and session.get("ext_user_social_id"):
+        try:
+            ext_user = _get_ext_user_by_social(session["ext_user_social_id"]) or {}
+            ext_user_id = ext_user.get("id")
+            nickname = nickname or (ext_user.get("nickname") or "").strip()
+        except Exception:
+            pass
+
+    if ext_user_id is not None:
+        return f"LINE_{ext_user_id}_{nickname}"
+
+    return (session.get("user") or "").strip()
+
+
+def _request_client_ip() -> str:
+    cf_ip = (request.headers.get("CF-Connecting-IP") or "").strip()
+    if cf_ip:
+        return cf_ip
+    forwarded = (request.headers.get("X-Forwarded-For") or "").strip()
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.remote_addr or "-"
+
+
+def _write_event_album_view_granted(album_id: str, event_id, auth_kind: str) -> None:
+    """Write a separate audit row only after the event album page rendered."""
+    try:
+        log_request_raw(
+            ip=_request_client_ip(),
+            method="AUDIT",
+            path=request.path or f"/album/{album_id}/",
+            status=200,
+            ua=request.headers.get("User-Agent", "-"),
+            referer=request.headers.get("Referer", ""),
+            endpoint="album.album_view_granted",
+            username=_access_log_username(),
+            latency_ms=0,
+            marker=(
+                f"[ALBUM_VIEW_GRANTED] album_id={album_id} "
+                f"event_id={event_id} auth={auth_kind}"
+            ),
+        )
+    except Exception:
+        current_app.logger.warning(
+            "event album view audit failed album_id=%s event_id=%s",
+            album_id,
+            event_id,
+            exc_info=True,
+        )
+
 
 def _fetch_event_process_members(event_id: int) -> list[dict]:
     """イベント参加者一覧を取得（process フラグ含む）"""
@@ -343,15 +402,7 @@ def _notify_requester_process_completion(
         f"アクセスはこちら:\n{link}\n\n"
         "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
     )
-    try:
-        from app.utils.mail import send_mail
-    except Exception:
-        try:
-            from app.mail import send_mail
-        except Exception:
-            send_mail = None
-    if send_mail:
-        send_mail(requester_email, subject, body)
+    send_mail(requester_email, subject, body)
 
 def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
     if not user_ids:
@@ -967,7 +1018,16 @@ def _is_event_member_approved(event_id: int) -> bool:
         return False
     ext_user_id = session.get("ext_user_id")
     if ext_user_id is None:
-        u = db_get_one("SELECT id, nickname FROM external_login_user WHERE social_id=%s", (sid,))
+        u = db_get_one(
+            """
+            SELECT id, nickname
+              FROM external_login_user
+             WHERE social_id=%s
+               AND COALESCE(is_deleted, 0)=0
+             LIMIT 1
+            """,
+            (sid,),
+        )
         if not u:
             session["ext_user_onboarding"] = True
             session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
@@ -982,7 +1042,15 @@ def _is_event_member_approved(event_id: int) -> bool:
             session.pop("ext_user_id", None)
             return False
     mem = db_get_one(
-        "SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s",
+        """
+        SELECT m.status, COALESCE(m.is_canceled,0) AS is_canceled
+          FROM mfu_event_member AS m
+          JOIN external_login_user AS u ON u.id=m.user_id
+         WHERE m.event_id=%s
+           AND m.user_id=%s
+           AND COALESCE(u.is_deleted,0)=0
+         LIMIT 1
+        """,
         (event_id, ext_user_id),
     )
     return bool(mem and mem.get("status") == "approved" and int(mem.get("is_canceled") or 0) == 0)
@@ -1070,6 +1138,39 @@ def album_home(album_id):
     ext_user_nickname = _get_ext_user_nickname()
     album_meta = _fetch_album_meta(album_id)
     show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
+    event_detail_url = None
+    event_detail_label = "イベント詳細へ戻る"
+    event_summary = None
+    if album_meta and album_meta.get("access_mode") == "event" and album_meta.get("event_id"):
+        try:
+            event_summary = db_get_one(
+                """
+                SELECT event_uuid, title, starts_at, place_name
+                  FROM mfu_event
+                 WHERE id=%s
+                 LIMIT 1
+                """,
+                (album_meta["event_id"],),
+            )
+            event_uuid_str = _uuid_bytes_to_str((event_summary or {}).get("event_uuid"))
+            if is_admin:
+                event_detail_url = url_for(
+                    "external_login_user.admin_event_view",
+                    event_id=album_meta["event_id"],
+                )
+                event_detail_label = "イベント管理へ戻る"
+            elif event_uuid_str:
+                event_detail_url = url_for(
+                    "external_login_user.view_event",
+                    event_uuid=event_uuid_str,
+                )
+        except Exception as exc:
+            current_app.logger.warning(
+                "event album header context failed album_id=%s: %s",
+                album_id,
+                exc,
+            )
+            event_summary = None
 
     # ★追加：加工ロック一覧を取得
     processing_list = []
@@ -1122,7 +1223,7 @@ def album_home(album_id):
         child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
         child["media_unit"] = "本" if mode == "movie" else "枚"
 
-    return render_template(
+    rendered = render_template(
         'album_home.html',
         album_id=album_id, meta=meta,
         is_admin=is_admin, is_owner=is_owner,
@@ -1130,7 +1231,15 @@ def album_home(album_id):
         ext_user_nickname=ext_user_nickname,
         completed_process_children=completed_process_children,
         show_extlogin_nav=show_extlogin_nav,
+        event_detail_url=event_detail_url,
+        event_detail_label=event_detail_label,
+        event_summary=event_summary,
+        is_event_album=bool((album_meta or {}).get("access_mode") == "event"),
     )
+    if album_meta and album_meta.get("access_mode") == "event" and album_meta.get("event_id"):
+        auth_kind = "admin" if is_admin else ("owner" if is_owner else "event_session")
+        _write_event_album_view_granted(album_id, album_meta["event_id"], auth_kind)
+    return rendered
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
 def create_child(album_id):
@@ -1441,27 +1550,17 @@ def upload_child(album_id, child_id):
                     return f"album:{album_id}:{child_id}:process_done:mfu:admin:{process_done_state}"[:191]
                 return f"album:{album_id}:{child_id}:{kind}:mfu:admin"[:191]
 
-            try:
-                from app.utils.mail import send_mail  # 既存の mail.py を利用
-            except Exception:
-                try:
-                    from app.mail import send_mail
-                except Exception:
-                    current_app.logger.warning("notify: send_mail import failed")
-                    send_mail = None
-
             # 送信
             sent_ok = False
             mail_failed_count = 0
-            if send_mail:
-                for to in mail_recipients:
-                    try:
-                        current_app.logger.info("notify: send -> %s", to)
-                        send_mail(to, title, body)
-                        sent_ok = True
-                    except Exception as e:
-                        mail_failed_count += 1
-                        current_app.logger.warning("notify send failed to %s: %s", to, e)
+            for to in mail_recipients:
+                try:
+                    current_app.logger.info("notify: send -> %s", to)
+                    send_mail(to, title, body)
+                    sent_ok = True
+                except Exception as e:
+                    mail_failed_count += 1
+                    current_app.logger.warning("notify send failed to %s: %s", to, e)
 
             push_failed_count = 0
             push_skipped_count = 0
@@ -2307,43 +2406,33 @@ def request_process(album_id, child_id):
             "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
         )
 
-        try:
-            from app.utils.mail import send_mail
-        except Exception:
+        recipients = [
+            c.get("email") for c in contacts
+            if c.get("email") and int(c.get("notify_album_process", 1)) == 1
+        ]
+        request_by_email = None
+        if requester_id:
+            requester = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (requester_id,))
+            request_by_email = (requester or {}).get("email")
+        current_app.logger.info(
+            "notify: pre_send kind=process_request album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
+            album_id,
+            child_id,
+            request_by_email,
+            len(recipients),
+            recipients,
+            "request_flag=1 AND complete_flag=0",
+        )
+        for c in contacts:
+            if not c.get("email"):
+                continue
+            if int(c.get("notify_album_process", 1)) != 1:
+                continue
             try:
-                from app.mail import send_mail
-            except Exception:
-                current_app.logger.warning("notify: send_mail import failed")
-                send_mail = None
-
-        if send_mail:
-            recipients = [
-                c.get("email") for c in contacts
-                if c.get("email") and int(c.get("notify_album_process", 1)) == 1
-            ]
-            request_by_email = None
-            if requester_id:
-                requester = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (requester_id,))
-                request_by_email = (requester or {}).get("email")
-            current_app.logger.info(
-                "notify: pre_send kind=process_request album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
-                album_id,
-                child_id,
-                request_by_email,
-                len(recipients),
-                recipients,
-                "request_flag=1 AND complete_flag=0",
-            )
-            for c in contacts:
-                if not c.get("email"):
-                    continue
-                if int(c.get("notify_album_process", 1)) != 1:
-                    continue
-                try:
-                    send_mail(c["email"], subject, body)
-                    sent_count += 1
-                except Exception as e:
-                    current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
+                send_mail(c["email"], subject, body)
+                sent_count += 1
+            except Exception as e:
+                current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
 
     return jsonify({"ok": True, "sent": sent_count})
 
@@ -2403,6 +2492,10 @@ def delete_album(album_id):
 
     if session.get('user') != 'admin' and session.get('user') != meta.get('owner'):
         return '削除権限がありません', 403
+
+    guard = require_admin_passkey(f"album_delete:{album_id}")
+    if guard:
+        return guard
 
     for root in (ALBUM_ROOT, MOVIE_ROOT):
         album_path = os.path.join(root, album_id)
@@ -2480,6 +2573,10 @@ def delete_child(album_id, child_id):
     user = session.get('user')
     if user != 'admin' and user != meta.get('owner'):
         return '削除権限がありません', 403
+
+    guard = require_admin_passkey(f"album_child_delete:{album_id}:{child_id}")
+    if guard:
+        return guard
 
     try:
         release_lock_db(album_id, child_id, username=None, force=True)

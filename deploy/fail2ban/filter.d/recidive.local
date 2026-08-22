@@ -1,0 +1,5 @@
+[Definition]
+# HTTP probe bans expire automatically. Permanent blocking remains an explicit
+# administrator action instead of being inherited from the global recidive jail.
+ignoreregex = ^.*\[mfu-sensitive-probe\] Ban <HOST>\s*$
+

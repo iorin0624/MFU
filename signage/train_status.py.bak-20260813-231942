@@ -1,0 +1,201 @@
+import json
+import os
+from datetime import datetime, timezone
+from functools import wraps
+from pathlib import Path
+from urllib.parse import urlparse
+
+from flask import (
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+from flask_login import current_user
+
+from . import train_status_bp
+
+
+TRAIN_STATUS_DATA_PATH = Path(
+    os.environ.get(
+        "TRAIN_STATUS_DATA_PATH",
+        "/mnt/mfu/signage_archive/train-status/latest.json",
+    )
+)
+TRAIN_STATUS_SYNC_STATUS_PATH = Path(
+    os.environ.get(
+        "TRAIN_STATUS_SYNC_STATUS_PATH",
+        "/mnt/mfu/signage_archive/train-status/sync-status.json",
+    )
+)
+TRAIN_STATUS_STALE_SECONDS = 25 * 60
+
+
+def _is_logged_in():
+    return bool(session.get("user")) or bool(
+        getattr(current_user, "is_authenticated", False)
+    )
+
+
+def _login_required(api=False):
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            if _is_logged_in():
+                return view(*args, **kwargs)
+            if api:
+                response = jsonify({"ok": False, "error": "ログインが必要です。"})
+                response.status_code = 401
+                response.headers["Cache-Control"] = "no-store"
+                return response
+            return redirect(url_for("login", next=request.full_path.rstrip("?")))
+
+        return wrapper
+
+    return decorator
+
+
+def _read_json_object(path):
+    try:
+        with path.open("r", encoding="utf-8") as source_file:
+            value = json.load(source_file)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _safe_transit_url(value):
+    value = str(value or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "transit.yahoo.co.jp":
+        return None
+    return value
+
+
+def _line_kind(status):
+    status = str(status or "")
+    if "運転見合わせ" in status or "運転を見合わせ" in status:
+        return "suspended"
+    if "遅延" in status or "遅れ" in status:
+        return "delayed"
+    return "other"
+
+
+def _iso_from_mtime(path):
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).astimezone().isoformat(
+            timespec="seconds"
+        )
+    except OSError:
+        return None
+
+
+def _parse_iso(value):
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def load_train_status_snapshot(now=None):
+    now = now or datetime.now().astimezone()
+    payload = _read_json_object(TRAIN_STATUS_DATA_PATH)
+    sync_status = _read_json_object(TRAIN_STATUS_SYNC_STATUS_PATH) or {}
+    raw_lines = payload.get("lines", []) if payload else []
+    lines = []
+
+    if isinstance(raw_lines, list):
+        for raw in raw_lines:
+            if not isinstance(raw, dict) or raw.get("error"):
+                continue
+            line_name = str(raw.get("line_name") or "").strip()
+            status = str(raw.get("status") or "").strip()
+            message = str(raw.get("message") or "").strip()
+            if not line_name or not (status or message):
+                continue
+            affected_source = raw.get("affected_lines")
+            affected_lines = []
+            if isinstance(affected_source, list):
+                affected_lines = sorted(
+                    {
+                        str(value).strip()
+                        for value in affected_source
+                        if value is not None and str(value).strip()
+                    }
+                )
+            kind = _line_kind(status)
+            lines.append(
+                {
+                    "line_name": line_name,
+                    "status": status or "運行情報",
+                    "message": message,
+                    "update_time_text": str(raw.get("update_time_text") or "").strip(),
+                    "affected_lines": affected_lines,
+                    "kind": kind,
+                }
+            )
+
+    priority = {"suspended": 0, "delayed": 1, "other": 2}
+    lines.sort(key=lambda line: (priority[line["kind"]], line["line_name"]))
+    fetched_at = sync_status.get("fetched_at") or _iso_from_mtime(TRAIN_STATUS_DATA_PATH)
+    fetched_dt = _parse_iso(fetched_at)
+    if fetched_dt and fetched_dt.tzinfo is None:
+        fetched_dt = fetched_dt.replace(tzinfo=timezone.utc)
+    age_seconds = None
+    if fetched_dt:
+        age_seconds = max(0, int((now - fetched_dt.astimezone(now.tzinfo)).total_seconds()))
+    sync_ok = bool(sync_status.get("ok", payload is not None))
+    stale = payload is None or age_seconds is None or age_seconds > TRAIN_STATUS_STALE_SECONDS
+    warning = None
+    if payload is None:
+        warning = "運行情報をまだ取得できていません。"
+    elif not sync_ok or stale:
+        warning = "最新情報を取得できていません。最後に取得できた情報を表示しています。"
+
+    counts = {
+        "total": len(lines),
+        "suspended": sum(line["kind"] == "suspended" for line in lines),
+        "delayed": sum(line["kind"] == "delayed" for line in lines),
+        "other": sum(line["kind"] == "other" for line in lines),
+    }
+    return {
+        "ok": payload is not None,
+        "source_updated": str(payload.get("updated") or "").strip() if payload else "",
+        "source_url": _safe_transit_url(payload.get("source")) if payload else None,
+        "fetched_at": fetched_at,
+        "age_seconds": age_seconds,
+        "stale": stale,
+        "warning": warning,
+        "counts": counts,
+        "lines": lines,
+    }
+
+
+def _no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    return response
+
+
+@train_status_bp.get("/train-status")
+@_login_required()
+def index():
+    return _no_store(
+        make_response(
+            render_template(
+                "signage/train_status.html",
+                snapshot=load_train_status_snapshot(),
+            )
+        )
+    )
+
+
+@train_status_bp.get("/train-status/data")
+@_login_required(api=True)
+def data():
+    return _no_store(jsonify(load_train_status_snapshot()))

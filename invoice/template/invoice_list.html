@@ -80,7 +80,7 @@
       <div class="invoice-card-field">
         <div class="invoice-card-label">処理履歴</div>
         <div class="invoice-card-value">メール: {{ invoice.mailed_at.strftime('%Y-%m-%d %H:%M') if invoice.mailed_at else '---' }}</div>
-        <div class="invoice-card-value">freee: {{ invoice.freee_exported_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_exported_at else '---' }}</div>
+        <div class="invoice-card-value">freee: {{ invoice.freee_api_registered_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_registered_at else '---' }}</div>
       </div>
     </div>
 

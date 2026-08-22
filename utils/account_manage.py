@@ -1,6 +1,8 @@
 from flask import Blueprint, render_template, session, redirect, url_for, request, flash
 import bcrypt
 from app.utils.db import get_db
+from app.utils.admin_auth import ADMIN_USERNAME, audit, invalidate_all_admin_sessions, recent_admin_mfa
+from app.utils.admin_passkey_stepup import require_admin_passkey
 
 account_bp = Blueprint("account", __name__)
 
@@ -15,16 +17,42 @@ def manage_account():
     cursor = db.cursor(dictionary=True)
 
     if request.method == "POST":
+        if False and username == ADMIN_USERNAME and not recent_admin_mfa():
+            db.close()
+            flash("安全のため、ログアウト後に再ログインしてから変更してください。", "danger")
+            return redirect(url_for("account.manage_account"))
+
         nickname = request.form.get("nickname", "").strip()
         email = request.form.get("email", "").strip()
         webhook_url = request.form.get("webhook_url", "").strip()
         notify_method = request.form.get("notify_method", "discord")
         password = request.form.get("password", "")
         confirm = request.form.get("confirm_password", "")
+        current_password = request.form.get("current_password", "")
+
+        if username == ADMIN_USERNAME and (password or confirm):
+            guard = require_admin_passkey("admin_password_change")
+            if guard:
+                db.close()
+                return guard
 
         if password or confirm:
             if password != confirm:
                 flash("パスワードが一致しません", "danger")
+                return redirect(url_for("account.manage_account"))
+            minimum = 14 if username == ADMIN_USERNAME else 10
+            if len(password) < minimum:
+                db.close()
+                flash(f"新しいパスワードは{minimum}文字以上にしてください。", "danger")
+                return redirect(url_for("account.manage_account"))
+            cursor.execute("SELECT password_hash FROM users WHERE username=%s", (username,))
+            password_row = cursor.fetchone() or {}
+            stored_hash = password_row.get("password_hash") or ""
+            if not current_password or not stored_hash or not bcrypt.checkpw(
+                current_password.encode(), stored_hash.encode()
+            ):
+                db.close()
+                flash("現在のパスワードが一致しません。", "danger")
                 return redirect(url_for("account.manage_account"))
             hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
             cursor.execute("""
@@ -39,6 +67,12 @@ def manage_account():
 
         db.commit()
         db.close()
+        if password and username == ADMIN_USERNAME:
+            invalidate_all_admin_sessions("admin password changed")
+            audit("CREDENTIAL_CHANGED", details={"credential": "password"})
+            session.clear()
+            flash("パスワードを変更しました。すべての端末からログアウトしました。", "success")
+            return redirect(url_for("login"))
         flash("アカウント情報を更新しました", "success")
         return redirect(url_for("account.manage_account"))
 
@@ -70,6 +104,9 @@ def manage_passkeys():
         return redirect(url_for("login"))
 
     username = session["user"]
+    if False and username == ADMIN_USERNAME and not recent_admin_mfa():
+        flash("パスキー管理には直近の追加認証が必要です。再ログインしてください。", "danger")
+        return redirect(url_for("account.manage_account"))
     db = get_db()
     cursor = db.cursor(dictionary=True)
     cursor.execute(
@@ -93,6 +130,13 @@ def delete_passkey(passkey_id: int):
         return redirect(url_for("login"))
 
     username = session["user"]
+    if username == ADMIN_USERNAME:
+        guard = require_admin_passkey(f"admin_passkey_delete:{passkey_id}")
+        if guard:
+            return guard
+    if False and username == ADMIN_USERNAME and not recent_admin_mfa():
+        flash("パスキー削除には直近の追加認証が必要です。", "danger")
+        return redirect(url_for("account.manage_passkeys"))
     db = get_db()
     cursor = db.cursor()
     cursor.execute(
@@ -106,5 +150,7 @@ def delete_passkey(passkey_id: int):
 
     db.commit()
     db.close()
+    if username == ADMIN_USERNAME:
+        audit("CREDENTIAL_CHANGED", details={"credential": "passkey_deleted", "passkey_id": passkey_id})
     flash("パスキーを削除しました。", "success")
     return redirect(url_for("account.manage_passkeys"))

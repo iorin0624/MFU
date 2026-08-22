@@ -187,7 +187,7 @@
     <p class="small text-muted mb-3">
       外部ログイン不能化・個人情報匿名化・周辺データ切り離しを実行します。過去参加履歴は匿名名で保持されます。
     </p>
-    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_anonymize_delete', user_id=u.id) }}" onsubmit="return window.confirm('このユーザーを匿名化削除します。実行してよろしいですか？');">
+    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_anonymize_delete', user_id=u.id) }}" data-admin-passkey-action="external_user_anonymize:{{ u.id }}" onsubmit="return window.confirm('このユーザーを匿名化削除します。実行してよろしいですか？');">
       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
       <div class="mb-2">
         <label class="form-label">理由（任意）</label>

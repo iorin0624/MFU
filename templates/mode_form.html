@@ -26,10 +26,16 @@
       <label class="form-check-label" for="download_url">ダウンロードURLを表示</label>
     </div>
 
-    <div class="form-check mb-2">
-      <input type="checkbox" class="form-check-input" id="require_password" name="require_password" {% if mode_data and mode_data.require_password %}checked{% endif %}>
-      <label class="form-check-label" for="require_password">パスワードを発行</label>
-    </div>
+    {% set selected_auth = (mode_data.auth_method if mode_data and mode_data.auth_method else ('password' if mode_data and mode_data.require_password else 'none')) %}
+    <fieldset class="border rounded p-3 mb-3">
+      <legend class="float-none w-auto px-2 fs-6 fw-bold">閲覧・ダウンロードの認証方式</legend>
+      {% for value, label in [('none', '認証なし'), ('password', 'パスワード認証'), ('email_otp', 'メールOTP認証')] %}
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="auth_method" id="auth_{{ value }}" value="{{ value }}" {% if selected_auth == value %}checked{% endif %}>
+        <label class="form-check-label" for="auth_{{ value }}">{{ label }}</label>
+      </div>
+      {% endfor %}
+    </fieldset>
 
     <div class="form-check mb-4">
       <input type="checkbox" class="form-check-input" id="layer_upload_url" name="enable_layer_upload_url" {% if mode_data and mode_data.enable_layer_upload_url %}checked{% endif %}>

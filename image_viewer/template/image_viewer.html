@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token_value }}">
   <meta name="theme-color" content="#0b63dd">
+  {% if session.get('user') == 'admin' %}
+  <script defer src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='js/admin-passkey-stepup.js') }}"></script>
+  {% endif %}
   <link rel="manifest" href="{{ url_for('image_viewer.pwa_manifest') }}">
   <link rel="apple-touch-icon" href="{{ url_for('image_viewer.pwa_icon', size=192) }}">
   <title>Image Viewer Desktop</title>
@@ -194,7 +198,18 @@
     }
 
     .window.active .titlebar { background: linear-gradient(#5bb7ff 0%, #0b63dd 48%, #0042a8 100%); }
-    .title-icon { width: 17px; height: 17px; display: grid; place-items: center; color: #ffdc48; text-shadow: 0 1px 0 rgba(0,0,0,.35); }
+    .title-icon {
+      width: auto;
+      min-width: 17px;
+      height: 17px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      white-space: nowrap;
+      line-height: 17px;
+      color: #ffdc48;
+      text-shadow: 0 1px 0 rgba(0,0,0,.35);
+    }
     .title-text {
       min-width: 0;
       flex: 1;
@@ -380,10 +395,9 @@
       33% { content: "Loading.."; }
       66%, 100% { content: "Loading..."; }
     }
+    .files.view-xxl { --tile-w: 232px; --tile-h: 268px; --thumb-size: 220px; --name-lines: 2; gap: 14px 12px; }
     .files.view-xl { --tile-w: 186px; --tile-h: 220px; --thumb-size: 174px; --name-lines: 2; }
     .files.view-lg { --tile-w: 148px; --tile-h: 176px; --thumb-size: 136px; --name-lines: 2; }
-    .files.view-md { --tile-w: 112px; --tile-h: 138px; --thumb-size: 100px; --name-lines: 2; gap: 8px 6px; }
-    .files.view-sm { --tile-w: 82px; --tile-h: 106px; --thumb-size: 70px; --name-lines: 1; gap: 6px 4px; }
     .file {
       border: 1px solid transparent;
       background: transparent;
@@ -1260,6 +1274,14 @@
     .files {
       background: #fff;
       border-top: 1px solid #f4f4f4;
+      user-select: none;
+    }
+    .selection-marquee {
+      position: fixed;
+      z-index: 100000;
+      pointer-events: none;
+      border: 1px solid #316ac5;
+      background: rgba(49, 106, 197, .18);
     }
     .file {
       border-radius: 1px;
@@ -1407,15 +1429,16 @@
               <button type="button" id="newFolderBtn" title="フォルダー作成">新規</button>
               <button type="button" id="uploadBtn" title="画像アップロード">追加</button>
               <button type="button" id="pasteBtn" title="クリップボード画像を保存">貼付</button>
+              <button type="button" id="numberingBtn" title="D&amp;D・追加・貼付時のファイル名">連番あり</button>
               <button type="button" id="sortBtn" title="名前順 / 逆順">昇順</button>
-              <button type="button" class="view-btn" data-view-size="xl" title="特大表示">特大</button>
-              <button type="button" class="view-btn" data-view-size="lg" title="大表示">大</button>
-              <button type="button" class="view-btn" data-view-size="md" title="中表示">中</button>
-              <button type="button" class="view-btn" data-view-size="sm" title="小表示">小</button>
+              <button type="button" class="view-btn" data-view-size="xxl" title="特大表示">特大</button>
+              <button type="button" class="view-btn" data-view-size="xl" title="大表示">大</button>
+              <button type="button" class="view-btn" data-view-size="lg" title="中表示">中</button>
               <button type="button" id="thumbBtn" title="不足サムネイル作成">縮小</button>
               <button type="button" id="regenThumbBtn" title="サムネイルキャッシュ削除と再生成">再生成</button>
               <button type="button" id="tileBtn" title="選択画像を開く">開く</button>
               <input id="uploadInput" type="file" accept="image/*,video/*,.mp4,.webm,.mov,.m4v" multiple hidden>
+              <input id="pasteFallbackInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp,.jpg,.jpeg,.png,.gif,.webp" multiple hidden>
             </div>
             <div class="files" id="fileGrid" aria-label="逕ｻ蜒丈ｸ隕ｧ"></div>
           </section>
@@ -1441,14 +1464,17 @@
   <script>
   (() => {
     const apiUrl = "{{ url_for('image_viewer.image_list') }}";
+    const imageVersionUrl = "{{ url_for('image_viewer.image_list_version') }}";
     const duplicateGroupsUrl = "{{ url_for('image_viewer.duplicate_groups') }}";
     const createFolderUrl = "{{ url_for('image_viewer.create_folder') }}";
     const uploadImagesUrl = "{{ url_for('image_viewer.upload_images') }}";
     const pasteImagesUrl = "{{ url_for('image_viewer.paste_images') }}";
     const renameEntryUrl = "{{ url_for('image_viewer.rename_entry') }}";
+    const appendSequenceUrl = "{{ url_for('image_viewer.append_sequence_entries') }}";
     const entryPropertiesUrl = "{{ url_for('image_viewer.entry_properties') }}";
     const deleteEntryUrl = "{{ url_for('image_viewer.delete_entry') }}";
     const moveEntryUrl = "{{ url_for('image_viewer.move_entry') }}";
+    const copyEntryUrl = "{{ url_for('image_viewer.copy_entry') }}";
     const illustrationUrl = "{{ url_for('image_viewer.openai_illustration') }}";
     const illustrationSaveUrl = "{{ url_for('image_viewer.openai_illustration_save') }}";
     const illustrationJobUrlBase = "{{ url_for('image_viewer.openai_illustration_job', job_id='__JOB_ID__') }}";
@@ -1462,7 +1488,10 @@
     const instagramBrowserSaveUrl = "{{ url_for('image_viewer.instagram_browser_save') }}";
     const instagramBrowserTypeUrl = "{{ url_for('image_viewer.instagram_browser_type') }}";
     const instagramBrowserOpenUrl = "{{ url_for('image_viewer.instagram_browser_open') }}";
+    const instagramCredentialsStatusUrl = "{{ url_for('image_viewer.instagram_credentials_get_status') }}";
+    const instagramCredentialsSaveUrl = "{{ url_for('image_viewer.instagram_credentials_save') }}";
     const videoFetchUrl = "{{ url_for('image_viewer.video_fetch') }}";
+    const videoFramesFetchUrl = "{{ url_for('image_viewer.video_frames_fetch') }}";
     const videoSaveUrl = "{{ url_for('image_viewer.video_save') }}";
     const videoJobUrlBase = "{{ url_for('image_viewer.video_job', job_id='__JOB_ID__') }}";
     const thumbnailJobUrlBase = "{{ url_for('image_viewer.thumbnail_job', job_id='__JOB_ID__') }}";
@@ -1471,6 +1500,7 @@
     const videoDownloaderSettingsKey = 'mfu.imageViewer.videoDownloaderSettings';
     const videoSettingsKey = 'mfu.imageViewer.videoSettings';
     const illustrationSettingsKey = 'mfu.imageViewer.illustrationSettings';
+    const numberingSettingsKey = 'mfu.imageViewer.numberingEnabled';
     const defaultIllustrationPrompt = '画像を詳細なアニメの美意識で再構成してください。 表情豊かな瞳、なめらかな網掛けセルの色使い、はっきりした線画を使用します。アニメのシーンに典型的な身ぶりと雰囲気で、心情と登場人物の存在を強調してください。 服とアクセサリーを参考にしてイラストを描いてください。背景は白地で、人物は全身を描いてください。 服と靴の装飾はできるだけ綺麗にこだわってください。 顔は、20代女性を生成して置き換えてください。 生成が完了したら完了したと報告をください。';
     const state = {
       images: [],
@@ -1482,14 +1512,19 @@
       nextViewer: 1,
       nextExplorer: 1,
       selectedPath: '',
+      selectedPaths: new Set(),
+      selectionAnchorPath: '',
       fitByWindow: new Map(),
       zoomByWindow: new Map(),
       wheelLockByWindow: new Map(),
       sortByFolder: {},
       viewSizeByFolder: {},
+      numberingEnabled: true,
       resetFileScrollNext: false,
       selectedEntry: null,
+      internalClipboardEntries: [],
       contextEntry: null,
+      appendSequenceMode: null,
       thumbObserver: null,
       thumbHydrateRaf: 0,
       thumbSettleTimer: 0,
@@ -1498,6 +1533,18 @@
       imageLoadSeq: 0,
       isLoadingImages: false,
       imageListSignature: '',
+      folderMeta: {},
+      folderLoadSeq: {},
+      pageObservers: new Map(),
+      pageScrollHandlers: new Map(),
+      pageScrollTimers: new Map(),
+      paginationLoading: new Set(),
+      paginationTargets: new Map(),
+      paginationScrollRatio: new Map(),
+      paginationInternalScroll: new Set(),
+      virtualWindows: new Map(),
+      prefetchedWindows: new Map(),
+      prefetchInFlight: new Map(),
       backgroundImageRefreshTimer: 0,
       instagram: { shortcode: '', jobId: '', images: [] },
       videoDownloader: { identifier: '', jobId: '', videos: [] }
@@ -1513,6 +1560,7 @@
     const desktopMessageBody = document.getElementById('desktopMessageBody');
     const desktopMessageOk = document.getElementById('desktopMessageOk');
     const sortBtn = document.getElementById('sortBtn');
+    const numberingBtn = document.getElementById('numberingBtn');
     const thumbBtn = document.getElementById('thumbBtn');
     const regenThumbBtn = document.getElementById('regenThumbBtn');
     const viewButtons = Array.from(document.querySelectorAll('[data-view-size]'));
@@ -1595,6 +1643,10 @@
         if (onTick) onTick(count, data);
         if (data.status === 'done') return data;
         if (data.status === 'cancelled') return data;
+        if (data.status === 'login_required') {
+          openInstagramAuthWindow();
+          throw new Error(data.error || 'Instagramの再ログインが必要です。VNCでOTPを入力してください。');
+        }
         if (data.status === 'error') throw new Error(data.error || '取得に失敗しました。');
       }
     }
@@ -1609,6 +1661,10 @@
         if (onTick) onTick(count);
         const data = await fetchJson(url);
         if (data.status === 'done') return data;
+        if (data.status === 'login_required') {
+          openInstagramAuthWindow();
+          throw new Error(data.error || 'Instagramの再ログインが必要です。VNCでOTPを入力してください。');
+        }
         if (data.status === 'error') throw new Error(data.error || '取得に失敗しました。');
       }
       throw new Error('取得がタイムアウトしました。もう一度お試しください。');
@@ -1708,10 +1764,15 @@
     function setCurrentFolder(folder) {
       if (folder === state.currentFolder) return;
       state.currentFolder = folder;
+      state.paginationScrollRatio.delete('explorer');
+      state.virtualWindows.delete('explorer');
       state.selectedPath = '';
+      state.selectedPaths.clear();
+      state.selectionAnchorPath = '';
       state.selectedEntry = null;
       state.resetFileScrollNext = true;
       renderExplorer();
+      loadImages({ folder, center: 0, silent: true }).catch(err => showDesktopError(err.message || '読み込みに失敗しました。'));
     }
 
     function loadSortState() {
@@ -1755,12 +1816,35 @@
 
     function viewSize(folder = state.currentFolder) {
       const value = state.viewSizeByFolder[folder || ''];
-      return ['xl', 'lg', 'md', 'sm'].includes(value) ? value : 'lg';
+      return ['xxl', 'xl', 'lg'].includes(value) ? value : 'lg';
     }
 
     function setViewSize(folder, size) {
-      state.viewSizeByFolder[folder || ''] = ['xl', 'lg', 'md', 'sm'].includes(size) ? size : 'lg';
+      state.viewSizeByFolder[folder || ''] = ['xxl', 'xl', 'lg'].includes(size) ? size : 'lg';
       saveViewSizeState();
+    }
+
+    function loadNumberingState() {
+      try {
+        state.numberingEnabled = localStorage.getItem(numberingSettingsKey) !== '0';
+      } catch (_) {
+        state.numberingEnabled = true;
+      }
+    }
+
+    function saveNumberingState() {
+      try {
+        localStorage.setItem(numberingSettingsKey, state.numberingEnabled ? '1' : '0');
+      } catch (_) {}
+    }
+
+    function renderNumberingButton() {
+      numberingBtn.textContent = state.numberingEnabled ? '連番あり' : '連番なし';
+      numberingBtn.title = state.numberingEnabled
+        ? 'D&D・追加・貼付時に最大番号の次を採番します'
+        : 'D&D・追加・貼付時に元のファイル名を使います';
+      numberingBtn.classList.toggle('active', state.numberingEnabled);
+      numberingBtn.setAttribute('aria-pressed', state.numberingEnabled ? 'true' : 'false');
     }
 
     function activate(id) {
@@ -1824,15 +1908,41 @@
       if (ex) {
         ex.currentFolder = folder || '';
         ex.selectedPath = selectedPath || '';
+        ex.selectedPaths = new Set(selectedPath ? [selectedPath] : []);
+        ex.selectionAnchorPath = selectedPath || '';
         ex.resetScroll = false;
         renderExplorerClone(ownerId);
         return;
       }
       state.currentFolder = folder || '';
+      state.selectedPath = '';
+      state.selectedPaths.clear();
+      state.selectionAnchorPath = '';
       renderAllExplorers();
       if (selectedPath) {
         setSelectedFile(selectedPath);
       }
+    }
+
+    function topVisibleWindow(excludeId = '') {
+      let top = null;
+      let topZ = Number.NEGATIVE_INFINITY;
+      for (const candidate of state.windows.values()) {
+        if (candidate.id === excludeId || candidate.minimized) continue;
+        const candidateZ = Number(candidate.el.style.zIndex) || 0;
+        if (!top || candidateZ > topZ) {
+          top = candidate;
+          topZ = candidateZ;
+        }
+      }
+      return top;
+    }
+
+    function activateTopVisibleWindow(excludeId = '') {
+      const next = topVisibleWindow(excludeId);
+      if (!next) return false;
+      activate(next.id);
+      return true;
     }
 
     function minimize(id) {
@@ -1841,8 +1951,7 @@
       win.el.classList.add('minimized');
       win.minimized = true;
       if (state.activeId === id) {
-        const next = Array.from(state.windows.values()).filter(w => !w.minimized && w.id !== id).pop();
-        if (next) activate(next.id);
+        activateTopVisibleWindow(id);
       }
       renderTasks();
       if (win.kind === 'viewer') scheduleViewerRefresh(id);
@@ -1891,13 +2000,23 @@
       win.el.querySelectorAll('video').forEach(video => video.pause());
       win.el.remove();
       if (win.kind === 'explorer' && id !== 'explorer') {
+        state.pageObservers.get(id)?.disconnect();
+        state.pageObservers.delete(id);
+        const pagingScroll = state.pageScrollHandlers.get(id);
+        if (pagingScroll) pagingScroll.grid.removeEventListener('scroll', pagingScroll.handler);
+        state.pageScrollHandlers.delete(id);
+        clearTimeout(state.pageScrollTimers.get(id));
+        state.pageScrollTimers.delete(id);
+        state.paginationInternalScroll.delete(id);
+        state.paginationScrollRatio.delete(id);
+        state.virtualWindows.delete(id);
         state.explorerClones.delete(id);
       }
       state.windows.delete(id);
       state.fitByWindow.delete(id);
       state.zoomByWindow.delete(id);
       state.wheelLockByWindow.delete(id);
-      if (state.activeId === id) activate('explorer');
+      if (state.activeId === id && !activateTopVisibleWindow()) activate('explorer');
       renderTasks();
     }
 
@@ -2014,13 +2133,62 @@
     }
 
     function imagesForFolder(folder) {
-      const direction = sortDirection(folder);
       return state.images
-        .filter(img => (img.folder || '') === (folder || ''))
-        .sort((a, b) => {
-          const result = String(a.name || '').localeCompare(String(b.name || ''), 'ja', { numeric: true, sensitivity: 'base' });
-          return direction === 'desc' ? -result : result;
-        });
+        .filter(img => (img.folder || '') === (folder || ''));
+    }
+
+    // Keep the complete metadata window mounted so scrollbar movement never lands
+    // between two DOM windows. Thumbnail bytes remain lazy-loaded near the viewport.
+    const VIRTUAL_DOM_WINDOW_SIZE = 1000;
+
+    function virtualWindowDescriptor(folder, ownerId, images = imagesForFolder(folder)) {
+      const meta = state.folderMeta[folder || ''] || {};
+      const page = Math.max(1, Number(meta.page || 1));
+      const perPage = Math.max(1, Number(meta.perPage || 1000));
+      const total = Math.max(images.length, Number(meta.total || images.length));
+      const count = Math.min(VIRTUAL_DOM_WINDOW_SIZE, images.length);
+      const batchStart = Math.max(0, Number(meta.offset ?? ((page - 1) * perPage)));
+      const ratio = Number(state.paginationScrollRatio.get(ownerId));
+      const globalIndex = Number.isFinite(ratio)
+        ? Math.floor(Math.max(0, Math.min(1, ratio)) * Math.max(0, total - 1))
+        : batchStart;
+      const localIndex = Math.max(0, Math.min(images.length - 1, globalIndex - batchStart));
+      const grid = explorerRefs(ownerId)?.fileGrid;
+      const columns = grid
+        ? Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(/\s+/).filter(Boolean).length)
+        : 1;
+      const existing = state.virtualWindows.get(ownerId);
+      const buffer = Math.max(60, columns * 4);
+      if (
+        existing
+        && existing.folder === (folder || '')
+        && existing.page === page
+        && existing.batchStart === batchStart
+        && localIndex >= existing.start + buffer
+        && localIndex < existing.start + existing.count - buffer
+      ) {
+        return { ...existing, total, perPage, batchStart };
+      }
+      const rawStart = images.length > count
+        ? Math.max(0, Math.min(images.length - count, localIndex - Math.floor(count / 2)))
+        : 0;
+      let start = rawStart;
+      const globalRemainder = (batchStart + start) % columns;
+      if (globalRemainder) {
+        const alignedForward = start + (columns - globalRemainder);
+        start = alignedForward <= Math.max(0, images.length - count)
+          ? alignedForward
+          : Math.max(0, start - globalRemainder);
+      }
+      const alignedCount = Math.min(images.length - start, count + columns - 1);
+      return { folder: folder || '', page, perPage, total, batchStart, start, count: alignedCount };
+    }
+
+    function virtualizedImages(folder, ownerId) {
+      const images = imagesForFolder(folder);
+      const descriptor = virtualWindowDescriptor(folder, ownerId, images);
+      state.virtualWindows.set(ownerId, descriptor);
+      return images.slice(descriptor.start, descriptor.start + descriptor.count);
     }
 
     function folderDepth(folder) {
@@ -2113,21 +2281,171 @@
     }
 
     function updateSelectedFileElement() {
-      fileGrid.querySelectorAll('.file').forEach(el => {
-        el.classList.toggle('selected', el.dataset.path === state.selectedPath);
+      updateSelectedFileElements('explorer');
+    }
+
+    function explorerSelectionState(ownerId = activeExplorerId()) {
+      return state.explorerClones.get(ownerId) || state;
+    }
+
+    function selectedPathsForExplorer(ownerId = activeExplorerId()) {
+      const selection = explorerSelectionState(ownerId);
+      if (!(selection.selectedPaths instanceof Set)) selection.selectedPaths = new Set();
+      return selection.selectedPaths;
+    }
+
+    function selectionEntries(ownerId = activeExplorerId()) {
+      const paths = selectedPathsForExplorer(ownerId);
+      return imagesForFolder(folderForExplorer(ownerId))
+        .filter(image => paths.has(image.path))
+        .map(image => ({ type: 'file', path: image.path }));
+    }
+
+    function updateSelectionPathStatus(ownerId = activeExplorerId()) {
+      const count = selectedPathsForExplorer(ownerId).size;
+      const folder = folderForExplorer(ownerId);
+      setPathStatus(ownerId, count > 1 ? `${count}件選択` : `画像ライブラリ${folder ? '/' + folder : ''}`);
+    }
+
+    function updateSelectedFileElements(ownerId = activeExplorerId()) {
+      const refs = explorerRefs(ownerId);
+      const paths = selectedPathsForExplorer(ownerId);
+      refs.fileGrid?.querySelectorAll('.file').forEach(el => {
+        el.classList.toggle('selected', paths.has(el.dataset.path));
+        el.setAttribute('aria-selected', paths.has(el.dataset.path) ? 'true' : 'false');
+      });
+      updateSelectionPathStatus(ownerId);
+    }
+
+    function setSelectionPrimary(ownerId, path) {
+      const selection = explorerSelectionState(ownerId);
+      selection.selectedPath = path || '';
+      state.selectedEntry = path ? { type: 'file', path } : null;
+    }
+
+    function clearExplorerSelection(ownerId = activeExplorerId(), update = true) {
+      const selection = explorerSelectionState(ownerId);
+      selectedPathsForExplorer(ownerId).clear();
+      selection.selectedPath = '';
+      selection.selectionAnchorPath = '';
+      if (ownerId === activeExplorerId()) state.selectedEntry = null;
+      if (update) updateSelectedFileElements(ownerId);
+    }
+
+    function setSelectedFile(path, ownerId = activeExplorerId()) {
+      const selection = explorerSelectionState(ownerId);
+      selection.selectedPaths = new Set(path ? [path] : []);
+      selection.selectionAnchorPath = path || '';
+      setSelectionPrimary(ownerId, path);
+      updateSelectedFileElements(ownerId);
+    }
+
+    function selectFileFromEvent(event, path, ownerId = activeExplorerId()) {
+      const selection = explorerSelectionState(ownerId);
+      const paths = selectedPathsForExplorer(ownerId);
+      const orderedPaths = imagesForFolder(folderForExplorer(ownerId)).map(image => image.path);
+      const additive = Boolean(event.ctrlKey || event.metaKey);
+      if (event.shiftKey) {
+        const anchor = selection.selectionAnchorPath || selection.selectedPath || path;
+        const anchorIndex = orderedPaths.indexOf(anchor);
+        const targetIndex = orderedPaths.indexOf(path);
+        if (!additive) paths.clear();
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex);
+          const end = Math.max(anchorIndex, targetIndex);
+          orderedPaths.slice(start, end + 1).forEach(itemPath => paths.add(itemPath));
+        } else {
+          paths.add(path);
+        }
+      } else if (additive) {
+        if (paths.has(path)) paths.delete(path);
+        else paths.add(path);
+        selection.selectionAnchorPath = path;
+      } else {
+        paths.clear();
+        paths.add(path);
+        selection.selectionAnchorPath = path;
+      }
+      const primary = paths.has(path) ? path : (orderedPaths.find(itemPath => paths.has(itemPath)) || '');
+      setSelectionPrimary(ownerId, primary);
+      updateSelectedFileElements(ownerId);
+    }
+
+    function selectFileForContext(path, ownerId = activeExplorerId()) {
+      const paths = selectedPathsForExplorer(ownerId);
+      if (!paths.has(path)) {
+        setSelectedFile(path, ownerId);
+        return;
+      }
+      setSelectionPrimary(ownerId, path);
+      updateSelectedFileElements(ownerId);
+    }
+
+    function wireMarqueeSelection(grid, ownerId) {
+      grid.addEventListener('pointerdown', (event) => {
+        if ((event.pointerType && event.pointerType !== 'mouse') || event.button !== 0 || event.target.closest('.file')) return;
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const additive = Boolean(event.ctrlKey || event.metaKey);
+        const initial = additive ? new Set(selectedPathsForExplorer(ownerId)) : new Set();
+        let marquee = null;
+        let moved = false;
+
+        const update = (moveEvent) => {
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+          if (!moved && Math.hypot(dx, dy) < 4) return;
+          moved = true;
+          if (!marquee) {
+            marquee = document.createElement('div');
+            marquee.className = 'selection-marquee';
+            document.body.appendChild(marquee);
+          }
+          const left = Math.min(startX, moveEvent.clientX);
+          const top = Math.min(startY, moveEvent.clientY);
+          const right = Math.max(startX, moveEvent.clientX);
+          const bottom = Math.max(startY, moveEvent.clientY);
+          marquee.style.left = `${left}px`;
+          marquee.style.top = `${top}px`;
+          marquee.style.width = `${right - left}px`;
+          marquee.style.height = `${bottom - top}px`;
+          const next = new Set(initial);
+          grid.querySelectorAll('.file').forEach(file => {
+            const rect = file.getBoundingClientRect();
+            if (rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom) {
+              next.add(file.dataset.path);
+            }
+          });
+          const selection = explorerSelectionState(ownerId);
+          selection.selectedPaths = next;
+          const ordered = imagesForFolder(folderForExplorer(ownerId)).map(image => image.path);
+          const primary = [...ordered].reverse().find(path => next.has(path)) || '';
+          if (primary) selection.selectionAnchorPath = primary;
+          setSelectionPrimary(ownerId, primary);
+          updateSelectedFileElements(ownerId);
+
+          const gridRect = grid.getBoundingClientRect();
+          if (moveEvent.clientY < gridRect.top + 28) grid.scrollTop -= 24;
+          else if (moveEvent.clientY > gridRect.bottom - 28) grid.scrollTop += 24;
+        };
+        const finish = () => {
+          document.removeEventListener('pointermove', update);
+          document.removeEventListener('pointerup', finish);
+          document.removeEventListener('pointercancel', finish);
+          marquee?.remove();
+          if (!moved && !additive) clearExplorerSelection(ownerId);
+        };
+        document.addEventListener('pointermove', update);
+        document.addEventListener('pointerup', finish);
+        document.addEventListener('pointercancel', finish);
+        event.preventDefault();
       });
     }
 
-    function setSelectedFile(path) {
-      state.selectedPath = path;
-      state.selectedEntry = { type: 'file', path };
-      updateSelectedFileElement();
-    }
-
     function setSelectedFolder(folder) {
+      clearExplorerSelection(activeExplorerId(), false);
       state.selectedEntry = { type: 'folder', path: folder || '' };
-      state.selectedPath = '';
-      updateSelectedFileElement();
+      updateSelectedFileElements(activeExplorerId());
     }
 
     function entryName(entry) {
@@ -2141,22 +2459,34 @@
       return entry?.type === 'folder' && !entry.path;
     }
 
-    function getDragEntry(event) {
+    function getDragEntries(event) {
       const raw = event.dataTransfer?.getData('application/x-mfu-image-viewer-entry') || '';
-      if (!raw) return null;
+      if (!raw) return [];
       try {
-        const entry = JSON.parse(raw);
-        if (!entry || !['file', 'folder'].includes(entry.type)) return null;
-        return { type: entry.type, path: String(entry.path || '') };
+        const parsed = JSON.parse(raw);
+        const entries = Array.isArray(parsed) ? parsed : [parsed];
+        return entries
+          .filter(entry => entry && ['file', 'folder'].includes(entry.type))
+          .map(entry => ({ type: entry.type, path: String(entry.path || '') }));
       } catch (_) {
-        return null;
+        return [];
       }
     }
 
-    function setDragEntry(event, entry) {
+    function getDragEntry(event) {
+      return getDragEntries(event)[0] || null;
+    }
+
+    function setDragEntries(event, entries) {
+      const validEntries = Array.from(entries || []).filter(entry => entry?.path);
+      if (!validEntries.length) return;
       event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('application/x-mfu-image-viewer-entry', JSON.stringify(entry));
-      event.dataTransfer.setData('text/plain', entry.path || 'uploads');
+      event.dataTransfer.setData('application/x-mfu-image-viewer-entry', JSON.stringify(validEntries));
+      event.dataTransfer.setData('text/plain', validEntries.map(entry => entry.path).join('\n'));
+    }
+
+    function setDragEntry(event, entry) {
+      setDragEntries(event, [entry]);
     }
 
     function closeContextMenu() {
@@ -2164,25 +2494,28 @@
       state.contextEntry = null;
     }
 
-    function showContextMenu(event, entry) {
+    function showContextMenu(event, entry, ownerId = activeExplorerId()) {
       event.preventDefault();
       event.stopPropagation();
       closeContextMenu();
       state.contextEntry = entry;
-      if (entry.type === 'file') setSelectedFile(entry.path);
+      if (entry.type === 'file') selectFileForContext(entry.path, ownerId);
       else setSelectedFolder(entry.path);
+      const selectedEntries = entry.type === 'file' ? selectionEntries(ownerId) : [entry];
+      const single = selectedEntries.length === 1;
       const menu = document.createElement('div');
       menu.className = 'context-menu open';
-      const canOpen = entry.type === 'file';
-      const canIllustrate = entry.type === 'file' && /\.(jpe?g|png|gif|webp)$/i.test(entry.path || '');
+      const canOpen = entry.type === 'file' && single;
+      const canIllustrate = canOpen && /\.(jpe?g|png|gif|webp)$/i.test(entry.path || '');
       const locked = isRootFolderEntry(entry);
       menu.innerHTML = `
         ${canOpen ? '<button type="button" data-menu-action="open">開く</button><div class="separator"></div>' : ''}
-        ${canOpen ? '<button type="button" data-menu-action="copy">コピー</button><div class="separator"></div>' : ''}
+        ${entry.type === 'file' ? `<button type="button" data-menu-action="copy">コピー${single ? '' : ` (${selectedEntries.length}件)`}</button><div class="separator"></div>` : ''}
+        ${entry.type === 'file' ? `<button type="button" data-menu-action="append-sequence">後付け連番${single ? '' : ` (${selectedEntries.length}件)`}...</button><div class="separator"></div>` : ''}
         ${canIllustrate ? '<button type="button" data-menu-action="illustrate">OpenAIでイラスト化</button><div class="separator"></div>' : ''}
-        <button type="button" data-menu-action="rename" ${locked ? 'disabled' : ''}>名前の変更</button>
-        <button type="button" data-menu-action="move" ${locked ? 'disabled' : ''}>移動...</button>
-        <button type="button" data-menu-action="delete" ${locked ? 'disabled' : ''}>削除</button>
+        <button type="button" data-menu-action="rename" ${locked || !single ? 'disabled' : ''}>名前の変更</button>
+        <button type="button" data-menu-action="move" ${locked ? 'disabled' : ''}>移動${single ? '...' : ` (${selectedEntries.length}件)...`}</button>
+        <button type="button" data-menu-action="delete" ${locked ? 'disabled' : ''}>削除${single ? '' : ` (${selectedEntries.length}件)`}</button>
         ${canOpen ? '<div class="separator"></div><button type="button" data-menu-action="properties">プロパティ</button>' : ''}
       `;
       document.body.appendChild(menu);
@@ -2196,13 +2529,103 @@
         const action = button.dataset.menuAction;
         closeContextMenu();
         if (action === 'open') openSelectedEntry();
-        if (action === 'copy') copyEntryToClipboard(entry).catch(err => alert(err.message || 'コピーに失敗しました。'));
+        if (action === 'copy') copySelectionToClipboard(ownerId).catch(err => alert(err.message || 'コピーに失敗しました。'));
+        if (action === 'append-sequence') startAppendSequence(selectedEntries, ownerId);
         if (action === 'illustrate') openIllustrationDialog(entry);
         if (action === 'rename') renameEntry(entry);
-        if (action === 'move') chooseMoveEntry(entry);
-        if (action === 'delete') deleteEntry(entry);
+        if (action === 'move') chooseMoveEntries(selectedEntries, ownerId);
+        if (action === 'delete') deleteEntries(selectedEntries, ownerId);
         if (action === 'properties') openEntryProperties(entry);
       });
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>'"]/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      })[char]);
+    }
+
+    function cancelAppendSequence(message = '') {
+      state.appendSequenceMode = null;
+      hideDesktopMessage();
+      if (message) showDesktopMessage(message);
+    }
+
+    function orderAppendSequenceSources(entries) {
+      return Array.from(entries || [])
+        .filter(entry => entry?.type === 'file' && entry.path)
+        .sort((a, b) => {
+          const aName = String(a.path || '').split('/').pop() || '';
+          const bName = String(b.path || '').split('/').pop() || '';
+          return compareNaturalText(aName, bName)
+            || String(a.path || '').localeCompare(String(b.path || ''), 'ja', {
+              numeric: true,
+              sensitivity: 'base'
+            });
+        });
+    }
+
+    function startAppendSequence(entries, ownerId) {
+      // A folder may currently be displayed in reverse order.  Appended sequence
+      // numbers must nevertheless follow the files' natural name order so the
+      // result is stable and does not change when the Explorer sort button is used.
+      const sources = orderAppendSequenceSources(entries);
+      if (!sources.length) return;
+      state.appendSequenceMode = {
+        ownerId,
+        sources: sources.map(entry => entry.path),
+        folder: folderForExplorer(ownerId)
+      };
+      showDesktopMessage(
+        `${sources.length}件を後ろへ付けます。\n基準にするファイルをクリックしてください。\nEscキーでキャンセルできます。`,
+        { title: '後付け連番', duration: 600000 }
+      );
+    }
+
+    function appendSequencePreview(sources, target) {
+      const nameOf = path => String(path || '').split('/').pop() || '';
+      const targetName = nameOf(target);
+      const targetDot = targetName.lastIndexOf('.');
+      const targetStem = targetDot > 0 ? targetName.slice(0, targetDot) : targetName;
+      return [target, ...sources].map((sourcePath, index) => {
+        const sourceName = nameOf(sourcePath);
+        const dot = sourceName.lastIndexOf('.');
+        const extension = dot > 0 ? sourceName.slice(dot) : '';
+        return { sourcePath, sourceName, name: `${targetStem}_${index + 1}${extension}` };
+      });
+    }
+
+    async function chooseAppendSequenceTarget(targetPath, ownerId) {
+      const mode = state.appendSequenceMode;
+      if (!mode) return false;
+      if (ownerId !== mode.ownerId || folderForExplorer(ownerId) !== mode.folder) {
+        alert('後付けするファイルと同じエクスプローラー・フォルダーから基準ファイルを選択してください。');
+        return true;
+      }
+      if (mode.sources.includes(targetPath)) {
+        alert('後ろへ付けるファイルとは別の基準ファイルを選択してください。');
+        return true;
+      }
+      const sources = [...mode.sources];
+      const preview = appendSequencePreview(sources, targetPath);
+      state.appendSequenceMode = null;
+      hideDesktopMessage();
+      const rows = preview.map(item => `${escapeHtml(item.sourceName)} → ${escapeHtml(item.name)}`).join('\n');
+      const ok = await dialogConfirm(
+        '後付け連番の確認',
+        `<div>次の${preview.length}件の名前を変更します。</div><pre style="max-height:260px;overflow:auto;white-space:pre-wrap;">${rows}</pre>`
+      );
+      if (!ok) return true;
+      const data = await fetchJson(appendSequenceUrl, {
+        method: 'POST',
+        body: JSON.stringify({ sources, target: targetPath })
+      });
+      await loadImages({ refresh: true });
+      const paths = (data.mappings || []).map(item => item.path).filter(Boolean);
+      setExplorerSelectedPaths(ownerId, mode.folder, paths);
+      scheduleBackgroundImageRefresh();
+      showDesktopMessage(`${data.count || paths.length}件を後付け連番へ変更しました。`);
+      return true;
     }
 
     function openDialog(title, bodyHtml) {
@@ -2245,6 +2668,7 @@
           <dt>場所 (仮想上):</dt><dd data-prop="virtualFolder">-</dd>
           <dt>仮想パス:</dt><dd data-prop="virtualPath">-</dd>
           <dt>実ファイル:</dt><dd data-prop="realPath">-</dd>
+          <dt>取得元URL:</dt><dd><a data-prop-link="sourceUrl" target="_blank" rel="noopener noreferrer">-</a></dd>
         </dl>
         <div class="properties-separator"></div>
         <dl class="properties-grid">
@@ -2297,6 +2721,14 @@
         prop('virtualFolder', props.virtualFolder ? `/${props.virtualFolder}` : '/');
         prop('virtualPath', props.virtualPath || currentEntry.path);
         prop('realPath', props.realPath);
+        const sourceUrlLink = dialog.querySelector('[data-prop-link="sourceUrl"]');
+        const sourceUrl = String(props.sourceUrl || '').trim();
+        sourceUrlLink.textContent = sourceUrl || '-';
+        if (/^https?:\/\//i.test(sourceUrl)) {
+          sourceUrlLink.href = sourceUrl;
+        } else {
+          sourceUrlLink.removeAttribute('href');
+        }
         prop('size', formatBytesDetailed(props.size));
         prop('dimensions', imageSizeText(props));
         prop('mimeType', props.mimeType);
@@ -2614,8 +3046,10 @@
       if (!entry || isRootFolderEntry(entry)) return;
       const ok = await dialogConfirm('削除の確認', `${entryName(entry)} を削除します。よろしいですか？`);
       if (!ok) return;
+      const passkeyToken = window.MFUAdminPasskey ? await window.MFUAdminPasskey.authorize('image_delete') : '';
       await fetchJson(deleteEntryUrl, {
         method: 'POST',
+        headers: passkeyToken ? { 'X-MFU-Admin-Passkey': passkeyToken } : {},
         body: JSON.stringify({ type: entry.type, path: entry.path })
       });
       if (entry.type === 'folder' && (state.currentFolder === entry.path || state.currentFolder.startsWith(`${entry.path}/`))) {
@@ -2624,6 +3058,51 @@
       removeEntryLocal(entry);
       renderAllExplorers();
       scheduleBackgroundImageRefresh();
+    }
+
+    function batchFailureMessage(data) {
+      const failures = (data.results || []).filter(result => !result.ok);
+      if (!failures.length) return '';
+      const details = failures.slice(0, 8).map(result => `${result.sourcePath}: ${result.error || '失敗'}`);
+      if (failures.length > details.length) details.push(`他 ${failures.length - details.length}件`);
+      return details.join('\n');
+    }
+
+    function removeFilePathsLocal(paths) {
+      const removed = new Set(paths || []);
+      state.images = state.images.filter(image => !removed.has(image.path));
+      for (const owner of [state, ...state.explorerClones.values()]) {
+        if (!(owner.selectedPaths instanceof Set)) owner.selectedPaths = new Set();
+        removed.forEach(path => owner.selectedPaths.delete(path));
+        if (removed.has(owner.selectedPath)) {
+          owner.selectedPath = '';
+          owner.selectionAnchorPath = '';
+        }
+      }
+      if (state.selectedEntry?.type === 'file' && removed.has(state.selectedEntry.path)) state.selectedEntry = null;
+      refreshImageListSignature();
+    }
+
+    async function deleteEntries(entries = selectionEntries(), ownerId = activeExplorerId()) {
+      const targets = Array.from(entries || []).filter(entry => entry?.type === 'file' && entry.path);
+      if (!targets.length) return;
+      const ok = await dialogConfirm('削除の確認', `${targets.length}件の画像を削除します。よろしいですか？`);
+      if (!ok) return;
+      const passkeyToken = window.MFUAdminPasskey ? await window.MFUAdminPasskey.authorize('image_delete') : '';
+      const data = await fetchJson(deleteEntryUrl, {
+        method: 'POST',
+        headers: passkeyToken ? { 'X-MFU-Admin-Passkey': passkeyToken } : {},
+        body: JSON.stringify({ entries: targets })
+      });
+      const succeededPaths = (data.results || []).filter(result => result.ok).map(result => result.sourcePath);
+      removeFilePathsLocal(succeededPaths);
+      clearExplorerSelection(ownerId, false);
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
+      const failures = batchFailureMessage(data);
+      const message = `${data.succeeded || 0}件を削除しました。${data.failed ? `\n${data.failed}件は削除できませんでした。\n${failures}` : ''}`;
+      if (data.failed) showDesktopError(message);
+      else showDesktopMessage(message);
     }
 
     async function moveEntry(entry, destination, ownerId = activeExplorerId()) {
@@ -2647,6 +3126,50 @@
       const destination = await dialogMoveDestination(entry);
       if (destination === null) return;
       await moveEntry(entry, destination);
+    }
+
+    function setExplorerSelectedPaths(ownerId, folder, paths) {
+      const selection = explorerSelectionState(ownerId);
+      if (state.explorerClones.has(ownerId)) selection.currentFolder = folder || '';
+      else state.currentFolder = folder || '';
+      selection.selectedPaths = new Set(paths || []);
+      selection.selectedPath = paths?.length ? paths[paths.length - 1] : '';
+      selection.selectionAnchorPath = selection.selectedPath;
+      state.selectedEntry = selection.selectedPath ? { type: 'file', path: selection.selectedPath } : null;
+      renderAllExplorers();
+    }
+
+    async function moveEntries(entries, destination, ownerId = activeExplorerId()) {
+      const targets = Array.from(entries || []).filter(entry => entry?.type === 'file' && entry.path);
+      if (!targets.length) return;
+      const data = await fetchJson(moveEntryUrl, {
+        method: 'POST',
+        body: JSON.stringify({ entries: targets, destination })
+      });
+      await loadImages({ refresh: true });
+      const movedPaths = (data.results || []).filter(result => result.ok).map(result => result.path).filter(Boolean);
+      setExplorerSelectedPaths(ownerId, destination || '', movedPaths);
+      scheduleBackgroundImageRefresh();
+      const failures = batchFailureMessage(data);
+      const message = `${data.succeeded || 0}件を移動しました。${data.failed ? `\n${data.failed}件は移動できませんでした。\n${failures}` : ''}`;
+      if (data.failed) showDesktopError(message);
+      else showDesktopMessage(message);
+    }
+
+    async function moveDraggedEntries(entries, destination, ownerId) {
+      const targets = Array.from(entries || []);
+      if (!targets.length) return false;
+      if (targets.length === 1) await moveEntry(targets[0], destination, ownerId);
+      else await moveEntries(targets, destination, ownerId);
+      return true;
+    }
+
+    async function chooseMoveEntries(entries = selectionEntries(), ownerId = activeExplorerId()) {
+      const targets = Array.from(entries || []).filter(entry => entry?.type === 'file' && entry.path);
+      if (!targets.length) return;
+      const destination = await dialogMoveDestination(targets[0]);
+      if (destination === null) return;
+      await moveEntries(targets, destination, ownerId);
     }
 
     function selectedFileItem(entry = state.selectedEntry) {
@@ -2729,6 +3252,39 @@
       notifyClipboard(`${item.name} のURLをコピーしました。`);
     }
 
+    async function copySelectionToClipboard(ownerId = activeExplorerId()) {
+      const entries = selectionEntries(ownerId);
+      if (!entries.length) throw new Error('コピーする画像を選択してください。');
+      state.internalClipboardEntries = entries.map(entry => ({ ...entry }));
+      if (entries.length === 1) {
+        try {
+          await copyEntryToClipboard(entries[0]);
+        } catch (_) {
+          // The internal Explorer clipboard remains available even if the OS clipboard is blocked.
+        }
+      }
+      setPathStatus(ownerId, `${entries.length}件をコピーしました。貼り付け先で Ctrl+V を押してください。`);
+    }
+
+    async function pasteInternalClipboard(ownerId = activeExplorerId()) {
+      const entries = state.internalClipboardEntries.map(entry => ({ ...entry }));
+      if (!entries.length) return false;
+      const destination = folderForExplorer(ownerId);
+      const data = await fetchJson(copyEntryUrl, {
+        method: 'POST',
+        body: JSON.stringify({ entries, destination })
+      });
+      await loadImages({ refresh: true });
+      const copiedPaths = (data.results || []).filter(result => result.ok).map(result => result.path).filter(Boolean);
+      setExplorerSelectedPaths(ownerId, destination, copiedPaths);
+      scheduleBackgroundImageRefresh();
+      const failures = batchFailureMessage(data);
+      const message = `${data.succeeded || 0}件をコピーしました。${data.failed ? `\n${data.failed}件はコピーできませんでした。\n${failures}` : ''}`;
+      if (data.failed) showDesktopError(message);
+      else showDesktopMessage(message);
+      return true;
+    }
+
     function openSelectedEntry() {
       const entry = state.selectedEntry;
       if (!entry) return;
@@ -2805,12 +3361,12 @@
     function renderFiles() {
       if (state.thumbObserver) state.thumbObserver.disconnect();
       fileGrid.innerHTML = '';
-      const images = imagesInCurrentFolder();
+      const images = virtualizedImages(state.currentFolder, 'explorer');
       pathBox.textContent = `画像ライブラリ${state.currentFolder ? '/' + state.currentFolder : ''}`;
       sortBtn.textContent = sortDirection() === 'desc' ? '逆順' : '昇順';
       sortBtn.title = sortDirection() === 'desc' ? '名前の逆順' : '名前順';
       const size = viewSize();
-      fileGrid.classList.remove('view-xl', 'view-lg', 'view-md', 'view-sm');
+      fileGrid.classList.remove('view-xxl', 'view-xl', 'view-lg', 'view-md', 'view-sm');
       fileGrid.classList.add(`view-${size}`);
       viewButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.viewSize === size));
       if (!images.length) {
@@ -2818,13 +3374,14 @@
         empty.className = 'empty';
         empty.textContent = 'このフォルダーに画像がありません。ここにドロップ、または追加してください。';
         fileGrid.appendChild(empty);
+        updateSelectionPathStatus('explorer');
         resetFileScrollIfNeeded();
         return;
       }
       images.forEach(img => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = `file${state.selectedPath === img.path ? ' selected' : ''}`;
+        btn.className = `file${state.selectedPaths.has(img.path) ? ' selected' : ''}`;
         btn.dataset.path = img.path;
         btn.draggable = true;
         btn.title = img.path;
@@ -2845,23 +3402,30 @@
         }
         btn.querySelector('.file-name').textContent = img.name;
         btn.querySelector('.file-meta').textContent = formatBytes(img.size);
-        btn.addEventListener('click', () => {
-          setSelectedFile(img.path);
+        btn.addEventListener('click', (event) => {
+          if (state.appendSequenceMode) {
+            chooseAppendSequenceTarget(img.path, 'explorer').catch(err => showDesktopError(err.message || '後付け連番に失敗しました。'));
+            return;
+          }
+          selectFileFromEvent(event, img.path, 'explorer');
         });
         btn.addEventListener('dblclick', () => {
           const latest = state.images.find(item => item.path === img.path) || img;
           openMedia(latest);
         });
         btn.addEventListener('contextmenu', (event) => {
-          showContextMenu(event, { type: 'file', path: img.path });
+          showContextMenu(event, { type: 'file', path: img.path }, 'explorer');
         });
         btn.addEventListener('dragstart', (event) => {
-          setSelectedFile(img.path);
-          setDragEntry(event, { type: 'file', path: img.path });
+          if (!state.selectedPaths.has(img.path)) setSelectedFile(img.path, 'explorer');
+          setDragEntries(event, selectionEntries('explorer'));
         });
         fileGrid.appendChild(btn);
       });
+      appendAutoLoadSentinel(fileGrid, state.currentFolder, 'explorer');
+      restoreExplorerScrollRatioImmediately('explorer');
       scheduleHydrateVisibleThumbnails();
+      updateSelectionPathStatus('explorer');
       resetFileScrollIfNeeded();
     }
 
@@ -2923,10 +3487,9 @@
               <button type="button" data-clone-action="refresh" title="更新">更新</button>
               <button type="button" data-clone-action="up" title="上へ">上へ</button>
               <button type="button" data-clone-action="sort" title="名前順 / 逆順">昇順</button>
-              <button type="button" data-clone-size="xl" title="特大表示">特大</button>
-              <button type="button" data-clone-size="lg" title="大表示">大</button>
-              <button type="button" data-clone-size="md" title="中表示">中</button>
-              <button type="button" data-clone-size="sm" title="小表示">小</button>
+              <button type="button" data-clone-size="xxl" title="特大表示">特大</button>
+              <button type="button" data-clone-size="xl" title="大表示">大</button>
+              <button type="button" data-clone-size="lg" title="中表示">中</button>
               <button type="button" data-clone-action="open" title="選択画像を開く">開く</button>
             </div>
             <div class="files clone-file-grid" aria-label="画像一覧"></div>
@@ -2940,6 +3503,8 @@
         el,
         currentFolder: folder,
         selectedPath: '',
+        selectedPaths: new Set(),
+        selectionAnchorPath: '',
         resetScroll: true,
         refs: {
           folderList: el.querySelector('.clone-folder-list'),
@@ -2948,18 +3513,26 @@
           title: el.querySelector('.title-text')
         }
       });
+      state.paginationScrollRatio.delete(id);
+      state.virtualWindows.delete(id);
       registerWindow(id, el, 'エクスプローラー', 'explorer');
       wireExplorerClone(id);
       renderExplorerClone(id);
+      loadImages({ folder, center: 0, silent: true }).catch(err => showDesktopError(err.message || '読み込みに失敗しました。'));
     }
 
     function setExplorerCloneFolder(id, folder) {
       const ex = state.explorerClones.get(id);
       if (!ex || ex.currentFolder === folder) return;
       ex.currentFolder = folder;
+      state.paginationScrollRatio.delete(id);
+      state.virtualWindows.delete(id);
       ex.selectedPath = '';
+      ex.selectedPaths.clear();
+      ex.selectionAnchorPath = '';
       ex.resetScroll = true;
       renderExplorerClone(id);
+      loadImages({ folder, center: 0, silent: true }).catch(err => showDesktopError(err.message || '読み込みに失敗しました。'));
     }
 
     function renderExplorerClone(id) {
@@ -2976,10 +3549,10 @@
       renderFolderTree(cloneFolders, folder, nextFolder => setExplorerCloneFolder(id, nextFolder));
 
       const size = viewSize(folder);
-      cloneGrid.classList.remove('view-xl', 'view-lg', 'view-md', 'view-sm');
+      cloneGrid.classList.remove('view-xxl', 'view-xl', 'view-lg', 'view-md', 'view-sm');
       cloneGrid.classList.add(`view-${size}`);
       cloneGrid.innerHTML = '';
-      const images = imagesForFolder(folder);
+      const images = virtualizedImages(folder, id);
       if (!images.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
@@ -2989,7 +3562,7 @@
         images.forEach(img => {
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = `file${ex.selectedPath === img.path ? ' selected' : ''}`;
+          btn.className = `file${ex.selectedPaths.has(img.path) ? ' selected' : ''}`;
           btn.dataset.path = img.path;
           btn.draggable = true;
           btn.title = img.path;
@@ -3006,25 +3579,33 @@
           }
           btn.querySelector('.file-name').textContent = img.name;
           btn.querySelector('.file-meta').textContent = formatBytes(img.size);
-          btn.addEventListener('click', () => {
-            ex.selectedPath = img.path;
-            state.selectedEntry = { type: 'file', path: img.path };
-            cloneGrid.querySelectorAll('.file').forEach(file => file.classList.toggle('selected', file.dataset.path === img.path));
+          btn.addEventListener('click', (event) => {
+            if (state.appendSequenceMode) {
+              chooseAppendSequenceTarget(img.path, id).catch(err => showDesktopError(err.message || '後付け連番に失敗しました。'));
+              return;
+            }
+            selectFileFromEvent(event, img.path, id);
           });
           btn.addEventListener('dblclick', () => openMedia(state.images.find(item => item.path === img.path) || img));
           btn.addEventListener('contextmenu', (event) => {
-            ex.selectedPath = img.path;
-            showContextMenu(event, { type: 'file', path: img.path });
+            selectFileForContext(img.path, id);
+            showContextMenu(event, { type: 'file', path: img.path }, id);
           });
-          btn.addEventListener('dragstart', (event) => setDragEntry(event, { type: 'file', path: img.path }));
+          btn.addEventListener('dragstart', (event) => {
+            if (!ex.selectedPaths.has(img.path)) setSelectedFile(img.path, id);
+            setDragEntries(event, selectionEntries(id));
+          });
           cloneGrid.appendChild(btn);
         });
+        appendAutoLoadSentinel(cloneGrid, folder, id);
+        restoreExplorerScrollRatioImmediately(id);
       }
       if (ex.resetScroll) {
         ex.resetScroll = false;
         cloneGrid.scrollTop = 0;
         cloneGrid.scrollLeft = 0;
       }
+      updateSelectionPathStatus(id);
       renderTasks();
     }
 
@@ -3042,14 +3623,15 @@
       const ex = state.explorerClones.get(id);
       if (!ex) return;
       const { folderList: cloneFolders, fileGrid: cloneGrid } = ex.refs;
-      ex.el.querySelector('[data-clone-action="refresh"]').addEventListener('click', () => loadImages({ refresh: true }));
+      wireMarqueeSelection(cloneGrid, id);
+      ex.el.querySelector('[data-clone-action="refresh"]').addEventListener('click', () => loadImages({ folder: ex.currentFolder, refresh: true }));
       ex.el.querySelector('[data-clone-action="up"]').addEventListener('click', () => {
         const parent = (ex.currentFolder || '').split('/').slice(0, -1).join('/');
         setExplorerCloneFolder(id, parent);
       });
       ex.el.querySelector('[data-clone-action="sort"]').addEventListener('click', () => {
         setSortDirection(ex.currentFolder, sortDirection(ex.currentFolder) === 'desc' ? 'asc' : 'desc');
-        renderExplorerClone(id);
+        loadImages({ folder: ex.currentFolder, refresh: true }).catch(err => showDesktopError(err.message));
       });
       ex.el.querySelectorAll('[data-clone-size]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -3073,9 +3655,9 @@
       cloneGrid.addEventListener('drop', (event) => {
         event.preventDefault();
         cloneGrid.classList.remove('drag-over');
-        const entry = getDragEntry(event);
-        if (entry) {
-          moveEntry(entry, ex.currentFolder, id).catch(err => alert(err.message || '移動に失敗しました。'));
+        const entries = getDragEntries(event);
+        if (entries.length) {
+          moveDraggedEntries(entries, ex.currentFolder, id).catch(err => alert(err.message || '移動に失敗しました。'));
           return;
         }
         uploadFilesToFolder(event.dataTransfer.files, ex.currentFolder, id).catch(err => alert(err.message || 'アップロードに失敗しました。'));
@@ -3095,10 +3677,10 @@
         if (!folderButton) return;
         event.preventDefault();
         folderButton.classList.remove('drag-over');
-        const entry = getDragEntry(event);
+        const entries = getDragEntries(event);
         const destination = folderButton.dataset.folder || '';
-        if (entry) {
-          moveEntry(entry, destination, id).catch(err => alert(err.message || '移動に失敗しました。'));
+        if (entries.length) {
+          moveDraggedEntries(entries, destination, id).catch(err => alert(err.message || '移動に失敗しました。'));
           return;
         }
         uploadFilesToFolder(event.dataTransfer.files, destination, id).catch(err => alert(err.message || 'アップロードに失敗しました。'));
@@ -3121,9 +3703,23 @@
     function applyImageListData(data) {
       const nextImages = data.images || [];
       const nextFolders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
-      state.imageListSignature = imageListSignature(nextImages, nextFolders);
-      state.images = nextImages;
+      const folder = data.folder || '';
+      const append = Boolean(data._append);
+      const retained = append
+        ? state.images
+        : state.images.filter(image => (image.folder || '') !== folder);
+      const byPath = new Map(retained.map(image => [image.path, image]));
+      nextImages.forEach(image => byPath.set(image.path, image));
+      state.images = Array.from(byPath.values());
       state.folders = nextFolders;
+      state.folderMeta[folder] = {
+        ...(data.pagination || {}),
+        version: data.version || state.folderMeta[folder]?.version || '',
+        loaded: imagesForFolder(folder).length,
+      };
+      refreshImageListSignature();
+      const activeImagePaths = new Set(state.images.map(image => image.path));
+      state.selectedPaths = new Set([...state.selectedPaths].filter(path => activeImagePaths.has(path)));
       if (!state.folders.includes(state.currentFolder)) {
         state.currentFolder = '';
         state.resetFileScrollNext = true;
@@ -3136,6 +3732,7 @@
         state.selectedEntry = null;
       }
       for (const ex of state.explorerClones.values()) {
+        ex.selectedPaths = new Set([...ex.selectedPaths].filter(path => activeImagePaths.has(path)));
         if (!state.folders.includes(ex.currentFolder)) {
           ex.currentFolder = '';
           ex.resetScroll = true;
@@ -3145,6 +3742,165 @@
         }
       }
       renderAllExplorers();
+    }
+
+    function appendAutoLoadSentinel(grid, folder, ownerId) {
+      state.pageObservers.get(ownerId)?.disconnect();
+      state.pageObservers.delete(ownerId);
+      const previousScroll = state.pageScrollHandlers.get(ownerId);
+      if (previousScroll) previousScroll.grid.removeEventListener('scroll', previousScroll.handler);
+      state.pageScrollHandlers.delete(ownerId);
+      clearTimeout(state.pageScrollTimers.get(ownerId));
+      state.pageScrollTimers.delete(ownerId);
+      const meta = state.folderMeta[folder || ''];
+      const windowMeta = state.virtualWindows.get(ownerId);
+      const renderedCount = Number(windowMeta?.count || meta?.loaded || 0);
+      if (!meta || Number(meta.total || 0) <= renderedCount) return;
+      grid.style.overflowAnchor = 'none';
+      const style = getComputedStyle(grid);
+      const columns = Math.max(1, style.gridTemplateColumns.split(/\s+/).filter(Boolean).length);
+      const tile = grid.querySelector('.file');
+      const configuredTileHeight = Number.parseFloat(style.getPropertyValue('--tile-h')) || 0;
+      const tileHeight = Math.max(80, configuredTileHeight || tile?.getBoundingClientRect().height || 180);
+      const rowGap = Number.parseFloat(style.rowGap) || 8;
+      const perPage = Number(meta.perPage || 1000);
+      const beforeCount = Math.min(
+        Number(meta.total || 0),
+        Math.max(0, Number(meta.offset ?? ((Number(meta.page || 1) - 1) * perPage)) + Number(windowMeta?.start || 0)),
+      );
+      const afterCount = Math.max(0, Number(meta.total || 0) - beforeCount - renderedCount);
+      const makeSpacer = (count) => {
+        if (!count) return null;
+        const spacer = document.createElement('div');
+        spacer.setAttribute('aria-hidden', 'true');
+        const rows = Math.ceil(count / columns);
+        spacer.style.cssText = `grid-column:1/-1;height:${Math.max(1, rows * (tileHeight + rowGap))}px;pointer-events:none;opacity:0;`;
+        return spacer;
+      };
+      const topSpacer = makeSpacer(beforeCount);
+      if (topSpacer) grid.insertBefore(topSpacer, grid.firstChild);
+      const bottomSpacer = makeSpacer(afterCount);
+      if (bottomSpacer) grid.appendChild(bottomSpacer);
+
+      let scrollFrame = 0;
+      const scrollHandler = () => {
+        if (state.paginationInternalScroll.has(ownerId)) return;
+        if (scrollFrame) return;
+        scrollFrame = requestAnimationFrame(() => {
+          scrollFrame = 0;
+          const current = state.folderMeta[folder || ''];
+          if (!current || grid.scrollHeight <= 0) return;
+          const maxScroll = Math.max(1, grid.scrollHeight - grid.clientHeight);
+          const ratio = Math.max(0, Math.min(1, grid.scrollTop / maxScroll));
+          state.paginationScrollRatio.set(ownerId, ratio);
+          const viewportCenter = Math.min(grid.scrollHeight, grid.scrollTop + (grid.clientHeight / 2));
+          const targetItem = Math.floor(
+            (viewportCenter / grid.scrollHeight) * Number(current.total || 0)
+          );
+          // The function consumes an already-prefetched window synchronously until
+          // its first animation-frame await. Calling it here prevents a blank paint
+          // between the scrollbar movement and the window swap.
+          ensurePositionVisible(folder, targetItem, ownerId);
+        });
+      };
+      grid.addEventListener('scroll', scrollHandler, { passive: true });
+      state.pageScrollHandlers.set(ownerId, { grid, handler: scrollHandler });
+    }
+
+    async function ensurePositionVisible(folder, targetIndex, ownerId) {
+      const key = folder || '';
+      const wanted = Math.max(0, Number(targetIndex || 0));
+      state.paginationTargets.set(key, wanted);
+      if (state.paginationLoading.has(key)) return;
+      state.paginationLoading.add(key);
+      try {
+        while (true) {
+          const current = state.folderMeta[key];
+          const target = Math.max(0, Number(state.paginationTargets.get(key) || 0));
+          if (!current) break;
+          const loadedStart = Math.max(0, Number(current.offset || 0));
+          const loadedCount = Math.max(0, Number(current.loaded || 0));
+          const loadedEnd = loadedStart + loadedCount;
+          const total = Math.max(0, Number(current.total || loadedEnd));
+          const preloadMargin = Math.min(50, Math.max(1, Math.floor(loadedCount / 4)));
+          const needsEarlierWindow = loadedStart > 0 && target < loadedStart + preloadMargin;
+          const needsLaterWindow = loadedEnd < total && target >= loadedEnd - preloadMargin;
+          if (!needsEarlierWindow && !needsLaterWindow) {
+            const images = imagesForFolder(key);
+            const desired = virtualWindowDescriptor(key, ownerId, images);
+            const existing = state.virtualWindows.get(ownerId);
+            if (!existing || existing.folder !== desired.folder || existing.page !== desired.page || existing.start !== desired.start || existing.count !== desired.count) {
+              const requestedRatio = Number(state.paginationScrollRatio.get(ownerId));
+              state.paginationInternalScroll.add(ownerId);
+              if (ownerId === 'explorer') renderFiles();
+              else renderExplorerClone(ownerId);
+              await restoreExplorerScrollRatio(ownerId, requestedRatio);
+            }
+            break;
+          }
+          const requestedRatio = Number(state.paginationScrollRatio.get(ownerId));
+          state.paginationInternalScroll.add(ownerId);
+          const prefetched = takePrefetchedImageWindow(key, target, current.version);
+          if (prefetched) {
+            prefetched._append = false;
+            applyImageListData(prefetched);
+            scheduleAdjacentWindowPrefetch(key);
+            await restoreExplorerScrollRatio(ownerId, requestedRatio);
+            continue;
+          }
+          try {
+            await loadImages({
+              folder: key,
+              center: target,
+              append: false,
+              ownerId,
+              silent: true,
+            });
+          } catch (err) {
+            state.paginationInternalScroll.delete(ownerId);
+            throw err;
+          }
+          await restoreExplorerScrollRatio(ownerId, requestedRatio);
+        }
+      } catch (err) {
+        showDesktopError(err.message || '画像一覧の続きを読み込めませんでした。');
+      } finally {
+        state.paginationLoading.delete(key);
+        state.paginationTargets.delete(key);
+      }
+    }
+
+    async function restoreExplorerScrollRatio(ownerId, ratioOverride) {
+      const ratio = Number.isFinite(Number(ratioOverride))
+        ? Number(ratioOverride)
+        : Number(state.paginationScrollRatio.get(ownerId));
+      if (!Number.isFinite(ratio)) {
+        state.paginationInternalScroll.delete(ownerId);
+        return;
+      }
+      await new Promise(resolve => requestAnimationFrame(() => {
+        const currentGrid = explorerRefs(ownerId).fileGrid;
+        if (currentGrid) {
+          currentGrid.style.overflowAnchor = 'none';
+          const maxScroll = Math.max(0, currentGrid.scrollHeight - currentGrid.clientHeight);
+          state.paginationInternalScroll.add(ownerId);
+          currentGrid.scrollTop = maxScroll * ratio;
+        }
+        requestAnimationFrame(() => {
+          state.paginationInternalScroll.delete(ownerId);
+          resolve();
+        });
+      }));
+    }
+
+    function restoreExplorerScrollRatioImmediately(ownerId) {
+      if (!state.paginationInternalScroll.has(ownerId)) return;
+      const ratio = Number(state.paginationScrollRatio.get(ownerId));
+      if (!Number.isFinite(ratio)) return;
+      const currentGrid = explorerRefs(ownerId)?.fileGrid;
+      if (!currentGrid) return;
+      currentGrid.style.overflowAnchor = 'none';
+      currentGrid.scrollTop = Math.max(0, currentGrid.scrollHeight - currentGrid.clientHeight) * ratio;
     }
 
     function ensureFolderState(folder) {
@@ -3185,6 +3941,8 @@
         state.images = state.images.filter(img => img.path !== entry.path);
       }
       state.selectedPath = '';
+      state.selectedPaths.clear();
+      state.selectionAnchorPath = '';
       state.selectedEntry = null;
       refreshImageListSignature();
     }
@@ -3200,13 +3958,22 @@
           folder: replacePathPrefix(img.folder || '', entry.path, nextPath)
         }));
         state.currentFolder = replacePathPrefix(state.currentFolder, entry.path, nextPath);
+        state.selectedPath = replacePathPrefix(state.selectedPath, entry.path, nextPath);
+        state.selectionAnchorPath = replacePathPrefix(state.selectionAnchorPath, entry.path, nextPath);
+        state.selectedPaths = new Set([...state.selectedPaths].map(path => replacePathPrefix(path, entry.path, nextPath)));
         for (const ex of state.explorerClones.values()) {
           ex.currentFolder = replacePathPrefix(ex.currentFolder, entry.path, nextPath);
           ex.selectedPath = replacePathPrefix(ex.selectedPath, entry.path, nextPath);
+          ex.selectionAnchorPath = replacePathPrefix(ex.selectionAnchorPath, entry.path, nextPath);
+          ex.selectedPaths = new Set([...ex.selectedPaths].map(path => replacePathPrefix(path, entry.path, nextPath)));
         }
       } else if (data.entry) {
         state.images = state.images.filter(img => img.path !== entry.path);
         upsertImageRecords([data.entry]);
+        if (state.selectedPaths.delete(entry.path)) state.selectedPaths.add(data.entry.path);
+        for (const ex of state.explorerClones.values()) {
+          if (ex.selectedPaths.delete(entry.path)) ex.selectedPaths.add(data.entry.path);
+        }
       }
       refreshImageListSignature();
     }
@@ -3214,32 +3981,142 @@
     function scheduleBackgroundImageRefresh() {
       clearTimeout(state.backgroundImageRefreshTimer);
       state.backgroundImageRefreshTimer = setTimeout(() => {
-        loadImages({ silent: true, refresh: true }).catch(() => {});
+        loadImages({ folder: state.currentFolder, silent: true, refresh: true }).catch(() => {});
       }, 700);
     }
 
     async function loadImages(options = {}) {
-      const seq = state.imageLoadSeq + 1;
-      state.imageLoadSeq = seq;
+      const folder = options.folder !== undefined ? String(options.folder || '') : String(state.currentFolder || '');
+      const seq = Number(state.folderLoadSeq[folder] || 0) + 1;
+      state.folderLoadSeq[folder] = seq;
       const silent = Boolean(options.silent);
+      if (options.refresh) state.prefetchedWindows.delete(folder);
       if (!silent) {
         setImageListLoading(true);
         renderAllExplorers();
       }
-      const url = options.refresh ? `${apiUrl}?refresh=1&_=${Date.now()}` : apiUrl;
+      const page = Math.max(1, Number(options.page || state.folderMeta[folder]?.page || 1));
+      const center = Math.max(0, Number(
+        options.center ?? state.folderMeta[folder]?.center ?? 0
+      ));
+      const params = new URLSearchParams({
+        folder,
+        page: String(page),
+        center: String(center),
+        perPage: '1000',
+        sort: sortDirection(folder),
+      });
+      if (options.refresh) params.set('_', String(Date.now()));
+      const url = `${apiUrl}?${params.toString()}`;
       const data = await fetchJson(url, { cache: 'no-store' }).catch((err) => {
-        if (!silent && seq === state.imageLoadSeq) setImageListLoading(false);
+        if (!silent && seq === state.folderLoadSeq[folder]) setImageListLoading(false);
         showDesktopError(err.message || 'File list refresh failed.');
         throw err;
       });
-      if (seq !== state.imageLoadSeq) return;
-      if (silent) {
-        const nextImages = data.images || [];
-        const nextFolders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
-        if (imageListSignature(nextImages, nextFolders) === state.imageListSignature) return;
-      }
+      if (seq !== state.folderLoadSeq[folder]) return;
+      data._append = Boolean(options.append);
       applyImageListData(data);
-      if (!silent && seq === state.imageLoadSeq) setImageListLoading(false);
+      scheduleAdjacentWindowPrefetch(folder);
+      if (!silent && seq === state.folderLoadSeq[folder]) setImageListLoading(false);
+    }
+
+    function prefetchedImageWindowKey(folder, center) {
+      return `${folder || ''}\n${sortDirection(folder)}\n${Math.max(0, Number(center || 0))}`;
+    }
+
+    function rememberPrefetchedImageWindow(folder, data) {
+      const key = folder || '';
+      const currentVersion = state.folderMeta[key]?.version || '';
+      if (!data?.pagination || (currentVersion && data.version !== currentVersion)) return;
+      const windows = (state.prefetchedWindows.get(key) || [])
+        .filter(item => item.version === data.version && item.sort === sortDirection(key));
+      const offset = Number(data.pagination.offset || 0);
+      const withoutDuplicate = windows.filter(item => Number(item.data.pagination.offset || 0) !== offset);
+      withoutDuplicate.push({ data, version: data.version || '', sort: sortDirection(key), storedAt: Date.now() });
+      withoutDuplicate.sort((a, b) => b.storedAt - a.storedAt);
+      state.prefetchedWindows.set(key, withoutDuplicate.slice(0, 8));
+    }
+
+    function takePrefetchedImageWindow(folder, target, version) {
+      const key = folder || '';
+      const windows = state.prefetchedWindows.get(key) || [];
+      const sort = sortDirection(key);
+      const candidates = windows.filter(item => {
+        const start = Number(item.data?.pagination?.offset || 0);
+        const end = start + Number(item.data?.images?.length || 0);
+        return item.version === version && item.sort === sort && target >= start && target < end;
+      });
+      if (!candidates.length) return null;
+      candidates.sort((a, b) => {
+        const centerA = Number(a.data.pagination.offset || 0) + (Number(a.data.images?.length || 0) / 2);
+        const centerB = Number(b.data.pagination.offset || 0) + (Number(b.data.images?.length || 0) / 2);
+        return Math.abs(centerA - target) - Math.abs(centerB - target);
+      });
+      const selected = candidates[0];
+      state.prefetchedWindows.set(key, windows.filter(item => item !== selected));
+      return selected.data;
+    }
+
+    async function prefetchImageWindow(folder, center, expectedVersion) {
+      const key = prefetchedImageWindowKey(folder, center);
+      if (state.prefetchInFlight.has(key)) return state.prefetchInFlight.get(key);
+      const task = (async () => {
+        const params = new URLSearchParams({
+          folder: folder || '',
+          center: String(Math.max(0, Number(center || 0))),
+          perPage: '1000',
+          sort: sortDirection(folder),
+        });
+        try {
+          const data = await fetchJson(`${apiUrl}?${params.toString()}`, { cache: 'no-store' });
+          if ((state.folderMeta[folder || '']?.version || '') !== expectedVersion) return;
+          rememberPrefetchedImageWindow(folder, data);
+        } catch (_) {
+          // Prefetch is opportunistic. A foreground request will retry if necessary.
+        } finally {
+          state.prefetchInFlight.delete(key);
+        }
+      })();
+      state.prefetchInFlight.set(key, task);
+      return task;
+    }
+
+    function scheduleAdjacentWindowPrefetch(folder) {
+      const key = folder || '';
+      const meta = state.folderMeta[key];
+      if (!meta || !meta.version) return;
+      const start = Math.max(0, Number(meta.offset || 0));
+      const count = Math.max(0, Number(meta.loaded || 0));
+      const end = start + count;
+      const total = Math.max(end, Number(meta.total || end));
+      const halfWindow = Math.max(1, Math.floor(count / 2));
+      const stride = Math.max(1, count - 50);
+      const centers = [];
+      const previousCenter = start - halfWindow + 50;
+      const nextCenter = end + halfWindow - 50;
+      if (start > 0) centers.push(Math.max(0, previousCenter));
+      if (previousCenter - stride > 0) centers.push(Math.max(0, previousCenter - stride));
+      if (end < total) centers.push(Math.min(total - 1, nextCenter));
+      if (nextCenter + stride < total) centers.push(Math.min(total - 1, nextCenter + stride));
+      const run = () => centers.forEach(center => prefetchImageWindow(key, center, meta.version));
+      setTimeout(run, 0);
+    }
+
+    async function pollImageVersions() {
+      if (document.hidden || state.isLoadingImages) return;
+      const folders = new Set([state.currentFolder || '']);
+      state.explorerClones.forEach(ex => folders.add(ex.currentFolder || ''));
+      await Promise.all([...folders].map(async folder => {
+        if (state.paginationLoading.has(folder || '')) return;
+        const url = `${imageVersionUrl}?${new URLSearchParams({ folder, _: String(Date.now()) })}`;
+        const data = await fetchJson(url, { cache: 'no-store' });
+        const previous = state.folderMeta[folder]?.version;
+        if (previous && data.version && previous !== data.version) {
+          await loadImages({ folder, center: state.folderMeta[folder]?.center || 0, silent: true, refresh: true });
+        } else if (data.version && state.folderMeta[folder]) {
+          state.folderMeta[folder].version = data.version;
+        }
+      }));
     }
 
     async function createFolderInCurrentFolder() {
@@ -3278,6 +4155,7 @@
           setPathStatus(ownerId, `アップロード中... ${i + 1}/${batches.length}`);
           const form = new FormData();
           form.append('folder', folder || '');
+          form.append('numbering', state.numberingEnabled ? '1' : '0');
           batches[i].forEach(file => form.append('files', file, file.name));
           const data = await fetchJson(uploadImagesUrl, { method: 'POST', body: form });
           const saved = data.saved || [];
@@ -3300,15 +4178,34 @@
       alert(`${message}${duplicateCount ? ` 重複${duplicateCount}件は保存しませんでした。${duplicatePaths.length ? ` 既存: ${duplicatePaths.join(', ')}` : ''}` : ''}`);
     }
 
+    function isSupportedClipboardImage(file) {
+      const type = String(file?.type || '').toLowerCase();
+      const name = String(file?.name || '');
+      return type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(name);
+    }
+
+    function filesFromClipboardData(clipboardData) {
+      const directFiles = Array.from(clipboardData?.files || []);
+      if (directFiles.length) return directFiles;
+      const files = [];
+      for (const item of Array.from(clipboardData?.items || [])) {
+        if (item.kind !== 'file') continue;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+      return files;
+    }
+
     async function pasteClipboardFiles(files, folder = folderForExplorer(), ownerId = activeExplorerId()) {
-      const imageFiles = Array.from(files || []).filter(file => file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name));
+      const imageFiles = Array.from(files || []).filter(isSupportedClipboardImage);
       if (!imageFiles.length) {
         showDesktopError('貼り付けできる画像がありません。');
-        return;
+        return false;
       }
       setPathStatus(ownerId, '貼り付け保存中...');
       const form = new FormData();
       form.append('folder', folder || '');
+      form.append('numbering', state.numberingEnabled ? '1' : '0');
       imageFiles.forEach((file, index) => {
         const fallbackName = file.type === 'image/jpeg' ? `clipboard-${index + 1}.jpg` : file.type === 'image/webp' ? `clipboard-${index + 1}.webp` : file.type === 'image/gif' ? `clipboard-${index + 1}.gif` : `clipboard-${index + 1}.png`;
         form.append('files', file, file.name || fallbackName);
@@ -3327,6 +4224,7 @@
       const duplicateMessage = duplicates.length ? ` 重複${duplicates.length}件は保存しませんでした。${duplicatePaths.length ? ` 既存: ${duplicatePaths.join(', ')}` : ''}` : '';
       if (failed) showDesktopError(message + duplicateMessage);
       else showDesktopMessage(message + duplicateMessage);
+      return true;
     }
 
     async function readClipboardImageFiles() {
@@ -3343,9 +4241,12 @@
       return files;
     }
 
-    async function pasteFromClipboard(folder = folderForExplorer(), ownerId = activeExplorerId()) {
-      const files = await readClipboardImageFiles();
-      await pasteClipboardFiles(files, folder, ownerId);
+    function openPasteFallbackPicker(input, folder, ownerId, message = 'クリップボードから画像を取得できませんでした。画像ファイルを選択してください。') {
+      showDesktopMessage(`${message} 選択画面が開かない場合は「追加」を押してください。`, { duration: 6000 });
+      input.dataset.folder = folder || '';
+      input.dataset.ownerId = ownerId || 'explorer';
+      input.value = '';
+      input.click();
     }
 
     function uploadBatches(files) {
@@ -3376,8 +4277,11 @@
       else openViewer(item);
     }
 
-    function neighborImage(image, delta) {
-      const list = currentFolderImagesFor(image);
+    function neighborImage(image, delta, viewerId = '') {
+      const viewer = viewerId ? state.windows.get(viewerId) : null;
+      const list = Array.isArray(viewer?.imageSequence) && viewer.imageSequence.length
+        ? viewer.imageSequence
+        : currentFolderImagesFor(image);
       const index = list.findIndex(item => item.path === image.path);
       if (index < 0) return image;
       const nextIndex = index + delta;
@@ -3462,6 +4366,14 @@
       state.fitByWindow.set(id, true);
       state.zoomByWindow.set(id, 100);
       registerWindow(id, el, image.name, 'viewer');
+      const viewerWindow = state.windows.get(id);
+      if (viewerWindow) {
+        const sequence = currentFolderImagesFor(image);
+        viewerWindow.sourceFolder = image.folder || '';
+        viewerWindow.imageSequence = sequence.some(item => item.path === image.path)
+          ? sequence.slice()
+          : [image];
+      }
       setViewerImage(id, image);
       applyZoom(id);
 
@@ -3470,8 +4382,8 @@
           const tool = btn.dataset.tool;
           const win = state.windows.get(id);
           if (!win || !win.image) return;
-          if (tool === 'prev') setViewerImage(id, neighborImage(win.image, -1));
-          if (tool === 'next') setViewerImage(id, neighborImage(win.image, 1));
+          if (tool === 'prev') setViewerImage(id, neighborImage(win.image, -1, id));
+          if (tool === 'next') setViewerImage(id, neighborImage(win.image, 1, id));
           if (tool === 'fit') state.fitByWindow.set(id, true);
           if (tool === 'actual') {
             state.fitByWindow.set(id, false);
@@ -3495,7 +4407,7 @@
         const lockedUntil = state.wheelLockByWindow.get(id) || 0;
         if (now < lockedUntil || Math.abs(event.deltaY) < 8) return;
         state.wheelLockByWindow.set(id, now + 180);
-        setViewerImage(id, neighborImage(win.image, event.deltaY > 0 ? 1 : -1));
+        setViewerImage(id, neighborImage(win.image, event.deltaY > 0 ? 1 : -1, id));
       }, { passive: false });
     }
 
@@ -3741,7 +4653,7 @@
       const existing = state.windows.get('instagram');
       if (existing) {
         activate('instagram');
-        return;
+        return existing;
       }
       const el = document.createElement('article');
       el.className = 'window instagram-window';
@@ -3788,6 +4700,7 @@
       desktopGrid.appendChild(el);
       registerWindow('instagram', el, 'Instagram / X Image Downloader', 'instagram');
       wireInstagramWindow(el);
+      return el;
     }
 
     function openInstagramAuthWindow() {
@@ -3819,12 +4732,11 @@
             <button type="button" id="igCopyVncPassword">コピー</button>
           </div>
           <div class="ig-auth-row">
-            <input id="igLoginText" type="text" autocomplete="username" placeholder="Instagram ID / email">
-            <button type="button" id="igTypeLoginText">ID入力</button>
+            <input id="igLoginText" name="instagram_login_identifier" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" readonly data-lpignore="true" data-1p-ignore placeholder="Instagram ID / email">
           </div>
           <div class="ig-auth-row">
-            <input id="igLoginPassword" type="password" autocomplete="current-password" placeholder="Instagram password">
-            <button type="button" id="igTypeLoginPassword">パスワード入力</button>
+            <input id="igLoginPassword" name="instagram_login_secret" type="password" autocomplete="new-password" readonly data-lpignore="true" data-1p-ignore placeholder="Instagram password">
+            <button type="button" id="igSaveCredentialsBtn">認証情報を保存</button>
           </div>
           <div class="ig-auth-status" id="igAuthStatus"></div>
         </div>
@@ -4017,6 +4929,25 @@
     }
 
     function wireInstagramAuthWindow(el) {
+      const loginIdInput = el.querySelector('#igLoginText');
+      const passwordInput = el.querySelector('#igLoginPassword');
+      [loginIdInput, passwordInput].forEach(input => {
+        input.addEventListener('focus', () => input.removeAttribute('readonly'), { once: true });
+      });
+
+      async function loadCredentialStatus() {
+        try {
+          const data = await fetchJson(instagramCredentialsStatusUrl);
+          if (data.configured) {
+            loginIdInput.value = data.login_id || '';
+            loginIdInput.dataset.savedValue = data.login_id || '';
+            passwordInput.placeholder = '保存済み（変更時のみ入力）';
+          }
+        } catch (err) {
+          setInstagramAuthStatus(el, err.message || 'Instagram認証情報の状態を確認できませんでした。');
+        }
+      }
+
       async function startLoginBrowser() {
         const openBtn = el.querySelector('#igAuthOpenBtn');
         openBtn.disabled = true;
@@ -4029,7 +4960,13 @@
             else window.open(data.url, 'mfu_instagram_login', 'width=1320,height=980');
           }
           setVncPassword(el, data.vncPassword || '');
-          setInstagramAuthStatus(el, 'noVNCでInstagramにログインし、完了後に「ログイン保存」を押してください。ID/PW欄はnoVNC側で入力欄をクリックしてから使います。');
+          if (data.state === 'logged_in') {
+            setInstagramAuthStatus(el, 'Instagramにログイン済みです。ログイン情報も取得処理へ保存しました。');
+          } else if (data.state === 'otp_required') {
+            setInstagramAuthStatus(el, data.message || 'ID・パスワードは入力済みです。noVNCでOTPを入力してください。');
+          } else {
+            setInstagramAuthStatus(el, data.message || '認証情報を保存後、noVNCでInstagramの状態を確認してください。');
+          }
         } catch (err) {
           if (popup) popup.close();
           setInstagramAuthStatus(el, err.message || 'Instagramログイン用ブラウザを起動できませんでした。');
@@ -4040,8 +4977,30 @@
 
       el.querySelector('#igAuthOpenBtn').addEventListener('click', startLoginBrowser);
       el.querySelector('#igCopyVncPassword').addEventListener('click', () => copyVncPassword(el));
-      el.querySelector('#igTypeLoginText').addEventListener('click', () => typeIntoInstagramBrowser(el, '#igLoginText', 'ID'));
-      el.querySelector('#igTypeLoginPassword').addEventListener('click', () => typeIntoInstagramBrowser(el, '#igLoginPassword', 'パスワード'));
+      el.querySelector('#igSaveCredentialsBtn').addEventListener('click', async () => {
+        const button = el.querySelector('#igSaveCredentialsBtn');
+        const loginId = loginIdInput.value.trim();
+        const password = passwordInput.value;
+        if (!loginId || !password) {
+          setInstagramAuthStatus(el, 'Instagram IDとパスワードを入力してください。');
+          return;
+        }
+        button.disabled = true;
+        setInstagramAuthStatus(el, 'Instagram認証情報を暗号化して保存中...');
+        try {
+          await fetchJson(instagramCredentialsSaveUrl, {
+            method: 'POST',
+            body: JSON.stringify({ loginId, password })
+          });
+          passwordInput.value = '';
+          passwordInput.placeholder = '保存済み（変更時のみ入力）';
+          setInstagramAuthStatus(el, '認証情報を保存しました。ブラウザー起動時に自動入力します。OTPだけnoVNCで入力してください。');
+        } catch (err) {
+          setInstagramAuthStatus(el, err.message || 'Instagram認証情報を保存できませんでした。');
+        } finally {
+          button.disabled = false;
+        }
+      });
       el.querySelector('#igAuthSaveBtn').addEventListener('click', async () => {
         const saveAuthBtn = el.querySelector('#igAuthSaveBtn');
         saveAuthBtn.disabled = true;
@@ -4056,7 +5015,7 @@
         }
       });
 
-      startLoginBrowser();
+      loadCredentialStatus().finally(startLoginBrowser);
     }
 
     function wireInstagramWindow(el) {
@@ -4224,6 +5183,7 @@
               <label for="vdUrl">URL</label>
               <input id="vdUrl" type="text" placeholder="https://www.instagram.com/reel/... / https://x.com/.../status/...">
               <button type="button" id="vdFetchBtn">取得</button>
+              <button type="button" id="vdFrameFetchBtn">動画を写真で取得</button>
             </div>
             <div class="ig-options" style="grid-template-columns:minmax(0, 1fr);">
               <label>保存先フォルダー<input id="vdFolder" type="text" value="video" placeholder="video"></label>
@@ -4336,6 +5296,50 @@
         }
       });
 
+      el.querySelector('#vdFrameFetchBtn').addEventListener('click', async () => {
+        const url = el.querySelector('#vdUrl').value.trim();
+        const frameFetchBtn = el.querySelector('#vdFrameFetchBtn');
+        const videoFetchBtn = el.querySelector('#vdFetchBtn');
+        frameFetchBtn.disabled = true;
+        videoFetchBtn.disabled = true;
+        setVideoDownloaderStatus(el, '動画を写真に変換しています...');
+        try {
+          const data = await fetchJson(videoFramesFetchUrl, {
+            method: 'POST',
+            body: JSON.stringify({ url })
+          });
+          const result = data.jobId
+            ? await waitInstagramJob(data.jobId, (count, job) => {
+                const total = Number(job.total || 0);
+                const processed = Number(job.processed || 0);
+                setVideoDownloaderStatus(el, total
+                  ? `動画を写真に変換中... ${processed}/${total}`
+                  : '動画を取得中...');
+              })
+            : data;
+          const imageWindow = openInstagramWindow();
+          imageWindow.querySelector('#igUrl').value = url;
+          state.instagram.shortcode = result.shortcode || data.shortcode || '';
+          state.instagram.jobId = data.jobId || '';
+          state.instagram.images = result.images || [];
+          renderInstagramItems(imageWindow);
+          await updateInstagramNextNumber(imageWindow);
+          setInstagramStatus(
+            imageWindow,
+            `${state.instagram.images.length}枚を動画から取得しました。保存する写真を選択してください。`
+          );
+          setVideoDownloaderStatus(
+            el,
+            `${state.instagram.images.length}枚を写真化し、画像取得ウィンドウに表示しました。`
+          );
+        } catch (err) {
+          setVideoDownloaderStatus(el, err.message || '動画を写真で取得できませんでした。');
+        } finally {
+          frameFetchBtn.disabled = false;
+          videoFetchBtn.disabled = false;
+        }
+      });
+
       el.querySelector('#vdSelectAll').addEventListener('click', () => {
         el.querySelectorAll('[data-vd-index]').forEach(input => {
           input.checked = true;
@@ -4391,6 +5395,8 @@
 
     function wireUploadInteractions() {
       const uploadInput = document.getElementById('uploadInput');
+      const pasteFallbackInput = document.getElementById('pasteFallbackInput');
+      wireMarqueeSelection(fileGrid, 'explorer');
       document.getElementById('newFolderBtn').addEventListener('click', () => {
         createFolderInCurrentFolder().catch(err => alert(err.message || 'フォルダーを作成できませんでした。'));
       });
@@ -4398,11 +5404,28 @@
         uploadInput.value = '';
         uploadInput.click();
       });
-      document.getElementById('pasteBtn').addEventListener('click', () => {
-        pasteFromClipboard(state.currentFolder, 'explorer').catch(err => showDesktopError(err.message || '貼り付け保存に失敗しました。'));
+      document.getElementById('pasteBtn').addEventListener('click', async () => {
+        let files = [];
+        try {
+          files = await readClipboardImageFiles();
+        } catch (err) {
+          openPasteFallbackPicker(pasteFallbackInput, state.currentFolder, 'explorer', 'クリップボードを読み取れませんでした。');
+          return;
+        }
+        if (!files.length) {
+          openPasteFallbackPicker(pasteFallbackInput, state.currentFolder, 'explorer');
+          return;
+        }
+        pasteClipboardFiles(files, state.currentFolder, 'explorer').catch(err => showDesktopError(err.message || '貼り付け保存に失敗しました。'));
       });
       uploadInput.addEventListener('change', () => {
         uploadFilesToFolder(uploadInput.files, state.currentFolder, 'explorer').catch(err => alert(err.message || 'アップロードに失敗しました。'));
+      });
+      pasteFallbackInput.addEventListener('change', () => {
+        if (!pasteFallbackInput.files?.length) return;
+        const ownerId = pasteFallbackInput.dataset.ownerId || 'explorer';
+        const folder = pasteFallbackInput.dataset.folder || '';
+        pasteClipboardFiles(pasteFallbackInput.files, folder, ownerId).catch(err => showDesktopError(err.message || '画像の保存に失敗しました。'));
       });
 
       fileGrid.addEventListener('dragover', (event) => {
@@ -4417,9 +5440,9 @@
       fileGrid.addEventListener('drop', (event) => {
         event.preventDefault();
         fileGrid.classList.remove('drag-over');
-        const entry = getDragEntry(event);
-        if (entry) {
-          moveEntry(entry, state.currentFolder, 'explorer').catch(err => alert(err.message || '移動に失敗しました。'));
+        const entries = getDragEntries(event);
+        if (entries.length) {
+          moveDraggedEntries(entries, state.currentFolder, 'explorer').catch(err => alert(err.message || '移動に失敗しました。'));
           return;
         }
         uploadFilesToFolder(event.dataTransfer.files, state.currentFolder, 'explorer').catch(err => alert(err.message || 'アップロードに失敗しました。'));
@@ -4440,9 +5463,9 @@
         if (!folderButton) return;
         event.preventDefault();
         folderButton.classList.remove('drag-over');
-        const entry = getDragEntry(event);
-        if (entry) {
-          moveEntry(entry, folderButton.dataset.folder || '', 'explorer').catch(err => alert(err.message || '移動に失敗しました。'));
+        const entries = getDragEntries(event);
+        if (entries.length) {
+          moveDraggedEntries(entries, folderButton.dataset.folder || '', 'explorer').catch(err => alert(err.message || '移動に失敗しました。'));
           return;
         }
         uploadFilesToFolder(event.dataTransfer.files, folderButton.dataset.folder || '', 'explorer').catch(err => alert(err.message || 'アップロードに失敗しました。'));
@@ -4451,16 +5474,23 @@
       document.addEventListener('paste', (event) => {
         const target = event.target;
         if (target && target.closest && target.closest('input, textarea, [contenteditable="true"]')) return;
-        const files = [];
-        for (const item of Array.from(event.clipboardData?.items || [])) {
-          if (!item.type.startsWith('image/')) continue;
-          const file = item.getAsFile();
-          if (file) files.push(file);
+        const clipboardFiles = filesFromClipboardData(event.clipboardData);
+        const files = clipboardFiles.filter(isSupportedClipboardImage);
+        const ownerId = activeExplorerId();
+        const folder = folderForExplorer(ownerId);
+        if (!files.length && clipboardFiles.length) {
+          event.preventDefault();
+          openPasteFallbackPicker(pasteFallbackInput, folder, ownerId, 'コピーされたファイルを画像として取得できませんでした。');
+          return;
+        }
+        if (!files.length && state.internalClipboardEntries.length) {
+          event.preventDefault();
+          pasteInternalClipboard(ownerId).catch(err => showDesktopError(err.message || 'コピーに失敗しました。'));
+          return;
         }
         if (!files.length) return;
         event.preventDefault();
-        const ownerId = activeExplorerId();
-        pasteClipboardFiles(files, folderForExplorer(ownerId), ownerId).catch(err => showDesktopError(err.message || '貼り付け保存に失敗しました。'));
+        pasteClipboardFiles(files, folder, ownerId).catch(err => showDesktopError(err.message || '貼り付け保存に失敗しました。'));
       });
     }
 
@@ -4508,7 +5538,12 @@
     });
     sortBtn.addEventListener('click', () => {
       setSortDirection(state.currentFolder, sortDirection() === 'desc' ? 'asc' : 'desc');
-      renderAllExplorers();
+      loadImages({ folder: state.currentFolder, refresh: true }).catch(err => showDesktopError(err.message));
+    });
+    numberingBtn.addEventListener('click', () => {
+      state.numberingEnabled = !state.numberingEnabled;
+      saveNumberingState();
+      renderNumberingButton();
     });
     viewButtons.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -4563,25 +5598,37 @@
     document.addEventListener('keydown', (event) => {
       const target = event.target;
       if (target && target.closest && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key === 'Escape' && state.appendSequenceMode) {
+        event.preventDefault();
+        cancelAppendSequence('後付け連番をキャンセルしました。');
+        return;
+      }
       const activeWindow = state.windows.get(state.activeId);
       if (activeWindow?.kind === 'explorer') {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && state.internalClipboardEntries.length) {
+          event.preventDefault();
+          pasteInternalClipboard(activeExplorerId()).catch(err => showDesktopError(err.message || 'コピーに失敗しました。'));
+          return;
+        }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
           event.preventDefault();
-          copyEntryToClipboard().catch(err => alert(err.message || 'コピーに失敗しました。'));
+          copySelectionToClipboard(activeExplorerId()).catch(err => alert(err.message || 'コピーに失敗しました。'));
           return;
         }
         if (event.key === 'F2') {
           event.preventDefault();
+          if (selectionEntries(activeExplorerId()).length !== 1) return;
           renameEntry().catch(err => alert(err.message || '名前変更に失敗しました。'));
           return;
         }
         if (event.key === 'Delete') {
           event.preventDefault();
-          deleteEntry().catch(err => alert(err.message || '削除に失敗しました。'));
+          deleteEntries(selectionEntries(activeExplorerId()), activeExplorerId()).catch(err => alert(err.message || '削除に失敗しました。'));
           return;
         }
         if (event.key === 'Enter') {
           event.preventDefault();
+          if (selectionEntries(activeExplorerId()).length !== 1) return;
           openSelectedEntry();
           return;
         }
@@ -4594,11 +5641,11 @@
         return;
       }
       if (event.key === 'ArrowLeft') {
-        setViewerImage(win.id, neighborImage(win.image, -1));
+        setViewerImage(win.id, neighborImage(win.image, -1, win.id));
         event.preventDefault();
       }
       if (event.key === 'ArrowRight') {
-        setViewerImage(win.id, neighborImage(win.image, 1));
+        setViewerImage(win.id, neighborImage(win.image, 1, win.id));
         event.preventDefault();
       }
       if (event.key === 'Escape') closeWindow(win.id);
@@ -4611,6 +5658,8 @@
 
     loadSortState();
     loadViewSizeState();
+    loadNumberingState();
+    renderNumberingButton();
     registerWindow('explorer', explorerWindow, 'エクスプローラー', 'explorer');
     updateClock();
     setInterval(updateClock, 15000);
@@ -4619,8 +5668,7 @@
     });
 
     setInterval(() => {
-      if (document.hidden || state.isLoadingImages) return;
-      loadImages({ silent: true }).catch(() => {});
+      pollImageVersions().catch(() => {});
     }, 10000);
 
     if ('serviceWorker' in navigator) {

@@ -61,7 +61,7 @@
     </table>
   </div>
 
-  <form method="post" action="/payment/admin/events/{{ event.id }}/bulk-refund/execute" id="execute-form" class="mt-3">
+  <form method="post" action="/payment/admin/events/{{ event.id }}/bulk-refund/execute" id="execute-form" class="mt-3" data-admin-passkey-action="square_bulk_refund:{{ event.id }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
     <input type="hidden" name="preview_hash" value="{{ preview_hash }}">
     <input type="hidden" name="selected_csv" id="selected_csv" value="">

@@ -460,6 +460,12 @@ def format_freee_partner_label(partner: dict) -> str:
     return f"{name}（ID:{partner_id}）"
 
 
+def format_freee_item_label(item: dict) -> str:
+    name = item.get("name") or item.get("display_name") or "名称未設定"
+    item_id = item.get("id") or "-"
+    return f"{name}（ID:{item_id}）"
+
+
 def find_company_by_id(companies: list[dict], company_id: int) -> dict | None:
     for company in companies:
         if freee_int_or_none(company.get("id")) == company_id:
@@ -499,6 +505,7 @@ def fetch_freee_master_bundle(company_id: int | None = None) -> dict:
         "companies": companies,
         "selected_company_id": selected_company_id,
         "account_items": [],
+        "items": [],
         "partners": [],
         "walletables": [],
         "taxes": [],
@@ -510,11 +517,18 @@ def fetch_freee_master_bundle(company_id: int | None = None) -> dict:
     params = {"company_id": selected_company_id}
     for key, path in (
         ("account_items", "/api/1/account_items"),
+        ("items", "/api/1/items"),
         ("partners", "/api/1/partners"),
         ("walletables", "/api/1/walletables"),
     ):
         try:
-            master[key] = freee_list_from_response(freee_api_request("GET", path, params=params), key)
+            request_params = dict(params)
+            if key in {"account_items", "items", "partners"}:
+                request_params["limit"] = 3000
+            master[key] = freee_list_from_response(
+                freee_api_request("GET", path, params=request_params),
+                key,
+            )
         except Exception as exc:
             warnings.append(f"{key} の取得に失敗しました: {sanitize_freee_error(str(exc))}")
     try:

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>折り返し発信</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f6f8; color: #17202a; }
+    main { max-width: 620px; margin: 5vh auto; padding: 20px; }
+    .card { background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 8px; font-size: 1.5rem; }
+    .muted { color: #64748b; font-size: .95rem; }
+    label { display: block; margin: 18px 0 6px; font-weight: 700; }
+    input, select { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+    input[readonly] { background: #f1f5f9; }
+    button { width: 100%; margin-top: 22px; padding: 13px; border: 0; border-radius: 8px; background: #16a34a; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .notice, .status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #eef2ff; }
+    .notice { background: #f8fafc; border: 1px solid #e2e8f0; font-size: .92rem; }
+    .error { background: #fee2e2; color: #991b1b; }
+    .success { background: #dcfce7; color: #166534; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <h1>📞 折り返し発信</h1>
+    <p class="muted">このリンクは発行から2時間、1回だけ使用できます。</p>
+    <div id="status" class="status">リンクを確認しています…</div>
+    <form id="callForm" hidden>
+      <label for="phone">発信先</label>
+      <input id="phone" type="text" readonly>
+
+      <label for="endpoint">どの電話機で話しますか？</label>
+      <select id="endpoint">
+        {% for endpoint, label in click_to_call_endpoints.items() %}
+        <option value="{{ endpoint }}">{{ endpoint }} — {{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="trunk">どの回線で外線発信しますか？</label>
+      <select id="trunk">
+        {% for key, trunk in click_to_call_trunks.items() %}
+        <option value="{{ key }}" {% if not trunk.available %}disabled{% endif %}>
+          {{ trunk.name }}{% if not trunk.available %} — 利用不可{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+
+      <div class="notice">
+        選択した電話機に <strong>外線発信 &lt;10321&gt;</strong> と表示して先に呼び出します。
+        応答後に上記の発信先へ接続します。
+      </div>
+      <button id="submitButton" type="submit">この内容で発信</button>
+    </form>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const inspectPath = "/phone-click-to-call/inspect";
+  const startPath = "/phone-click-to-call/start";
+  const statusPath = "/phone-click-to-call/status";
+  const statusLabels = {{ click_to_call_status_labels|tojson }};
+  let token = (window.location.hash || "").slice(1);
+  let jobId = "";
+  let pollTimer = null;
+  history.replaceState(null, "", window.location.pathname);
+
+  const status = document.getElementById("status");
+  const form = document.getElementById("callForm");
+  const phone = document.getElementById("phone");
+  const endpoint = document.getElementById("endpoint");
+  const trunk = document.getElementById("trunk");
+  const button = document.getElementById("submitButton");
+
+  function show(message, kind = "") {
+    status.textContent = message;
+    status.className = `status ${kind}`.trim();
+    status.hidden = false;
+  }
+
+  async function post(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+    const fallbackMessages = {
+      403: "このリンクは無効です",
+      409: "このリンクは使用済み、または現在発信できません",
+      410: "このリンクの有効期限は切れています",
+      429: "試行回数が多すぎます。しばらく待ってからお試しください",
+      503: "FreePBXへ接続できませんでした",
+    };
+    if (!response.ok || !data.ok) throw new Error(data.message || fallbackMessages[response.status] || `処理に失敗しました（HTTP ${response.status}）`);
+    return data;
+  }
+
+  async function inspect() {
+    if (!token) {
+      show("トークンがありません。Discordに届いたリンクを開き直してください。", "error");
+      return;
+    }
+    try {
+      const data = await post(inspectPath, {token});
+      phone.value = data.phone_number;
+      form.hidden = false;
+      status.hidden = true;
+    } catch (error) {
+      token = "";
+      show(error.message, "error");
+    }
+  }
+
+  async function poll() {
+    try {
+      const data = await post(statusPath, {token, job_id: jobId});
+      const item = data.job;
+      const message = item.detail
+        ? `${statusLabels[item.status] || item.status}：${item.detail}`
+        : (statusLabels[item.status] || item.status);
+      const isError = ["failed", "phone_no_answer", "external_failed"].includes(item.status);
+      show(message, isError ? "error" : (item.status === "call_ended" ? "success" : ""));
+      if (item.terminal) return;
+      pollTimer = window.setTimeout(poll, 1000);
+    } catch (error) {
+      show(error.message, "error");
+    }
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const endpointText = endpoint.options[endpoint.selectedIndex].text;
+    const trunkText = trunk.options[trunk.selectedIndex].text;
+    if (!window.confirm(`${phone.value} へ発信します。\n\n電話機: ${endpointText}\n外線: ${trunkText}\n\nよろしいですか？`)) return;
+    button.disabled = true;
+    show("発信処理を開始しています…");
+    try {
+      const data = await post(startPath, {token, endpoint: endpoint.value, trunk: trunk.value});
+      jobId = data.job_id;
+      form.hidden = true;
+      show(statusLabels[data.status] || data.status);
+      poll();
+    } catch (error) {
+      show(error.message, "error");
+      button.disabled = false;
+    }
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (pollTimer) window.clearTimeout(pollTimer);
+  });
+  inspect();
+})();
+</script>
+</body>
+</html>

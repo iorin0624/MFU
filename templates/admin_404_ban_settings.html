@@ -1,54 +1,381 @@
 {% extends "base.html" %}
-{% block title %}404アクセスBAN設定{% endblock %}
+{% block title %}不審アクセスの自動BAN設定{% endblock %}
 
 {% block content %}
-<div class="container mt-4" style="max-width: 760px;">
-  <h2 class="mb-3">404アクセスでの自動BAN判定</h2>
-  <p class="text-muted">この画面で、404アクセス時の短時間判定・累積判定・IPv4のBAN単位を変更できます。</p>
+<style>
+  .ban-settings-page { max-width: 1040px; }
+  .ban-status-card,
+  .ban-section {
+    border: 1px solid #dfe5ec;
+    border-radius: 14px;
+    background: #fff;
+  }
+  .ban-status-card { padding: 1.1rem 1.25rem; }
+  .ban-status-label {
+    color: #64748b;
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+  }
+  .ban-status-value { font-size: 1.05rem; font-weight: 700; }
+  .ban-section { padding: 1.25rem; margin-bottom: 1rem; }
+  .ban-section-title { font-size: 1.08rem; font-weight: 700; margin: 0; }
+  .ban-section-note { color: #64748b; font-size: .9rem; margin: .35rem 0 1rem; }
+  .ban-rule {
+    border: 1px solid #e7ebf0;
+    border-radius: 12px;
+    padding: 1rem;
+    height: 100%;
+  }
+  .ban-rule--danger { border-left: 5px solid #dc3545; }
+  .ban-rule--warning { border-left: 5px solid #f0ad4e; }
+  .ban-rule--secondary { border-left: 5px solid #64748b; }
+  .ban-rule-title { font-weight: 700; margin-bottom: .25rem; }
+  .ban-rule-example { color: #64748b; font-size: .83rem; min-height: 2.5rem; }
+  .ban-rule-summary {
+    background: #f6f8fa;
+    border-radius: 8px;
+    font-weight: 700;
+    margin: .8rem 0;
+    padding: .65rem .75rem;
+  }
+  .ban-help { color: #64748b; font-size: .8rem; margin-top: .35rem; }
+  .ban-duration-preview { color: #0d6efd; font-weight: 700; }
+  .ban-advanced summary { cursor: pointer; font-weight: 700; }
+  .ban-sticky-actions {
+    border-top: 1px solid #dee2e6;
+    padding: .85rem 0;
+  }
+  @media (max-width: 767.98px) {
+    .ban-status-item + .ban-status-item { border-top: 1px solid #edf0f3; margin-top: .75rem; padding-top: .75rem; }
+    .ban-sticky-actions .btn { flex: 1 1 auto; }
+  }
+</style>
 
-  <form method="post" class="card card-body">
-    <h5 class="mb-3">短時間判定</h5>
-    <div class="row g-3 align-items-end mb-3">
-      <div class="col-md-4">
-        <label class="form-label">何秒以内</label>
-        <input type="number" class="form-control" name="short_window_sec" min="0.1" step="0.1" value="{{ settings.short_window_sec }}" required>
+<div class="container mt-4 mb-5 ban-settings-page">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+    <div>
+      <h2 class="mb-1">不審アクセスの自動BAN設定</h2>
+      <p class="text-muted mb-0">同じIPからの不審な404アクセスを検出し、リバースプロキシで一時的に遮断します。</p>
+    </div>
+    <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-secondary">アクセスログへ戻る</a>
+  </div>
+
+  <div class="ban-status-card shadow-sm mb-3">
+    <div class="row g-0">
+      <div class="col-md-4 ban-status-item pe-md-3">
+        <div class="ban-status-label">現在の実際の動作</div>
+        <div class="ban-status-value mt-1">
+          {% if effective_enforcement %}
+            <span class="badge text-bg-danger">自動遮断中</span>
+          {% else %}
+            <span class="badge text-bg-secondary">観察のみ</span>
+          {% endif %}
+        </div>
+        <div class="small text-muted mt-1">{{ effective_mode_reason }}</div>
       </div>
-      <div class="col-md-4">
-        <label class="form-label">何回でBAN</label>
-        <input type="number" class="form-control" name="short_threshold" min="1" step="1" value="{{ settings.short_threshold }}" required>
+      <div class="col-md-4 ban-status-item px-md-3 border-start-md">
+        <div class="ban-status-label">初回の遮断時間</div>
+        <div class="ban-status-value mt-1" data-duration-text="ban_duration_sec">{{ settings.ban_duration_sec }}秒</div>
+        <div class="small text-muted mt-1">同じIPを再検出した場合は延長します。</div>
+      </div>
+      <div class="col-md-4 ban-status-item ps-md-3">
+        <div class="ban-status-label">IPv4の遮断範囲</div>
+        <div class="ban-status-value mt-1">
+          {% if settings.ipv4_prefix == 32 %}単一IP（/32）{% else %}同一ネットワーク（/24）{% endif %}
+        </div>
+        <div class="small text-muted mt-1">IPv6は常に単一アドレス（/128）です。</div>
       </div>
     </div>
+  </div>
 
-    <h5 class="mb-3">累積判定（IP単位）</h5>
-    <div class="row g-3 align-items-end mb-3">
-      <div class="col-md-4">
-        <label class="form-label">何秒以内</label>
-        <input type="number" class="form-control" name="ip_window_sec" min="1" step="1" value="{{ settings.ip_window_sec }}" required>
-      </div>
-      <div class="col-md-4">
-        <label class="form-label">何回でBAN</label>
-        <input type="number" class="form-control" name="ip_threshold" min="1" step="1" value="{{ settings.ip_threshold }}" required>
-      </div>
-    </div>
+  <div class="alert alert-info">
+    <strong>判定対象外：</strong>削除済み画像、期限切れURLなど、MFUの機能が返した通常の404は一般404判定に含めません。
+    <br><span class="small">秘密ファイル探索は103.15側のFail2Banでも独立して遮断されます。</span>
+  </div>
 
-    <div class="row g-3 align-items-end mb-4">
-      <div class="col-md-4">
-        <label class="form-label">BANクールダウン（秒）</label>
-        <input type="number" class="form-control" name="cooldown_sec" min="1" step="1" value="{{ settings.cooldown_sec }}" required>
-      </div>
-      <div class="col-md-4">
-        <label class="form-label">IPv4のBAN単位</label>
-        <select class="form-select" name="ipv4_prefix">
-          <option value="24" {% if settings.ipv4_prefix == 24 %}selected{% endif %}>/24</option>
-          <option value="32" {% if settings.ipv4_prefix == 32 %}selected{% endif %}>/32</option>
-        </select>
-      </div>
-    </div>
+  <form method="post" id="banSettingsForm">
+    <section class="ban-section shadow-sm">
+      <h3 class="ban-section-title">1. 自動で遮断するか</h3>
+      <p class="ban-section-note">最初に動作方法を選びます。観察期間を指定した場合は、その日時を過ぎると自動遮断へ移行します。</p>
 
-    <div class="d-flex gap-2">
-      <button type="submit" class="btn btn-danger">保存</button>
-      <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-secondary">ログ画面に戻る</a>
+      <div class="row g-3 align-items-start">
+        <div class="col-md-5">
+          <label class="form-label fw-bold" for="mode">動作方法</label>
+          <select class="form-select" id="mode" name="mode">
+            <option value="observe" {% if settings.mode == 'observe' %}selected{% endif %}>観察する（記録だけ・アプリからは遮断しない）</option>
+            <option value="enforce" {% if settings.mode == 'enforce' %}selected{% endif %}>自動で遮断する</option>
+          </select>
+          <div class="ban-help">機密ファイル探索に対する103.15側の遮断は、この選択とは別に動作します。</div>
+        </div>
+        <div class="col-md-5" id="observeUntilGroup">
+          <label class="form-label fw-bold" for="observe_until">観察を終了して自動遮断を始める日時</label>
+          <input type="datetime-local" class="form-control" id="observe_until" name="observe_until" value="{{ settings.observe_until[:16] }}">
+          <div class="ban-help">空欄の場合は観察だけを続けます。過去の日時なら現在は自動遮断中です。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ban-section shadow-sm">
+      <h3 class="ban-section-title">2. どの程度のアクセスで不審と判断するか</h3>
+      <p class="ban-section-note">危険なURL探索を優先し、それ以外の404探索は短時間と累積の2段階で判定します。</p>
+
+      <div class="row g-3">
+        <div class="col-lg-4">
+          <div class="ban-rule ban-rule--danger">
+            <div class="ban-rule-title">危険なURLの探索</div>
+            <div class="ban-rule-example">例：<code>/.env</code>、<code>/.git</code>、WordPress、PHPシェル、認証情報</div>
+            <div class="ban-rule-summary" id="sensitiveSummary"></div>
+            <label class="form-label" for="sensitive_window_sec">数える時間</label>
+            <div class="input-group mb-2">
+              <input type="number" class="form-control js-rule-input" id="sensitive_window_sec" name="sensitive_window_sec" min="1" step="1" value="{{ settings.sensitive_window_sec }}" required>
+              <span class="input-group-text">秒以内</span>
+            </div>
+            <label class="form-label" for="sensitive_threshold">BANする回数</label>
+            <div class="input-group">
+              <input type="number" class="form-control js-rule-input" id="sensitive_threshold" name="sensitive_threshold" min="1" step="1" value="{{ settings.sensitive_threshold }}" required>
+              <span class="input-group-text">回</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-4">
+          <div class="ban-rule ban-rule--warning">
+            <div class="ban-rule-title">短時間の404探索</div>
+            <div class="ban-rule-example">同じURLの連打ではなく、異なる存在しないURLを高速に探すアクセス</div>
+            <div class="ban-rule-summary" id="shortSummary"></div>
+            <label class="form-label" for="short_window_sec">数える時間</label>
+            <div class="input-group mb-2">
+              <input type="number" class="form-control js-rule-input" id="short_window_sec" name="short_window_sec" min="0.1" step="0.1" value="{{ settings.short_window_sec }}" required>
+              <span class="input-group-text">秒以内</span>
+            </div>
+            <label class="form-label" for="short_threshold">BANする異なるURL数</label>
+            <div class="input-group">
+              <input type="number" class="form-control js-rule-input" id="short_threshold" name="short_threshold" min="1" step="1" value="{{ settings.short_threshold }}" required>
+              <span class="input-group-text">種類</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-4">
+          <div class="ban-rule ban-rule--secondary">
+            <div class="ban-rule-title">ゆっくり続く404探索</div>
+            <div class="ban-rule-example">短時間判定を避けながら、複数の存在しないURLを探し続けるアクセス</div>
+            <div class="ban-rule-summary" id="cumulativeSummary"></div>
+            <label class="form-label" for="ip_window_sec">数える時間</label>
+            <div class="input-group mb-2">
+              <input type="number" class="form-control js-rule-input" id="ip_window_sec" name="ip_window_sec" min="1" step="1" value="{{ settings.ip_window_sec }}" required>
+              <span class="input-group-text">秒以内</span>
+            </div>
+            <label class="form-label" for="ip_threshold">BANする異なるURL数</label>
+            <div class="input-group">
+              <input type="number" class="form-control js-rule-input" id="ip_threshold" name="ip_threshold" min="1" step="1" value="{{ settings.ip_threshold }}" required>
+              <span class="input-group-text">種類</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ban-section shadow-sm">
+      <h3 class="ban-section-title">3. 何時間遮断するか</h3>
+      <p class="ban-section-note">同じ種類の検出履歴を数え、段階的に遮断時間を延長します。</p>
+
+      <div class="table-responsive mb-4">
+        <table class="table table-sm table-bordered align-middle mb-0">
+          <thead class="table-light">
+            <tr><th>検出の種類</th><th>1回目</th><th>2回目</th><th>3回目</th><th>4回目</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>危険なURL探索</th>
+              <td data-duration-text="ban_duration_sec"></td>
+              <td data-duration-text="repeat_ban_duration_sec"></td>
+              <td colspan="2" class="text-danger fw-bold">永久BAN</td>
+            </tr>
+            <tr>
+              <th>一般404探索</th>
+              <td data-duration-text="ban_duration_sec"></td>
+              <td data-duration-text="repeat_ban_duration_sec"></td>
+              <td data-duration-text="generic_third_ban_duration_sec"></td>
+              <td class="text-danger fw-bold">永久BAN</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-md-6 col-lg-3">
+          <label class="form-label fw-bold" for="ban_duration_sec">初回の遮断時間</label>
+          <div class="input-group">
+            <input type="number" class="form-control js-duration-input" id="ban_duration_sec" name="ban_duration_sec" min="60" max="604800" value="{{ settings.ban_duration_sec }}" required>
+            <span class="input-group-text">秒</span>
+          </div>
+          <div class="ban-help">現在：<span class="ban-duration-preview" id="ban_duration_secPreview"></span></div>
+        </div>
+        <div class="col-md-6 col-lg-3">
+          <label class="form-label fw-bold" for="repeat_ban_duration_sec">再検出時の遮断時間</label>
+          <div class="input-group">
+            <input type="number" class="form-control js-duration-input" id="repeat_ban_duration_sec" name="repeat_ban_duration_sec" min="60" max="604800" value="{{ settings.repeat_ban_duration_sec }}" required>
+            <span class="input-group-text">秒</span>
+          </div>
+          <div class="ban-help">現在：<span class="ban-duration-preview" id="repeat_ban_duration_secPreview"></span></div>
+        </div>
+        <div class="col-md-6 col-lg-3">
+          <label class="form-label fw-bold" for="generic_third_ban_duration_sec">一般404・3回目の遮断時間</label>
+          <div class="input-group">
+            <input type="number" class="form-control js-duration-input" id="generic_third_ban_duration_sec" name="generic_third_ban_duration_sec" min="60" max="604800" value="{{ settings.generic_third_ban_duration_sec }}" required>
+            <span class="input-group-text">秒</span>
+          </div>
+          <div class="ban-help">現在：<span class="ban-duration-preview" id="generic_third_ban_duration_secPreview"></span></div>
+        </div>
+        <div class="col-md-6 col-lg-3">
+          <label class="form-label fw-bold" for="repeat_window_sec">再検出として扱う期間</label>
+          <div class="input-group">
+            <input type="number" class="form-control js-duration-input" id="repeat_window_sec" name="repeat_window_sec" min="3600" max="31536000" value="{{ settings.repeat_window_sec }}" required>
+            <span class="input-group-text">秒</span>
+          </div>
+          <div class="ban-help">現在：<span class="ban-duration-preview" id="repeat_window_secPreview"></span>以内の再検出を対象</div>
+        </div>
+      </div>
+
+      <details class="ban-advanced mt-4">
+        <summary>詳細設定を表示</summary>
+        <div class="row g-3 mt-1">
+          <div class="col-md-5">
+            <label class="form-label fw-bold" for="cooldown_sec">同じ判定の連続登録を抑える時間</label>
+            <div class="input-group">
+              <input type="number" class="form-control js-duration-input" id="cooldown_sec" name="cooldown_sec" min="1" value="{{ settings.cooldown_sec }}" required>
+              <span class="input-group-text">秒</span>
+            </div>
+            <div class="ban-help">同じIPのBAN記録が短時間に重複するのを防ぎます。現在：<span id="cooldown_secPreview"></span></div>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label fw-bold" for="ipv4_prefix">IPv4の遮断範囲</label>
+            <select class="form-select" id="ipv4_prefix" name="ipv4_prefix">
+              <option value="32" {% if settings.ipv4_prefix == 32 %}selected{% endif %}>/32：検出した1つのIPだけ（推奨）</option>
+              <option value="24" {% if settings.ipv4_prefix == 24 %}selected{% endif %}>/24：同じネットワーク最大256アドレス</option>
+            </select>
+            <div class="ban-help" id="ipv4PrefixHelp"></div>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label fw-bold" for="sensitive_permanent_threshold">危険探索を永久BANにする回数</label>
+            <div class="input-group">
+              <input type="number" class="form-control" id="sensitive_permanent_threshold" name="sensitive_permanent_threshold" min="3" max="100" value="{{ settings.sensitive_permanent_threshold }}" required>
+              <span class="input-group-text">回目</span>
+            </div>
+            <div class="ban-help">同じIP・危険探索の成功したBAN履歴だけを数えます。</div>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label fw-bold" for="generic_permanent_threshold">一般404を永久BANにする回数</label>
+            <div class="input-group">
+              <input type="number" class="form-control" id="generic_permanent_threshold" name="generic_permanent_threshold" min="4" max="100" value="{{ settings.generic_permanent_threshold }}" required>
+              <span class="input-group-text">回目</span>
+            </div>
+            <div class="ban-help">短時間判定と累積判定を合わせて数えます。</div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <div class="ban-sticky-actions d-flex flex-wrap gap-2 justify-content-end">
+      <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-secondary">変更せず戻る</a>
+      <button type="submit" class="btn btn-danger px-4">この内容で保存</button>
     </div>
   </form>
+
+  <section class="ban-section shadow-sm mt-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+      <h3 class="ban-section-title">自動永久BAN中のIP</h3>
+      <span class="badge text-bg-dark">{{ permanent_bans|length }}件</span>
+    </div>
+    <p class="ban-section-note">MFUの段階判定で永久BANになったIPだけを表示します。手動BANとは別管理です。</p>
+    {% if permanent_bans %}
+      <div class="row g-3">
+        {% for ban in permanent_bans %}
+          <div class="col-lg-6">
+            <div class="border rounded-3 p-3 h-100">
+              <div class="d-flex justify-content-between gap-2">
+                <div>
+                  <div class="fw-bold"><code>{{ ban.target }}</code></div>
+                  <div class="small text-muted">{{ ban.decision_at }}／{{ ban.offense_number }}回目</div>
+                </div>
+                <span class="badge {{ 'text-bg-danger' if ban.escalation_class == 'sensitive' else 'text-bg-warning' }} align-self-start">
+                  {{ '危険探索' if ban.escalation_class == 'sensitive' else '一般404' }}
+                </span>
+              </div>
+              <div class="small mt-2">理由：{{ ban.reason }}／異なるURL {{ ban.distinct_paths }}種類</div>
+              <form method="post" action="{{ url_for('admin_logs_404_ban_unban_permanent', decision_id=ban.id) }}" class="mt-3" onsubmit="return confirm('この自動永久BANを解除しますか？\n{{ ban.target }}');">
+                <button type="submit" class="btn btn-sm btn-outline-danger">永久BANを解除</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="alert alert-light border mb-0">現在、自動永久BAN中のIPはありません。</div>
+    {% endif %}
+  </section>
 </div>
+
+<script>
+(function () {
+  const get = (id) => document.getElementById(id);
+  const value = (id) => get(id)?.value || '0';
+
+  function formatDuration(raw) {
+    const seconds = Math.max(0, Number(raw) || 0);
+    if (seconds < 60) return `${seconds}秒`;
+    if (seconds % 86400 === 0) return `${seconds / 86400}日`;
+    if (seconds % 3600 === 0) return `${seconds / 3600}時間`;
+    if (seconds % 60 === 0) return `${seconds / 60}分`;
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return [days ? `${days}日` : '', hours ? `${hours}時間` : '', minutes ? `${minutes}分` : ''].filter(Boolean).join(' ') || `${seconds}秒`;
+  }
+
+  function updateRuleSummaries() {
+    get('sensitiveSummary').textContent = `${value('sensitive_window_sec')}秒以内に ${value('sensitive_threshold')}回でBAN`;
+    get('shortSummary').textContent = `${value('short_window_sec')}秒以内に異なるURL ${value('short_threshold')}種類でBAN`;
+    get('cumulativeSummary').textContent = `${value('ip_window_sec')}秒以内に異なるURL ${value('ip_threshold')}種類でBAN`;
+  }
+
+  function updateDurations() {
+    document.querySelectorAll('.js-duration-input').forEach((input) => {
+      const preview = get(`${input.id}Preview`);
+      if (preview) preview.textContent = formatDuration(input.value);
+    });
+    document.querySelectorAll('[data-duration-text]').forEach((node) => {
+      const input = get(node.dataset.durationText);
+      if (input) node.textContent = formatDuration(input.value);
+    });
+  }
+
+  function updateModeHelp() {
+    const observing = value('mode') === 'observe';
+    get('observeUntilGroup').style.opacity = observing ? '1' : '.55';
+    get('observe_until').disabled = !observing;
+  }
+
+  function updatePrefixHelp() {
+    const broad = value('ipv4_prefix') === '24';
+    const help = get('ipv4PrefixHelp');
+    help.className = broad ? 'ban-help text-danger fw-bold' : 'ban-help text-success';
+    help.textContent = broad
+      ? '注意：関係のない利用者を含む最大256アドレスをまとめて遮断します。'
+      : '検出したIPだけを遮断するため、誤遮断の影響を最小限にできます。';
+  }
+
+  document.querySelectorAll('.js-rule-input').forEach((input) => input.addEventListener('input', updateRuleSummaries));
+  document.querySelectorAll('.js-duration-input').forEach((input) => input.addEventListener('input', updateDurations));
+  get('mode').addEventListener('change', updateModeHelp);
+  get('ipv4_prefix').addEventListener('change', updatePrefixHelp);
+
+  updateRuleSummaries();
+  updateDurations();
+  updateModeHelp();
+  updatePrefixHelp();
+})();
+</script>
 {% endblock %}

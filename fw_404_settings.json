@@ -1,8 +1,15 @@
 {
-  "short_window_sec": 5.0,
-  "short_threshold": 4,
-  "ip_window_sec": 120.0,
-  "ip_threshold": 10,
+  "mode": "enforce",
+  "observe_until": "",
+  "sensitive_window_sec": 60.0,
+  "sensitive_threshold": 2,
+  "short_window_sec": 20.0,
+  "short_threshold": 5,
+  "ip_window_sec": 300.0,
+  "ip_threshold": 20,
   "cooldown_sec": 120,
+  "ban_duration_sec": 3600,
+  "repeat_ban_duration_sec": 86400,
+  "repeat_window_sec": 2592000,
   "ipv4_prefix": 32
 }

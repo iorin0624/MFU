@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+from collections import defaultdict
+
+from flask import flash, redirect, render_template, url_for
+
+from app import admin_required
+from app.tdr import tdr_bp
+
+from .repository import get_active_snapshot, get_recent_runs
+from .service import RefreshAlreadyRunning, refresh_popcorn_data
+
+
+def _comparison(flavor_rows: list[dict]) -> list[dict]:
+    parks_by_flavor: dict[str, set[str]] = defaultdict(set)
+    types_by_flavor: dict[str, set[str]] = defaultdict(set)
+    for row in flavor_rows:
+        parks_by_flavor[row["name"]].add(row["park"])
+        types_by_flavor[row["name"]].add(row.get("popcorn_type") or "regular")
+    return [
+        {
+            "name": name,
+            "tdl": "tdl" in parks_by_flavor[name],
+            "tds": "tds" in parks_by_flavor[name],
+            "popcorn_type": "bb" if types_by_flavor[name] == {"bb"} else "regular",
+        }
+        for name in sorted(parks_by_flavor)
+    ]
+
+
+def _flavor_options(data: dict) -> list[dict[str, str]]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        name = str(value or "").strip()
+        if not name or name in seen:
+            return
+        seen.add(name)
+        names.append(name)
+
+    for row in data.get("flavors", []):
+        add(row.get("name"))
+    for product in data.get("products", []):
+        for offer in product.get("offers", []):
+            add(offer.get("flavor"))
+
+    return [
+        {
+            "value": name,
+            "label": name[:-1] if name.endswith("味") else name,
+        }
+        for name in names
+    ]
+
+
+@tdr_bp.get("/popcorn/")
+def popcorn_public():
+    snapshot = get_active_snapshot()
+    data = snapshot["data"] if snapshot else {"flavors": [], "products": [], "summary": {}}
+    areas = sorted(
+        {
+            offer.get("area", "")
+            for row in data.get("flavors", [])
+            for offer in row.get("offers", [])
+            if offer.get("area")
+        }
+    )
+    return render_template(
+        "tdr/popcorn/index.html",
+        snapshot=snapshot,
+        data=data,
+        areas=areas,
+        flavor_options=_flavor_options(data),
+        comparison=_comparison(data.get("flavors", [])),
+    )
+
+
+@tdr_bp.get("/admin/popcorn/")
+@admin_required
+def popcorn_admin():
+    return render_template(
+        "tdr/popcorn/admin.html",
+        snapshot=get_active_snapshot(),
+        runs=get_recent_runs(),
+    )
+
+
+@tdr_bp.post("/admin/popcorn/refresh")
+@admin_required
+def popcorn_admin_refresh():
+    try:
+        result = refresh_popcorn_data()
+        counts = result["counts"]
+        change_text = "新しいスナップショットを公開しました" if result["changed"] else "内容に変更はありません"
+        flash(
+            f"取得成功：味 {counts.get('flavor_count', 0)}件、商品 {counts.get('product_count', 0)}件。{change_text}。",
+            "success",
+        )
+    except RefreshAlreadyRunning as exc:
+        flash(str(exc), "warning")
+    except Exception as exc:
+        flash(f"取得に失敗しました。公開中のデータは変更していません：{exc}", "danger")
+    return redirect(url_for("tdr.popcorn_admin"))

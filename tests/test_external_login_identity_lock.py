@@ -10,6 +10,7 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(identity_lock)
 
 is_deleted_identity_locked = identity_lock.is_deleted_identity_locked
+get_deleted_identity_lock = identity_lock.get_deleted_identity_lock
 lock_deleted_identity = identity_lock.lock_deleted_identity
 social_identity_hash = identity_lock.social_identity_hash
 
@@ -50,10 +51,22 @@ class DeletedIdentityLockTest(unittest.TestCase):
         self.assertEqual(params[2], 42)
 
     def test_lookup_returns_cursor_result(self):
-        locked = FakeCursor(row=(1,))
+        locked = FakeCursor(row=(42,))
         self.assertTrue(is_deleted_identity_locked(locked, provider="line", social_id="U123"))
         unlocked = FakeCursor(row=None)
         self.assertFalse(is_deleted_identity_locked(unlocked, provider="line", social_id="U456"))
+
+    def test_lookup_returns_original_user_id(self):
+        locked = FakeCursor(row=(42,))
+        self.assertEqual(
+            get_deleted_identity_lock(locked, provider="line", social_id="U123"),
+            (True, 42),
+        )
+        unlocked = FakeCursor(row=None)
+        self.assertEqual(
+            get_deleted_identity_lock(unlocked, provider="line", social_id="U456"),
+            (False, None),
+        )
 
 
 if __name__ == "__main__":

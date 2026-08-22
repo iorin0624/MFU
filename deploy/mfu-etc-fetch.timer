@@ -1,0 +1,10 @@
+[Unit]
+Description=Fetch ETC usage certificates every two hours
+
+[Timer]
+OnCalendar=*-*-* 00/2:10:00 Asia/Tokyo
+Persistent=true
+Unit=mfu-etc-fetch.service
+
+[Install]
+WantedBy=timers.target

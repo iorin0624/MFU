@@ -288,6 +288,7 @@ def _send_notice(
                 upload_id=upload.get("uuid") or "",
                 message=f"{subject}\n\n{body}",
                 context_label="[upload-expiry]",
+                feature_key="upload_expiry",
             )
             return (True, None) if ok else (False, "Discord notification failed")
     except Exception as exc:

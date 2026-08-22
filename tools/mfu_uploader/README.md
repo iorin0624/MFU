@@ -2,6 +2,10 @@
 
 Windows/macOS 共通の MFU アップローダーです。
 
+- Version: `1.10.1`
+- Release series: `v10`
+- Windows/macOS は同じ `main.py` と `MFUUploader.spec` からビルドします。
+
 ## 概要
 
 - Python / PySide6 製
@@ -23,7 +27,7 @@ build_windows.bat
 Output:
 
 ```text
-dist\MFUUploader\MFUUploader.exe
+dist_v10\MFUUploader\MFUUploader.exe
 ```
 
 macOS:
@@ -36,8 +40,11 @@ chmod +x build_macos.sh
 Output:
 
 ```text
-dist/MFUUploader.app
+dist_v10/MFUUploader.app
 ```
+
+タイトルバーとウィンドウ右下にアプリのバージョンが表示されます。
+Windows のファイル情報と macOS のアプリ情報にも同じバージョンが設定されます。
 
 ## ImageMagick
 
@@ -57,9 +64,9 @@ PNG・TIFF・HEIC など、JPEG/JPG 以外のサムネイル生成には `magick
 
 - `自動（LAN優先）`: アップロード開始前に LAN API へ認証付き接続確認を行い、接続できなければ公開URLへ切り替えます。
 - `公開URL`: `API Base URL` を使用します。
-- `LAN直接`: `LAN API URL` だけを使用し、接続できない場合は開始しません。
+- `LAN直接`: 専用LAN API（標準は `http://192.168.103.16:8081`）だけを使用し、接続できない場合は開始しません。
 
-デフォルトの LAN API URL は `http://192.168.103.16:8080` です。
+デフォルトの LAN API URL は `http://192.168.103.16:8081` です。
 LAN API が HTTP の場合、信頼できる LAN 内での使用を前提とします。
 
 ## Upload Modes

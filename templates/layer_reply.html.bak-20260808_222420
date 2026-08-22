@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>折り返しアップロード確認</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- baguetteBox.js -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 2em;
+    }
+
+    .container {
+      background: white;
+      padding: 2em;
+      max-width: 800px;
+      margin: auto;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+      margin-top: 0;
+    }
+
+    .info-box {
+      margin-bottom: 1.5em;
+      line-height: 1.6;
+    }
+
+    .gallery {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    .gallery a img {
+      width: 120px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      transition: transform 0.2s;
+    }
+
+    .gallery a:hover img {
+      transform: scale(1.05);
+    }
+
+    .link-box {
+      margin-top: 2em;
+      background: #f9f9f9;
+      border: 1px solid #ccc;
+      padding: 1em;
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      word-break: break-all;
+    }
+
+    .link-box code {
+      font-family: monospace;
+      font-size: 0.95em;
+    }
+
+    .link-box button {
+      padding: 0.4em 1em;
+      font-size: 0.9em;
+      border: none;
+      border-radius: 4px;
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+    }
+
+    .link-box button:hover {
+      background-color: #0056b3;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>✅ 折り返しアップロードが完了しました</h2>
+
+    <div class="info-box">
+      <p><strong>タイトル:</strong> {{ info.title }}</p>
+      <p><strong>コメント:</strong> {{ info.comment or '（なし）' }}</p>
+      <p><strong>アップロード日時:</strong> {{ info.created }}</p>
+    </div>
+
+    <h5>📸 アップロードされた写真</h5>
+    <div class="gallery">
+      {% for fname in info.filenames %}
+        <a href="/uploads/layer_uploads/{{ uuid }}/{{ reply_uuid }}/original/{{ fname }}"
+           data-caption="{{ fname }}">
+          <img src="/uploads/layer_uploads/{{ uuid }}/{{ reply_uuid }}/original/{{ fname }}"
+               alt="{{ fname }}">
+        </a>
+      {% endfor %}
+    </div>
+
+    <div class="link-box" style="margin-top: 2em;">
+      <code id="replyLink">https://mfu.iori0624.jp/layer_reply/{{ reply_uuid }}</code>
+      <button onclick="copyReplyLink()">📋 コピー</button>
+    </div>
+  </div>
+
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      baguetteBox.run('.gallery', {
+        animation: 'fadeIn',
+        noScrollbars: true
+      });
+    });
+
+    function copyReplyLink() {
+      const text = document.getElementById("replyLink").innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        alert("✅ リンクをコピーしました！");
+      }).catch(err => {
+        alert("コピーに失敗しました: " + err);
+      });
+    }
+  </script>
+</body>
+</html>

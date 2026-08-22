@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>東京ディズニーリゾート チケット価格一覧</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 14mm 12mm 15mm;
+      @bottom-left {
+        content: "MFU チケット価格情報";
+        color: #667085;
+        font-size: 8pt;
+      }
+      @bottom-right {
+        content: counter(page) " / " counter(pages);
+        color: #667085;
+        font-size: 8pt;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172033; font-size: 9.5pt; line-height: 1.45; }
+    header {
+      border-bottom: 3px solid #1f4b78;
+      margin-bottom: 6mm;
+      padding-bottom: 3mm;
+    }
+    h1 { margin: 0 0 1.5mm; color: #123a62; font-size: 20pt; line-height: 1.25; }
+    .meta { color: #526173; display: flex; gap: 8mm; font-size: 9pt; }
+    .warning {
+      background: #fff8e1;
+      border: 1px solid #f0c36d;
+      border-radius: 2mm;
+      margin: 0 0 4mm;
+      padding: 2.5mm 3mm;
+    }
+    .warning strong { color: #8a4b00; }
+    .warning ul { margin: 1mm 0 0 5mm; padding: 0; }
+    table { border-collapse: collapse; table-layout: fixed; width: 100%; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
+    th {
+      background: #1f4b78;
+      border: 1px solid #1f4b78;
+      color: #fff;
+      font-size: 9pt;
+      padding: 2.4mm 2mm;
+      text-align: left;
+    }
+    td {
+      border: 1px solid #ced7e2;
+      padding: 2.2mm 2mm;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    tbody tr:nth-child(even) td { background: #f4f7fa; }
+    .col-title { width: 43%; }
+    .col-price { width: 13%; text-align: right; white-space: nowrap; }
+    .col-expiry { width: 17%; white-space: nowrap; }
+    .col-shop { width: 27%; }
+    .title { font-weight: 700; }
+    .shop-area { color: #667085; font-size: 8.2pt; margin-top: 1mm; }
+    a { color: #135ea8; text-decoration: underline; }
+    .notes { color: #5f6b7a; font-size: 8.3pt; margin-top: 4mm; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>東京ディズニーリゾート チケット価格一覧</h1>
+    <div class="meta">
+      <span>取得日時: {{ payload.fetched_at }}</span>
+      <span>掲載件数: {{ payload.count }}件</span>
+      <span>取得元: チケット大黒屋・格安チケットコム</span>
+    </div>
+  </header>
+
+  {% if payload.warnings %}
+    <div class="warning">
+      <strong>取得時の注意</strong>
+      <ul>{% for warning in payload.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+
+  <table>
+    <thead>
+      <tr>
+        <th class="col-title">商品名</th>
+        <th class="col-price">価格</th>
+        <th class="col-expiry">有効期限</th>
+        <th class="col-shop">取扱店</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in payload["items"] %}
+        <tr>
+          <td class="col-title">
+            <span class="title">{{ item.title }}</span>
+            {% if item.detail_url %}<br><a href="{{ item.detail_url }}">商品詳細を確認</a>{% endif %}
+          </td>
+          <td class="col-price">
+            {% if item.price is not none %}¥{{ "{:,}".format(item.price) }}{% else %}不明{% endif %}
+          </td>
+          <td class="col-expiry">{{ item.expiry_display or "不明" }}</td>
+          <td class="col-shop">
+            {% if item.shop_url %}
+              <a href="{{ item.shop_url }}">{{ item.shop_name or "不明" }}</a>
+            {% else %}
+              {{ item.shop_name or "不明" }}
+            {% endif %}
+            {% if item.shop_area %}<div class="shop-area">{{ item.shop_area }}</div>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="notes">
+    ※価格・在庫は変動します。購入前に各店舗ページで最新情報をご確認ください。<br>
+    ※本資料は公開ページの情報を一覧化した補助資料で、購入可否や価格を保証するものではありません。
+  </div>
+</body>
+</html>

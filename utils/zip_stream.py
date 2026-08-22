@@ -15,7 +15,21 @@ from werkzeug.utils import safe_join
 from flask import (
     Blueprint, current_app, request, jsonify, send_file, after_this_request, session
 )
-from app.utils.upload_security import can_access_upload_record, fetch_upload_access_record, has_view_auth, resolve_upload_subpath
+from app.utils.upload_security import (
+    can_access_upload_record,
+    current_upload_visibility_version,
+    fetch_upload_access_record,
+    fetch_upload_file_record,
+    fetch_upload_thumbnail_source,
+    has_view_auth,
+    resolve_upload_subpath,
+    upload_file_is_hidden,
+)
+from app.utils.upload_download_history import (
+    record_upload_download,
+    request_ip as download_request_ip,
+    track_upload_download_response,
+)
 
 # ------------------------------------------------------------
 # Blueprint（他モジュールで使っていればそのまま生かす）
@@ -31,6 +45,9 @@ def _cfg_storage_root() -> str:
 def _cfg_albums_root() -> str:
     # （従来の単一ルート）アルバム保存先
     return current_app.config.get("ALBUMS_ROOT", "/mnt/mfu/mfu_albums")
+
+def _cfg_album_movies_root() -> str:
+    return current_app.config.get("ALBUM_MOVIES_ROOT", "/mnt/mfu/mfu_album_movie")
 
 def _cfg_album_multi_roots() -> List[str]:
     """
@@ -202,6 +219,29 @@ def _resolve_relpath_internal(rel: str) -> Optional[str]:
         return None
 
     rel = rel.lstrip("/").replace("\\", "/")
+
+    # --- album_movies（動画原本/変換済み） ---
+    if rel.startswith("album_movies/"):
+        parts = rel.split("/", 4)
+        if len(parts) != 5:
+            return None
+        _, album_id, child_id, kind, fname = parts
+        if not (
+            _UUID4_RE.match(album_id)
+            and _UUID4_RE.match(child_id)
+            and kind in {"original", "encoded"}
+            and fname
+        ):
+            return None
+        base = _cfg_album_movies_root()
+        full = safe_join(base, album_id, child_id, kind, fname)
+        if not full:
+            return None
+        full_real = os.path.realpath(full)
+        base_real = os.path.realpath(base)
+        if full_real.startswith(base_real + os.sep) and os.path.isfile(full_real):
+            return full_real
+        return None
 
     # --- albums（SSD/HDD 両対応） ---
     if rel.startswith("albums/"):
@@ -479,11 +519,28 @@ def _job_access_allowed(progress: Optional[dict]) -> bool:
     if access_type == "album":
         return all(_has_album_access(str(album_id)) for album_id in access.get("album_ids") or [])
     if access_type == "upload":
+        visibility_versions = access.get("visibility_versions") or {}
         for upload_id in access.get("upload_ids") or []:
             upload = fetch_upload_access_record(str(upload_id))
             if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
                 return False
+            current_version = current_upload_visibility_version(upload)
+            expected_version = visibility_versions.get(str(upload_id))
+            if expected_version is None:
+                # Legacy prepared ZIPs are safe only before the first visibility change.
+                if current_version != 0:
+                    return False
+            else:
+                try:
+                    if int(expected_version) != current_version:
+                        return False
+                except (TypeError, ValueError):
+                    return False
         return True
+    if access_type == "layer_upload":
+        username = str(session.get("user") or "")
+        owner = str(access.get("username") or "")
+        return bool(username and (username == "admin" or username == owner))
     return True
 
 
@@ -492,6 +549,8 @@ def _resolve_zip_request_paths(relpaths: list) -> tuple[list[str], list[str], di
     bad_paths = []
     album_ids: set[str] = set()
     upload_ids: set[str] = set()
+    upload_versions: dict[str, int] = {}
+    upload_history: dict[str, dict] = {}
     for rel in relpaths:
         rel_value = str(rel).lstrip("/").replace("\\", "/")
         upload_ref = resolve_upload_subpath(rel_value, allow_zip=True)
@@ -499,8 +558,19 @@ def _resolve_zip_request_paths(relpaths: list) -> tuple[list[str], list[str], di
             upload = fetch_upload_access_record(upload_ref["uuid"])
             if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
                 raise PermissionError(str(rel))
+            if upload_ref["kind"] == "original":
+                file_row = fetch_upload_file_record(upload["id"], upload_ref["filename"])
+            elif upload_ref["kind"] == "thumb":
+                file_row = fetch_upload_thumbnail_source(upload["id"], upload_ref["filename"])
+            else:
+                file_row = None
+            if file_row is not None and upload_file_is_hidden(file_row):
+                raise PermissionError(str(rel))
+            if upload_ref["kind"] in {"original", "thumb"} and file_row is None:
+                raise PermissionError(str(rel))
             upload_ids.add(upload_ref["uuid"])
-        elif rel_value.startswith("albums/"):
+            upload_versions[upload_ref["uuid"]] = current_upload_visibility_version(upload)
+        elif rel_value.startswith("albums/") or rel_value.startswith("album_movies/"):
             parts = rel_value.split("/", 3)
             if len(parts) != 4 or not _has_album_access(parts[1]):
                 raise PermissionError(str(rel))
@@ -510,10 +580,30 @@ def _resolve_zip_request_paths(relpaths: list) -> tuple[list[str], list[str], di
             bad_paths.append(rel)
             continue
         abs_list.append(p)
+        if upload_ref and upload_ref["kind"] == "original" and file_row is not None:
+            history = upload_history.setdefault(
+                upload_ref["uuid"],
+                {"upload_id": int(upload["id"]), "files": []},
+            )
+            history["files"].append(
+                {
+                    "file_id": int(file_row["id"]),
+                    "filename": str(file_row["filename"]),
+                }
+            )
     if album_ids:
         access = {"type": "album", "album_ids": sorted(album_ids)}
     elif upload_ids:
-        access = {"type": "upload", "upload_ids": sorted(upload_ids)}
+        access = {
+            "type": "upload",
+            "upload_ids": sorted(upload_ids),
+            "visibility_versions": upload_versions,
+        }
+        if len(upload_ids) == 1:
+            only_uuid = next(iter(upload_ids))
+            history = upload_history.get(only_uuid)
+            if history and history.get("files"):
+                access["download_history"] = history
     else:
         access = {"type": "bearer"}
     return abs_list, bad_paths, access
@@ -712,7 +802,25 @@ def api_zip_download(key: str):
     if not _job_access_allowed(progress):
         return jsonify({"ok": False, "error": "forbidden"}), 403
     download_name = (progress or {}).get("download_name") or f"{safe_key}.zip"
-    return send_file(
+    history_event_id = None
+    history = ((progress or {}).get("access") or {}).get("download_history") or {}
+    if request.method == "GET" and not request.headers.get("Range") and history.get("files"):
+        try:
+            history_event_id = record_upload_download(
+                upload_id=int(history["upload_id"]),
+                event_key=f"selected-zip:{safe_key}",
+                download_kind="selected_zip",
+                ip_address=download_request_ip(request),
+                user_agent=request.headers.get("User-Agent", ""),
+                files=history["files"],
+            )
+        except Exception:
+            current_app.logger.exception(
+                "selected ZIP download history insert failed key=%s",
+                safe_key,
+            )
+
+    response = send_file(
         path,
         as_attachment=True,
         download_name=download_name,
@@ -721,6 +829,11 @@ def api_zip_download(key: str):
         max_age=0,
         etag=False,
         last_modified=datetime.now(timezone.utc),
+    )
+    return track_upload_download_response(
+        response,
+        history_event_id,
+        logger=current_app._get_current_object().logger,
     )
 
 @zip_api.route("/api/zip-progress", methods=["GET"])

@@ -45,11 +45,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from version import RELEASE_SERIES, __version__
+
 
 APP_NAME = "MFU Uploader"
+APP_VERSION = __version__
+WINDOW_TITLE = f"{APP_NAME} v{APP_VERSION}"
 DEFAULT_BASE_URL = "https://mfu.iori0624.jp"
-DEFAULT_LAN_BASE_URL = "http://192.168.103.16:8080"
-USER_AGENT = "MFUUploader/1.1"
+DEFAULT_LAN_BASE_URL = "http://192.168.103.16:8081"
+LEGACY_LAN_BASE_URL = "http://192.168.103.16:8080"
+USER_AGENT = f"MFUUploader/{APP_VERSION}"
 DEFAULT_EXTENSIONS = ".jpg,.jpeg,.png,.webp,.heic,.tif,.tiff"
 
 
@@ -925,6 +930,13 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.config = load_config()
+        configured_lan_url = normalize_base_url(
+            str(self.config.get("lan_base_url") or DEFAULT_LAN_BASE_URL)
+        )
+        if configured_lan_url == LEGACY_LAN_BASE_URL:
+            configured_lan_url = DEFAULT_LAN_BASE_URL
+            self.config["lan_base_url"] = configured_lan_url
+            save_config(self.config)
         self.files: list[Path] = []
         self.login_thread: QThread | None = None
         self.login_worker: LoginWorker | None = None
@@ -937,7 +949,7 @@ class MainWindow(QMainWindow):
         self.monitor_py_thread: threading.Thread | None = None
         self.monitor_worker: MonitorWorker | None = None
         self.realtime_uuid = ""
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(WINDOW_TITLE)
         self.resize(980, 780)
         self.setAcceptDrops(True)
 
@@ -949,7 +961,7 @@ class MainWindow(QMainWindow):
         route_index = self.upload_route_box.findData(str(self.config.get("upload_route") or "auto"))
         self.upload_route_box.setCurrentIndex(max(0, route_index))
         self.lan_base_url = QLineEdit(
-            normalize_base_url(str(self.config.get("lan_base_url") or DEFAULT_LAN_BASE_URL))
+            configured_lan_url
         )
         self.user_label = QLabel("未ログイン")
         self.login_btn = QPushButton("Chromeでログイン")
@@ -968,6 +980,8 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
+        self.version_label = QLabel(f"Version {APP_VERSION} ({RELEASE_SERIES})")
+        self.version_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.batch_radio = QRadioButton("一括アップロード")
         self.realtime_radio = QRadioButton("リアルタイム送信")
@@ -1086,6 +1100,7 @@ class MainWindow(QMainWindow):
         run.addWidget(self.progress, 1)
         layout.addLayout(run)
         layout.addWidget(self.log_box, 1)
+        layout.addWidget(self.version_label)
 
     def _connect(self) -> None:
         self.login_btn.clicked.connect(self.login)
@@ -1614,6 +1629,7 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     window = MainWindow()
     window.show()
     return app.exec()

@@ -1,0 +1,16 @@
+--- etc/asterisk/extensions_custom.conf
++++ etc/asterisk/extensions_custom.conf
+@@ -1,6 +1,7 @@
+ ; ====== Brastel 向け：余計なSIPヘッダを削るフック ======
+ [macro-dialout-trunk-predial-hook]
+ exten => s,1,NoOp(*** Strip IMS-style SIP headers for Brastel ***)
++ same => n,GosubIf($["${CHANNEL(endpoint)}"="10610"]?mfu-rtp-diagnostics-attach,s,1(${FILTER(0-9*#+,${DIAL_NUMBER})},outbound))
+ 
+ ; 必要なら特定トランクだけに限定（DIAL_TRUNK=1 が Brastel の場合）
+ ; 例：アウトバウンドルートID=1 が Brastel ならこのままでOK
+@@ -86,3 +87,5 @@
+  same => n,TrySystem(/usr/bin/nohup /usr/bin/python3 /var/lib/asterisk/bin/mfu_blacklist_cdr.py '${NORMALIZED_CID}' '${MFU_BLACKLIST_NAME_B64}' '${MFU_CDR_DID}' '${MFU_CDR_ID}' </dev/null >/dev/null 2>&1 &)
+  same => n,Hangup(21)
+ ; END CALLER ID WHITELIST
++
++#include mfu_rtp_diagnostics.conf

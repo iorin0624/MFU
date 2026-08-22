@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from app.mail_filters import service
+from app.mail_filters.sieve import (
+    SieveRuleError,
+    generate_script,
+    parse_script,
+    script_hash,
+)
+
+
+ROUND_CUBE_SCRIPT = """\
+require ["fileinto","imap4flags"];
+# rule:日本語フォルダー
+if allof (header :contains "Subject" "予約", address :is "From" "sender@example.jp")
+{
+\tfileinto "INBOX.予約受付";
+\tstop;
+}
+# rule:既読にする
+if header :contains "Subject" "お知らせ"
+{
+\taddflag "\\\\Seen";
+\tkeep;
+}
+"""
+
+
+def _load_agent_module():
+    path = Path(__file__).resolve().parents[1] / "deploy" / "mfu_mail_filter_agent.py"
+    spec = importlib.util.spec_from_file_location("mfu_mail_filter_agent_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_roundcube_rules_round_trip_with_japanese_folder():
+    document = parse_script(ROUND_CUBE_SCRIPT)
+
+    assert len(document["rules"]) == 2
+    assert document["rules"][0]["actions"][0]["value"] == "INBOX.予約受付"
+    assert document["rules"][1]["actions"][0]["type"] == "addflag"
+
+    generated = generate_script(document)
+    assert 'fileinto "INBOX.予約受付";' in generated
+    assert 'addflag "\\\\\\\\Seen";' in generated
+    assert '"fileinto"' in generated
+    assert generated.endswith("\n")
+
+
+def test_unsupported_notify_rule_is_preserved_as_raw_sieve():
+    source = """\
+require ["enotify"];
+# rule:通知
+if header :contains "Subject" "重要"
+{
+\tnotify :method "mailto" :options ["admin@example.jp"] "通知";
+}
+"""
+    document = parse_script(source)
+
+    assert document["rules"][0]["raw"]
+    generated = generate_script(document)
+    assert 'notify :method "mailto"' in generated
+
+
+def test_unmarked_existing_sieve_is_not_erased():
+    source = 'require ["fileinto"];\nif true { fileinto "INBOX.保存"; }\n'
+
+    document = parse_script(source)
+    generated = generate_script(document)
+
+    assert document["unparsed_script"] == source
+    assert generated == source
+
+
+def test_disabled_rule_is_kept_in_document_but_not_generated():
+    document = parse_script(ROUND_CUBE_SCRIPT)
+    document["rules"][0]["enabled"] = False
+
+    generated = generate_script(document)
+
+    assert document["rules"][0]["name"] == "日本語フォルダー"
+    assert "INBOX.予約受付" not in generated
+    assert "既読にする" in generated
+
+
+def test_raw_external_execute_is_rejected():
+    document = {
+        "requirements": [],
+        "rules": [
+            {
+                "name": "危険なルール",
+                "enabled": True,
+                "raw": '# rule:危険なルール\nexecute :program "touch" ["x"];\n',
+            }
+        ],
+    }
+
+    with pytest.raises(SieveRuleError, match="外部コマンド"):
+        generate_script(document)
+
+
+def test_agent_normalizes_empty_script_to_stable_deploy_source():
+    agent = _load_agent_module()
+
+    normalized = agent._normalize_script("")
+
+    assert normalized == "# MFU: no active filters\n"
+    assert script_hash(normalized) == script_hash(agent._normalize_script(normalized))
+
+
+def test_agent_rejects_execute_extension():
+    agent = _load_agent_module()
+
+    with pytest.raises(agent.AgentError, match="外部コマンド"):
+        agent._normalize_script('require ["vnd.dovecot.execute"];\n')
+
+
+def test_agent_excludes_dovecot_internal_mailboxes(monkeypatch):
+    agent = _load_agent_module()
+
+    def fake_run(command, **_kwargs):
+        if command[1:3] == ["mailbox", "list"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="INBOX\nINBOX.予約受付\ndovecot.lda-dupes.locks\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="uidvalidity=1\n", stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    assert agent._folder_list("test@example.jp") == ["INBOX", "INBOX.予約受付"]
+
+
+def test_ssh_agent_accepts_last_json_line_and_preserves_japanese():
+    completed = SimpleNamespace(
+        returncode=0,
+        stdout='notice\n{"ok":true,"folders":["INBOX","INBOX.予約受付"]}\n',
+        stderr="",
+    )
+    with patch("app.mail_filters.service.subprocess.run", return_value=completed) as run:
+        result = service.call_agent({"action": "get", "mailbox": "test@example.jp"})
+
+    assert result["folders"][1] == "INBOX.予約受付"
+    sent = json.loads(run.call_args.kwargs["input"])
+    assert sent["mailbox"] == "test@example.jp"
+
+
+def test_mail_filter_route_is_csrf_protected_and_registered():
+    app_init = (Path(__file__).resolve().parents[1] / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"/admin/mail-filters"' in app_init
+    assert "app.register_blueprint(mail_filters_bp)" in app_init
+
+
+def test_mail_filter_editor_has_flag_choices_and_action_reordering():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "mail_filters"
+        / "templates"
+        / "mail_filters"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+
+    for flag in ("\\\\Seen", "\\\\Flagged", "\\\\Answered", "\\\\Deleted", "\\\\Draft"):
+        assert flag in template
+    assert "move-action-up" in template
+    assert "move-action-down" in template
+    assert "function moveAction(" in template
+
+
+def test_condition_values_textarea_expands_to_show_all_lines():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "mail_filters"
+        / "templates"
+        / "mail_filters"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert ".cond-values{overflow-y:hidden;resize:none}" in template
+    assert "const resizeConditionTextarea = (element) =>" in template
+    assert "element.scrollHeight" in template
+    assert "resizeConditionTextarea(el);" in template
+    assert 'window.addEventListener("resize"' in template

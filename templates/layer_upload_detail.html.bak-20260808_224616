@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}レイヤーアップロード詳細{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <h2 class="mb-0">レイヤーアップロード詳細</h2>
+    <a href="{{ url_for('upload_history.layer_upload_list') }}" class="btn btn-outline-secondary btn-sm">一覧へ戻る</a>
+  </div>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <div class="row g-2">
+        <div class="col-md-6"><strong>UUID:</strong> {{ upload.uuid }}</div>
+        <div class="col-md-6"><strong>ユーザー名:</strong> {{ upload.username }}</div>
+        <div class="col-md-6"><strong>タイトル:</strong> {{ upload.title }}</div>
+        <div class="col-md-6"><strong>撮影日:</strong> {{ upload.date }}</div>
+      </div>
+    </div>
+  </div>
+
+  {% if groups %}
+    <div class="d-grid gap-3">
+      {% for group in groups %}
+      <section class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <div>
+            <strong>返信UUID:</strong> {{ group.reply_uuid }}
+            <span class="text-muted ms-2">画像 {{ group.images|length }} 枚</span>
+            <div class="small text-muted mt-1">
+              投稿日時: {{ group.posted_at.strftime('%Y-%m-%d %H:%M:%S') if group.posted_at else '不明' }}
+            </div>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            {% for zip_name in group.zips %}
+              <a href="{{ url_for('upload_history.layer_upload_zip', uuid=upload.uuid, reply_uuid=group.folder_name, filename=zip_name) }}"
+                 class="btn btn-sm btn-success">ZIPダウンロード</a>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <div class="fw-semibold mb-1">コメント</div>
+            <div class="border rounded bg-light p-3" style="white-space: pre-wrap; overflow-wrap: anywhere;">{{ group.comment if group.comment else '（コメントなし）' }}</div>
+          </div>
+          {% if group.images %}
+          <div class="row g-2">
+            {% for image_name in group.images %}
+            <div class="col-6 col-sm-4 col-md-3 col-lg-2">
+              <a href="{{ url_for('upload_history.layer_upload_image', uuid=upload.uuid, reply_uuid=group.folder_name, filename=image_name) }}" target="_blank" rel="noopener" class="text-decoration-none">
+                <img src="{{ url_for('upload_history.layer_upload_image', uuid=upload.uuid, reply_uuid=group.folder_name, filename=image_name) }}"
+                     alt="{{ image_name }}"
+                     class="img-fluid rounded border w-100"
+                     style="aspect-ratio: 1 / 1; object-fit: cover;">
+                <small class="d-block text-muted mt-1 text-truncate">{{ image_name }}</small>
+              </a>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <p class="text-muted mb-0">このフォルダに表示可能な画像はありません。</p>
+          {% endif %}
+        </div>
+      </section>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="alert alert-secondary">このアップロードに紐づくレイヤーアップロードはまだありません。</div>
+  {% endif %}
+</div>
+{% endblock %}

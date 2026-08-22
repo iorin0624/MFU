@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}関東の鉄道運行情報{% endblock %}
+{% block head_extra %}
+<meta name="robots" content="noindex,nofollow,noarchive">
+<style>
+  :root {
+    --train-bg: #f3f6fa;
+    --train-panel: #fff;
+    --train-text: #172033;
+    --train-muted: #687386;
+    --train-border: #dbe2ea;
+    --train-shadow: 0 10px 28px rgba(26, 44, 72, .08);
+  }
+  body { background: var(--train-bg); color: var(--train-text); }
+  .train-page { max-width: 1180px; margin: 0 auto 3rem; }
+  .train-hero {
+    padding: 1.35rem 1.5rem;
+    border: 1px solid #cdd9e7;
+    border-radius: 1.1rem;
+    background: linear-gradient(135deg, #ffffff 0%, #eaf4ff 100%);
+    box-shadow: var(--train-shadow);
+  }
+  .train-title { font-weight: 800; letter-spacing: .01em; }
+  .train-title-mark {
+    display: inline-grid;
+    width: 2.65rem;
+    height: 2.65rem;
+    place-items: center;
+    margin-right: .55rem;
+    border-radius: .8rem;
+    color: #fff;
+    background: #1769aa;
+  }
+  .train-updated { color: var(--train-muted); font-size: .92rem; }
+  .train-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
+  .train-count {
+    min-width: 0;
+    padding: .85rem 1rem;
+    border: 1px solid var(--train-border);
+    border-radius: .9rem;
+    background: var(--train-panel);
+    text-align: left;
+    box-shadow: 0 4px 16px rgba(26, 44, 72, .05);
+  }
+  button.train-count { transition: transform .15s, border-color .15s, box-shadow .15s; }
+  button.train-count:hover { transform: translateY(-1px); border-color: #8aa8c4; }
+  button.train-count.active { border-color: #1769aa; box-shadow: 0 0 0 2px rgba(23, 105, 170, .14); }
+  .train-count-label { display: block; color: var(--train-muted); font-size: .8rem; font-weight: 700; }
+  .train-count-value { display: block; margin-top: .1rem; font-size: 1.55rem; font-weight: 800; }
+  .train-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+  .train-card {
+    display: flex;
+    min-width: 0;
+    min-height: 100%;
+    flex-direction: column;
+    padding: 1.1rem 1.15rem;
+    border: 1px solid var(--train-border);
+    border-left-width: 6px;
+    border-radius: 1rem;
+    background: var(--train-panel);
+    box-shadow: var(--train-shadow);
+  }
+  .train-card[data-kind="suspended"] { border-left-color: #d52b3f; }
+  .train-card[data-kind="delayed"] { border-left-color: #df7a00; }
+  .train-card[data-kind="other"] { border-left-color: #2369a8; }
+  .train-line-name { margin: 0; font-size: 1.15rem; font-weight: 800; overflow-wrap: anywhere; }
+  .train-badge { flex: 0 0 auto; padding: .34rem .62rem; border-radius: 999px; color: #fff; font-size: .8rem; font-weight: 800; }
+  .train-badge.suspended { background: #c82338; }
+  .train-badge.delayed { background: #cf6f00; }
+  .train-badge.other { background: #2369a8; }
+  .train-message { margin: .9rem 0 1rem; line-height: 1.7; white-space: pre-wrap; }
+  .train-affected { margin: -.15rem 0 1rem; }
+  .train-affected-label { color: var(--train-muted); font-size: .8rem; font-weight: 800; }
+  .train-affected-list { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+  .train-affected-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: .28rem .58rem;
+    border: 1px solid #bfd0e1;
+    border-radius: 999px;
+    background: #edf5fc;
+    color: #245174;
+    font-size: .78rem;
+    font-weight: 700;
+  }
+  .train-meta { margin-top: auto; color: var(--train-muted); font-size: .82rem; }
+  .train-empty {
+    padding: 3.5rem 1.5rem;
+    border: 1px dashed #b8c6d5;
+    border-radius: 1rem;
+    background: #fff;
+    color: var(--train-muted);
+    text-align: center;
+  }
+  @media (max-width: 767.98px) {
+    .train-hero { padding: 1.1rem; }
+    .train-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .train-grid { grid-template-columns: 1fr; }
+    .train-title { font-size: 1.55rem; }
+  }
+</style>
+{% endblock %}
+{% block content %}
+<main class="train-page">
+  <section class="train-hero mb-3">
+    <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
+      <div>
+        <h1 class="train-title h2 mb-2"><span class="train-title-mark" aria-hidden="true">🚆</span>関東の鉄道運行情報</h1>
+        <div class="train-updated" id="train-updated" aria-live="polite"></div>
+      </div>
+      {% if snapshot.source_url %}
+      <a id="train-overall-source" class="btn btn-outline-primary btn-sm" href="{{ snapshot.source_url }}" target="_blank" rel="noopener noreferrer">情報元を確認</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <div id="train-warning" class="alert alert-warning{% if not snapshot.warning %} d-none{% endif %}" role="status">{{ snapshot.warning or '' }}</div>
+
+  <section class="train-counts mb-3" aria-label="運行情報の件数">
+    <button type="button" class="train-count active" data-filter="all" aria-pressed="true">
+      <span class="train-count-label">運行情報</span><span class="train-count-value" data-count="total">{{ snapshot.counts.total }}</span>
+    </button>
+    <button type="button" class="train-count" data-filter="suspended" aria-pressed="false">
+      <span class="train-count-label">運転見合わせ</span><span class="train-count-value text-danger" data-count="suspended">{{ snapshot.counts.suspended }}</span>
+    </button>
+    <button type="button" class="train-count" data-filter="delayed" aria-pressed="false">
+      <span class="train-count-label">列車遅延</span><span class="train-count-value" style="color:#b86000" data-count="delayed">{{ snapshot.counts.delayed }}</span>
+    </button>
+    <button type="button" class="train-count" data-filter="other" aria-pressed="false">
+      <span class="train-count-label">その他</span><span class="train-count-value text-primary" data-count="other">{{ snapshot.counts.other }}</span>
+    </button>
+  </section>
+
+  <div id="train-grid" class="train-grid" aria-live="polite"></div>
+  <div id="train-empty" class="train-empty d-none">
+    <div class="fs-1 mb-2" aria-hidden="true">✓</div>
+    <strong class="d-block text-body fs-5">現在、運行情報はありません</strong>
+  </div>
+</main>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  "use strict";
+  let snapshot = {{ snapshot|tojson }};
+  let activeFilter = "all";
+  const grid = document.getElementById("train-grid");
+  const empty = document.getElementById("train-empty");
+  const warning = document.getElementById("train-warning");
+  const updated = document.getElementById("train-updated");
+
+  function formatFetchedAt(value) {
+    if (!value) return "MFUへの最終取得：未取得";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return `MFUへの最終取得：${value}`;
+    return `MFUへの最終取得：${new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric", month: "numeric", day: "numeric", weekday: "short",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    }).format(date)}`;
+  }
+
+  function addText(parent, tag, className, text) {
+    const node = document.createElement(tag);
+    node.className = className;
+    node.textContent = text;
+    parent.appendChild(node);
+    return node;
+  }
+
+  function buildCard(line) {
+    const article = document.createElement("article");
+    article.className = "train-card";
+    article.dataset.kind = line.kind;
+
+    const header = document.createElement("div");
+    header.className = "d-flex align-items-start justify-content-between gap-2";
+    addText(header, "h2", "train-line-name", line.line_name);
+    addText(header, "span", `train-badge ${line.kind}`, line.status);
+    article.appendChild(header);
+
+    if (line.message) addText(article, "p", "train-message", line.message);
+    if (Array.isArray(line.affected_lines) && line.affected_lines.length) {
+      const affected = document.createElement("div");
+      affected.className = "train-affected";
+      addText(affected, "div", "train-affected-label", "影響路線");
+      const affectedList = document.createElement("div");
+      affectedList.className = "train-affected-list";
+      line.affected_lines.forEach((name) => {
+        addText(affectedList, "span", "train-affected-chip", name);
+      });
+      affected.appendChild(affectedList);
+      article.appendChild(affected);
+    }
+    const meta = document.createElement("div");
+    meta.className = "train-meta d-flex flex-wrap justify-content-between align-items-center gap-2";
+    const timeText = line.update_time_text;
+    addText(meta, "span", "", timeText ? `路線情報：${timeText}` : "");
+    article.appendChild(meta);
+    return article;
+  }
+
+  function render() {
+    const lines = snapshot.lines.filter((line) => activeFilter === "all" || line.kind === activeFilter);
+    grid.replaceChildren(...lines.map(buildCard));
+    const hasLines = lines.length > 0;
+    grid.classList.toggle("d-none", !hasLines);
+    empty.classList.toggle("d-none", hasLines);
+    empty.querySelector("strong").textContent = snapshot.counts.total === 0
+      ? "現在、運行情報はありません"
+      : "この分類の運行情報はありません";
+
+    updated.textContent = [snapshot.source_updated || "情報元の更新時刻：不明", formatFetchedAt(snapshot.fetched_at)].join(" ／ ");
+    warning.textContent = snapshot.warning || "";
+    warning.classList.toggle("d-none", !snapshot.warning);
+    Object.entries(snapshot.counts).forEach(([key, value]) => {
+      const count = document.querySelector(`[data-count="${key}"]`);
+      if (count) count.textContent = value;
+    });
+  }
+
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeFilter = button.dataset.filter;
+      document.querySelectorAll("[data-filter]").forEach((item) => {
+        const selected = item === button;
+        item.classList.toggle("active", selected);
+        item.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      render();
+    });
+  });
+
+  async function refresh() {
+    try {
+      const response = await fetch({{ url_for('train_status.data')|tojson }}, {
+        cache: "no-store",
+        headers: { "Accept": "application/json" }
+      });
+      if (response.status === 401) {
+        window.location.reload();
+        return;
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      snapshot = await response.json();
+      render();
+    } catch (_) {
+      warning.textContent = "画面の更新に失敗しました。表示中の情報を維持しています。";
+      warning.classList.remove("d-none");
+    }
+  }
+
+  render();
+  window.setInterval(refresh, 60 * 1000);
+})();
+</script>
+{% endblock %}

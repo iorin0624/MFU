@@ -35,10 +35,7 @@
     </thead>
 
     {% for item in nav_items %}
-      {% if loop.first %}
-        <tbody class="nav-sort-group" data-parent-id="">
-      {% endif %}
-
+      <tbody class="nav-parent-block" data-item-id="{{ item.id }}">
         <tr class="nav-sort-row nav-parent-row" draggable="true" data-item-id="{{ item.id }}" data-parent-id="">
           <td>
             <span class="nav-drag-handle" title="ドラッグして並び替え">☰</span>
@@ -58,34 +55,27 @@
           </td>
         </tr>
 
-      {% if loop.last %}
-        </tbody>
-      {% endif %}
-
-      {% if item.children %}
-        <tbody class="nav-sort-group nav-child-group" data-parent-id="{{ item.id }}">
-          {% for child in item.children %}
-            <tr class="nav-sort-row nav-child-row" draggable="true" data-item-id="{{ child.id }}" data-parent-id="{{ item.id }}">
-              <td>
-                <span class="nav-drag-handle" title="ドラッグして並び替え">☰</span>
-                <button type="button" class="btn btn-sm btn-outline-secondary nav-move-up">↑</button>
-                <button type="button" class="btn btn-sm btn-outline-secondary nav-move-down">↓</button>
-              </td>
-              <td class="ps-4">↳ {{ child.label }}</td>
-              <td>{{ child.url }}</td>
-              <td>{{ child.feature_key or "-" }}</td>
-              <td>{{ "✓" if child.is_enabled else "-" }}</td>
-              <td>
-                <a href="/admin/nav/{{ child.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
-                <form method="post" action="/admin/nav/{{ child.id }}/delete" class="d-inline">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
-                  <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      {% endif %}
+        {% for child in item.children %}
+          <tr class="nav-sort-row nav-child-row" draggable="true" data-item-id="{{ child.id }}" data-parent-id="{{ item.id }}">
+            <td>
+              <span class="nav-drag-handle" title="ドラッグして並び替え">☰</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary nav-move-up">↑</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary nav-move-down">↓</button>
+            </td>
+            <td class="ps-4">↳ {{ child.label }}</td>
+            <td>{{ child.url }}</td>
+            <td>{{ child.feature_key or "-" }}</td>
+            <td>{{ "✓" if child.is_enabled else "-" }}</td>
+            <td>
+              <a href="/admin/nav/{{ child.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
+              <form method="post" action="/admin/nav/{{ child.id }}/delete" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
     {% endfor %}
   </table>
 </div>
@@ -146,27 +136,42 @@
     messageBox.classList.remove("d-none");
   }
 
-  function getGroupRows(group) {
-    return Array.from(group.querySelectorAll(":scope > tr.nav-sort-row"));
+  function getParentBlocks() {
+    return Array.from(table.querySelectorAll(":scope > tbody.nav-parent-block"));
   }
 
   function moveRow(row, direction) {
-    const group = row.closest(".nav-sort-group");
-    if (!group) {
+    const block = row.closest(".nav-parent-block");
+    if (!block) {
+      return;
+    }
+
+    if (row.classList.contains("nav-parent-row")) {
+      const sibling = direction === "up"
+        ? block.previousElementSibling
+        : block.nextElementSibling;
+      if (!sibling || !sibling.classList.contains("nav-parent-block")) {
+        return;
+      }
+      if (direction === "up") {
+        table.insertBefore(block, sibling);
+      } else {
+        table.insertBefore(sibling, block);
+      }
       return;
     }
 
     if (direction === "up") {
       const prev = row.previousElementSibling;
-      if (prev && prev.classList.contains("nav-sort-row")) {
-        group.insertBefore(row, prev);
+      if (prev && prev.classList.contains("nav-child-row")) {
+        block.insertBefore(row, prev);
       }
     }
 
     if (direction === "down") {
       const next = row.nextElementSibling;
-      if (next && next.classList.contains("nav-sort-row")) {
-        group.insertBefore(next, row);
+      if (next && next.classList.contains("nav-child-row")) {
+        block.insertBefore(next, row);
       }
     }
   }
@@ -223,10 +228,12 @@
       return;
     }
 
-    const draggedParentId = draggedRow.dataset.parentId || "";
-    const targetParentId = targetRow.dataset.parentId || "";
-
-    if (draggedParentId !== targetParentId) {
+    const draggedIsParent = draggedRow.classList.contains("nav-parent-row");
+    const targetIsParent = targetRow.classList.contains("nav-parent-row");
+    if (draggedIsParent !== targetIsParent) {
+      return;
+    }
+    if (!draggedIsParent && draggedRow.dataset.parentId !== targetRow.dataset.parentId) {
       return;
     }
 
@@ -251,40 +258,61 @@
       return;
     }
 
-    const draggedParentId = draggedRow.dataset.parentId || "";
-    const targetParentId = targetRow.dataset.parentId || "";
-
-    if (draggedParentId !== targetParentId) {
+    const draggedIsParent = draggedRow.classList.contains("nav-parent-row");
+    const targetIsParent = targetRow.classList.contains("nav-parent-row");
+    if (draggedIsParent !== targetIsParent) {
+      return;
+    }
+    if (!draggedIsParent && draggedRow.dataset.parentId !== targetRow.dataset.parentId) {
       return;
     }
 
     event.preventDefault();
     targetRow.classList.remove("drag-over");
 
-    const group = targetRow.closest(".nav-sort-group");
-    if (!group) {
+    const targetBlock = targetRow.closest(".nav-parent-block");
+    const draggedBlock = draggedRow.closest(".nav-parent-block");
+    if (!targetBlock || !draggedBlock) {
       return;
     }
 
     const rect = targetRow.getBoundingClientRect();
     const insertAfter = event.clientY > rect.top + rect.height / 2;
 
-    if (insertAfter) {
-      group.insertBefore(draggedRow, targetRow.nextSibling);
+    if (draggedIsParent) {
+      if (insertAfter) {
+        table.insertBefore(draggedBlock, targetBlock.nextSibling);
+      } else {
+        table.insertBefore(draggedBlock, targetBlock);
+      }
+    } else if (insertAfter) {
+      targetBlock.insertBefore(draggedRow, targetRow.nextSibling);
     } else {
-      group.insertBefore(draggedRow, targetRow);
+      targetBlock.insertBefore(draggedRow, targetRow);
     }
   });
 
   function collectGroups() {
-    return Array.from(document.querySelectorAll(".nav-sort-group")).map(function (group) {
-      return {
-        parent_id: group.dataset.parentId || null,
-        item_ids: getGroupRows(group).map(function (row) {
-          return Number(row.dataset.itemId);
-        }).filter(Boolean)
-      };
-    }).filter(function (group) {
+    const blocks = getParentBlocks();
+    const groups = [{
+      parent_id: null,
+      item_ids: blocks.map(function (block) {
+        return Number(block.dataset.itemId);
+      }).filter(Boolean)
+    }];
+
+    blocks.forEach(function (block) {
+      const childIds = Array.from(block.querySelectorAll(":scope > tr.nav-child-row")).map(function (row) {
+        return Number(row.dataset.itemId);
+      }).filter(Boolean);
+      if (childIds.length > 0) {
+        groups.push({
+          parent_id: Number(block.dataset.itemId),
+          item_ids: childIds
+        });
+      }
+    });
+    return groups.filter(function (group) {
       return group.item_ids.length > 0;
     });
   }

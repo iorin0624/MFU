@@ -105,7 +105,7 @@
   const refundAmount=document.getElementById('refundAmount');
   const refundReason=document.getElementById('refundReason');
   let refundRemaining=0;
-  document.querySelectorAll('.js-refund-open').forEach(button=>button.addEventListener('click',()=>{refundRemaining=Number(button.dataset.remaining||0);refundForm.action=`/payment/admin/refund/${button.dataset.paymentId}`;refundAmount.max=String(refundRemaining);refundAmount.value=String(refundRemaining);refundReason.value='';document.getElementById('refundTarget').textContent=`${button.dataset.nickname||'名称未設定'} / 返金可能額 ¥${refundRemaining.toLocaleString()}`}));
+  document.querySelectorAll('.js-refund-open').forEach(button=>button.addEventListener('click',()=>{refundRemaining=Number(button.dataset.remaining||0);refundForm.action=`/payment/admin/refund/${button.dataset.paymentId}`;refundForm.dataset.adminPasskeyAction=`square_refund:${button.dataset.paymentId}`;refundAmount.max=String(refundRemaining);refundAmount.value=String(refundRemaining);refundReason.value='';document.getElementById('refundTarget').textContent=`${button.dataset.nickname||'名称未設定'} / 返金可能額 ¥${refundRemaining.toLocaleString()}`}));
   document.getElementById('refundAll')?.addEventListener('click',()=>{refundAmount.value=String(refundRemaining)});
   refundForm?.addEventListener('submit',event=>{const amount=Number(refundAmount.value||0);if(amount<=0||amount>refundRemaining){event.preventDefault();alert('返金可能額の範囲で入力してください。');return}if(!confirm(`¥${amount.toLocaleString()} を返金します。\nこの操作は取り消せません。よろしいですか？`))event.preventDefault()});
 </script>

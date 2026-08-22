@@ -1,56 +1,158 @@
 {% extends "base.html" %}
-{% block title %}サービスログ（リアルタイム）{% endblock %}
+{% block title %}サービスログ{% endblock %}
 
 {% block head_extra %}
 <style>
-  /* テーマ用の変数（ライトを既定） */
   :root {
     --log-bg: #ffffff;
     --log-fg: #111111;
     --log-border: #d0d7de;
   }
-  /* ダークテーマ時 */
   html[data-log-theme="dark"] {
     --log-bg: #0a0a0a;
     --log-fg: #f1f5f9;
     --log-border: #333;
   }
-
-  .logwrap{
-    height: 70vh;
+  .service-log-shell {
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  .mode-switch .btn {
+    min-width: 9rem;
+  }
+  .history-filter-card,
+  .history-table-card {
+    border: 1px solid #dfe5ec;
+    border-radius: 14px;
+    box-shadow: 0 5px 18px rgba(21, 35, 52, .05);
+  }
+  .history-table {
+    table-layout: fixed;
+    margin-bottom: 0;
+  }
+  .history-table th {
+    white-space: nowrap;
+    background: #f6f8fa;
+  }
+  .history-time-col { width: 185px; }
+  .history-level-col { width: 105px; }
+  .history-source-col { width: 190px; }
+  .history-message {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: .84rem;
+    line-height: 1.5;
+  }
+  .history-source {
+    overflow-wrap: anywhere;
+  }
+  .history-details summary {
+    color: var(--bs-primary);
+    cursor: pointer;
+    font-size: .8rem;
+    margin-top: .4rem;
+    width: fit-content;
+  }
+  .history-details-grid {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: .2rem .75rem;
+    margin-top: .5rem;
+    padding: .65rem;
+    border-radius: 8px;
+    background: #f6f8fa;
+    font-size: .78rem;
+  }
+  .history-details-grid dt {
+    color: #687386;
+    font-weight: 600;
+  }
+  .history-details-grid dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .logwrap {
+    height: 68vh;
     background: var(--log-bg);
     color: var(--log-fg);
-    border:1px solid var(--log-border);
-    border-radius:8px;
-    padding:10px;
-    overflow:auto;
-    font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size:12px;          /* 初期。スライダー/ショートカットで上書き */
-    line-height:1.5;         /* 少し広めで読みやすく */
-    white-space: pre-wrap;   /* \n を改行しつつ折返し */
-    overflow-wrap: anywhere; /* 長い1語でも折返し */
+    border: 1px solid var(--log-border);
+    border-radius: 10px;
+    padding: 12px;
+    overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     tab-size: 4;
   }
-  .controls { gap:.5rem; }
-  .badge-svc { font-weight:700; }
+  .controls { gap: .5rem; }
+  .badge-svc { font-weight: 700; }
+  .history-loading {
+    min-height: 12rem;
+  }
+  @media (max-width: 767.98px) {
+    .mode-switch {
+      width: 100%;
+    }
+    .mode-switch .btn {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    .history-table thead {
+      display: none;
+    }
+    .history-table,
+    .history-table tbody,
+    .history-table tr,
+    .history-table td {
+      display: block;
+      width: 100%;
+    }
+    .history-table tr {
+      padding: .75rem;
+      border-bottom: 1px solid #e5e9ef;
+    }
+    .history-table td {
+      border: 0;
+      padding: .2rem 0;
+    }
+    .history-table td[data-label]::before {
+      content: attr(data-label);
+      display: inline-block;
+      min-width: 5.5rem;
+      color: #687386;
+      font-size: .75rem;
+      font-weight: 600;
+      vertical-align: top;
+    }
+    .history-table td.history-message-cell::before {
+      display: block;
+      margin-bottom: .25rem;
+    }
+  }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="container mt-4">
-  <div class="d-flex align-items-center justify-content-between mb-2">
-    <h2 class="mb-0">📡 サービスログ（リアルタイム）</h2>
-    <span class="badge text-bg-secondary badge-svc" id="svc-label">
+<div class="container-fluid px-3 px-xl-4 mt-4 mb-5 service-log-shell">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+    <div>
+      <h2 class="mb-1">📡 サービスログ</h2>
+      <p class="text-muted mb-0 small">
+        systemd journalを読み取り専用で表示します。ログをDBへ複製しません。
+      </p>
+    </div>
+    <span class="badge text-bg-secondary badge-svc fs-6" id="svc-label">
       {{ labels.get(initial, units.get(initial, initial)) }}
     </span>
   </div>
-  <p class="text-muted mb-3 small">
-    JSON設定（<code>/mnt/mfu/data/service_logs.json</code>）に基づき、指定サービスの <code>journalctl -f</code> または <code>tail -F</code> をブラウザへストリーミング表示します。
-  </p>
 
-  <div class="row g-3 align-items-end">
-    <div class="col-12 col-md-4">
-      <label class="form-label">サービス</label>
+  <div class="d-flex flex-wrap align-items-end gap-3 mb-3">
+    <div style="min-width: min(100%, 22rem);">
+      <label class="form-label" for="svc">サービス</label>
       <select id="svc" class="form-select">
         {% for key, unit in units.items() %}
           <option value="{{ key }}" {% if key == initial %}selected{% endif %}>
@@ -59,82 +161,410 @@
         {% endfor %}
       </select>
     </div>
-    <div class="col-6 col-md-2">
-      <label class="form-label">初期行数</label>
-      <input id="lines" type="number" class="form-control" value="{{ default_lines }}" min="50" step="50">
-    </div>
-
-    <div class="col-12 col-md-6 d-flex flex-wrap controls">
-      <button id="connect" class="btn btn-primary">接続</button>
-      <button id="pause"   class="btn btn-warning">一時停止</button>
-      <button id="resume"  class="btn btn-success">再開</button>
-      <button id="clear"   class="btn btn-outline-secondary">クリア</button>
-
-      <!-- テーマ切替（右寄せ） -->
-      <div class="ms-auto d-flex align-items-center gap-2">
-        <label class="form-label mb-0 me-2">テーマ</label>
-        <select id="theme" class="form-select form-select-sm" style="width:auto">
-          <option value="light" selected>ライト</option>
-          <option value="dark">ダーク</option>
-          <option value="auto">システム</option>
-        </select>
-      </div>
-
-      <!-- 自動スクロール -->
-      <div class="form-check ms-3">
-        <input class="form-check-input" type="checkbox" id="autoscroll" checked>
-        <label class="form-check-label" for="autoscroll">自動スクロール</label>
-      </div>
+    <div class="btn-group mode-switch" role="group" aria-label="表示モード">
+      <button type="button" id="history-mode-btn" class="btn btn-primary">履歴・検索</button>
+      <button type="button" id="live-mode-btn" class="btn btn-outline-primary">リアルタイム</button>
     </div>
   </div>
 
-  <!-- 文字サイズコントロール -->
-  <div class="row g-3 mt-2 align-items-center">
-    <div class="col-12 col-lg-6">
-      <label for="fontsize" class="form-label">
-        文字サイズ：<span id="fontsize-val">12px</span>
-      </label>
-      <input type="range" class="form-range" id="fontsize" min="10" max="24" step="1" value="12">
-      <div class="text-secondary small">ショートカット：<kbd>+</kbd>/<kbd>-</kbd></div>
+  <section id="history-panel">
+    <div class="card history-filter-card mb-3">
+      <div class="card-body">
+        <form id="history-form">
+          <div class="row g-3 align-items-end">
+            <div class="col-12 col-md-6 col-xl-3">
+              <label for="date-from" class="form-label">開始日時</label>
+              <input id="date-from" type="datetime-local" class="form-control" required>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label for="date-to" class="form-label">終了日時</label>
+              <input id="date-to" type="datetime-local" class="form-control" required>
+            </div>
+            <div class="col-12 col-md-6 col-xl-2">
+              <label for="history-level" class="form-label">重要度</label>
+              <select id="history-level" class="form-select">
+                <option value="all">すべて</option>
+                <option value="warning">警告以上</option>
+                <option value="error">エラー以上</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-6 col-xl-2">
+              <label for="page-size" class="form-label">1ページ</label>
+              <select id="page-size" class="form-select">
+                {% for size in history_page_sizes %}
+                  <option value="{{ size }}" {% if size == 50 %}selected{% endif %}>{{ size }}件</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-xl-2">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch" id="history-auto-refresh">
+                <label class="form-check-label" for="history-auto-refresh">15秒ごとに更新</label>
+              </div>
+            </div>
+            <div class="col-12 col-xl-8">
+              <label for="history-keyword" class="form-label">キーワード</label>
+              <input
+                id="history-keyword"
+                type="search"
+                class="form-control"
+                maxlength="200"
+                placeholder="メッセージ・サービス・プロセス・PID・ホストを検索"
+              >
+            </div>
+            <div class="col-12 col-xl-4 d-flex flex-wrap gap-2">
+              <button type="submit" class="btn btn-primary flex-grow-1">検索</button>
+              <button type="button" id="history-reset" class="btn btn-outline-secondary">条件を戻す</button>
+              <a id="history-csv" class="btn btn-outline-success" href="#">CSV</a>
+            </div>
+          </div>
+        </form>
+        <div class="small text-muted mt-3">
+          検索期間は最大{{ history_max_days }}日です。初期表示は当日分、表示順は新しい順です。
+        </div>
+      </div>
     </div>
-    <div class="col-12 col-lg-6 d-flex align-items-end">
-      <button id="fs-reset" class="btn btn-sm btn-outline-secondary ms-auto">デフォルトに戻す</button>
+
+    <div id="history-error" class="alert alert-danger d-none" role="alert"></div>
+
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+      <div class="d-flex flex-wrap gap-2">
+        <span class="badge text-bg-dark" id="history-total">0件</span>
+        <span class="badge text-bg-light border text-dark" id="history-page-summary">1 / 1ページ</span>
+      </div>
+      <span class="small text-muted" id="history-fetched-at"></span>
     </div>
-  </div>
 
-  <div class="logwrap mt-3" id="log" aria-live="polite"></div>
+    <div class="card history-table-card overflow-hidden">
+      <div id="history-loading" class="history-loading d-flex align-items-center justify-content-center d-none">
+        <div class="text-center text-muted">
+          <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+          ログを読み込んでいます
+        </div>
+      </div>
+      <div id="history-empty" class="history-loading d-flex align-items-center justify-content-center d-none">
+        <span class="text-muted">条件に一致するログはありません。</span>
+      </div>
+      <div id="history-table-wrap" class="table-responsive">
+        <table class="table table-hover align-middle history-table">
+          <thead>
+            <tr>
+              <th class="history-time-col">日時</th>
+              <th class="history-level-col">重要度</th>
+              <th class="history-source-col">プロセス</th>
+              <th>メッセージ</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
 
-  <p class="text-muted small mt-2">
-    * 閲覧できる項目は JSON の <code>units</code> 設定に従います（例：<code>{"unit": "xxx.service"}</code> / <code>{"units":[...]}</code> / <code>{"file":"/var/log/xxx.log"}</code>）。
-  </p>
+    <nav class="mt-3" aria-label="サービスログページ">
+      <ul class="pagination pagination-sm flex-wrap justify-content-center" id="history-pagination"></ul>
+    </nav>
+  </section>
+
+  <section id="live-panel" class="d-none">
+    <div class="row g-3 align-items-end">
+      <div class="col-6 col-md-2">
+        <label class="form-label" for="lines">初期行数</label>
+        <input id="lines" type="number" class="form-control" value="{{ default_lines }}" min="50" max="2000" step="50">
+      </div>
+      <div class="col-12 col-md-10 d-flex flex-wrap controls align-items-center">
+        <button id="connect" class="btn btn-primary">接続</button>
+        <button id="pause" class="btn btn-warning">一時停止</button>
+        <button id="resume" class="btn btn-success">再開</button>
+        <button id="clear" class="btn btn-outline-secondary">クリア</button>
+        <div class="ms-md-auto d-flex align-items-center gap-2">
+          <label class="form-label mb-0" for="theme">テーマ</label>
+          <select id="theme" class="form-select form-select-sm" style="width:auto">
+            <option value="light" selected>ライト</option>
+            <option value="dark">ダーク</option>
+            <option value="auto">システム</option>
+          </select>
+        </div>
+        <div class="form-check ms-2">
+          <input class="form-check-input" type="checkbox" id="autoscroll" checked>
+          <label class="form-check-label" for="autoscroll">自動スクロール</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mt-2 align-items-center">
+      <div class="col-12 col-lg-6">
+        <label for="fontsize" class="form-label">
+          文字サイズ：<span id="fontsize-val">12px</span>
+        </label>
+        <input type="range" class="form-range" id="fontsize" min="10" max="24" step="1" value="12">
+        <div class="text-secondary small">ショートカット：<kbd>+</kbd>/<kbd>-</kbd></div>
+      </div>
+      <div class="col-12 col-lg-6 d-flex align-items-end">
+        <button id="fs-reset" class="btn btn-sm btn-outline-secondary ms-auto">デフォルトに戻す</button>
+      </div>
+    </div>
+
+    <div class="logwrap mt-3" id="log" aria-live="polite"></div>
+    <p class="text-muted small mt-2">
+      JSON設定（<code>/mnt/mfu/data/service_logs.json</code>）に従い、
+      <code>journalctl -f</code>または<code>tail -F</code>を表示します。
+    </p>
+  </section>
 </div>
 {% endblock %}
 
 {% block body_extra %}
 <script>
-  // サーバー埋め込み設定
   const UNITS = {{ units|tojson }};
   const LABELS = {{ labels|tojson }};
   const INITIAL = {{ initial|tojson }};
   const DEFAULT_LINES = {{ default_lines|tojson }};
+  const HISTORY_CAPABLE = {{ history_capable|tojson }};
 
   let es = null;
   let paused = false;
+  let activeMode = 'history';
+  let currentPage = 1;
+  let historyAbortController = null;
+  let historyAutoTimer = null;
 
-  const logEl     = document.getElementById('log');
-  const svcSel    = document.getElementById('svc');
-  const linesEl   = document.getElementById('lines');
-  const svcLabel  = document.getElementById('svc-label');
+  const logEl = document.getElementById('log');
+  const svcSel = document.getElementById('svc');
+  const linesEl = document.getElementById('lines');
+  const svcLabel = document.getElementById('svc-label');
+  const historyPanel = document.getElementById('history-panel');
+  const livePanel = document.getElementById('live-panel');
+  const historyModeBtn = document.getElementById('history-mode-btn');
+  const liveModeBtn = document.getElementById('live-mode-btn');
 
-  // ===== テーマ（保存つき） =====
-  const themeSel  = document.getElementById('theme');
+  const escapeHtml = (value) => String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+
+  function serviceLabel() {
+    const key = svcSel.value || INITIAL;
+    return LABELS[key] || key;
+  }
+
+  function updateServiceLabel() {
+    svcLabel.textContent = serviceLabel();
+  }
+
+  function toDatetimeLocal(date) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+      `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function resetHistoryDates() {
+    const now = new Date();
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    document.getElementById('date-from').value = toDatetimeLocal(start);
+    document.getElementById('date-to').value = toDatetimeLocal(now);
+  }
+
+  function historyParams({ includePage = true } = {}) {
+    const params = new URLSearchParams({
+      service: svcSel.value || INITIAL,
+      date_from: document.getElementById('date-from').value,
+      date_to: document.getElementById('date-to').value,
+      level: document.getElementById('history-level').value,
+      keyword: document.getElementById('history-keyword').value.trim(),
+      page_size: document.getElementById('page-size').value,
+    });
+    if (includePage) params.set('page', String(currentPage));
+    return params;
+  }
+
+  const LEVEL_LABELS = {
+    emergency: '緊急',
+    alert: '警報',
+    critical: '重大',
+    error: 'エラー',
+    warning: '警告',
+    notice: '通知',
+    info: '情報',
+    debug: 'デバッグ',
+  };
+  const LEVEL_CLASSES = {
+    emergency: 'text-bg-danger',
+    alert: 'text-bg-danger',
+    critical: 'text-bg-danger',
+    error: 'text-bg-danger',
+    warning: 'text-bg-warning',
+    notice: 'text-bg-info',
+    info: 'text-bg-secondary',
+    debug: 'text-bg-light border text-dark',
+  };
+
+  function formatTimestamp(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('ja-JP', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    }).format(date);
+  }
+
+  function renderHistoryRows(rows) {
+    const tbody = document.getElementById('history-tbody');
+    tbody.innerHTML = rows.map((row) => {
+      const levelLabel = LEVEL_LABELS[row.level] || row.level || '情報';
+      const levelClass = LEVEL_CLASSES[row.level] || 'text-bg-secondary';
+      const source = row.identifier || row.unit || '—';
+      const unitLine = row.unit && row.unit !== source
+        ? `<div class="small text-muted mt-1">${escapeHtml(row.unit)}</div>`
+        : '';
+      return `
+        <tr>
+          <td data-label="日時">${escapeHtml(formatTimestamp(row.timestamp))}</td>
+          <td data-label="重要度"><span class="badge ${levelClass}">${escapeHtml(levelLabel)}</span></td>
+          <td data-label="プロセス" class="history-source">
+            ${escapeHtml(source)}${row.pid ? ` <span class="text-muted">#${escapeHtml(row.pid)}</span>` : ''}
+            ${unitLine}
+          </td>
+          <td data-label="メッセージ" class="history-message-cell">
+            <div class="history-message">${escapeHtml(row.message || '（メッセージなし）')}</div>
+            <details class="history-details">
+              <summary>詳細を表示</summary>
+              <dl class="history-details-grid">
+                <dt>日時</dt><dd>${escapeHtml(row.timestamp || '—')}</dd>
+                <dt>重要度</dt><dd>${escapeHtml(`${row.priority}: ${row.level}`)}</dd>
+                <dt>サービス</dt><dd>${escapeHtml(row.unit || '—')}</dd>
+                <dt>プロセス</dt><dd>${escapeHtml(row.identifier || '—')}</dd>
+                <dt>PID</dt><dd>${escapeHtml(row.pid || '—')}</dd>
+                <dt>ホスト</dt><dd>${escapeHtml(row.hostname || '—')}</dd>
+                <dt>transport</dt><dd>${escapeHtml(row.transport || '—')}</dd>
+                <dt>cursor</dt><dd>${escapeHtml(row.cursor || '—')}</dd>
+              </dl>
+            </details>
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  function pageItem(label, page, { disabled = false, active = false } = {}) {
+    return `
+      <li class="page-item ${disabled ? 'disabled' : ''} ${active ? 'active' : ''}">
+        <button class="page-link" type="button" data-page="${page}" ${disabled ? 'disabled' : ''}>${label}</button>
+      </li>`;
+  }
+
+  function renderPagination(page, pages) {
+    const pagination = document.getElementById('history-pagination');
+    const items = [pageItem('前へ', Math.max(1, page - 1), { disabled: page <= 1 })];
+    const start = Math.max(1, page - 2);
+    const end = Math.min(pages, page + 2);
+    if (start > 1) {
+      items.push(pageItem('1', 1, { active: page === 1 }));
+      if (start > 2) items.push('<li class="page-item disabled"><span class="page-link">…</span></li>');
+    }
+    for (let number = start; number <= end; number += 1) {
+      items.push(pageItem(String(number), number, { active: number === page }));
+    }
+    if (end < pages) {
+      if (end < pages - 1) items.push('<li class="page-item disabled"><span class="page-link">…</span></li>');
+      items.push(pageItem(String(pages), pages, { active: page === pages }));
+    }
+    items.push(pageItem('次へ', Math.min(pages, page + 1), { disabled: page >= pages }));
+    pagination.innerHTML = items.join('');
+    pagination.querySelectorAll('button[data-page]').forEach((button) => {
+      button.addEventListener('click', () => {
+        currentPage = Number(button.dataset.page || 1);
+        loadHistory();
+      });
+    });
+  }
+
+  function setHistoryLoading(loading) {
+    document.getElementById('history-loading').classList.toggle('d-none', !loading);
+    if (loading) {
+      document.getElementById('history-table-wrap').classList.add('d-none');
+      document.getElementById('history-empty').classList.add('d-none');
+    }
+  }
+
+  function showHistoryError(message) {
+    const error = document.getElementById('history-error');
+    error.textContent = message || 'ログを取得できませんでした。';
+    error.classList.remove('d-none');
+  }
+
+  function clearHistoryError() {
+    document.getElementById('history-error').classList.add('d-none');
+  }
+
+  async function loadHistory() {
+    if (activeMode !== 'history') return;
+    clearHistoryError();
+    if (!HISTORY_CAPABLE[svcSel.value || INITIAL]) {
+      showHistoryError('この項目はファイル追尾専用です。リアルタイム表示を使用してください。');
+      document.getElementById('history-tbody').innerHTML = '';
+      document.getElementById('history-empty').classList.remove('d-none');
+      document.getElementById('history-table-wrap').classList.add('d-none');
+      const csv = document.getElementById('history-csv');
+      csv.classList.add('disabled');
+      csv.removeAttribute('href');
+      return;
+    }
+
+    historyAbortController?.abort();
+    historyAbortController = new AbortController();
+    setHistoryLoading(true);
+    try {
+      const response = await fetch(`/service_logs/history?${historyParams()}`, {
+        signal: historyAbortController.signal,
+        headers: { Accept: 'application/json' },
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (currentPage > data.pages) {
+        currentPage = data.pages;
+        setHistoryLoading(false);
+        return loadHistory();
+      }
+
+      renderHistoryRows(data.rows || []);
+      renderPagination(data.page, data.pages);
+      document.getElementById('history-total').textContent = `${Number(data.total).toLocaleString('ja-JP')}件`;
+      document.getElementById('history-page-summary').textContent = `${data.page} / ${data.pages}ページ`;
+      document.getElementById('history-fetched-at').textContent =
+        `最終取得：${formatTimestamp(data.fetched_at)}`;
+      document.getElementById('history-empty').classList.toggle('d-none', data.rows.length > 0);
+      document.getElementById('history-table-wrap').classList.toggle('d-none', data.rows.length === 0);
+      const csv = document.getElementById('history-csv');
+      csv.href = `/service_logs/history.csv?${historyParams({ includePage: false })}`;
+      csv.classList.remove('disabled');
+    } catch (error) {
+      if (error.name !== 'AbortError') showHistoryError(error.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function restartHistoryAutoRefresh() {
+    if (historyAutoTimer) clearInterval(historyAutoTimer);
+    historyAutoTimer = null;
+    if (document.getElementById('history-auto-refresh').checked) {
+      historyAutoTimer = setInterval(() => {
+        if (activeMode === 'history' && !document.hidden) loadHistory();
+      }, 15000);
+    }
+  }
+
+  // ===== リアルタイム表示のテーマ =====
+  const themeSel = document.getElementById('theme');
   const THEME_KEY = 'serviceLogs.theme';
-
   function systemPrefersDark() {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   }
   function applyTheme(mode) {
-    // mode: 'light' | 'dark' | 'auto'
     let effective = mode;
     if (mode === 'auto') effective = systemPrefersDark() ? 'dark' : 'light';
     document.documentElement.setAttribute('data-log-theme', effective);
@@ -142,95 +572,150 @@
     themeSel.value = mode;
   }
   function initTheme() {
-    const saved = localStorage.getItem(THEME_KEY) || 'light'; // 既定はライト
-    applyTheme(saved);
-    // システム設定が変わったら反映（auto時のみ）
+    applyTheme(localStorage.getItem(THEME_KEY) || 'light');
     if (window.matchMedia) {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      mq.addEventListener?.('change', () => {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
         if ((localStorage.getItem(THEME_KEY) || 'light') === 'auto') applyTheme('auto');
       });
     }
   }
   themeSel.addEventListener('change', () => applyTheme(themeSel.value));
 
-  // ===== フォントサイズ（保存つき） =====
-  const fsInput   = document.getElementById('fontsize');
-  const fsVal     = document.getElementById('fontsize-val');
-  const fsReset   = document.getElementById('fs-reset');
+  // ===== リアルタイム表示の文字サイズ =====
+  const fsInput = document.getElementById('fontsize');
+  const fsVal = document.getElementById('fontsize-val');
   const LS_KEY_FS = 'serviceLogs.fontSizePx';
-
-  function applyFontSize(px){
-    const clamped = Math.max(10, Math.min(24, parseInt(px,10) || 12));
-    logEl.style.fontSize = clamped + 'px';
-    fsVal.textContent = clamped + 'px';
+  function applyFontSize(px) {
+    const clamped = Math.max(10, Math.min(24, parseInt(px, 10) || 12));
+    logEl.style.fontSize = `${clamped}px`;
+    fsVal.textContent = `${clamped}px`;
     localStorage.setItem(LS_KEY_FS, String(clamped));
   }
-  function initFontSize(){
+  function initFontSize() {
     const saved = parseInt(localStorage.getItem(LS_KEY_FS) || '12', 10);
-    const px = Number.isFinite(saved) ? saved : 12;
-    fsInput.value = String(Math.max(10, Math.min(24, px)));
+    fsInput.value = String(Math.max(10, Math.min(24, Number.isFinite(saved) ? saved : 12)));
     applyFontSize(fsInput.value);
   }
-  document.addEventListener('keydown', (ev) => {
+  document.addEventListener('keydown', (event) => {
+    if (activeMode !== 'live') return;
     const tag = (document.activeElement?.tagName || '').toUpperCase();
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if ((ev.key === '=' && ev.shiftKey) || ev.key === '+') {
-      let px = parseInt(window.getComputedStyle(logEl).fontSize, 10) || 12;
-      px = Math.min(24, px + 1); fsInput.value = String(px); applyFontSize(px); ev.preventDefault();
-    } else if (ev.key === '-') {
-      let px = parseInt(window.getComputedStyle(logEl).fontSize, 10) || 12;
-      px = Math.max(10, px - 1); fsInput.value = String(px); applyFontSize(px); ev.preventDefault();
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
+    if ((event.key === '=' && event.shiftKey) || event.key === '+') {
+      const px = Math.min(24, (parseInt(getComputedStyle(logEl).fontSize, 10) || 12) + 1);
+      fsInput.value = String(px);
+      applyFontSize(px);
+      event.preventDefault();
+    } else if (event.key === '-') {
+      const px = Math.max(10, (parseInt(getComputedStyle(logEl).fontSize, 10) || 12) - 1);
+      fsInput.value = String(px);
+      applyFontSize(px);
+      event.preventDefault();
     }
   });
   fsInput.addEventListener('input', () => applyFontSize(fsInput.value));
-  fsReset.addEventListener('click', () => { fsInput.value = '12'; applyFontSize(12); });
+  document.getElementById('fs-reset').addEventListener('click', () => {
+    fsInput.value = '12';
+    applyFontSize(12);
+  });
 
   // ===== SSE =====
-  function atBottom(el){ return el.scrollTop + el.clientHeight >= el.scrollHeight - 10; }
-  function append(line){
+  function atBottom(element) {
+    return element.scrollTop + element.clientHeight >= element.scrollHeight - 10;
+  }
+  function append(line) {
     const stick = document.getElementById('autoscroll').checked && atBottom(logEl);
-    logEl.textContent += (line || '') + "\n";
+    logEl.textContent += `${line || ''}\n`;
     if (logEl.textContent.length > 1_000_000) {
       logEl.textContent = logEl.textContent.slice(-800_000);
     }
     if (stick) logEl.scrollTop = logEl.scrollHeight;
   }
-  function connect(){
+  function disconnect() {
+    if (es) {
+      es.close();
+      es = null;
+    }
+  }
+  function connect() {
     disconnect();
+    if (activeMode !== 'live') return;
     paused = false;
-    const svc = svcSel.value || INITIAL;
-    const n = parseInt(linesEl.value || String(DEFAULT_LINES), 10) || DEFAULT_LINES;
-    svcLabel.textContent = LABELS[svc] || UNITS[svc] || svc;
-
-    const url = `/service_logs/sse?service=${encodeURIComponent(svc)}&n=${n}`;
-    es = new EventSource(url);
-    es.onmessage = (ev) => { if (!paused) append(ev.data); };
+    const service = svcSel.value || INITIAL;
+    const lines = parseInt(linesEl.value || String(DEFAULT_LINES), 10) || DEFAULT_LINES;
+    es = new EventSource(`/service_logs/sse?service=${encodeURIComponent(service)}&n=${lines}`);
+    es.onmessage = (event) => {
+      if (!paused) append(event.data);
+    };
     es.addEventListener('ping', () => {});
     es.onerror = () => {
       append('[SSE] connection lost. retrying in 3s…');
       disconnect();
-      setTimeout(connect, 3000);
+      if (activeMode === 'live') setTimeout(connect, 3000);
     };
-    append(`[SSE] connected: ${svcLabel.textContent}`);
+    append(`[SSE] connected: ${serviceLabel()}`);
   }
-  function disconnect(){ if (es) { es.close(); es = null; } }
 
-  document.getElementById('connect').onclick = connect;
-  document.getElementById('pause').onclick   = () => { paused = true; append('[SSE] paused'); };
-  document.getElementById('resume').onclick  = () => { paused = false; append('[SSE] resumed'); };
-  document.getElementById('clear').onclick   = () => { logEl.textContent = ''; };
+  function setMode(mode) {
+    activeMode = mode;
+    const historyActive = mode === 'history';
+    historyPanel.classList.toggle('d-none', !historyActive);
+    livePanel.classList.toggle('d-none', historyActive);
+    historyModeBtn.className = `btn ${historyActive ? 'btn-primary' : 'btn-outline-primary'}`;
+    liveModeBtn.className = `btn ${historyActive ? 'btn-outline-primary' : 'btn-primary'}`;
+    if (historyActive) {
+      disconnect();
+      loadHistory();
+    } else {
+      connect();
+    }
+  }
+
+  historyModeBtn.addEventListener('click', () => setMode('history'));
+  liveModeBtn.addEventListener('click', () => setMode('live'));
+  document.getElementById('history-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    currentPage = 1;
+    loadHistory();
+  });
+  document.getElementById('history-reset').addEventListener('click', () => {
+    resetHistoryDates();
+    document.getElementById('history-level').value = 'all';
+    document.getElementById('history-keyword').value = '';
+    document.getElementById('page-size').value = '50';
+    currentPage = 1;
+    loadHistory();
+  });
+  document.getElementById('history-auto-refresh').addEventListener('change', restartHistoryAutoRefresh);
+  document.getElementById('connect').addEventListener('click', connect);
+  document.getElementById('pause').addEventListener('click', () => {
+    paused = true;
+    append('[SSE] paused');
+  });
+  document.getElementById('resume').addEventListener('click', () => {
+    paused = false;
+    append('[SSE] resumed');
+  });
+  document.getElementById('clear').addEventListener('click', () => {
+    logEl.textContent = '';
+  });
   svcSel.addEventListener('change', () => {
-    const svc = svcSel.value;
-    svcLabel.textContent = LABELS[svc] || UNITS[svc] || svc;
+    updateServiceLabel();
+    currentPage = 1;
+    if (activeMode === 'history') loadHistory();
+    else connect();
   });
 
-  // 初期化
   window.addEventListener('DOMContentLoaded', () => {
-    initTheme();     // まずテーマ
-    initFontSize();  // 次にフォント
-    connect();       // 接続
+    updateServiceLabel();
+    resetHistoryDates();
+    initTheme();
+    initFontSize();
+    setMode('history');
   });
-  window.addEventListener('beforeunload', disconnect);
+  window.addEventListener('beforeunload', () => {
+    disconnect();
+    historyAbortController?.abort();
+    if (historyAutoTimer) clearInterval(historyAutoTimer);
+  });
 </script>
 {% endblock %}

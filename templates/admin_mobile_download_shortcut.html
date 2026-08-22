@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}SCダウンロード案内設定 | MFU{% endblock %}
+
+{% block head_extra %}
+<style>
+  .shortcut-settings-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,.72fr); gap:1.5rem; align-items:start; }
+  .shortcut-preview { position:sticky; top:1rem; }
+  .preview-dialog { border:1px solid #d8dee8; border-radius:18px; padding:1.4rem; background:#fff; box-shadow:0 14px 38px rgba(20,31,54,.14); }
+  .preview-copy { white-space:pre-wrap; color:#526071; line-height:1.7; }
+  .preview-install { white-space:pre-wrap; background:#f4f7fb; border-radius:10px; padding:.85rem 1rem; color:#364255; }
+  @media (max-width:900px) { .shortcut-settings-grid { grid-template-columns:1fr; } .shortcut-preview { position:static; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-1">SCダウンロード案内設定</h1>
+    <p class="text-muted mb-0">iPhone／iPadでショートカットを検出できなかった場合の案内を設定します。</p>
+  </div>
+  <a class="btn btn-outline-secondary" href="/admin/nav">管理ナビ設定へ</a>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <div class="alert alert-{{ category }}">{{ message }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="shortcut-settings-grid">
+  <form method="post" class="card shadow-sm border-0">
+    <div class="card-body p-4">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+
+      <div class="form-check form-switch mb-4">
+        <input class="form-check-input" type="checkbox" role="switch" id="is_enabled" name="is_enabled" value="1" {% if settings.is_enabled %}checked{% endif %}>
+        <label class="form-check-label fw-bold" for="is_enabled">iPhone／iPadに「SCでDL」を表示する</label>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="shortcut_name">ショートカット名</label>
+        <input class="form-control" id="shortcut_name" name="shortcut_name" maxlength="128" required value="{{ settings.shortcut_name }}">
+        <div class="form-text">iPhoneに登録されている名前と完全に一致させてください。</div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="popup_title">ポップアップタイトル</label>
+        <input class="form-control" id="popup_title" name="popup_title" maxlength="255" required value="{{ settings.popup_title }}">
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="popup_body">説明文</label>
+        <textarea class="form-control" id="popup_body" name="popup_body" rows="4" required>{{ settings.popup_body }}</textarea>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="install_steps">導入手順</label>
+        <textarea class="form-control" id="install_steps" name="install_steps" rows="5" required>{{ settings.install_steps }}</textarea>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="download_button_label">ダウンロードボタン名</label>
+        <input class="form-control" id="download_button_label" name="download_button_label" maxlength="128" required value="{{ settings.download_button_label }}">
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold" for="download_url">ショートカット配布URL</label>
+        <input class="form-control" type="url" id="download_url" name="download_url" placeholder="https://www.icloud.com/shortcuts/..." value="{{ settings.download_url }}">
+        <div class="form-text">未設定の場合、ポップアップには「配布URLが未設定です」と表示します。</div>
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label fw-semibold" for="detection_timeout_seconds">判定待ち時間</label>
+        <div class="input-group" style="max-width:240px">
+          <input class="form-control" type="number" id="detection_timeout_seconds" name="detection_timeout_seconds" min="3" max="30" required value="{{ settings.detection_timeout_seconds }}">
+          <span class="input-group-text">秒</span>
+        </div>
+        <div class="form-text">3～30秒。初期値は10秒です。</div>
+      </div>
+
+      <button class="btn btn-primary px-4" type="submit">保存して公開</button>
+    </div>
+  </form>
+
+  <aside class="shortcut-preview">
+    <h2 class="h5 mb-3">ポップアップのプレビュー</h2>
+    <div class="preview-dialog">
+      <h3 id="preview-title" class="h5 mb-3"></h3>
+      <div id="preview-body" class="preview-copy mb-3"></div>
+      <div id="preview-steps" class="preview-install mb-4"></div>
+      <button id="preview-download" type="button" class="btn btn-primary w-100 mb-2"></button>
+      <button type="button" class="btn btn-outline-primary w-100 mb-2">もう一度起動</button>
+      <button type="button" class="btn btn-outline-secondary w-100">閉じる</button>
+    </div>
+    {% if settings.updated_at %}
+      <p class="small text-muted mt-3 mb-0">最終更新：{{ settings.updated_at }}{% if settings.updated_by %} / {{ settings.updated_by }}{% endif %}</p>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}
+
+{% block body_extra %}
+<script>
+(() => {
+  const fields = {
+    title: document.getElementById('popup_title'),
+    body: document.getElementById('popup_body'),
+    steps: document.getElementById('install_steps'),
+    button: document.getElementById('download_button_label'),
+    url: document.getElementById('download_url'),
+  };
+  const update = () => {
+    document.getElementById('preview-title').textContent = fields.title.value || 'タイトル';
+    document.getElementById('preview-body').textContent = fields.body.value || '説明文';
+    document.getElementById('preview-steps').textContent = fields.steps.value || '導入手順';
+    const button = document.getElementById('preview-download');
+    button.textContent = fields.url.value ? (fields.button.value || 'ショートカットを入手') : '配布URLが未設定です';
+    button.disabled = !fields.url.value;
+  };
+  Object.values(fields).forEach(field => field?.addEventListener('input', update));
+  update();
+})();
+</script>
+{% endblock %}

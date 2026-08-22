@@ -1,0 +1,70 @@
+--- thumb_worker.py
++++ thumb_worker.py
+@@ -75,3 +75,10 @@
++MAGICK = shutil.which("magick")
++
++IMAGE_EXTENSIONS = (
++    '.jpg', '.jpeg', '.png', '.gif', '.heic', '.heif', '.webp',
++    '.cr2', '.cr3', '.nef', '.nrw', '.arw', '.dng',
++)
++
+ def allowed_file(filename: str) -> bool:
+     name = filename.lower()
+-    return any(name.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.heic', '.webp'])
++    return any(name.endswith(ext) for ext in IMAGE_EXTENSIONS)
+@@ -260,18 +266,43 @@
+                 return
+ 
+             img_path = os.path.join(base_path, fname)
+-            with Image.open(img_path) as img:
+-                img = ImageOps.exif_transpose(img)
+-
+-                if img.mode not in ("RGB", "RGBA"):
+-                    img = img.convert("RGB")
+-                elif img.mode == "RGBA":
+-                    bg = Image.new("RGB", img.size, (255, 255, 255))
+-                    bg.paste(img, mask=img.split()[-1])
+-                    img = bg
+-
+-                img.thumbnail((300, 300))
+-                img.save(thumb_path, format='WEBP', quality=70, method=6)
++            try:
++                with Image.open(img_path) as img:
++                    img = ImageOps.exif_transpose(img)
++
++                    if img.mode not in ("RGB", "RGBA"):
++                        img = img.convert("RGB")
++                    elif img.mode == "RGBA":
++                        bg = Image.new("RGB", img.size, (255, 255, 255))
++                        bg.paste(img, mask=img.split()[-1])
++                        img = bg
++
++                    img.thumbnail((300, 300))
++                    img.save(thumb_path, format='WEBP', quality=70, method=6)
++            except Exception as pillow_error:
++                # ImageMagick on this host has libheif and libraw delegates. It
++                # handles HEIC/HEIF and camera RAW without adding heavy Python
++                # packages to the long-running worker environment.
++                if not MAGICK:
++                    raise
++                temp_thumb = thumb_path + ".tmp.webp"
++                try:
++                    subprocess.run(
++                        [
++                            MAGICK, f"{img_path}[0]", "-auto-orient",
++                            "-thumbnail", "300x300>", "-strip",
++                            "-quality", "70", temp_thumb,
++                        ],
++                        check=True,
++                        stdout=subprocess.DEVNULL,
++                        stderr=subprocess.PIPE,
++                        timeout=180,
++                    )
++                    os.replace(temp_thumb, thumb_path)
++                    print(f"[THUMB] Pillow fallback to ImageMagick: {fname} ({pillow_error})")
++                finally:
++                    if os.path.exists(temp_thumb):
++                        os.unlink(temp_thumb)
+ 
+             print(f"[THUMB] OK: {thumb_path}")
+         except Exception as e:

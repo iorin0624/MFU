@@ -4,22 +4,226 @@
 
 {% block content %}
 <style>
+  .shipment-page-header {
+    gap: 0.75rem;
+  }
+
+  .shipment-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    overflow-x: auto;
+    padding: 0.15rem 0 0.35rem;
+    scrollbar-width: thin;
+  }
+
+  .shipment-tab {
+    align-items: center;
+    background: #fff;
+    border: 1px solid #d7dee8;
+    border-radius: 999px;
+    color: #344054;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-weight: 600;
+    gap: 0.45rem;
+    padding: 0.55rem 0.9rem;
+    text-decoration: none;
+  }
+
+  .shipment-tab:hover {
+    background: #f5f8fc;
+    color: #0d6efd;
+  }
+
+  .shipment-tab.active {
+    background: #0d6efd;
+    border-color: #0d6efd;
+    color: #fff;
+  }
+
+  .shipment-tab-count {
+    align-items: center;
+    background: rgba(52, 64, 84, 0.1);
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 0.78rem;
+    justify-content: center;
+    min-width: 1.6rem;
+    padding: 0.1rem 0.42rem;
+  }
+
+  .shipment-tab.active .shipment-tab-count {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .shipment-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  }
+
+  .shipment-card {
+    background: #fff;
+    border: 1px solid #dfe5ec;
+    border-radius: 0.9rem;
+    box-shadow: 0 0.2rem 0.7rem rgba(15, 23, 42, 0.06);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .shipment-card.is-inactive {
+    background: #f8f9fa;
+    opacity: 0.86;
+  }
+
+  .shipment-card-header {
+    align-items: flex-start;
+    border-bottom: 1px solid #edf0f3;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    padding: 1rem 1rem 0.8rem;
+  }
+
+  .shipment-card-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    line-height: 1.4;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .shipment-carrier {
+    color: #667085;
+    font-size: 0.86rem;
+    margin-top: 0.2rem;
+  }
+
+  .shipment-state-badge {
+    border-radius: 999px;
+    flex: 0 0 auto;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.28rem 0.58rem;
+  }
+
+  .shipment-state-badge.is-active {
+    background: #dff5e8;
+    color: #16794b;
+  }
+
+  .shipment-state-badge.is-inactive {
+    background: #e9ecef;
+    color: #667085;
+  }
+
+  .shipment-card-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.85rem;
+    padding: 1rem;
+  }
+
+  .shipment-number-label,
+  .shipment-meta-label {
+    color: #667085;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .shipment-number {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    overflow-wrap: anywhere;
+  }
+
+  .shipment-status-box {
+    background: #f5f8fc;
+    border-radius: 0.65rem;
+    padding: 0.75rem;
+  }
+
   .shipment-status-main {
-    white-space: normal;
-    word-break: break-word;
+    font-weight: 650;
+    overflow-wrap: anywhere;
   }
 
   .shipment-status-detail {
-    font-size: 0.875em;
+    color: #667085;
+    font-size: 0.84rem;
+    margin-top: 0.25rem;
+    overflow-wrap: anywhere;
+  }
+
+  .shipment-meta-grid {
+    display: grid;
+    gap: 0.7rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shipment-meta-value {
+    font-size: 0.88rem;
+    margin-top: 0.1rem;
+    overflow-wrap: anywhere;
+  }
+
+  .shipment-card-actions {
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: auto;
+  }
+
+  .shipment-card-actions .btn,
+  .shipment-card-actions form,
+  .shipment-card-actions form .btn {
+    width: 100%;
+  }
+
+  .shipment-empty {
+    background: #f8f9fa;
+    border: 1px dashed #ced4da;
+    border-radius: 0.9rem;
     color: #6c757d;
-    margin-top: 0.2rem;
-    white-space: normal;
-    word-break: break-word;
+    padding: 2.5rem 1rem;
+    text-align: center;
+  }
+
+  @media (max-width: 575.98px) {
+    .shipment-page-header {
+      align-items: stretch !important;
+      flex-direction: column;
+    }
+
+    .shipment-page-header .btn {
+      width: 100%;
+    }
+
+    .shipment-tabs {
+      margin-left: -0.25rem;
+      margin-right: -0.25rem;
+      padding-left: 0.25rem;
+      padding-right: 0.25rem;
+    }
+
+    .shipment-meta-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .shipment-card-actions {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="shipment-page-header d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">配送追跡一覧</h1>
-  <a href="{{ url_for('shipment_tracking.shipment_tracking_new') }}" class="btn btn-primary btn-sm">新規登録</a>
+  <a href="{{ url_for('shipment_tracking.shipment_tracking_new') }}" class="btn btn-primary">＋ 新規登録</a>
 </div>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
@@ -30,51 +234,75 @@
   {% endif %}
 {% endwith %}
 
-<div class="table-responsive">
-  <table class="table table-bordered align-middle table-sm">
-    <thead class="table-light">
-      <tr>
-        <th>ID</th>
-        <th>ラベル</th>
-        <th>業者</th>
-        <th>配達番号</th>
-        <th>最新状態</th>
-        <th>最新イベント日時</th>
-        <th>最終確認日時</th>
-        <th>有効/無効</th>
-        <th>操作</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for target in targets %}
-        <tr>
-          <td>{{ target.id }}</td>
-          <td>{{ target.label or '-' }}</td>
-          <td>{{ carrier_master.get(target.carrier_code, target.carrier_code) }}</td>
-          <td>{{ target.tracking_number }}</td>
-          <td>
-            <div class="shipment-status-main">{{ target.last_current_status or '-' }}</div>
-            {% if target.last_current_status_detail %}
-              <div class="shipment-status-detail">{{ target.last_current_status_detail }}</div>
-            {% endif %}
-          </td>
-          <td>{{ target.last_latest_event_at or '-' }}</td>
-          <td>{{ target.last_checked_at or '-' }}</td>
-          <td>{{ '有効' if target.is_active else '無効' }}</td>
-          <td class="text-nowrap">
-            <a href="{{ url_for('shipment_tracking.shipment_tracking_detail', id=target.id) }}" class="btn btn-outline-secondary btn-sm">詳細</a>
-            <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_check_now', id=target.id) }}" class="d-inline">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
-              <button type="submit" class="btn btn-outline-primary btn-sm">最新情報の確認</button>
-            </form>
-          </td>
-        </tr>
-      {% else %}
-        <tr>
-          <td colspan="9" class="text-center text-muted">登録がありません</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<nav class="shipment-tabs" aria-label="配送追跡の表示切り替え">
+  <a href="{{ url_for('shipment_tracking.shipment_tracking_list', status='active') }}"
+     class="shipment-tab{{ ' active' if selected_status == 'active' else '' }}"
+     {% if selected_status == 'active' %}aria-current="page"{% endif %}>
+    現在有効な追跡 <span class="shipment-tab-count">{{ counts.active }}</span>
+  </a>
+  <a href="{{ url_for('shipment_tracking.shipment_tracking_list', status='inactive') }}"
+     class="shipment-tab{{ ' active' if selected_status == 'inactive' else '' }}"
+     {% if selected_status == 'inactive' %}aria-current="page"{% endif %}>
+    無効な追跡 <span class="shipment-tab-count">{{ counts.inactive }}</span>
+  </a>
+  <a href="{{ url_for('shipment_tracking.shipment_tracking_list', status='all') }}"
+     class="shipment-tab{{ ' active' if selected_status == 'all' else '' }}"
+     {% if selected_status == 'all' %}aria-current="page"{% endif %}>
+    すべての追跡 <span class="shipment-tab-count">{{ counts.all }}</span>
+  </a>
+</nav>
+
+{% if targets %}
+<div class="shipment-grid">
+  {% for target in targets %}
+    <article class="shipment-card{{ ' is-inactive' if not target.is_active else '' }}">
+      <header class="shipment-card-header">
+        <div>
+          <h2 class="shipment-card-title">{{ target.label or '名称未設定' }}</h2>
+          <div class="shipment-carrier">{{ carrier_master.get(target.carrier_code, target.carrier_code) }} ／ ID {{ target.id }}</div>
+        </div>
+        <span class="shipment-state-badge {{ 'is-active' if target.is_active else 'is-inactive' }}">
+          {{ '有効' if target.is_active else '無効' }}
+        </span>
+      </header>
+
+      <div class="shipment-card-body">
+        <div>
+          <div class="shipment-number-label">配送番号</div>
+          <div class="shipment-number">{{ target.tracking_number }}</div>
+        </div>
+
+        <div class="shipment-status-box">
+          <div class="shipment-meta-label">最新状態</div>
+          <div class="shipment-status-main">{{ target.last_current_status or '未確認' }}</div>
+          {% if target.last_current_status_detail %}
+            <div class="shipment-status-detail">{{ target.last_current_status_detail }}</div>
+          {% endif %}
+        </div>
+
+        <div class="shipment-meta-grid">
+          <div>
+            <div class="shipment-meta-label">最新イベント日時</div>
+            <div class="shipment-meta-value">{{ target.last_latest_event_at or '-' }}</div>
+          </div>
+          <div>
+            <div class="shipment-meta-label">最終確認日時</div>
+            <div class="shipment-meta-value">{{ target.last_checked_at or '-' }}</div>
+          </div>
+        </div>
+
+        <div class="shipment-card-actions">
+          <a href="{{ url_for('shipment_tracking.shipment_tracking_detail', id=target.id) }}" class="btn btn-outline-secondary">詳細を見る</a>
+          <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_check_now', id=target.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+            <button type="submit" class="btn btn-outline-primary">最新情報の確認</button>
+          </form>
+        </div>
+      </div>
+    </article>
+  {% endfor %}
 </div>
+{% else %}
+  <div class="shipment-empty">この条件に該当する配送追跡はありません。</div>
+{% endif %}
 {% endblock %}

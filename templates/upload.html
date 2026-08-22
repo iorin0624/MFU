@@ -62,9 +62,15 @@
     <div class="mb-3">
       <label class="form-label">ファイル選択（ドラッグ＆ドロップも可）</label>
       <div id="drop-area" class="border border-secondary rounded p-3 text-center text-muted" style="cursor: pointer;">
-        ここに画像をドロップ、またはクリックして選択
+        ここにファイルをドロップ、またはクリックして選択
       </div>
-      <input type="file" id="fileElem" name="photos" multiple accept="image/*" hidden>
+      <input type="file" id="fileElem" name="photos" multiple
+             accept=".jpg,.jpeg,.png,.gif,.pdf,.heic,.heif,.cr2,.cr3,.nef,.nrw,.arw,.dng,.zip,image/*,application/pdf,application/zip"
+             hidden>
+      <div class="form-text">
+        JPG / PNG / HEIC / HEIF / CR2 / CR3 / NEF / NRW / ARW / DNG / ZIP
+        （従来のGIF・PDFも利用可）
+      </div>
       <div id="preview" class="mt-2"></div>
     </div>
 

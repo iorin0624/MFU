@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}TDRポップコーン管理 | MFU{% endblock %}
+
+{% block head_extra %}
+<style>
+  body { background: #f5f7fa; }
+  .admin-panel { border: 1px solid #dfe5ec; border-radius: 16px; background: #fff; box-shadow: 0 5px 18px rgba(28,49,74,.06); }
+  .status-success { color: #087647; }
+  .status-failed { color: #b4232c; }
+  .status-running { color: #8a5b00; }
+  code.hash { font-size: .78rem; word-break: break-all; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+  <div>
+    <h1 class="h3 mb-1">🍿 TDRポップコーン管理</h1>
+    <p class="text-secondary mb-0">公式4ページの取得状況と公開スナップショットを管理します。</p>
+  </div>
+  <a class="btn btn-outline-primary" href="{{ url_for('tdr.popcorn_public') }}" target="_blank" rel="noopener">公開ページを見る ↗</a>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}<div class="alert alert-{{ category }}">{{ message }}</div>{% endfor %}
+{% endwith %}
+
+<section class="admin-panel p-4 mb-4">
+  <div class="row g-3 align-items-center">
+    <div class="col-md">
+      <div class="small text-secondary mb-1">現在の公開データ</div>
+      {% if snapshot %}
+        <div class="fw-bold">最終更新：{{ snapshot.fetched_at.strftime('%Y年%m月%d日 %H:%M:%S') }}</div>
+        <div class="small text-secondary mt-1">
+          味 {{ snapshot.data.summary.flavor_count }}件 ／ 販売場所 {{ snapshot.data.summary.offer_count }}件 ／ 商品 {{ snapshot.data.summary.product_count }}件
+        </div>
+        <code class="hash">{{ snapshot.content_hash }}</code>
+      {% else %}
+        <div class="text-warning-emphasis fw-bold">まだ公開データがありません。</div>
+      {% endif %}
+    </div>
+    <div class="col-md-auto">
+      <form method="post" action="{{ url_for('tdr.popcorn_admin_refresh') }}" onsubmit="return confirm('公式4ページを取得して、正常な場合だけ公開データを更新します。実行しますか？');">
+        <button type="submit" class="btn btn-primary btn-lg">今すぐ更新</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<section class="admin-panel overflow-hidden">
+  <div class="p-3 border-bottom"><h2 class="h5 mb-0">取得履歴</h2></div>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead class="table-light"><tr><th>ID</th><th>開始</th><th>終了</th><th>結果</th><th>件数</th><th>詳細</th></tr></thead>
+      <tbody>
+      {% for run in runs %}
+        <tr>
+          <td>{{ run.id }}</td>
+          <td class="text-nowrap">{{ run.started_at.strftime('%Y-%m-%d %H:%M:%S') if run.started_at else '' }}</td>
+          <td class="text-nowrap">{{ run.finished_at.strftime('%Y-%m-%d %H:%M:%S') if run.finished_at else '実行中' }}</td>
+          <td class="fw-bold status-{{ run.status }}">{{ {'success':'成功','failed':'失敗','running':'実行中'}.get(run.status, run.status) }}</td>
+          <td class="small">
+            {% if run.counts %}味 {{ run.counts.flavor_count or 0 }} / 場所 {{ run.counts.offer_count or 0 }} / 商品 {{ run.counts.product_count or 0 }}{% else %}―{% endif %}
+          </td>
+          <td class="small text-danger">{{ run.error_text or '' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="text-center text-secondary py-4">取得履歴はありません。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

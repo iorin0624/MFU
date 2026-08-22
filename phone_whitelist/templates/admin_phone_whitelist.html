@@ -1,14 +1,23 @@
 {% extends "base.html" %}
-{% block title %}着信ホワイトリスト | MFU{% endblock %}
+{% block title %}着信リスト管理 | MFU{% endblock %}
 
 {% block content %}
+{% set is_blacklist = list_type == 'blacklist' %}
+{% set list_name = 'ブラックリスト' if is_blacklist else 'ホワイトリスト' %}
+{% set export_endpoint = 'phone_whitelist.export_blacklist_csv' if is_blacklist else 'phone_whitelist.export_csv' %}
+{% set add_endpoint = 'phone_whitelist.add_blacklist_entry' if is_blacklist else 'phone_whitelist.add_entry' %}
+{% set edit_endpoint = 'phone_whitelist.edit_blacklist_entry' if is_blacklist else 'phone_whitelist.edit_entry' %}
+{% set delete_endpoint = 'phone_whitelist.delete_blacklist_entry' if is_blacklist else 'phone_whitelist.delete_entry' %}
+{% set preview_endpoint = 'phone_whitelist.blacklist_import_preview' if is_blacklist else 'phone_whitelist.import_preview' %}
+{% set apply_endpoint = 'phone_whitelist.blacklist_import_apply' if is_blacklist else 'phone_whitelist.import_apply' %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
-    <h1 class="h3 mb-1">📞 着信ホワイトリスト</h1>
-    <p class="text-muted mb-0">登録番号はRing Group 106、未登録・非通知はVoiceMail_Announceへ接続します。</p>
+    <h1 class="h3 mb-1">📞 着信リスト管理</h1>
+    <p class="text-muted mb-0">ブラックリストを最優先し、該当番号は応答前に即時拒否します。</p>
   </div>
   <div class="d-flex gap-2">
-    <a class="btn btn-outline-success" href="{{ url_for('phone_whitelist.export_csv') }}">CSV書き出し</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('phone_diagnostics.index') }}">通話品質診断</a>
+    <a class="btn btn-outline-success" href="{{ url_for(export_endpoint) }}">{{ list_name }}CSV書き出し</a>
     <form method="post" action="{{ url_for('phone_whitelist.sync_now') }}" onsubmit="return confirm('現在の全件をFreePBXへ再反映しますか？');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-outline-primary" type="submit">全件を再反映</button>
@@ -24,31 +33,69 @@
 {% endfor %}
 
 <div class="alert alert-light border d-flex flex-wrap gap-4 py-2">
-  <span><strong>登録件数:</strong> {{ total }}件</span>
+  <span><strong>ホワイトリスト:</strong> {{ sync_state.entry_count or 0 }}件</span>
+  <span><strong>ブラックリスト:</strong> {{ sync_state.blacklist_count or 0 }}件</span>
   <span><strong>最終反映:</strong> {{ sync_state.last_synced_at or '未反映' }}</span>
   <span><strong>操作者:</strong> {{ sync_state.updated_by or '-' }}</span>
   <span><strong>結果:</strong> {{ sync_state.last_result or '-' }}</span>
 </div>
 
+<ul class="nav nav-tabs mb-4">
+  <li class="nav-item">
+    <a class="nav-link {% if not is_blacklist %}active{% endif %}" href="{{ url_for('phone_whitelist.index') }}">ホワイトリスト</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link text-danger {% if is_blacklist %}active fw-bold{% endif %}" href="{{ url_for('phone_whitelist.index', list='blacklist') }}">ブラックリスト</a>
+  </li>
+</ul>
+
+{% if is_blacklist %}
+<div class="alert alert-danger">
+  ここに登録した番号は、一時設定やホワイトリストより優先して呼出音なしで即時拒否します。Discord通知・留守電接続は行いません。
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
-  <div class="col-lg-6">
+  <div class="col-lg-4">
+    <section class="card h-100 {% if sync_state.anonymous_hangup_enabled %}border-danger{% endif %}">
+      <div class="card-body">
+        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('非通知着信の常時拒否設定を変更しますか？');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="setting" value="anonymous_hangup">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="anonymousHangup" name="enabled" value="1" {% if sync_state.anonymous_hangup_enabled %}checked{% endif %}>
+            <label class="form-check-label fw-bold" for="anonymousHangup">非通知を常にHangup(21)</label>
+          </div>
+          <p class="small text-muted">ONの間、非通知・通知不能の着信はDiscord通知や留守電接続を行わず、呼出音なしで即時拒否します。</p>
+          <button class="btn btn-sm btn-danger" type="submit">設定を反映</button>
+          {% if sync_state.anonymous_hangup_enabled %}
+            <div class="mt-2 small text-danger fw-bold">現在ON：手動でOFFにするまで継続</div>
+          {% endif %}
+        </form>
+      </div>
+    </section>
+  </div>
+  <div class="col-lg-4">
     <section class="card h-100 {% if sync_state.anonymous_allowed_active %}border-warning{% endif %}">
       <div class="card-body">
         <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('非通知着信の許可設定を変更しますか？');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="setting" value="anonymous_allowed">
           <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" role="switch" id="anonymousAllowed" name="enabled" value="1" {% if sync_state.anonymous_allowed_active %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" role="switch" id="anonymousAllowed" name="enabled" value="1" {% if sync_state.anonymous_allowed_active %}checked{% endif %} {% if sync_state.anonymous_hangup_enabled %}disabled{% endif %}>
             <label class="form-check-label fw-bold" for="anonymousAllowed">非通知着信を許可</label>
           </div>
           <p class="small text-muted">ONの間、非通知・通知不能の着信をRing Group 106へ接続します。</p>
+          {% if sync_state.anonymous_hangup_enabled %}
+            <div class="alert alert-danger small py-2">「非通知を常にHangup(21)」がONのため、強制OFFになっています。</div>
+          {% endif %}
           <div class="d-flex flex-wrap gap-2 align-items-center">
-            <select class="form-select form-select-sm" name="duration" style="max-width:180px">
+            <select class="form-select form-select-sm" name="duration" style="max-width:180px" {% if sync_state.anonymous_hangup_enabled %}disabled{% endif %}>
               <option value="900">15分</option><option value="1800">30分</option>
               <option value="3600" selected>1時間</option><option value="10800">3時間</option>
               <option value="manual">手動で戻すまで</option>
             </select>
-            <button class="btn btn-sm btn-warning" type="submit">設定を反映</button>
+            <button class="btn btn-sm btn-warning" type="submit" {% if sync_state.anonymous_hangup_enabled %}disabled{% endif %}>設定を反映</button>
           </div>
           {% if sync_state.anonymous_allowed_active %}
             <div class="mt-2 small text-warning-emphasis">現在ON：{% if sync_state.anonymous_allowed_manual %}手動解除まで{% else %}{{ sync_state.anonymous_allowed_until }}まで{% endif %}</div>
@@ -57,17 +104,17 @@
       </div>
     </section>
   </div>
-  <div class="col-lg-6">
+  <div class="col-lg-4">
     <section class="card h-100 {% if sync_state.whitelist_disabled_active %}border-danger{% endif %}">
       <div class="card-body">
-        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('ホワイトリスト無効化設定を変更しますか？ 無効化中は非通知を含む全着信を許可します。');">
+        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('ホワイトリスト無効化設定を変更しますか？ ブラックリスト以外の番号通知あり着信を許可します。');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="setting" value="whitelist_disabled">
           <div class="form-check form-switch mb-3">
             <input class="form-check-input" type="checkbox" role="switch" id="whitelistDisabled" name="enabled" value="1" {% if sync_state.whitelist_disabled_active %}checked{% endif %}>
             <label class="form-check-label fw-bold" for="whitelistDisabled">ホワイトリストを一時的に無効化</label>
           </div>
-          <p class="small text-muted">ONの間、登録・未登録・非通知を問わず、全着信をRing Group 106へ接続します。</p>
+          <p class="small text-muted">ONの間、番号通知ありの着信はブラックリスト以外の登録・未登録をRing Group 106へ接続します。非通知の判定には影響しません。</p>
           <div class="d-flex flex-wrap gap-2 align-items-center">
             <select class="form-select form-select-sm" name="duration" style="max-width:180px">
               <option value="900">15分</option><option value="1800">30分</option>
@@ -85,6 +132,118 @@
   </div>
 </div>
 
+<section class="card border-success mb-4" id="callThroughPanel">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <strong>📞 5分間コールスルー</strong>
+    <span class="small text-muted">許可番号から着信→4桁PIN認証→指定先へ自動発信</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-4">
+      <div class="col-lg-5">
+        <h2 class="h6">① コールスルー許可電話番号</h2>
+        <form method="post" action="{{ url_for('phone_whitelist.call_through_update_source') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label class="form-label" for="callThroughSource">許可番号（1件）</label>
+          <input
+            class="form-control"
+            id="callThroughSource"
+            name="allowed_phone_number"
+            value="{{ call_through_settings.allowed_phone_number or '' }}"
+            maxlength="32"
+            placeholder="08012345678"
+            {% if call_through_busy %}disabled{% endif %}
+          >
+          <div class="form-text">この番号はサーバーへ保存され、変更して保存するまで次回以降も引き継がれます。ホワイトリスト未登録でも利用できます。</div>
+          <button class="btn btn-outline-success mt-3" type="submit" {% if call_through_busy %}disabled{% endif %}>許可番号を保存</button>
+        </form>
+      </div>
+
+      <div class="col-lg-7 border-start-lg">
+        <h2 class="h6">② 5分間の発信予約</h2>
+        {% if call_through_reservation and call_through_busy %}
+          <div class="alert alert-success mb-3">
+            <div class="d-flex flex-wrap justify-content-between gap-2">
+              <strong>{{ call_through_status_labels.get(call_through_reservation.status, call_through_reservation.status) }}</strong>
+              {% if call_through_reservation.status == 'active' %}
+                <span id="callThroughRemaining" data-expires="{{ call_through_reservation.expires_at.isoformat() }}">残り時間を計算中…</span>
+              {% endif %}
+            </div>
+            <hr>
+            <dl class="row mb-0 small">
+              <dt class="col-sm-4">許可番号</dt><dd class="col-sm-8">{{ call_through_reservation.allowed_phone_number }}</dd>
+              <dt class="col-sm-4">発信先</dt><dd class="col-sm-8 fw-bold">{{ call_through_reservation.target_phone_number }}</dd>
+              <dt class="col-sm-4">着信回線</dt><dd class="col-sm-8">{{ call_through_trunks[call_through_reservation.inbound_trunk_key].name }}</dd>
+              <dt class="col-sm-4">発信回線</dt><dd class="col-sm-8">{{ call_through_trunks[call_through_reservation.outbound_trunk_key].name }}</dd>
+              {% if call_through_reservation.status == 'active' %}
+                <dt class="col-sm-4">4桁PIN</dt>
+                <dd class="col-sm-8"><span class="display-6 fw-bold font-monospace user-select-all">{{ call_through_reservation.pin_code }}</span></dd>
+              {% endif %}
+            </dl>
+          </div>
+          {% if call_through_reservation.status == 'active' %}
+          <form method="post" action="{{ url_for('phone_whitelist.call_through_cancel', reservation_id=call_through_reservation.reservation_id) }}" onsubmit="return confirm('このコールスルー予約をキャンセルしますか？');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-outline-danger" type="submit">予約をキャンセル</button>
+          </form>
+          {% endif %}
+        {% else %}
+          {% if call_through_reservation %}
+          <div class="alert alert-light border small py-2">
+            前回の結果：<strong>{{ call_through_status_labels.get(call_through_reservation.status, call_through_reservation.status) }}</strong>
+            {% if call_through_reservation.detail %}（{{ call_through_reservation.detail }}）{% endif %}
+          </div>
+          {% endif %}
+          <form method="post" action="{{ url_for('phone_whitelist.call_through_reserve') }}" class="row g-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-12">
+              <label class="form-label" for="callThroughTarget">かけたい電話番号</label>
+              <input class="form-control" id="callThroughTarget" name="target_phone_number" required maxlength="32" placeholder="0436252137" {% if not call_through_settings.allowed_phone_number %}disabled{% endif %}>
+              <div class="form-text d-none" id="callThroughSelectedTarget"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="callThroughInbound">着信を待つ回線</label>
+              <select class="form-select" id="callThroughInbound" name="inbound_trunk" {% if not call_through_settings.allowed_phone_number %}disabled{% endif %}>
+                {% for key, trunk in call_through_trunks.items() %}
+                <option value="{{ key }}" {% if not trunk.available %}disabled{% endif %}>{{ trunk.name }}{% if not trunk.available %} — 利用不可{% endif %}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="callThroughOutbound">発信に使う回線</label>
+              <select class="form-select" id="callThroughOutbound" name="outbound_trunk" {% if not call_through_settings.allowed_phone_number %}disabled{% endif %}>
+                {% for key, trunk in call_through_trunks.items() %}
+                <option value="{{ key }}" {% if not trunk.available %}disabled{% endif %}>{{ trunk.name }}{% if not trunk.available %} — 利用不可{% endif %}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12">
+              <button class="btn btn-success" type="submit" {% if not call_through_settings.allowed_phone_number %}disabled{% endif %}>4桁PINを発行して5分間待受</button>
+              {% if not call_through_settings.allowed_phone_number %}<div class="form-text text-danger">先に許可電話番号を保存してください。</div>{% endif %}
+            </div>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+
+{% if call_through_reservation and call_through_reservation.status == 'active' %}
+<script>
+(() => {
+  const element = document.getElementById('callThroughRemaining');
+  if (!element) return;
+  const expiresAt = new Date(element.dataset.expires.replace(' ', 'T')).getTime();
+  const update = () => {
+    const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+    element.textContent = seconds > 0 ? `残り ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '有効期限切れ';
+    if (seconds <= 0) window.setTimeout(() => window.location.reload(), 1000);
+  };
+  update();
+  window.setInterval(update, 1000);
+})();
+</script>
+{% endif %}
+
 {% if preview_entries %}
 <section class="card border-primary mb-4">
   <div class="card-header bg-primary text-white">CSV取込確認（{{ preview_entries|length }}件）</div>
@@ -101,12 +260,12 @@
       </table>
     </div>
     <div class="d-flex gap-2 mt-3">
-      <form method="post" action="{{ url_for('phone_whitelist.import_apply') }}">
+      <form method="post" action="{{ url_for(apply_endpoint) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="csv_payload" value="{{ csv_payload }}">
-        <button class="btn btn-primary" type="submit">この内容を登録・反映</button>
+        <button class="btn {% if is_blacklist %}btn-danger{% else %}btn-primary{% endif %}" type="submit">この内容を{{ list_name }}へ登録・反映</button>
       </form>
-      <a class="btn btn-outline-secondary" href="{{ url_for('phone_whitelist.index') }}">キャンセル</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('phone_whitelist.index', list=list_type) }}">キャンセル</a>
     </div>
   </div>
 </section>
@@ -117,12 +276,12 @@
     <section class="card h-100">
       <div class="card-header">新規登録</div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('phone_whitelist.add_entry') }}" class="row g-2">
+        <form method="post" action="{{ url_for(add_endpoint) }}" class="row g-2">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="col-md-4"><label class="form-label">電話番号</label><input class="form-control" name="phone_number" required maxlength="32" placeholder="08012345678"></div>
           <div class="col-md-4"><label class="form-label">名称</label><input class="form-control" name="name" maxlength="100"></div>
           <div class="col-md-4"><label class="form-label">備考</label><input class="form-control" name="note" maxlength="500"></div>
-          <div class="col-12"><button class="btn btn-primary" type="submit">登録して即時反映</button></div>
+          <div class="col-12"><button class="btn {% if is_blacklist %}btn-danger{% else %}btn-primary{% endif %}" type="submit">{{ list_name }}へ登録して即時反映</button></div>
         </form>
       </div>
     </section>
@@ -131,7 +290,7 @@
     <section class="card h-100">
       <div class="card-header">CSV一括登録</div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('phone_whitelist.import_preview') }}" enctype="multipart/form-data">
+        <form method="post" action="{{ url_for(preview_endpoint) }}" enctype="multipart/form-data">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input class="form-control mb-2" type="file" name="csv_file" accept=".csv,text/csv" required>
           <div class="form-text mb-2">列: phone_number, name, note（UTF-8／Shift_JIS、最大1MB）</div>
@@ -143,35 +302,55 @@
 </div>
 
 <form class="row g-2 mb-3" method="get" action="{{ url_for('phone_whitelist.index') }}">
+  <input type="hidden" name="list" value="{{ list_type }}">
   <div class="col-md-6"><input class="form-control" name="q" value="{{ query }}" placeholder="電話番号・名称・備考を検索"></div>
   <div class="col-auto"><button class="btn btn-outline-secondary" type="submit">検索</button></div>
-  {% if query %}<div class="col-auto"><a class="btn btn-link" href="{{ url_for('phone_whitelist.index') }}">解除</a></div>{% endif %}
+  {% if query %}<div class="col-auto"><a class="btn btn-link" href="{{ url_for('phone_whitelist.index', list=list_type) }}">解除</a></div>{% endif %}
 </form>
 
 <div class="table-responsive">
-  <table class="table table-bordered table-hover align-middle" style="min-width: 860px; table-layout: fixed;">
+  <table class="table table-bordered table-hover align-middle" style="min-width: 980px; table-layout: fixed;">
     <colgroup>
-      <col style="width: 22%;">
-      <col style="width: 25%;">
-      <col style="width: 33%;">
-      <col style="width: 20%;">
+      <col style="width: 21%;">
+      <col style="width: 24%;">
+      <col style="width: 31%;">
+      <col style="width: 24%;">
     </colgroup>
     <thead class="table-light"><tr><th>電話番号</th><th>名称</th><th>備考</th><th>操作</th></tr></thead>
     <tbody>
       {% for entry in entries %}
       <tr>
         <td class="p-2">
-          <form id="phone-whitelist-entry-{{ entry.id }}" method="post" action="{{ url_for('phone_whitelist.edit_entry', entry_id=entry.id) }}">
+          <form id="phone-{{ list_type }}-entry-{{ entry.id }}" method="post" action="{{ url_for(edit_endpoint, entry_id=entry.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input class="form-control" name="phone_number" value="{{ entry.phone_number }}" required maxlength="32">
+            {% if entry.phone_number in overlap_numbers %}<span class="badge text-bg-warning mt-1">両方に登録：ブラックリスト優先</span>{% endif %}
           </form>
         </td>
-        <td class="p-2"><input class="form-control" form="phone-whitelist-entry-{{ entry.id }}" name="name" value="{{ entry.name }}" maxlength="100"></td>
-        <td class="p-2"><input class="form-control" form="phone-whitelist-entry-{{ entry.id }}" name="note" value="{{ entry.note }}" maxlength="500"></td>
+        <td class="p-2"><input class="form-control" form="phone-{{ list_type }}-entry-{{ entry.id }}" name="name" value="{{ entry.name }}" maxlength="100"></td>
+        <td class="p-2"><input class="form-control" form="phone-{{ list_type }}-entry-{{ entry.id }}" name="note" value="{{ entry.note }}" maxlength="500"></td>
         <td class="p-2">
-          <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-primary flex-grow-1" form="phone-whitelist-entry-{{ entry.id }}" type="submit">保存</button>
-            <button class="btn btn-sm btn-outline-danger" form="phone-whitelist-entry-{{ entry.id }}" type="submit" formaction="{{ url_for('phone_whitelist.delete_entry', entry_id=entry.id) }}" onclick="return confirm('{{ entry.phone_number }} を削除しますか？');">削除</button>
+          <div class="d-flex flex-wrap gap-2">
+            {% if not is_blacklist %}
+            <button
+              class="btn btn-sm btn-outline-primary js-call-through-from-list"
+              type="button"
+              data-phone-number="{{ entry.phone_number }}"
+              data-name="{{ entry.name|e }}"
+              {% if call_through_busy or entry.phone_number in overlap_numbers %}disabled{% endif %}
+              {% if call_through_busy %}title="別のコールスルー予約または通話が進行中です"{% elif entry.phone_number in overlap_numbers %}title="ブラックリスト登録中のため発信できません"{% endif %}
+            >コールスルー発信</button>
+            <button
+              class="btn btn-sm btn-outline-success js-click-to-call"
+              type="button"
+              data-entry-id="{{ entry.id }}"
+              data-phone-number="{{ entry.phone_number }}"
+              data-name="{{ entry.name|e }}"
+              {% if entry.phone_number in overlap_numbers %}disabled title="ブラックリスト登録中のため発信できません"{% endif %}
+            >発信</button>
+            {% endif %}
+            <button class="btn btn-sm {% if is_blacklist %}btn-danger{% else %}btn-primary{% endif %} flex-grow-1" form="phone-{{ list_type }}-entry-{{ entry.id }}" type="submit">保存</button>
+            <button class="btn btn-sm btn-outline-danger" form="phone-{{ list_type }}-entry-{{ entry.id }}" type="submit" formaction="{{ url_for(delete_endpoint, entry_id=entry.id) }}" onclick="return confirm('{{ entry.phone_number }} を{{ list_name }}から削除しますか？');">削除</button>
           </div>
         </td>
       </tr>
@@ -182,10 +361,208 @@
   </table>
 </div>
 
+{% if not is_blacklist %}
+<script>
+(() => {
+  const panel = document.getElementById('callThroughPanel');
+  const targetInput = document.getElementById('callThroughTarget');
+  const selectedTarget = document.getElementById('callThroughSelectedTarget');
+  const sourceInput = document.getElementById('callThroughSource');
+
+  document.querySelectorAll('.js-call-through-from-list').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!panel || !targetInput) return;
+      targetInput.value = button.dataset.phoneNumber || '';
+      if (selectedTarget) {
+        const name = button.dataset.name || '';
+        selectedTarget.textContent = name
+          ? `ホワイトリストから選択：${name}（${targetInput.value}）`
+          : `ホワイトリストから選択：${targetInput.value}`;
+        selectedTarget.classList.remove('d-none');
+      }
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.setTimeout(() => {
+        if (!targetInput.disabled) {
+          targetInput.focus({ preventScroll: true });
+        } else if (sourceInput && !sourceInput.disabled) {
+          sourceInput.focus({ preventScroll: true });
+        }
+      }, 350);
+    });
+  });
+})();
+</script>
+
+<div class="modal fade" id="clickToCallModal" tabindex="-1" aria-labelledby="clickToCallModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title h5 mb-1" id="clickToCallModalLabel">ホワイトリストから発信</h2>
+          <div class="small text-muted" id="clickToCallTarget"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+      </div>
+      <div class="modal-body">
+        <div id="clickToCallControls">
+          <label class="form-label" for="clickToCallEndpoint">どの電話機で話しますか？</label>
+          <select class="form-select mb-3" id="clickToCallEndpoint">
+            {% for endpoint, label in click_to_call_endpoints.items() %}
+            <option value="{{ endpoint }}">{{ endpoint }} — {{ label }}</option>
+            {% endfor %}
+          </select>
+
+          <label class="form-label" for="clickToCallTrunk">どの回線で外線発信しますか？</label>
+          <select class="form-select mb-3" id="clickToCallTrunk">
+            {% for key, trunk in click_to_call_trunks.items() %}
+            <option value="{{ key }}" {% if not trunk.available %}disabled{% endif %}>
+              {{ trunk.name }}{% if not trunk.available %} — 利用不可{% endif %}
+            </option>
+            {% endfor %}
+          </select>
+
+          <div class="alert alert-light border small mb-0">
+            選択した電話機には <strong>外線発信 &lt;10321&gt;</strong> と表示して先に呼び出します。
+            応答後に相手先へ発信します。相手側には契約回線の正規の発信者番号が通知されます。
+          </div>
+        </div>
+        <div class="alert mt-3 mb-0 d-none" id="clickToCallStatus" role="status"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">閉じる</button>
+        <button type="button" class="btn btn-success" id="clickToCallStart">この内容で発信</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const modalElement = document.getElementById('clickToCallModal');
+  const startButton = document.getElementById('clickToCallStart');
+  const targetElement = document.getElementById('clickToCallTarget');
+  const statusElement = document.getElementById('clickToCallStatus');
+  const endpointElement = document.getElementById('clickToCallEndpoint');
+  const trunkElement = document.getElementById('clickToCallTrunk');
+  const csrfToken = {{ csrf_token()|tojson }};
+  const startUrl = {{ url_for('phone_whitelist.click_to_call_start')|tojson }};
+  const statusUrlTemplate = {{ url_for('phone_whitelist.click_to_call_status', job_id='JOB_ID')|tojson }};
+  const statusLabels = {{ click_to_call_status_labels|tojson }};
+  let selectedEntry = null;
+  let pollTimer = null;
+
+  function showStatus(status, detail = '', isError = false) {
+    statusElement.className = `alert mt-3 mb-0 ${isError ? 'alert-danger' : 'alert-info'}`;
+    statusElement.textContent = detail ? `${statusLabels[status] || status}：${detail}` : (statusLabels[status] || status);
+  }
+
+  function stopPolling() {
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  async function readApiResponse(response) {
+    const text = await response.text();
+    if (text) {
+      try {
+        return JSON.parse(text);
+      } catch (_) {
+        // リバースプロキシが4xx/5xxをHTMLへ差し替えた場合も、利用者向けに日本語で表示する。
+      }
+    }
+    const fallbackMessages = {
+      400: '入力内容または認証情報を確認してください',
+      403: '操作権限またはセッションを確認してください',
+      404: '発信情報が見つかりません。画面を再読み込みしてください',
+      409: '選択した電話機で別の発信処理が進行中、または発信できない番号です',
+      503: 'FreePBXへ接続できませんでした',
+    };
+    return {
+      ok: false,
+      message: fallbackMessages[response.status] || `サーバーエラーが発生しました（HTTP ${response.status}）`,
+    };
+  }
+
+  async function pollStatus(jobId) {
+    try {
+      const response = await fetch(statusUrlTemplate.replace('JOB_ID', jobId), {
+        headers: {'Accept': 'application/json'},
+        credentials: 'same-origin',
+      });
+      const data = await readApiResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.message || '状態を確認できませんでした');
+      showStatus(data.job.status, data.job.detail || '', ['failed', 'phone_no_answer', 'external_failed'].includes(data.job.status));
+      if (data.job.terminal) {
+        startButton.disabled = false;
+        startButton.textContent = 'もう一度発信';
+        return;
+      }
+      pollTimer = window.setTimeout(() => pollStatus(jobId), 1000);
+    } catch (error) {
+      showStatus('failed', error.message || String(error), true);
+      startButton.disabled = false;
+    }
+  }
+
+  document.querySelectorAll('.js-click-to-call').forEach(button => {
+    button.addEventListener('click', () => {
+      stopPolling();
+      selectedEntry = {
+        id: Number(button.dataset.entryId),
+        phoneNumber: button.dataset.phoneNumber,
+        name: button.dataset.name || '',
+      };
+      targetElement.textContent = `${selectedEntry.phoneNumber}${selectedEntry.name ? ` — ${selectedEntry.name}` : ''}`;
+      statusElement.className = 'alert mt-3 mb-0 d-none';
+      statusElement.textContent = '';
+      startButton.disabled = false;
+      startButton.textContent = 'この内容で発信';
+      bootstrap.Modal.getOrCreateInstance(modalElement).show();
+    });
+  });
+
+  startButton.addEventListener('click', async () => {
+    if (!selectedEntry) return;
+    const endpointText = endpointElement.options[endpointElement.selectedIndex].text;
+    const trunkText = trunkElement.options[trunkElement.selectedIndex].text;
+    if (!window.confirm(
+      `${selectedEntry.phoneNumber} へ発信します。\n\n電話機: ${endpointText}\n外線: ${trunkText}\n\nよろしいですか？`
+    )) return;
+    stopPolling();
+    startButton.disabled = true;
+    startButton.textContent = '発信処理中…';
+    showStatus('queued');
+    try {
+      const response = await fetch(startUrl, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-Token': csrfToken},
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          entry_id: selectedEntry.id,
+          endpoint: endpointElement.value,
+          trunk: trunkElement.value,
+        }),
+      });
+      const data = await readApiResponse(response);
+      if (!response.ok || !data.ok) throw new Error(data.message || '発信を開始できませんでした');
+      showStatus(data.status);
+      pollStatus(data.job_id);
+    } catch (error) {
+      showStatus('failed', error.message || String(error), true);
+      startButton.disabled = false;
+      startButton.textContent = 'もう一度発信';
+    }
+  });
+
+  modalElement.addEventListener('hidden.bs.modal', stopPolling);
+})();
+</script>
+{% endif %}
+
 {% if pages > 1 %}
 <nav aria-label="ページ"><ul class="pagination">
   {% for number in range(1, pages + 1) %}
-    <li class="page-item {% if number == page %}active{% endif %}"><a class="page-link" href="{{ url_for('phone_whitelist.index', q=query, page=number) }}">{{ number }}</a></li>
+    <li class="page-item {% if number == page %}active{% endif %}"><a class="page-link" href="{{ url_for('phone_whitelist.index', list=list_type, q=query, page=number) }}">{{ number }}</a></li>
   {% endfor %}
 </ul></nav>
 {% endif %}

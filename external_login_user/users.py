@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from mimetypes import guess_extension
 from urllib.parse import quote_plus, urlparse
 from ipaddress import ip_address, IPv4Address, IPv6Address, ip_network
-from app.utils.logs import write_line_login_log  # 追加
+from app.utils.logs import write_line_login_blocked_log, write_line_login_log  # 追加
 from jinja2 import TemplateNotFound
 import math
 
@@ -45,7 +45,7 @@ from . import bp, oauth
 
 from app.utils.db import get_db
 from app.utils.mail import send_mail
-from .identity_lock import is_deleted_identity_locked
+from .identity_lock import get_deleted_identity_lock
 from .utils import (
     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
@@ -663,7 +663,9 @@ def _get_admin_webhook_url() -> str | None:
         row = cur.fetchone()
         if not row:
             return None
-        return row[0] if isinstance(row, tuple) else row.get("webhook_url")
+        legacy = row[0] if isinstance(row, tuple) else row.get("webhook_url")
+        from app.discord_notifications.repository import get_discord_webhook
+        return get_discord_webhook("event_management", legacy) or None
     finally:
         try: cur.close(); db.close()
         except Exception: pass
@@ -1624,7 +1626,11 @@ def line_callback():
 
     lock_db = get_db(); lock_cur = lock_db.cursor()
     try:
-        identity_locked = is_deleted_identity_locked(lock_cur, provider="line", social_id=sub)
+        identity_locked, original_user_id = get_deleted_identity_lock(
+            lock_cur,
+            provider="line",
+            social_id=sub,
+        )
     finally:
         try: lock_cur.close(); lock_db.close()
         except Exception: pass
@@ -1639,7 +1645,23 @@ def line_callback():
             "ext_after_verify_next",
         ):
             session.pop(key, None)
-        current_app.logger.warning("deleted LINE identity login blocked")
+        ip_for_log = (
+            (request.headers.get("CF-Connecting-IP") or "").strip()
+            or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote_addr
+            or "-"
+        )
+        try:
+            write_line_login_blocked_log(
+                ip_for_log,
+                original_user_id=original_user_id,
+            )
+        except Exception:
+            current_app.logger.warning("write [LINE_LOGIN_BLOCKED] log failed", exc_info=True)
+        current_app.logger.warning(
+            "deleted LINE identity login blocked original_user_id=%s",
+            original_user_id,
+        )
         flash("このLINEアカウントは退会済みのため、再登録できません。", "error")
         return redirect(url_for("external_login_user.index"))
 
@@ -3811,11 +3833,17 @@ def event_pass(event_uuid: str):
     my_paid_at         = row.get("paid_at") if row else None
     my_receipt_url     = row.get("receipt_url") if row else None
 
+    # 参加証は承認済み・未キャンセルの参加者だけに表示する。
+    # 画面上のリンク非表示だけに頼らず、直リンクでも必ず拒否する。
+    if (
+        not row
+        or str(my_status).strip().lower() != "approved"
+        or int(row.get("is_canceled") or 0) == 1
+    ):
+        abort(403, "承認済みの参加者のみ参加証を利用できます")
+
     # ★ チェックイン情報
     raw_checkin_at = row.get("checkin_at") if row else None
-    if row and int(row.get("is_canceled") or 0) == 1:
-        flash("キャンセル済みのため参加証は利用できません。", "warning")
-        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
     if isinstance(raw_checkin_at, _dt):
         checkin_at_str = raw_checkin_at.strftime("%Y-%m-%d %H:%M:%S")
     else:

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ファイルをダウンロード - {{ upload.title or 'MFU' }}</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh; margin: 0; padding: 24px 16px;
+      display: grid; place-items: center;
+      color: #172033; background: #f3f6fb;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+    }
+    .card {
+      width: min(100%, 620px); padding: 30px;
+      background: #fff; border: 1px solid #dce4ef; border-radius: 20px;
+      box-shadow: 0 14px 38px rgba(24, 44, 76, .11);
+    }
+    .icon {
+      display: grid; place-items: center; width: 58px; height: 58px;
+      margin: 0 auto 16px; border-radius: 16px; background: #eaf3ff; font-size: 30px;
+    }
+    h1 { margin: 0 0 24px; text-align: center; font-size: clamp(1.45rem, 5vw, 2rem); }
+    .title { margin: 0 0 24px; text-align: center; font-size: 1.2rem; font-weight: 700; overflow-wrap: anywhere; }
+    dl {
+      display: grid; grid-template-columns: minmax(7em, 1fr) 2fr;
+      gap: 12px 18px; margin: 0; padding: 20px;
+      border-radius: 14px; background: #f7f9fc;
+    }
+    dt { color: #637087; }
+    dd { margin: 0; font-weight: 650; text-align: right; overflow-wrap: anywhere; }
+    .download {
+      display: block; width: 100%; margin-top: 24px; padding: 15px 18px;
+      border-radius: 12px; color: #fff; background: #1769e0;
+      font-size: 1.05rem; font-weight: 750; text-align: center; text-decoration: none;
+    }
+    .download:hover { background: #0d57bf; }
+    .download.disabled { pointer-events: none; background: #9aa7b8; }
+    .help { margin: 14px 0 0; color: #66748a; font-size: .9rem; line-height: 1.65; text-align: center; }
+    .notice { margin: 16px 0 0; padding: 11px 13px; border-radius: 10px; color: #7a5211; background: #fff7e5; }
+    @media (max-width: 480px) {
+      .card { padding: 24px 18px; }
+      dl { grid-template-columns: 1fr; gap: 4px; }
+      dd { margin-bottom: 8px; text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="icon" aria-hidden="true">📦</div>
+    <h1>ファイルをダウンロード</h1>
+    <p class="title">{{ upload.title or 'タイトル未設定' }}</p>
+
+    <dl>
+      <dt>撮影日</dt><dd>{{ upload_date }}</dd>
+      <dt>ファイル数</dt><dd>{{ download_count }}件</dd>
+      <dt>ダウンロード容量</dt><dd>{{ total_size_label }}</dd>
+      <dt>有効期限</dt><dd>{{ expire_date }}</dd>
+    </dl>
+
+    <a class="download{% if download_count == 0 %} disabled{% endif %}"
+       {% if download_count > 0 %}href="{{ download_url }}"{% else %}aria-disabled="true"{% endif %}>
+      すべてのファイルをZIPでダウンロード
+    </a>
+
+    {% if download_count > 0 %}
+      <p class="help">
+        ボタンを押すとZIPファイルを準備します。<br>
+        ファイル数や容量によっては開始まで時間がかかる場合があります。
+      </p>
+    {% else %}
+      <p class="notice">現在ダウンロードできるファイルはありません。</p>
+    {% endif %}
+
+    {% if hidden_count > 0 %}
+      <p class="notice">非公開中の{{ hidden_count }}件はZIPに含まれません。</p>
+    {% endif %}
+  </main>
+</body>
+</html>

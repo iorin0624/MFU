@@ -297,6 +297,15 @@ def _lock_deleted_external_user():
             pass
 
     if not row or int(row.get("is_deleted") or 0) == 1:
+        try:
+            from app.albums.routes import clear_event_album_auth
+            clear_event_album_auth()
+        except Exception:
+            current_app.logger.warning(
+                "failed to clear event album auth for deleted external user uid=%s",
+                uid,
+                exc_info=True,
+            )
         for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname", "ext_after_login_next", "ext_after_verify_next"):
             session.pop(k, None)
         if request.blueprint == "external_login_user":

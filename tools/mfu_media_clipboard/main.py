@@ -111,6 +111,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressDialog,
     QPushButton,
     QScrollArea,
@@ -139,11 +140,27 @@ STARTUP_VALUE_NAME = "MFUMediaClipboard"
 URL_PATTERN = re.compile(
     r"https?://(?:www\.)?(?:"
     r"(?:instagram\.com/(?:[^/?#]+/)?(?:p|reel|tv)/[A-Za-z0-9_-]+/?[^ \r\n\t]*)|"
+    r"(?:instagram\.com/stories/[A-Za-z0-9._]+(?:/\d+)?/?[^ \r\n\t]*)|"
+    r"(?:threads\.(?:com|net)/(?:@[^/?#\s]+/post|t)/[A-Za-z0-9_-]+/?[^ \r\n\t]*)|"
     r"(?:(?:x|twitter)\.com/[^/?#\s]+/status/\d+[^ \r\n\t]*)"
     r")",
     re.IGNORECASE,
 )
+MAX_BATCH_URLS = 20
+URL_TRAILING_PUNCTUATION = ".,;:!?)]}>\u3001\u3002\uff01\uff1f\u3011\u300d\u300f"
 FOLDER_RANGE_PATTERN = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
+
+
+def extract_media_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in URL_PATTERN.finditer(str(text or "")):
+        url = match.group(0).rstrip(URL_TRAILING_PUNCTUATION)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
 
 
 def folder_sort_key(value: str) -> tuple[int, int, int, str]:
@@ -327,6 +344,9 @@ class ApiClient:
         data = self.get("/image_viewer/api/instagram/next-number", folder=folder)
         return int(data.get("nextNumber") or 1)
 
+    def start_instagram_browser(self) -> dict[str, Any]:
+        return self.post_json("/image_viewer/api/instagram/browser/start", {}, timeout=90)
+
     def folders(self) -> list[str]:
         data = self.get("/image_viewer/api/images")
         folders = data.get("folders") or []
@@ -352,32 +372,59 @@ class ApiClient:
         result["jobId"] = job_id
         return result
 
-    def _poll_job(self, path: str, progress: Signal) -> dict[str, Any]:
+    def fetch_video_frames(self, source_url: str, progress: Signal) -> dict[str, Any]:
+        data = self.post_json("/image_viewer/api/video/frames/fetch", {"url": source_url})
+        job_id = str(data.get("jobId") or "")
+        if not job_id:
+            return data
+        result = self._poll_job(f"/image_viewer/api/instagram/jobs/{job_id}", progress)
+        result["jobId"] = job_id
+        return result
+
+    def _poll_job(
+        self,
+        path: str,
+        progress: Signal,
+        *,
+        attempts: int = 180,
+        action_label: str = "取得中",
+    ) -> dict[str, Any]:
         last: dict[str, Any] = {}
-        for _ in range(180):
+        for _ in range(attempts):
             data = self.get(path)
             last = data
             status = str(data.get("status") or "")
-            progress.emit(self._progress_text(data))
-            if status in {"done", "error", "cancelled"}:
+            progress.emit(self._progress_text(data, action_label=action_label))
+            if status in {"done", "error", "cancelled", "login_required"}:
                 return data
             time.sleep(1)
         raise ApiError("取得がタイムアウトしました。")
 
-    def _progress_text(self, data: dict[str, Any]) -> str:
+    def _progress_text(self, data: dict[str, Any], *, action_label: str = "取得中") -> str:
         total = int(data.get("total") or 0)
         processed = int(data.get("processed") or 0)
         downloaded = int(data.get("downloaded") or 0)
         failed = int(data.get("failed") or 0)
         if total:
-            return f"取得中... {processed}/{total}  成功:{downloaded}  失敗:{failed}"
-        return "取得中..."
+            if downloaded or failed:
+                return f"{action_label}... {processed}/{total}  成功:{downloaded}  失敗:{failed}"
+            return f"{action_label}... {processed}/{total}"
+        return f"{action_label}..."
 
     def save_images(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post_json("/image_viewer/api/instagram/save", payload, timeout=180)
 
-    def save_videos(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.post_json("/image_viewer/api/video/save", payload, timeout=180)
+    def save_videos(self, payload: dict[str, Any], progress: Signal) -> dict[str, Any]:
+        data = self.post_json("/image_viewer/api/video/save-async", payload, timeout=30)
+        save_job_id = str(data.get("saveJobId") or "")
+        if not save_job_id:
+            return data
+        return self._poll_job(
+            f"/image_viewer/api/video/save-jobs/{save_job_id}",
+            progress,
+            attempts=1800,
+            action_label="動画を保存中",
+        )
 
     def download_bytes(self, url: str) -> bytes:
         response = self.session.get(self.absolute_url(url), headers=self._headers(), timeout=45)
@@ -407,14 +454,50 @@ class FetchWorker(threading.Thread):
                 self.signals.progress.emit("画像を取得しています...")
                 try:
                     result["images"] = self.api.fetch_images(self.source_url, self.signals.progress)
+                    if result["images"].get("loginRequired"):
+                        result["errors"].append(
+                            str(result["images"].get("error") or "Instagramの再ログインが必要です。")
+                        )
                 except Exception as exc:
                     result["errors"].append(f"画像: {exc}")
             if "videos" in self.kinds:
                 self.signals.progress.emit("動画を取得しています...")
                 try:
                     result["videos"] = self.api.fetch_videos(self.source_url, self.signals.progress)
+                    if result["videos"].get("loginRequired"):
+                        result["errors"].append(
+                            str(result["videos"].get("error") or "Instagramの再ログインが必要です。")
+                        )
                 except Exception as exc:
                     result["errors"].append(f"動画: {exc}")
+            if "video_frames" in self.kinds:
+                self.signals.progress.emit("動画を写真に変換しています...")
+                try:
+                    result["images"] = self.api.fetch_video_frames(
+                        self.source_url,
+                        self.signals.progress,
+                    )
+                    if result["images"].get("loginRequired"):
+                        result["errors"].append(
+                            str(result["images"].get("error") or "Instagramの再ログインが必要です。")
+                        )
+                except Exception as exc:
+                    result["errors"].append(f"動画→写真: {exc}")
+            self.signals.finished.emit(result)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoSaveWorker(threading.Thread):
+    def __init__(self, api: ApiClient, payload: dict[str, Any]) -> None:
+        super().__init__(daemon=True)
+        self.api = api
+        self.payload = payload
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        try:
+            result = self.api.save_videos(self.payload, self.signals.progress)
             self.signals.finished.emit(result)
         except Exception as exc:
             self.signals.failed.emit(str(exc))
@@ -750,10 +833,20 @@ class ImageSelectionDialog(QDialog):
     CARD_WIDTH = 184
     THUMB_SIZE = 156
 
-    def __init__(self, api: ApiClient, job: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        api: ApiClient,
+        job: dict[str, Any],
+        parent: QWidget | None = None,
+        *,
+        show_completion_message: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.api = api
         self.job = job
+        self.show_completion_message = show_completion_message
+        self.save_result: dict[str, int] | None = None
+        self.save_error = ""
         self.items = [x for x in (job.get("images") or []) if isinstance(x, dict)]
         self.cards: list[MediaCard] = []
         self.thumb_signals = ThumbSignals()
@@ -971,21 +1064,43 @@ class ImageSelectionDialog(QDialog):
             )
             saved = len(data.get("saved") or [])
             duplicates = len(data.get("duplicates") or [])
+            errors = len(data.get("errors") or [])
+            self.save_result = {"saved": saved, "duplicates": duplicates, "errors": errors}
+            self.save_error = ""
             self.api.set_setting("last_image_folder", self._folder_text())
-            QMessageBox.information(self, APP_NAME, f"画像を保存しました。\n保存: {saved}件\n重複: {duplicates}件")
+            if self.show_completion_message:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    f"画像を保存しました。\n保存: {saved}件\n重複: {duplicates}件\n失敗: {errors}件",
+                )
             self.accept()
         except Exception as exc:
+            self.save_error = str(exc)
             QMessageBox.critical(self, APP_NAME, f"画像保存に失敗しました。\n{exc}")
             self.status.setText("")
 
 
 class VideoSelectionDialog(QDialog):
-    def __init__(self, api: ApiClient, job: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        api: ApiClient,
+        job: dict[str, Any],
+        parent: QWidget | None = None,
+        *,
+        show_completion_message: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.api = api
         self.job = job
+        self.show_completion_message = show_completion_message
+        self.save_result: dict[str, int] | None = None
+        self.save_error = ""
         self.items = [x for x in (job.get("videos") or []) if isinstance(x, dict)]
         self.checkboxes: list[tuple[dict[str, Any], QCheckBox]] = []
+        self.save_worker: VideoSaveWorker | None = None
+        self.save_progress: QProgressDialog | None = None
+        self.pending_save_folder = ""
 
         self.setWindowTitle("動画を選択して保存")
         self.resize(560, 420)
@@ -1024,6 +1139,7 @@ class VideoSelectionDialog(QDialog):
         buttons.button(QDialogButtonBox.Save).setText("選択動画を保存")
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+        self.buttons = buttons
         layout.addWidget(buttons)
 
     def _select_all(self) -> None:
@@ -1066,40 +1182,102 @@ class VideoSelectionDialog(QDialog):
         if not selected:
             QMessageBox.warning(self, APP_NAME, "保存する動画を選択してください。")
             return
-        try:
-            data = self.api.save_videos(
-                {
-                    "jobId": self.job.get("jobId") or "",
-                    "videos": self.items,
-                    "selected": selected,
-                    "folder": self._folder_text(),
-                }
+        self.pending_save_folder = self._folder_text()
+        payload = {
+            "jobId": self.job.get("jobId") or "",
+            "videos": self.items,
+            "selected": selected,
+            "folder": self.pending_save_folder,
+        }
+        self.buttons.setEnabled(False)
+        self.save_progress = QProgressDialog("動画保存を開始しています...", "", 0, 0, self)
+        self.save_progress.setWindowTitle(APP_NAME)
+        self.save_progress.setCancelButton(None)
+        self.save_progress.setWindowModality(Qt.WindowModal)
+        self.save_progress.show()
+        self.save_worker = VideoSaveWorker(self.api, payload)
+        self.save_worker.signals.progress.connect(self._save_progress_changed)
+        self.save_worker.signals.finished.connect(self._save_finished)
+        self.save_worker.signals.failed.connect(self._save_failed)
+        self.save_worker.start()
+
+    def _save_progress_changed(self, message: str) -> None:
+        if self.save_progress:
+            self.save_progress.setLabelText(message)
+
+    def _finish_save_progress(self) -> None:
+        if self.save_progress:
+            self.save_progress.close()
+            self.save_progress.deleteLater()
+            self.save_progress = None
+        self.buttons.setEnabled(True)
+
+    def _save_finished(self, data: dict[str, Any]) -> None:
+        self._finish_save_progress()
+        saved = len(data.get("saved") or [])
+        duplicates = len(data.get("duplicates") or [])
+        errors = len(data.get("errors") or [])
+        self.save_result = {"saved": saved, "duplicates": duplicates, "errors": errors}
+        self.save_error = ""
+        self.api.set_setting("last_video_folder", self.pending_save_folder)
+        if self.show_completion_message:
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                f"動画を保存しました。\n保存: {saved}件\n重複: {duplicates}件\n失敗: {errors}件",
             )
-            saved = len(data.get("saved") or [])
-            duplicates = len(data.get("duplicates") or [])
-            self.api.set_setting("last_video_folder", self._folder_text())
-            QMessageBox.information(self, APP_NAME, f"動画を保存しました。\n保存: {saved}件\n重複: {duplicates}件")
-            self.accept()
-        except Exception as exc:
-            QMessageBox.critical(self, APP_NAME, f"動画保存に失敗しました。\n{exc}")
+        self.accept()
+
+    def _save_failed(self, error: str) -> None:
+        self._finish_save_progress()
+        self.save_error = str(error)
+        QMessageBox.critical(self, APP_NAME, f"動画保存に失敗しました。\n{error}")
 
 
 class ManualUrlDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("URLを指定")
+        self.resize(700, 380)
         layout = QVBoxLayout(self)
-        self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText("https://www.instagram.com/reel/... / https://x.com/.../status/...")
-        layout.addWidget(QLabel("Instagram / X の投稿URL"))
+        self.url_edit = QPlainTextEdit()
+        self.url_edit.setPlaceholderText(
+            "Instagramの投稿・ストーリー / Threads / X のURLを1行ずつ入力してください。\n\n"
+            "https://www.instagram.com/reel/...\n"
+            "https://www.instagram.com/stories/username/...\n"
+            "https://www.threads.com/@user/post/...\n"
+            "https://x.com/.../status/..."
+        )
+        layout.addWidget(QLabel(f"Instagram / Threads / X のURL（最大{MAX_BATCH_URLS}件）"))
         layout.addWidget(self.url_edit)
+        self.url_count = QLabel("有効なURL: 0件")
+        self.url_count.setStyleSheet("color:#64748b;")
+        layout.addWidget(self.url_count)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("取得へ進む")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.ok_button = buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setEnabled(False)
+        self.url_edit.textChanged.connect(self._update_url_count)
+
+    def _update_url_count(self) -> None:
+        count = len(self.urls())
+        over_limit = count > MAX_BATCH_URLS
+        self.url_count.setText(
+            f"有効なURL: {count}件"
+            + (f"（{MAX_BATCH_URLS}件以下に分けてください）" if over_limit else "")
+        )
+        self.url_count.setStyleSheet(f"color:{'#dc3545' if over_limit else '#64748b'};")
+        self.ok_button.setEnabled(0 < count <= MAX_BATCH_URLS)
+
+    def urls(self) -> list[str]:
+        return extract_media_urls(self.url_edit.toPlainText())
 
     def url(self) -> str:
-        return self.url_edit.text().strip()
+        urls = self.urls()
+        return urls[0] if urls else ""
 
 
 class BrowserLoginDialog(QDialog):
@@ -1227,10 +1405,16 @@ class MediaClipboardApp(QObject):
         super().__init__()
         self.qt_app = qt_app
         self.api = ApiClient()
-        self.pending_url = ""
-        self.last_seen_url = ""
+        self.pending_urls: list[str] = []
+        self.last_seen_urls: tuple[str, ...] = ()
         self.worker: FetchWorker | None = None
         self.progress: QProgressDialog | None = None
+        self.batch_urls: list[str] = []
+        self.batch_kinds: list[str] = []
+        self.batch_results: list[dict[str, Any]] = []
+        self.batch_index = 0
+        self.batch_cancel_requested = False
+        self.current_url = ""
         self.last_timer_tick = time.monotonic()
         self.resume_recovery_running = False
 
@@ -1263,6 +1447,9 @@ class MediaClipboardApp(QObject):
         check = QAction("ログイン確認", self)
         check.triggered.connect(self._show_login_status)
         menu.addAction(check)
+        instagram_vnc = QAction("Instagramログイン（VNC）", self)
+        instagram_vnc.triggered.connect(self._open_instagram_vnc)
+        menu.addAction(instagram_vnc)
         logout = QAction("ログアウト", self)
         logout.triggered.connect(self._logout)
         menu.addAction(logout)
@@ -1292,7 +1479,7 @@ class MediaClipboardApp(QObject):
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
-            if self.pending_url:
+            if self.pending_urls:
                 self._open_pending_confirmation()
             else:
                 self._open_manual_url()
@@ -1339,17 +1526,30 @@ class MediaClipboardApp(QObject):
 
     def _check_clipboard(self) -> None:
         text = (self.clipboard.text() or "").strip()
-        match = URL_PATTERN.search(text)
-        if not match:
+        urls = extract_media_urls(text)
+        if not urls:
             return
-        url = match.group(0)
-        if url == self.last_seen_url:
+        fingerprint = tuple(urls)
+        if fingerprint == self.last_seen_urls:
             return
-        self.last_seen_url = url
-        self.pending_url = url
+        self.last_seen_urls = fingerprint
+        if self._batch_active():
+            self.tray.showMessage(
+                APP_NAME,
+                "URLを検出しましたが、現在は複数URLを取得中です。\n完了後にもう一度コピーしてください。",
+                QSystemTrayIcon.Warning,
+                8000,
+            )
+            return
+        self.pending_urls = urls[:MAX_BATCH_URLS]
+        omitted = len(urls) - len(self.pending_urls)
+        message = f"Instagram / Threads / X のURLを{len(self.pending_urls)}件検出しました。"
+        if omitted:
+            message += f"\n上限を超えた{omitted}件は対象外です。"
+        message += "\nクリックして取得確認を開きます。"
         self.tray.showMessage(
             APP_NAME,
-            "Instagram / X のURLを検出しました。\nクリックして取得確認を開きます。",
+            message,
             QSystemTrayIcon.Information,
             10000,
         )
@@ -1358,11 +1558,14 @@ class MediaClipboardApp(QObject):
         dialog = ManualUrlDialog()
         if dialog.exec() != QDialog.Accepted:
             return
-        url = dialog.url()
-        if not URL_PATTERN.search(url):
-            QMessageBox.warning(None, APP_NAME, "Instagram / X の投稿URLを入力してください。")
+        urls = dialog.urls()
+        if not urls:
+            QMessageBox.warning(None, APP_NAME, "Instagram / Threads / X の投稿URLを入力してください。")
             return
-        self.pending_url = URL_PATTERN.search(url).group(0)
+        if len(urls) > MAX_BATCH_URLS:
+            QMessageBox.warning(None, APP_NAME, f"URLは1度に{MAX_BATCH_URLS}件までです。")
+            return
+        self.pending_urls = urls
         self._open_pending_confirmation()
 
     def _show_login_status(self) -> None:
@@ -1375,6 +1578,26 @@ class MediaClipboardApp(QObject):
 
     def _open_login(self) -> None:
         BrowserLoginDialog(self.api).exec()
+
+    def _open_instagram_vnc(self) -> None:
+        try:
+            self.api.ensure_login()
+            data = self.api.start_instagram_browser()
+            target_url = str(data.get("url") or "")
+            if not target_url:
+                raise ApiError("VNCのURLを取得できませんでした。")
+            chrome = _find_chrome_exe()
+            if chrome:
+                subprocess.Popen([str(chrome), target_url])
+            else:
+                webbrowser.open(target_url)
+            state = str(data.get("state") or "")
+            if state == "otp_required":
+                self.tray.showMessage(APP_NAME, "InstagramのOTPをVNC画面で入力してください。", QSystemTrayIcon.Warning, 8000)
+            elif state == "logged_in":
+                self.tray.showMessage(APP_NAME, "Instagramはログイン済みです。", QSystemTrayIcon.Information, 4000)
+        except Exception as exc:
+            QMessageBox.warning(None, APP_NAME, f"Instagram VNCを開けませんでした。\n{exc}")
 
     def _logout(self) -> None:
         if self.api.token:
@@ -1391,77 +1614,276 @@ class MediaClipboardApp(QObject):
         QMessageBox.information(None, APP_NAME, "このアプリのログイン状態を削除しました。")
 
     def _open_pending_confirmation(self) -> None:
-        if not self.pending_url:
+        if not self.pending_urls:
             return
+        urls = list(self.pending_urls)
         box = QMessageBox()
         box.setWindowTitle(APP_NAME)
         box.setIcon(QMessageBox.Question)
-        box.setText("このURLからメディアを取得しますか？")
-        box.setInformativeText(self.pending_url)
+        if len(urls) == 1:
+            box.setText("このURLからメディアを取得しますか？")
+            box.setInformativeText(urls[0])
+        else:
+            box.setText(f"{len(urls)}件のURLを上から順に取得しますか？")
+            preview = "\n".join(urls[:5])
+            if len(urls) > 5:
+                preview += f"\n…他 {len(urls) - 5}件"
+            box.setInformativeText(preview)
+            box.setDetailedText("\n".join(urls))
         images_btn = box.addButton("画像", QMessageBox.AcceptRole)
         videos_btn = box.addButton("動画", QMessageBox.AcceptRole)
+        frames_btn = box.addButton("動画を写真で取得", QMessageBox.AcceptRole)
         both_btn = box.addButton("画像と動画", QMessageBox.AcceptRole)
         box.addButton("キャンセル", QMessageBox.RejectRole)
         box.exec()
         clicked = box.clickedButton()
         if clicked == images_btn:
-            self._start_fetch(self.pending_url, ["images"])
+            self._start_batch(urls, ["images"])
         elif clicked == videos_btn:
-            self._start_fetch(self.pending_url, ["videos"])
+            self._start_batch(urls, ["videos"])
+        elif clicked == frames_btn:
+            self._start_batch(urls, ["video_frames"])
         elif clicked == both_btn:
-            self._start_fetch(self.pending_url, ["images", "videos"])
+            self._start_batch(urls, ["images", "videos"])
 
     def _start_fetch(self, source_url: str, kinds: list[str]) -> None:
-        if self.worker and self.worker.is_alive():
+        self._start_batch([source_url], kinds)
+
+    def _batch_active(self) -> bool:
+        return bool(self.batch_urls) or bool(self.worker and self.worker.is_alive())
+
+    def _start_batch(self, urls: list[str], kinds: list[str]) -> None:
+        urls = list(dict.fromkeys(urls))
+        if not urls:
+            return
+        if len(urls) > MAX_BATCH_URLS:
+            QMessageBox.warning(None, APP_NAME, f"URLは1度に{MAX_BATCH_URLS}件までです。")
+            return
+        if self._batch_active():
             QMessageBox.information(None, APP_NAME, "現在取得中です。完了してから再度実行してください。")
             return
-        self.progress = QProgressDialog("取得を開始しています...", "閉じる", 0, 0)
+        self.pending_urls = []
+        self.batch_urls = urls
+        self.batch_kinds = list(kinds)
+        self.batch_results = []
+        self.batch_index = 0
+        self.batch_cancel_requested = False
+        self.current_url = ""
+        self.progress = QProgressDialog("取得を開始しています...", "残りを中止", 0, 0)
         self.progress.setWindowTitle(APP_NAME)
         self.progress.setWindowModality(Qt.NonModal)
         self.progress.setAutoClose(False)
         self.progress.setAutoReset(False)
+        self.progress.canceled.connect(self._cancel_batch)
         self.progress.show()
-        self.worker = FetchWorker(self.api, source_url, kinds)
+        self._start_next_batch_item()
+
+    def _start_next_batch_item(self) -> None:
+        if self.batch_cancel_requested or self.batch_index >= len(self.batch_urls):
+            self._finish_batch()
+            return
+        self.current_url = self.batch_urls[self.batch_index]
+        if self.progress:
+            self.progress.setLabelText(
+                f"{self.batch_index + 1}/{len(self.batch_urls)} URLの取得を開始しています..."
+            )
+            if not self.progress.isVisible():
+                self.progress.show()
+        self.worker = FetchWorker(self.api, self.current_url, self.batch_kinds)
         self.worker.signals.progress.connect(self._set_progress_text)
-        self.worker.signals.finished.connect(self._fetch_finished)
-        self.worker.signals.failed.connect(self._fetch_failed)
+        self.worker.signals.finished.connect(self._batch_fetch_finished)
+        self.worker.signals.failed.connect(self._batch_fetch_failed)
         self.worker.start()
 
     def _set_progress_text(self, text: str) -> None:
         if self.progress:
-            self.progress.setLabelText(text)
+            self.progress.setLabelText(f"{self.batch_index + 1}/{len(self.batch_urls)}  {text}")
+
+    def _cancel_batch(self) -> None:
+        self.batch_cancel_requested = True
+        if self.progress:
+            self.progress.setLabelText("現在のURLを完了後、残りの取得を中止します。")
 
     def _fetch_failed(self, message: str) -> None:
-        if self.progress:
-            self.progress.close()
-            self.progress = None
-        if "ログイン" in message:
-            if QMessageBox.question(None, APP_NAME, f"{message}\n\nログイン画面を開きますか？") == QMessageBox.Yes:
-                self._open_login()
-            return
-        QMessageBox.critical(None, APP_NAME, message)
+        self._batch_fetch_failed(message)
 
     def _fetch_finished(self, result: dict[str, Any]) -> None:
+        self._batch_fetch_finished(result)
+
+    def _batch_fetch_failed(self, message: str) -> None:
+        self.batch_results.append(
+            {
+                "url": self.current_url,
+                "shown": False,
+                "saved": 0,
+                "duplicates": 0,
+                "skipped": 0,
+                "empty": False,
+                "errors": [str(message)],
+            }
+        )
+        if "ログイン" in message:
+            self.batch_cancel_requested = True
+        self.worker = None
+        self.batch_index += 1
+        QTimer.singleShot(0, self._start_next_batch_item)
+
+    def _batch_fetch_finished(self, result: dict[str, Any]) -> None:
         if self.progress:
-            self.progress.close()
-            self.progress = None
+            self.progress.hide()
+        outcome = self._show_selection_dialogs(result)
+        outcome["url"] = self.current_url
+        self.batch_results.append(outcome)
+        self.worker = None
+        self.batch_index += 1
+        QTimer.singleShot(0, self._start_next_batch_item)
+
+    def _show_selection_dialogs(self, result: dict[str, Any]) -> dict[str, Any]:
         shown = False
+        saved = 0
+        duplicates = 0
+        skipped = 0
+        errors = [str(value) for value in (result.get("errors") or [])]
+        show_completion_message = len(self.batch_urls) == 1
         image_job = result.get("images")
         if isinstance(image_job, dict) and image_job.get("images"):
-            ImageSelectionDialog(self.api, image_job).exec()
             shown = True
+            dialog = ImageSelectionDialog(
+                self.api,
+                image_job,
+                show_completion_message=show_completion_message,
+            )
+            accepted = dialog.exec() == QDialog.Accepted
+            if accepted and dialog.save_result:
+                saved += int(dialog.save_result.get("saved") or 0)
+                duplicates += int(dialog.save_result.get("duplicates") or 0)
+                failed = int(dialog.save_result.get("errors") or 0)
+                if failed:
+                    errors.append(f"画像保存: {failed}件失敗")
+            else:
+                skipped += 1
+                if dialog.save_error:
+                    errors.append(f"画像保存: {dialog.save_error}")
         video_job = result.get("videos")
         if isinstance(video_job, dict) and video_job.get("videos"):
-            VideoSelectionDialog(self.api, video_job).exec()
             shown = True
+            dialog = VideoSelectionDialog(
+                self.api,
+                video_job,
+                show_completion_message=show_completion_message,
+            )
+            accepted = dialog.exec() == QDialog.Accepted
+            if accepted and dialog.save_result:
+                saved += int(dialog.save_result.get("saved") or 0)
+                duplicates += int(dialog.save_result.get("duplicates") or 0)
+                failed = int(dialog.save_result.get("errors") or 0)
+                if failed:
+                    errors.append(f"動画保存: {failed}件失敗")
+            else:
+                skipped += 1
+                if dialog.save_error:
+                    errors.append(f"動画保存: {dialog.save_error}")
+        return {
+            "shown": shown,
+            "saved": saved,
+            "duplicates": duplicates,
+            "skipped": skipped,
+            "empty": not shown and not errors,
+            "errors": errors,
+        }
+
+    def _finish_batch(self) -> None:
+        total_urls = len(self.batch_urls)
+        kinds = list(self.batch_kinds)
+        results = list(self.batch_results)
+        cancelled_count = max(0, total_urls - len(results))
+        if self.progress:
+            self.progress.close()
+            self.progress.deleteLater()
+            self.progress = None
+
+        self.worker = None
+        self.batch_urls = []
+        self.batch_kinds = []
+        self.batch_results = []
+        self.batch_index = 0
+        self.batch_cancel_requested = False
+        self.current_url = ""
+
+        if total_urls == 1:
+            self._show_single_result(results[0] if results else None)
+            return
+        self._show_batch_summary(results, cancelled_count, kinds)
+
+    def _show_single_result(self, result: dict[str, Any] | None) -> None:
+        if not result:
+            return
         errors = result.get("errors") or []
-        if not shown:
+        if not result.get("shown"):
             text = "取得できるメディアが見つかりませんでした。"
             if errors:
-                text += "\n\n" + "\n".join(str(x) for x in errors)
+                text += "\n\n" + "\n".join(str(value) for value in errors)
             QMessageBox.warning(None, APP_NAME, text)
         elif errors:
-            QMessageBox.warning(None, APP_NAME, "一部の取得に失敗しました。\n\n" + "\n".join(str(x) for x in errors))
+            QMessageBox.warning(
+                None,
+                APP_NAME,
+                "一部の取得または保存に失敗しました。\n\n"
+                + "\n".join(str(value) for value in errors),
+            )
+        if any("ログイン" in str(value) for value in errors):
+            if QMessageBox.question(None, APP_NAME, "ログイン画面を開きますか？") == QMessageBox.Yes:
+                self._open_login()
+
+    def _show_batch_summary(
+        self,
+        results: list[dict[str, Any]],
+        cancelled_count: int,
+        kinds: list[str],
+    ) -> None:
+        saved = sum(int(row.get("saved") or 0) for row in results)
+        duplicates = sum(int(row.get("duplicates") or 0) for row in results)
+        skipped = sum(1 for row in results if row.get("skipped") and not row.get("saved"))
+        failed_urls = [str(row.get("url") or "") for row in results if row.get("errors")]
+        empty = sum(1 for row in results if row.get("empty"))
+
+        box = QMessageBox()
+        box.setWindowTitle(APP_NAME)
+        box.setIcon(QMessageBox.Information if not failed_urls else QMessageBox.Warning)
+        box.setText("複数URLの取得が完了しました。")
+        box.setInformativeText(
+            f"保存: {saved}件\n重複: {duplicates}件\nスキップ: {skipped}件\n"
+            f"メディアなし: {empty}件\n取得・保存失敗: {len(failed_urls)}件"
+            + (f"\n中止した残りURL: {cancelled_count}件" if cancelled_count else "")
+        )
+        details: list[str] = []
+        for index, row in enumerate(results, start=1):
+            errors = [str(value) for value in (row.get("errors") or [])]
+            if errors and (row.get("saved") or row.get("duplicates")):
+                status = "⚠ 一部失敗"
+            elif errors:
+                status = "❌ 失敗"
+            elif row.get("saved") or row.get("duplicates"):
+                status = "✅ 完了"
+            elif row.get("skipped"):
+                status = "⏭ スキップ"
+            else:
+                status = "ℹ メディアなし"
+            detail = f"{index}. {status}\n{row.get('url') or ''}"
+            detail += f"\n保存:{int(row.get('saved') or 0)}  重複:{int(row.get('duplicates') or 0)}"
+            if errors:
+                detail += "\n" + "\n".join(errors)
+            details.append(detail)
+        if cancelled_count:
+            details.append(f"未処理: {cancelled_count}件（ユーザーが中止）")
+        box.setDetailedText("\n\n".join(details))
+        retry_button = None
+        if failed_urls:
+            retry_button = box.addButton("失敗したURLだけ再試行", QMessageBox.ActionRole)
+        box.addButton("閉じる", QMessageBox.AcceptRole)
+        box.exec()
+        if retry_button is not None and box.clickedButton() == retry_button:
+            QTimer.singleShot(0, lambda urls=failed_urls, values=kinds: self._start_batch(urls, values))
 
 
 def main() -> int:

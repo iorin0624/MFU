@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{{ page_title }}</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f6f8; color: #17202a; }
+    main { max-width: 620px; margin: 5vh auto; padding: 20px; }
+    .card { background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
+    h1 { margin: 0 0 8px; font-size: 1.5rem; }
+    .muted { color: #64748b; font-size: .95rem; }
+    label { display: block; margin: 18px 0 6px; font-weight: 700; }
+    input, textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+    input[readonly] { background: #f1f5f9; }
+    textarea { min-height: 110px; resize: vertical; }
+    button { width: 100%; margin-top: 22px; padding: 13px; border: 0; border-radius: 8px; background: {{ accent_color }}; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #eef2ff; }
+    .error { background: #fee2e2; color: #991b1b; }
+    .success { background: #dcfce7; color: #166534; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <h1>{{ heading }}</h1>
+    <p class="muted">このリンクは発行から30分間、1回だけ使用できます。</p>
+    <div id="status" class="status">リンクを確認しています…</div>
+    <form id="registerForm" hidden>
+      <label for="phone">電話番号</label>
+      <input id="phone" type="text" readonly>
+      <label for="name">名称（任意・後から登録できます）</label>
+      <input id="name" type="text" maxlength="100" autocomplete="off">
+      <label for="note">備考</label>
+      <textarea id="note" maxlength="500"></textarea>
+      <button id="submitButton" type="submit">{{ submit_label }}</button>
+    </form>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const listType = {{ list_type|tojson }};
+  const inspectPath = `/phone-${listType}/register/inspect`;
+  const applyPath = `/phone-${listType}/register/apply`;
+  const listLabel = listType === "blacklist" ? "ブラックリスト" : "ホワイトリスト";
+  let token = (window.location.hash || "").slice(1);
+  history.replaceState(null, "", window.location.pathname);
+  const status = document.getElementById("status");
+  const form = document.getElementById("registerForm");
+  const phone = document.getElementById("phone");
+  const name = document.getElementById("name");
+  const note = document.getElementById("note");
+  const button = document.getElementById("submitButton");
+
+  function show(message, kind = "") {
+    status.textContent = message;
+    status.className = `status ${kind}`.trim();
+    status.hidden = false;
+  }
+
+  async function post(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify(body),
+    });
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) throw new Error(data.message || "処理に失敗しました");
+    return data;
+  }
+
+  async function inspect() {
+    if (!token) {
+      show("トークンがありません。Discordに届いたリンクを開き直してください。", "error");
+      return;
+    }
+    try {
+      const data = await post(inspectPath, {token});
+      phone.value = data.phone_number;
+      form.hidden = false;
+      status.hidden = true;
+    } catch (error) {
+      token = "";
+      show(error.message, "error");
+    }
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    show("登録してFreePBXへ反映しています…");
+    try {
+      const data = await post(applyPath, {
+        token,
+        name: name.value,
+        note: note.value,
+      });
+      token = "";
+      form.hidden = true;
+      show(data.message || `${listLabel}へ登録しました。`, "success");
+    } catch (error) {
+      show(error.message, "error");
+      button.disabled = false;
+    }
+  });
+
+  inspect();
+})();
+</script>
+</body>
+</html>

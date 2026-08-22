@@ -163,6 +163,7 @@
                   </form>
 
                   <form method="post" action="{{ url_for('album.delete_album', album_id=album.id) }}"
+                        data-admin-passkey-action="album_delete:{{ album.id }}"
                         onsubmit="return confirm('この親アルバムとすべての子アルバムを削除します。この操作は元に戻せません。よろしいですか？');">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-outline-danger btn-sm">削除</button>

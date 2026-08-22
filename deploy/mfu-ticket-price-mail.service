@@ -1,0 +1,21 @@
+[Unit]
+Description=MFU Disney ticket price mail responder
+After=network-online.target mfu.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+Environment=PYTHONPATH=/mnt/mfu
+Environment=PYTHONUNBUFFERED=1
+Environment=TMPDIR=/tmp
+ExecStart=/mnt/mfu/venv/bin/python /mnt/mfu/app/ticket_price_research/inbox_cli.py
+TimeoutStartSec=3min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/mfu/ticket_price_mail.ini /etc/mfu/ticket_price_mail.password
+ReadWritePaths=/mnt/mfu/tmp

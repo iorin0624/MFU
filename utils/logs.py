@@ -6,11 +6,16 @@ import ipaddress
 import threading
 import os
 import json
-from collections import deque
+from datetime import datetime
 from typing import Optional, Dict, Tuple, List, Union
 from flask import g, request as _req, current_app
 from app.utils.db import get_db
-from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
+from app.utils.fw_auto_ban import choose_ban_escalation, evaluate_events, enforcement_enabled
+from app.utils.fw_ban import (
+    permanently_ban_ip_cidr_via_ssh,
+    temporarily_ban_ip_cidr_via_ssh,
+    unban_auto_permanent_ip_cidr_via_ssh,
+)
 from app.utils.whois_util import get_netinfo
 
 # 外部: Discord 通知用（無ければ黙ってスキップ）
@@ -118,6 +123,8 @@ def toggle_debug_logs() -> None:
 # ==========================================================
 SKIP_PREFIXES = [
     "/static/",
+    "/image_viewer/thumbs/",  # サムネイル配信は大量発生するためDBへ記録しない
+    "/image_viewer/files/",   # 画像・動画本体の配信もDBへ記録しない
     "/api/ext/up/",       # 外部アップロードAPI配下は全部除外（/api/ext/up/thumb, /original等）
     "/tickets/thumb/",    # 追加: チケットのサムネ表示を除外
     "/tickets/preview/",
@@ -226,6 +233,7 @@ def log_request_raw(
     username,
     latency_ms,
     location=None,   # ← 追加
+    marker=None,
 ) -> None:
     """
     旧来互換の生INSERT関数。
@@ -242,15 +250,19 @@ def log_request_raw(
     status     = int(status) if status is not None else 0
     latency_ms = int(latency_ms) if latency_ms is not None else 0
     location   = _clamp(location or "", 512)
+    marker     = _clamp(marker or "", 160)
 
     # ログ1行分テキスト（Locationがあれば Loc="..." を追加）
-    parts = [
+    parts = []
+    if marker:
+        parts.append(marker)
+    parts.extend([
         f"{method} {path} {status}",
         f'UA="{ua}"',
         f'Ref="{referer}"',
         f'ep="{endpoint}"',
         f'user="{username}"',
-    ]
+    ])
     if location:
         parts.append(f'Loc="{location}"')
     parts.append(f"{latency_ms}ms")
@@ -454,7 +466,8 @@ def _get_discord_webhook() -> Optional[str]:
     # DB（正規仕様）
     url = _get_discord_webhook_from_db()
     if url:
-        return url
+        from app.discord_notifications.repository import get_discord_webhook
+        return get_discord_webhook("suspicious_access", url) or None
 
     # 保険: config/env
     cfg = current_app.config if current_app else {}
@@ -462,7 +475,8 @@ def _get_discord_webhook() -> Optional[str]:
         val = (cfg.get(key) if cfg else None) or os.getenv(key)
         if val:
             _dbg(f"webhook-source=config:{key}")
-            return val
+            from app.discord_notifications.repository import get_discord_webhook
+            return get_discord_webhook("suspicious_access", val) or None
 
     # 保険: ファイル
     file_url = _read_first_existing_file([
@@ -471,7 +485,8 @@ def _get_discord_webhook() -> Optional[str]:
         "/etc/mfu/discord_webhook.txt",
     ])
     if file_url:
-        return file_url
+        from app.discord_notifications.repository import get_discord_webhook
+        return get_discord_webhook("suspicious_access", file_url) or None
 
     _dbg("webhook-source=none")
     return None
@@ -544,13 +559,7 @@ def _fmt_provider(netinfo: dict) -> str:
 # after_request から呼び出すラッパ
 # ==========================================================
 def _client_ip() -> str:
-    """Proxy配下：CF → XFF → remote_addr の順で取得"""
-    cf = _req.headers.get("CF-Connecting-IP")
-    if cf:
-        return cf.strip()
-    fwd = _req.headers.get("X-Forwarded-For")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Return only the address normalized by the trusted ProxyFix hop."""
     return _req.remote_addr or "-"
 
 
@@ -606,6 +615,7 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
         endpoint=endpoint or "",
         username=username,
         latency_ms=_latency_ms(),
+        marker=getattr(g, "mfu_access_log_marker", ""),
     )
 
 
@@ -625,38 +635,40 @@ def _is_private_or_reserved_ip(ip: str) -> bool:
 # key: (ip, path, status, ua) -> (last_ts, count)
 _recent_access_hits: Dict[Tuple[str, str, int, str], Tuple[float, int]] = {}
 
-_FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "3")))
-_FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1")))
+_FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "8")))
+_FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "10")))
 _FW_404_IP_THRESHOLD = max(1, int(os.getenv("FW_404_IP_THRESHOLD", "20")))
-_FW_404_IP_WINDOW_SEC = max(1.0, float(os.getenv("FW_404_IP_WINDOW_SEC", "60")))
+_FW_404_IP_WINDOW_SEC = max(1.0, float(os.getenv("FW_404_IP_WINDOW_SEC", "300")))
 _FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
-_FW_404_IPV4_PREFIX = 24
-_FW_404_SKIP_PREFIXES = (
-    "/static",
-    "/favicon",
-    "/api",
-    "/suc",
-    "/external-login/",
-    "/e/",
-)
-
-_rate_404_hits: Dict[str, deque[float]] = {}
-_rate_404_ip_hits: Dict[str, deque[float]] = {}
-_rate_404_last_ban: Dict[str, float] = {}
-_rate_404_lock = threading.Lock()
+_FW_404_IPV4_PREFIX = 32
 
 _FW_404_SETTINGS_PATH = os.getenv("FW_404_SETTINGS_PATH", "/mnt/mfu/app/fw_404_settings.json")
 _fw_404_settings_lock = threading.Lock()
+_fw_auto_ban_schema_lock = threading.Lock()
+_fw_auto_ban_schema_ready = False
 
 
 def _normalize_fw_404_settings(src: dict | None) -> dict:
     src = src or {}
+    mode = str(src.get("mode") or "observe").strip().lower()
+    if mode not in {"observe", "enforce"}:
+        mode = "observe"
     return {
+        "mode": mode,
+        "observe_until": str(src.get("observe_until") or "").strip(),
+        "sensitive_window_sec": max(1.0, float(src.get("sensitive_window_sec", 60))),
+        "sensitive_threshold": max(1, int(src.get("sensitive_threshold", 2))),
         "short_window_sec": max(0.1, float(src.get("short_window_sec", _FW_404_RATE_WINDOW_SEC))),
         "short_threshold": max(1, int(src.get("short_threshold", _FW_404_RATE_THRESHOLD))),
         "ip_window_sec": max(1.0, float(src.get("ip_window_sec", _FW_404_IP_WINDOW_SEC))),
         "ip_threshold": max(1, int(src.get("ip_threshold", _FW_404_IP_THRESHOLD))),
         "cooldown_sec": max(1, int(src.get("cooldown_sec", _FW_BAN_COOLDOWN_SEC))),
+        "ban_duration_sec": max(60, min(604800, int(src.get("ban_duration_sec", 3600)))),
+        "repeat_ban_duration_sec": max(60, min(604800, int(src.get("repeat_ban_duration_sec", 86400)))),
+        "generic_third_ban_duration_sec": max(60, min(604800, int(src.get("generic_third_ban_duration_sec", 604800)))),
+        "sensitive_permanent_threshold": max(3, min(100, int(src.get("sensitive_permanent_threshold", 3)))),
+        "generic_permanent_threshold": max(4, min(100, int(src.get("generic_permanent_threshold", 4)))),
+        "repeat_window_sec": max(3600, min(31536000, int(src.get("repeat_window_sec", 2592000)))),
         "ipv4_prefix": 24 if str(src.get("ipv4_prefix", _FW_404_IPV4_PREFIX)) != "32" else 32,
     }
 
@@ -673,28 +685,41 @@ def _load_fw_404_settings_from_file() -> dict:
 
 
 _fw_404_settings = _load_fw_404_settings_from_file()
+try:
+    _fw_404_settings_mtime = os.path.getmtime(_FW_404_SETTINGS_PATH)
+except OSError:
+    _fw_404_settings_mtime = 0.0
 
 
 def get_fw_404_settings() -> dict:
+    global _fw_404_settings_mtime
+    try:
+        current_mtime = os.path.getmtime(_FW_404_SETTINGS_PATH)
+    except OSError:
+        current_mtime = 0.0
     with _fw_404_settings_lock:
+        if current_mtime != _fw_404_settings_mtime:
+            _fw_404_settings.clear()
+            _fw_404_settings.update(_load_fw_404_settings_from_file())
+            _fw_404_settings_mtime = current_mtime
         return dict(_fw_404_settings)
 
 
 def save_fw_404_settings(settings: dict) -> dict:
+    global _fw_404_settings_mtime
     normalized = _normalize_fw_404_settings(settings)
     os.makedirs(os.path.dirname(_FW_404_SETTINGS_PATH), exist_ok=True)
     with _fw_404_settings_lock:
-        with open(_FW_404_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        temp_path = f"{_FW_404_SETTINGS_PATH}.{os.getpid()}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(normalized, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, _FW_404_SETTINGS_PATH)
         _fw_404_settings.clear()
         _fw_404_settings.update(normalized)
+        _fw_404_settings_mtime = os.path.getmtime(_FW_404_SETTINGS_PATH)
     return dict(normalized)
-
-
-def _is_auto_ban_target_path(path: str) -> bool:
-    if not path:
-        return False
-    return not any(path.startswith(prefix) for prefix in _FW_404_SKIP_PREFIXES)
 
 
 def _is_public_ip(ip: str) -> bool:
@@ -728,107 +753,350 @@ def _write_fw_ban_log(ip: str, log_text: str) -> None:
             pass
 
 
-def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
+def _ensure_fw_auto_ban_schema(db) -> None:
+    global _fw_auto_ban_schema_ready
+    if _fw_auto_ban_schema_ready:
+        return
+    with _fw_auto_ban_schema_lock:
+        if _fw_auto_ban_schema_ready:
+            return
+        cur = db.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fw_auto_ban_decisions (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                decision_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                ip VARCHAR(64) NOT NULL,
+                target VARCHAR(96) NOT NULL,
+                reason VARCHAR(32) NOT NULL,
+                evidence_count INT NOT NULL DEFAULT 0,
+                distinct_paths INT NOT NULL DEFAULT 0,
+                sample_paths TEXT NULL,
+                mode VARCHAR(16) NOT NULL,
+                status VARCHAR(24) NOT NULL,
+                ban_duration_sec INT NULL,
+                expires_at DATETIME NULL,
+                offense_number INT NOT NULL DEFAULT 1,
+                escalation_class VARCHAR(16) NOT NULL DEFAULT 'generic',
+                action_kind VARCHAR(16) NOT NULL DEFAULT 'temporary',
+                error_text VARCHAR(1024) NULL,
+                PRIMARY KEY (id),
+                KEY idx_fw_auto_target_time (target, decision_at),
+                KEY idx_fw_auto_ip_time (ip, decision_at),
+                KEY idx_fw_auto_status_time (status, decision_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        for column_name, definition in (
+            ("offense_number", "INT NOT NULL DEFAULT 1"),
+            ("escalation_class", "VARCHAR(16) NOT NULL DEFAULT 'generic'"),
+            ("action_kind", "VARCHAR(16) NOT NULL DEFAULT 'temporary'"),
+        ):
+            cur.execute("SHOW COLUMNS FROM fw_auto_ban_decisions LIKE %s", (column_name,))
+            if not cur.fetchone():
+                cur.execute(
+                    f"ALTER TABLE fw_auto_ban_decisions ADD COLUMN {column_name} {definition}"
+                )
+        db.commit()
+        _fw_auto_ban_schema_ready = True
+
+
+def _auto_ban_target(ip: str, settings: dict) -> dict:
+    ip_obj = ipaddress.ip_address(ip)
+    if ip_obj.version == 4:
+        network = ipaddress.ip_network(
+            f"{ip}/{int(settings['ipv4_prefix'])}",
+            strict=False,
+        )
+        return {"version": 4, "target": str(network)}
+    return {"version": 6, "target": f"{ip_obj}/128"}
+
+
+def _maybe_auto_ban_by_404_rate(
+    ip: str,
+    path: str,
+    *,
+    endpoint: str = "",
+) -> None:
+    """Evaluate 404s centrally so every Gunicorn worker sees the same evidence."""
     if not _is_public_ip(ip):
         return
-    if not _is_auto_ban_target_path(path):
-        return
 
-    now = time.time()
     settings = get_fw_404_settings()
-    should_ban = False
-    count = 0
-    reason = ""
-    target = None
+    target = _auto_ban_target(ip, settings)
+    target_repr = target["target"]
+    lock_name = f"mfu-fwban:{ip}"[:64]
+    max_window = int(max(
+        float(settings["sensitive_window_sec"]),
+        float(settings["short_window_sec"]),
+        float(settings["ip_window_sec"]),
+    ))
+    decision_id = None
+    evidence = None
+    enforce = False
+    duration = None
+    action_kind = "temporary"
+    escalation_class = "generic"
+    offense_number = 1
+    db = get_db()
+    lock_acquired = False
+    try:
+        _ensure_fw_auto_ban_schema(db)
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT GET_LOCK(%s, 2) AS acquired", (lock_name,))
+        lock_acquired = bool((cur.fetchone() or {}).get("acquired"))
+        if not lock_acquired:
+            current_app.logger.warning("FW auto-BAN lock timeout ip=%s", ip)
+            return
 
-    with _rate_404_lock:
-        q = _rate_404_hits.setdefault(ip, deque())
-        q.append(now)
+        cur.execute("SELECT NOW() AS db_now")
+        db_now = (cur.fetchone() or {}).get("db_now") or datetime.now()
+        cur.execute(
+            f"""
+            SELECT log_date, path, status, endpoint
+              FROM logs
+             WHERE ip=%s
+               AND log_date >= DATE_SUB(NOW(), INTERVAL {max_window} SECOND)
+               AND status IN (400, 403, 404, 405)
+             ORDER BY log_date, id
+            """,
+            (ip,),
+        )
+        rows = cur.fetchall()
+        # The current 404 has already been committed to logs. The explicit
+        # fallback only matters in tests or if the structured insert changes.
+        if not any(str(row.get("path") or "") == path for row in rows):
+            rows.append({
+                "log_date": db_now,
+                "path": path,
+                "status": 404,
+                "endpoint": endpoint,
+            })
+        evidence = evaluate_events(rows, settings, now=db_now)
+        if evidence is None:
+            return
+        escalation_class = "sensitive" if evidence.reason == "sensitive" else "generic"
 
-        while q and now - q[0] > settings["short_window_sec"]:
-            q.popleft()
+        cur.execute(
+            """
+            SELECT id
+              FROM fw_auto_ban_decisions
+             WHERE target=%s
+               AND status IN ('observed','pending','added','already','permanent')
+               AND decision_at >= DATE_SUB(NOW(), INTERVAL %s SECOND)
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (target_repr, int(settings["cooldown_sec"])),
+        )
+        if cur.fetchone():
+            return
 
-        count_short = len(q)
+        enforce = enforcement_enabled(settings)
+        if enforce:
+            reason_clause = "reason='sensitive'" if escalation_class == "sensitive" else "reason IN ('short','cumulative')"
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS prior_count
+                  FROM fw_auto_ban_decisions
+                 WHERE target=%s
+                   AND status IN ('added','already','permanent')
+                   AND {reason_clause}
+                   AND decision_at >= DATE_SUB(NOW(), INTERVAL %s SECOND)
+                """,
+                (target_repr, int(settings["repeat_window_sec"])),
+            )
+            prior_count = int((cur.fetchone() or {}).get("prior_count") or 0)
+            escalation = choose_ban_escalation(
+                prior_count=prior_count,
+                escalation_class=escalation_class,
+                settings=settings,
+            )
+            offense_number = escalation.offense_number
+            action_kind = escalation.action_kind
+            duration = escalation.duration_sec
 
-        ip_q = _rate_404_ip_hits.setdefault(ip, deque())
-        ip_q.append(now)
-        while ip_q and now - ip_q[0] > settings["ip_window_sec"]:
-            ip_q.popleft()
-        count_ip = len(ip_q)
-
+        cur.execute(
+            """
+            INSERT INTO fw_auto_ban_decisions
+                (ip, target, reason, evidence_count, distinct_paths,
+                 sample_paths, mode, status, ban_duration_sec,
+                 offense_number, escalation_class, action_kind)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                ip,
+                target_repr,
+                evidence.reason,
+                evidence.count,
+                evidence.distinct_paths,
+                json.dumps(evidence.sample_paths, ensure_ascii=False),
+                "enforce" if enforce else "observe",
+                "pending" if enforce else "observed",
+                duration,
+                offense_number,
+                escalation_class,
+                action_kind,
+            ),
+        )
+        decision_id = int(cur.lastrowid)
+        db.commit()
+    except Exception:
         try:
-            ip_obj = ipaddress.ip_address(ip)
+            db.rollback()
         except Exception:
-            ip_obj = None
-
-        if count_short >= settings["short_threshold"]:
-            if ip_obj and ip_obj.version == 4:
-                target = {"version": 4, "target": str(ipaddress.ip_network(f"{ip}/{settings['ipv4_prefix']}", strict=False))}
-            else:
-                target = normalize_ip_target(ip=ip)
-            target_key = f"{target['version']}:{target['target']}"
-            last_ban_ts = _rate_404_last_ban.get(target_key, 0)
-            if now - last_ban_ts >= settings["cooldown_sec"]:
-                _rate_404_last_ban[target_key] = now
-                should_ban = True
-                count = count_short
-                reason = "short"
-        elif count_ip >= settings["ip_threshold"]:
-            if ip_obj and ip_obj.version == 4:
-                target = {"version": 4, "target": str(ipaddress.ip_network(f"{ip}/{settings['ipv4_prefix']}", strict=False))}
-            else:
-                target = normalize_ip_target(ip=ip)
-            target_key = f"{target['version']}:{target['target']}"
-            last_ban_ts = _rate_404_last_ban.get(target_key, 0)
-            if now - last_ban_ts >= settings["cooldown_sec"]:
-                _rate_404_last_ban[target_key] = now
-                should_ban = True
-                count = count_ip
-                reason = "ip"
-
-        if len(_rate_404_hits) > 5000:
-            stale_before = now - max(settings["short_window_sec"], 5.0)
-            for key in list(_rate_404_hits.keys())[:1000]:
-                if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
-                    _rate_404_hits.pop(key, None)
-
-        if len(_rate_404_ip_hits) > 5000:
-            stale_ip_before = now - max(settings["ip_window_sec"], 5.0)
-            for key in list(_rate_404_ip_hits.keys())[:1000]:
-                if _rate_404_ip_hits.get(key) and _rate_404_ip_hits[key][-1] < stale_ip_before:
-                    _rate_404_ip_hits.pop(key, None)
-
-        if len(_rate_404_last_ban) > 5000:
-            stale_cooldown = now - (settings["cooldown_sec"] * 2)
-            for key in list(_rate_404_last_ban.keys())[:1000]:
-                if _rate_404_last_ban.get(key, 0) < stale_cooldown:
-                    _rate_404_last_ban.pop(key, None)
-
-    if not should_ban:
+            pass
+        current_app.logger.warning("FW auto-BAN evaluation failed ip=%s path=%s", ip, path, exc_info=True)
         return
+    finally:
+        if lock_acquired:
+            try:
+                release_cur = db.cursor()
+                release_cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+            except Exception:
+                pass
+        try:
+            db.close()
+        except Exception:
+            pass
 
-    result = ban_ip_cidr_via_ssh(target)
-    target_repr = (target or {}).get("target", "")
-    if result.get("ok"):
+    samples = ",".join(evidence.sample_paths if evidence else ())
+    if not enforce:
         _write_fw_ban_log(
             ip,
-            f"[FW_BAN][404RATE] ip={ip} target={target_repr} path={path} count={count} reason={reason} status={result.get('status')}",
-        )
-        _dbg(
-            f"fw-ban success ip={ip} target={target_repr} path={path} count={count} reason={reason} status={result.get('status')}"
+            f"[FW_BAN][OBSERVE] ip={ip} target={target_repr} reason={evidence.reason} "
+            f"count={evidence.count} distinct={evidence.distinct_paths} samples={samples}",
         )
         return
 
-    current_app.logger.warning(
-        "[FW_BAN][404RATE] failed ip=%s target=%s path=%s count=%s reason=%s status=%s stderr=%s",
-        ip,
-        target_repr,
-        path,
-        count,
-        reason,
-        result.get("status"),
-        result.get("stderr", ""),
+    if action_kind == "permanent":
+        result = permanently_ban_ip_cidr_via_ssh(target)
+    else:
+        result = temporarily_ban_ip_cidr_via_ssh(target, timeout_sec=int(duration or 3600))
+    result_status = str(result.get("status") or "error")
+    update_db = get_db()
+    try:
+        update_cur = update_db.cursor()
+        if result.get("ok"):
+            if action_kind == "permanent":
+                update_cur.execute(
+                    """
+                    UPDATE fw_auto_ban_decisions
+                       SET status='permanent', expires_at=NULL
+                     WHERE id=%s
+                    """,
+                    (decision_id,),
+                )
+            else:
+                update_cur.execute(
+                    """
+                    UPDATE fw_auto_ban_decisions
+                       SET status=%s,
+                           expires_at=DATE_ADD(NOW(), INTERVAL %s SECOND)
+                     WHERE id=%s
+                    """,
+                    (result_status, int(duration or 3600), decision_id),
+                )
+        else:
+            update_cur.execute(
+                """
+                UPDATE fw_auto_ban_decisions
+                   SET status='failed', error_text=%s
+                 WHERE id=%s
+                """,
+                (_clamp(result.get("stderr") or result_status, 1024), decision_id),
+            )
+        update_db.commit()
+    finally:
+        update_db.close()
+
+    if result.get("ok"):
+        marker = "PERMANENT" if action_kind == "permanent" else "AUTO"
+        _write_fw_ban_log(
+            ip,
+            f"[FW_BAN][{marker}] ip={ip} target={target_repr} reason={evidence.reason} "
+            f"offense={offense_number} class={escalation_class} count={evidence.count} "
+            f"distinct={evidence.distinct_paths} duration={duration or 'permanent'} "
+            f"status={result_status} samples={samples}",
+        )
+    else:
+        current_app.logger.warning(
+            "[FW_BAN][AUTO] failed ip=%s target=%s reason=%s status=%s stderr=%s",
+            ip,
+            target_repr,
+            evidence.reason,
+            result_status,
+            result.get("stderr", ""),
+        )
+
+
+def list_fw_auto_permanent_bans(limit: int = 200) -> list[dict]:
+    db = get_db()
+    try:
+        _ensure_fw_auto_ban_schema(db)
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id, decision_at, ip, target, reason, evidence_count,
+                   distinct_paths, sample_paths, offense_number,
+                   escalation_class, action_kind
+              FROM fw_auto_ban_decisions
+             WHERE status='permanent'
+             ORDER BY decision_at DESC, id DESC
+             LIMIT %s
+            """,
+            (max(1, min(1000, int(limit))),),
+        )
+        return cur.fetchall() or []
+    finally:
+        db.close()
+
+
+def unban_fw_auto_permanent(decision_id: int, *, actor: str = "admin") -> dict:
+    db = get_db()
+    try:
+        _ensure_fw_auto_ban_schema(db)
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id, ip, target
+              FROM fw_auto_ban_decisions
+             WHERE id=%s AND status='permanent'
+             LIMIT 1
+            """,
+            (int(decision_id),),
+        )
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row:
+        return {"ok": False, "status": "not_found", "message": "有効な自動永久BANが見つかりません。"}
+
+    network = ipaddress.ip_network(str(row["target"]), strict=False)
+    target = {"version": network.version, "target": str(network)}
+    result = unban_auto_permanent_ip_cidr_via_ssh(target)
+    if not result.get("ok"):
+        return result
+
+    update_db = get_db()
+    try:
+        update_cur = update_db.cursor()
+        update_cur.execute(
+            """
+            UPDATE fw_auto_ban_decisions
+               SET status='unbanned', error_text=%s
+             WHERE target=%s AND status='permanent'
+            """,
+            (f"manual unban by {actor}"[:1024], row["target"]),
+        )
+        update_db.commit()
+    finally:
+        update_db.close()
+    _write_fw_ban_log(
+        str(row.get("ip") or "-"),
+        f"[FW_BAN][UNBAN] target={row['target']} actor={actor} status={result.get('status')}",
     )
+    return result
 
 
 def _should_suppress_access_log(fields: dict) -> bool:
@@ -888,9 +1156,11 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
     """
     after_requestから呼び出すだけでOK
     - 除外判定→log_request_rawでINSERT
-    - 404なら メモリ内カウント → 非JPのみ Discord 通知
+    - 404ならDB共有の自動BAN判定と、非JP向けDiscord通知を実行
     """
     path = flask_request.path or ""
+    if getattr(g, "mfu_skip_access_log", False):
+        return
     if should_skip_access_log(path, endpoint):
         return
 
@@ -915,13 +1185,17 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
         current_app.logger.warning(f"log_access: log_request_raw failed: {e}")
         return  # 記録失敗時は以降スキップ
 
-    # 404バースト検知（メモリ）
+    # 404のセキュリティ判定
     try:
         if fields.get("status") == 404 and fields.get("ip"):
             ip = fields["ip"]
 
-            # 追加: 1秒あたりの404レート検知で自動BAN（例外は握りつぶす）
-            _maybe_auto_ban_by_404_rate(ip, path)
+            # 全Gunicornワーカーで共有するリスク別自動BAN判定
+            _maybe_auto_ban_by_404_rate(
+                ip,
+                path,
+                endpoint=fields.get("endpoint") or "",
+            )
 
             # 既存: IP+Path 単位
             notify_path, cnt_path, cooldown_until_path = _note_404_hit_and_should_notify(ip, path)
@@ -1024,6 +1298,32 @@ def write_line_login_log(nickname: str, ip: str, user_id: int | None = None) -> 
             db.close()
         except Exception:
             pass
+
+
+def write_line_login_blocked_log(
+    ip: str,
+    *,
+    original_user_id: int | None = None,
+) -> None:
+    """退会済みLINEアカウントのログイン拒否を管理ログへ記録する。"""
+    log_text = "[LINE_LOGIN_BLOCKED] 退会済みLINEアカウントからのログインを拒否しました"
+    if original_user_id is not None:
+        log_text += f" original_user_id={int(original_user_id)}"
+
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+            (ip or "-", log_text),
+        )
+        db.commit()
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
 
 def write_smtp_log(log_text: str, ip: str = "-") -> None:
     """SMTP送信結果を logs テーブルに1行だけ書き込む簡易ログ。"""
