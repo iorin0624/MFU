@@ -229,6 +229,14 @@ def parse_clients(text, numeric_text=None):
             item["ntp_hits"], item["ntp_drops"],
         )
         rows.append(item)
+    def address_sort_key(row):
+        try:
+            address = ipaddress.ip_address(row.get("address") or "")
+            return (0, address.version, int(address))
+        except ValueError:
+            return (1, 0, str(row.get("address") or "").casefold())
+
+    rows.sort(key=address_sort_key)
     return rows
 
 
