@@ -37,6 +37,15 @@ CLIENTS_NUMERIC = """Hostname                      NTP   Drop Int IntL Last     
 192.168.103.21                  1      0   -   -   260       0      0   -     -
 """
 
+UNSORTED_CLIENTS = """Hostname                      NTP   Drop Int IntL Last     Cmd   Drop Int  Last
+===============================================================================
+192.168.103.43                  1      0   -   -    10       0      0   -     -
+192.168.103.9                   1      0   -   -    10       0      0   -     -
+2001:db8::2                     1      0   -   -    10       0      0   -     -
+192.168.103.21                  1      0   -   -    10       0      0   -     -
+2001:db8::1                     1      0   -   -    10       0      0   -     -
+"""
+
 
 class ChronyMonitorParserTests(unittest.TestCase):
     def test_tracking_slow_time_is_negative(self):
@@ -62,6 +71,13 @@ class ChronyMonitorParserTests(unittest.TestCase):
         self.assertEqual(classify_client(1000, None, 1, 0), "stale")
         self.assertEqual(classify_client(None, None, 0, 0), "unknown")
         self.assertEqual(classify_client(10, 6, 1, 1), "warning")
+
+    def test_clients_are_sorted_by_numeric_ip_address(self):
+        parsed = parse_clients(UNSORTED_CLIENTS)
+        self.assertEqual(
+            [row["address"] for row in parsed],
+            ["192.168.103.9", "192.168.103.21", "192.168.103.43", "2001:db8::1", "2001:db8::2"],
+        )
 
 
 if __name__ == "__main__":

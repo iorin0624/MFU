@@ -193,6 +193,25 @@
     const d = new Date(value);
     return Number.isNaN(d.getTime()) ? value : d.toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'});
   };
+  const serverStatLabels = {
+    'NTP packets received': '受信したNTPパケット',
+    'NTP packets dropped': '破棄されたNTPパケット',
+    'Command packets received': '受信したコマンドパケット',
+    'Command packets dropped': '破棄されたコマンドパケット',
+    'Client log records dropped': '破棄されたクライアントログ記録',
+    'NTS-KE connections accepted': '受け付けたNTS-KE接続',
+    'NTS-KE connections dropped': '破棄されたNTS-KE接続',
+    'Authenticated NTP packets': '認証済みNTPパケット',
+    'Interleaved NTP packets': 'インターリーブNTPパケット',
+    'NTP timestamps held': '保持中のNTPタイムスタンプ',
+    'NTP timestamp span': 'NTPタイムスタンプ保持期間',
+    'Daemon RX timestamps': 'デーモン受信タイムスタンプ',
+    'Daemon TX timestamps': 'デーモン送信タイムスタンプ',
+    'Kernel RX timestamps': 'カーネル受信タイムスタンプ',
+    'Kernel TX timestamps': 'カーネル送信タイムスタンプ',
+    'Hardware RX timestamps': 'ハードウェア受信タイムスタンプ',
+    'Hardware TX timestamps': 'ハードウェア送信タイムスタンプ'
+  };
 
   function formatClock(epochMs, useClientTimezone=false) {
     if (!Number.isFinite(epochMs)) return '----/--/-- --:--:--';
@@ -344,7 +363,7 @@
 
     const stats = data.serverstats || {};
     $('serverStatsBody').innerHTML = Object.keys(stats).length ? Object.entries(stats).map(([key, value]) =>
-      `<tr><th>${esc(key)}</th><td class="text-end">${value == null ? '-' : Number(value).toLocaleString()}</td></tr>`
+      `<tr><th title="${esc(key)}">${esc(serverStatLabels[key] || key)}</th><td class="text-end">${value == null ? '-' : Number(value).toLocaleString()}</td></tr>`
     ).join('') : '<tr><td class="text-muted">統計情報はありません。</td></tr>';
 
     const sourceStates = {'*':['同期中','success'], '+':['併用','primary'], '-':['候補外','secondary'], '?':['利用不可','warning'], 'x':['異常','danger'], '~':['不安定','warning']};
