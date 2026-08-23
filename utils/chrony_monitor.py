@@ -289,3 +289,15 @@ def fetch_chrony_status(url, token="", timeout=5):
     if response.status_code >= 500 and not payload.get("commands"):
         response.raise_for_status()
     return build_status(payload)
+
+
+def fetch_chrony_time_sample(url, token="", timeout=4):
+    headers = {"X-Node-Token": token} if token else {}
+    response = requests.get(url, headers=headers, timeout=timeout)
+    payload = response.json()
+    if not response.ok or not payload.get("ok"):
+        raise RuntimeError(payload.get("error") or "Chrony time sample is unavailable")
+    required = ("sample_time_unix_ms", "ntp_time_unix_ms", "reference_id")
+    if any(payload.get(key) is None for key in required):
+        raise RuntimeError("Chrony time sample is incomplete")
+    return payload
