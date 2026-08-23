@@ -195,7 +195,6 @@
   let jihoErrorMessage = '';
   let lastScheduledJihoSecond = null;
   const JIHO_VOLUME_STORAGE_KEY = 'mfuChronyJihoVolume';
-  const HOUR_MS = 60 * 60 * 1000;
   const SECOND_MS = 1000;
   const JIHO_SCHEDULE_AHEAD_MS = 250;
 
@@ -258,7 +257,7 @@
       return;
     }
     $('jihoStatus').className = 'small text-primary mt-2';
-    $('jihoStatus').textContent = `NTP基準で毎秒440Hz、正時の0秒に880Hzを鳴らします。現在: ${formatClock(ntpNow)}`;
+    $('jihoStatus').textContent = `NTP基準で毎秒時報を鳴らします（通常2000Hz／10秒ごと1000Hz／27～29・57～59秒500Hz）。現在: ${formatClock(ntpNow)}`;
   }
 
   function createJihoAudioContext() {
@@ -270,17 +269,24 @@
     return jihoAudioContext;
   }
 
+  function jihoFrequencyForSecond(second) {
+    if ([27, 28, 29, 57, 58, 59].includes(second)) return 500;
+    if (second % 10 === 0) return 1000;
+    return 2000;
+  }
+
   function scheduleJihoTone(ntpSecond, ntpNow) {
     const context = createJihoAudioContext();
     if (context.state !== 'running') return;
-    const isExactHour = ((ntpSecond % HOUR_MS) + HOUR_MS) % HOUR_MS === 0;
+    const second = new Date(ntpSecond).getUTCSeconds();
+    const frequency = jihoFrequencyForSecond(second);
     const startAt = context.currentTime + Math.max(0, (ntpSecond - ntpNow) / SECOND_MS);
-    const duration = isExactHour ? 0.5 : 0.09;
+    const duration = 0.09;
     const volume = Number($('jihoVolume').value) / 100;
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(isExactHour ? 880 : 440, startAt);
+    oscillator.frequency.setValueAtTime(frequency, startAt);
     gain.gain.setValueAtTime(0.0001, startAt);
     gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume * 0.3), startAt + 0.008);
     gain.gain.setValueAtTime(Math.max(0.0001, volume * 0.3), startAt + Math.max(0.009, duration - 0.025));
