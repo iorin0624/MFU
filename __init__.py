@@ -5480,14 +5480,39 @@ def admin_nodes_data():
 # ────────────────────────────────────────────
 CHRONY_METRICS_URL = "http://192.168.103.15:5055/chrony"
 CHRONY_TIME_URL = "http://192.168.103.15:5055/chrony/time"
+CHRONY_CLIENT_METRICS = {
+    "192.168.103.16": "http://192.168.103.16:5055/metrics",
+    "192.168.103.17": "http://192.168.103.17:5055/metrics",
+    "192.168.103.21": "http://192.168.103.21:5055/metrics",
+}
+
+
+def _fetch_chrony_client_timesync(url, headers):
+    response = requests.get(url, headers=headers, timeout=3)
+    response.raise_for_status()
+    return (response.json() or {}).get("time_sync") or {}
 
 
 def _chrony_status_with_labels():
     token = os.environ.get("NODE_METRICS_TOKEN", "")
     status = fetch_chrony_status(CHRONY_METRICS_URL, token=token, timeout=5)
+    headers = {"X-Node-Token": token} if token else {}
+    time_sync_by_address = {}
+    with ThreadPoolExecutor(max_workers=len(CHRONY_CLIENT_METRICS)) as executor:
+        pending = {
+            executor.submit(_fetch_chrony_client_timesync, url, headers): address
+            for address, url in CHRONY_CLIENT_METRICS.items()
+        }
+        for future, address in ((future, pending[future]) for future in pending):
+            try:
+                time_sync_by_address[address] = future.result()
+            except Exception as exc:
+                app.logger.debug("client time-sync fetch failed: address=%s error=%s", address, exc)
     labels = load_client_labels(get_db())
     for client in status.get("clients", []):
-        client["display_name"] = labels.get(client.get("address"), "")
+        address = client.get("address")
+        client["display_name"] = labels.get(address, "")
+        client["time_sync"] = time_sync_by_address.get(address, {})
     return status
 
 
