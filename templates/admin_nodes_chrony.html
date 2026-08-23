@@ -62,7 +62,7 @@
             <label class="form-check-label" for="showMilliseconds">ミリ秒を表示</label>
           </div>
           <div class="form-check form-switch mb-0">
-            <input class="form-check-input" type="checkbox" id="jihoEnabled">
+            <input class="form-check-input" type="checkbox" id="jihoEnabled" autocomplete="off">
             <label class="form-check-label" for="jihoEnabled">毎秒時報</label>
           </div>
           <div class="d-flex align-items-center gap-2">
@@ -576,6 +576,12 @@
   $('autoRefresh').addEventListener('change', resetTimer);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) lastScheduledJihoSecond = null;
+  });
+  window.addEventListener('pageshow', () => {
+    $('jihoEnabled').checked = false;
+    lastScheduledJihoSecond = null;
+    const ntpNow = currentNtpTime();
+    updateJihoStatus(ntpNow == null ? Date.now() : ntpNow);
   });
   $('clientTimezone').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || '不明';
   // Web Audioは利用者の操作を起点に開始する必要があるため、再読み込み後は常に無効から始めます。
