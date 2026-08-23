@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}EEW履歴 {{ report.event_id }}{% endblock %}
+{% block content %}
+<style>
+  .eew-detail { max-width: 1200px; }
+  .timeline { border-left: 3px solid #cbd5e1; margin-left: .55rem; padding-left: 1.25rem; }
+  .timeline-item { position: relative; padding: 0 0 1rem; }
+  .timeline-item::before { content:""; position:absolute; left:-1.66rem; top:.3rem; width:.7rem; height:.7rem; border-radius:50%; background:#1976c9; }
+  .timeline-time { font-variant-numeric: tabular-nums; font-weight: 800; }
+  .raw-json { max-height: 38rem; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:.65rem; padding:1rem; font-size:.8rem; }
+</style>
+<div class="container eew-detail py-3">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div><h1 class="h3 mb-1">EEW履歴詳細</h1><div class="text-muted"><code>{{ report.event_id }}</code> / serial {{ report.serial }}</div></div>
+    <a href="{{ url_for('admin_eew_history') }}" class="btn btn-outline-secondary">一覧へ戻る</a>
+  </div>
+  <div class="row g-3">
+    <div class="col-12 col-lg-5"><section class="card shadow-sm h-100"><div class="card-header"><strong>受信タイムライン</strong></div><div class="card-body"><div class="timeline">
+      <div class="timeline-item"><div class="timeline-time">{{ report.formatted.origin_time }}</div><div>地震発生</div></div>
+      <div class="timeline-item"><div class="timeline-time">{{ report.formatted.arrival_time }}</div><div>主要動到達予想</div></div>
+      <div class="timeline-item"><div class="timeline-time">{{ report.formatted.jma_issue_time }}</div><div>JMA発表</div></div>
+      <div class="timeline-item"><div class="timeline-time">{{ report.formatted.p2p_time }}</div><div>P2Pデータ時刻 {% if report.delays.jma_to_p2p is not none %}<span class="badge text-bg-light">JMAから {{ '%+.3f'|format(report.delays.jma_to_p2p) }}秒</span>{% endif %}</div></div>
+      {% if report.has_ws %}<div class="timeline-item"><div class="timeline-time">{{ report.formatted.pi_ws_received_at }}</div><div>Pi WebSocket受信 {% if report.delays.p2p_to_ws is not none %}<span class="badge text-bg-primary">P2Pから {{ '%+.3f'|format(report.delays.p2p_to_ws) }}秒</span>{% endif %}</div></div>{% endif %}
+      {% if report.has_history %}<div class="timeline-item"><div class="timeline-time">{{ report.formatted.pi_history_received_at }}</div><div>Pi履歴補完受信</div></div>{% endif %}
+    </div></div></section></div>
+    <div class="col-12 col-lg-7"><section class="card shadow-sm h-100"><div class="card-header"><strong>地震・受信情報</strong></div><div class="card-body"><dl class="row mb-0">
+      <dt class="col-sm-4">震源</dt><dd class="col-sm-8">{{ report.hypocenter_name or '不明' }}</dd>
+      <dt class="col-sm-4">規模</dt><dd class="col-sm-8">M{{ report.magnitude if report.magnitude is not none else '-' }} / 深さ {{ report.depth_km if report.depth_km is not none else '-' }}km</dd>
+      <dt class="col-sm-4">緯度・経度</dt><dd class="col-sm-8">{{ report.latitude or '-' }}, {{ report.longitude or '-' }}</dd>
+      <dt class="col-sm-4">予想震度</dt><dd class="col-sm-8">{{ report.scale_from_label }}～{{ report.scale_to_label }}</dd>
+      <dt class="col-sm-4">取消</dt><dd class="col-sm-8">{{ '取消報' if report.cancelled else '通常' }}</dd>
+      <dt class="col-sm-4">受信</dt><dd class="col-sm-8">{{ report.receive_count }}回 / 初回 {{ report.first_source }} / 最終 {{ report.last_source }}</dd>
+      <dt class="col-sm-4">Discord</dt><dd class="col-sm-8">{{ '通知済み' if report.discord_notified else '未通知・通知抑制' }}</dd>
+      <dt class="col-sm-4">JMA → Pi</dt><dd class="col-sm-8">{% if report.delays.jma_to_ws is not none %}{{ '%+.3f'|format(report.delays.jma_to_ws) }}秒{% else %}-{% endif %}</dd>
+    </dl></div></section></div>
+  </div>
+  <section class="card shadow-sm mt-3"><div class="card-header"><strong>P2P生JSON</strong></div><div class="card-body"><pre class="raw-json mb-0">{{ report.raw_json_pretty }}</pre></div></section>
+</div>
+{% endblock %}

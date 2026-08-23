@@ -136,6 +136,7 @@ from app.utils.chrony_monitor import (
     load_client_labels,
     save_client_label,
 )
+from app.utils.eew_history import get_report as get_eew_report, list_reports as list_eew_reports
 from app.utils.upload_notifications import send_discord_upload_notification
 from app.utils.upload_download_history import (
     DOWNLOAD_KIND_LABELS,
@@ -5536,6 +5537,65 @@ def admin_nodes_chrony_client_label():
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "address": address, "display_name": name})
+
+
+# ────────────────────────────────────────────
+# 管理: EEW受信履歴（読み取り専用DB）
+# ────────────────────────────────────────────
+@app.get("/admin/eew-history")
+@admin_required
+def admin_eew_history():
+    filters = {
+        "date_from": request.args.get("date_from", ""),
+        "date_to": request.args.get("date_to", ""),
+        "keyword": request.args.get("keyword", ""),
+        "source": request.args.get("source", ""),
+        "cancelled": request.args.get("cancelled", ""),
+        "discord": request.args.get("discord", ""),
+    }
+    try:
+        rows, summary, pagination = list_eew_reports(
+            filters,
+            page=request.args.get("page", 1, type=int),
+            per_page=request.args.get("per_page", 50, type=int),
+        )
+        error = None
+    except Exception as exc:
+        app.logger.exception("EEW history list failed")
+        rows, summary = [], {"reports": 0, "events": 0, "cancelled_count": 0, "discord_not_notified": 0, "avg_jma_to_ws": None}
+        pagination = {"page": 1, "per_page": 50, "total": 0, "pages": 1}
+        error = str(exc)
+    page_args = {key: value for key, value in filters.items() if value}
+    prev_args = dict(
+        page_args,
+        page=max(1, pagination["page"] - 1),
+        per_page=pagination["per_page"],
+    )
+    next_args = dict(
+        page_args,
+        page=min(pagination["pages"], pagination["page"] + 1),
+        per_page=pagination["per_page"],
+    )
+    prev_url = url_for("admin_eew_history", **prev_args)
+    next_url = url_for("admin_eew_history", **next_args)
+    return render_template(
+        "admin_eew_history.html", rows=rows, summary=summary,
+        pagination=pagination, filters=filters, error=error,
+        prev_url=prev_url, next_url=next_url,
+    )
+
+
+@app.get("/admin/eew-history/<int:report_id>")
+@admin_required
+def admin_eew_history_detail(report_id):
+    try:
+        report = get_eew_report(report_id)
+    except Exception:
+        app.logger.exception("EEW history detail failed: id=%s", report_id)
+        abort(503)
+    if not report:
+        abort(404)
+    return render_template("admin_eew_history_detail.html", report=report)
 
 # ─────────────────────────────────────────
 # 管理: アクセスログから即BAN（103.15へSSH実行）
