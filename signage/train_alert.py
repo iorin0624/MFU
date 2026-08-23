@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -23,6 +24,10 @@ DISCORD_EMBEDS_PER_MESSAGE = 10
 # Leave a little headroom for Discord-side counting differences.
 DISCORD_EMBED_CHARS_PER_MESSAGE = 5_800
 DISCORD_RATE_LIMIT_RETRIES = 4
+EARTHQUAKE_DELAY_MESSAGE = "地震の影響で、一部列車に遅れや運休が出ています。"
+EARTHQUAKE_GROUP_TITLE = "地震による一部列車に遅れや運休がある路線"
+EARTHQUAKE_DELAY_ONLY_MESSAGE = "地震の影響で、一部列車に遅れが出ています。"
+EARTHQUAKE_DELAY_ONLY_GROUP_TITLE = "地震による一部列車に遅れがある路線"
 
 
 def now_iso(now: datetime | None = None) -> str:
@@ -176,9 +181,17 @@ def _current_route_states(
         for summary in summary_lines:
             if not isinstance(summary, dict):
                 continue
-            key = _route_name_key(summary.get("line_name"))
-            if key and (summary.get("status") or summary.get("message")):
-                summary_by_name.setdefault(key, []).append(summary)
+            names = [summary.get("line_name")]
+            if summary.get("group_type") == "shared_message":
+                source_lines = summary.get("source_lines") or summary.get("affected_lines")
+                if isinstance(source_lines, list):
+                    names.extend(source_lines)
+            for name in names:
+                key = _route_name_key(name)
+                if key and (summary.get("status") or summary.get("message")):
+                    route_summary = dict(summary)
+                    route_summary["line_name"] = str(name or "").strip()
+                    summary_by_name.setdefault(key, []).append(route_summary)
 
     current: dict[str, dict] = {}
     unavailable: list[str] = []
@@ -291,6 +304,66 @@ def _status_priority(route: dict, event: str) -> int:
     }.get(_status_icon(route, event), 3)
 
 
+def _normalise_shared_message(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
+
+
+def _group_shared_message_changes(changes: list[dict]) -> list[dict]:
+    """同じ地震本文の同時更新を、Discord上では影響路線付きの1カードにする。"""
+    buckets: dict[tuple[str, str, str, str], list[tuple[int, dict]]] = {}
+    for index, change in enumerate(changes):
+        current = change.get("current") or {}
+        message = _normalise_shared_message(current.get("message"))
+        status = str(current.get("status") or "").strip()
+        notices = current.get("notices")
+        group_title = {
+            EARTHQUAKE_DELAY_MESSAGE: EARTHQUAKE_GROUP_TITLE,
+            EARTHQUAKE_DELAY_ONLY_MESSAGE: EARTHQUAKE_DELAY_ONLY_GROUP_TITLE,
+        }.get(message)
+        if (
+            change.get("event") == "recovered"
+            or not group_title
+            or "運転見合わせ" in status
+            or (isinstance(notices, list) and len(notices) > 1)
+        ):
+            continue
+        buckets.setdefault(
+            (str(change.get("event") or ""), status, message, group_title), []
+        ).append((index, change))
+
+    grouped_at = {}
+    consumed = set()
+    for (_event, status, message, group_title), items in buckets.items():
+        if len(items) < 2:
+            continue
+        members = [change for _, change in items]
+        route = dict(members[0]["current"])
+        affected_lines = [str(change["current"].get("line_name") or "") for change in members]
+        route.update(
+            line_name=group_title,
+            message=message,
+            status=status or "運行情報",
+            affected_lines=affected_lines,
+            affected_count=len(affected_lines),
+            group_type="shared_message",
+        )
+        grouped_at[items[0][0]] = {
+            "event": members[0]["event"],
+            "current": route,
+            "previous": {},
+            "member_changes": members,
+        }
+        consumed.update(index for index, _ in items)
+
+    result = []
+    for index, change in enumerate(changes):
+        if index in grouped_at:
+            result.append(grouped_at[index])
+        elif index not in consumed:
+            result.append(change)
+    return result
+
+
 def build_embed(change: dict, page_url: str, timestamp: str, notice: dict | None = None) -> dict:
     route = dict(change["current"])
     event = change["event"]
@@ -318,6 +391,15 @@ def build_embed(change: dict, page_url: str, timestamp: str, notice: dict | None
     if route.get("update_time_text"):
         fields.append(
             {"name": "Yahoo!更新時刻", "value": route["update_time_text"], "inline": True}
+        )
+    affected_lines = route.get("affected_lines")
+    if isinstance(affected_lines, list) and affected_lines:
+        fields.append(
+            {
+                "name": "影響路線",
+                "value": "　".join(str(name) for name in affected_lines)[:1024],
+                "inline": False,
+            }
         )
     fields.append(
         {"name": "MFU", "value": f"[運行情報一覧を開く]({page_url})", "inline": False}
@@ -537,6 +619,7 @@ def run_train_alert(
     changes.sort(
         key=lambda change: _status_priority(change["current"], change["event"])
     )
+    notification_changes = _group_shared_message_changes(changes)
     state = {
         "version": 1,
         "updated_at": checked_at,
@@ -547,7 +630,7 @@ def run_train_alert(
     if changes and not webhook_url:
         status["error"] = "adminのDiscord Webhookが未設定です。"
     elif changes:
-        batches = list(_notification_batches(changes, page_url, checked_at))
+        batches = list(_notification_batches(notification_changes, page_url, checked_at))
         for batch_index, (chunk, embeds) in enumerate(batches):
             try:
                 sender(webhook_url, embeds)
@@ -555,9 +638,13 @@ def run_train_alert(
                 logger.exception("鉄道運行情報のDiscord通知に失敗しました。")
                 status["error"] = f"Discord通知失敗: {type(exc).__name__}: {exc}"[:500]
                 break
+            notified_routes = 0
             for change in chunk:
-                state["routes"][change["url"]] = change["current"]
-            status["notified_count"] += len(chunk)
+                members = change.get("member_changes") or [change]
+                for member in members:
+                    state["routes"][member["url"]] = member["current"]
+                    notified_routes += 1
+            status["notified_count"] += notified_routes
             status["last_notification_at"] = checked_at
             # 先に送信済みのカードを次回重複送信しないよう、チャンクごとに確定する。
             atomic_json_write(state_path, state)

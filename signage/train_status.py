@@ -267,6 +267,15 @@ def load_train_status_snapshot(now=None):
                     }
                 )
             kind = _line_kind(status)
+            group_type = str(raw.get("group_type") or "").strip()
+            affected_count = raw.get("affected_count")
+            if group_type == "shared_message":
+                try:
+                    affected_count = max(1, int(affected_count))
+                except (TypeError, ValueError):
+                    affected_count = max(1, len(affected_lines))
+            else:
+                affected_count = 1
             lines.append(
                 {
                     "line_name": line_name,
@@ -276,6 +285,8 @@ def load_train_status_snapshot(now=None):
                     "update_time_text": str(raw.get("update_time_text") or "").strip(),
                     "publish_time": str(raw.get("publish_time") or "").strip(),
                     "affected_lines": affected_lines,
+                    "affected_count": affected_count,
+                    "group_type": group_type,
                     "kind": kind,
                 }
             )
@@ -298,10 +309,16 @@ def load_train_status_snapshot(now=None):
         warning = "最新情報を取得できていません。最後に取得できた情報を表示しています。"
 
     counts = {
-        "total": len(lines),
-        "suspended": sum(line["kind"] == "suspended" for line in lines),
-        "delayed": sum(line["kind"] == "delayed" for line in lines),
-        "other": sum(line["kind"] == "other" for line in lines),
+        "total": sum(line["affected_count"] for line in lines),
+        "suspended": sum(
+            line["affected_count"] for line in lines if line["kind"] == "suspended"
+        ),
+        "delayed": sum(
+            line["affected_count"] for line in lines if line["kind"] == "delayed"
+        ),
+        "other": sum(
+            line["affected_count"] for line in lines if line["kind"] == "other"
+        ),
     }
     return {
         "ok": payload is not None,
