@@ -63,7 +63,12 @@
           </div>
           <div class="form-check form-switch mb-0">
             <input class="form-check-input" type="checkbox" id="jihoEnabled">
-            <label class="form-check-label" for="jihoEnabled">時報</label>
+            <label class="form-check-label" for="jihoEnabled">毎秒時報</label>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <label class="small mb-0 text-nowrap" for="jihoVolume">音量</label>
+            <input id="jihoVolume" class="form-range" type="range" min="0" max="100" step="1" value="60" style="width: 7rem;">
+            <span id="jihoVolumeValue" class="small text-nowrap">60%</span>
           </div>
           <button id="resyncClocks" type="button" class="btn btn-light btn-sm">時計を再同期</button>
         </div>
@@ -99,12 +104,10 @@
         <span>通信往復時間: <strong id="clockRtt">-</strong> / <span id="clockSampleCount">-</span>回測定の最短結果を採用</span>
         <span>最終時計同期: <span id="clockSyncedAt">-</span></span>
       </div>
-      <div id="jihoStatus" class="small text-muted mt-2">時報は無効です。</div>
+      <div id="jihoStatus" class="small text-muted mt-2">毎秒時報は無効です。</div>
       <div class="small text-muted mt-2">NTP時刻は、Chronyが保持する現在の時刻差から算出した同期先基準の推定時刻です。</div>
     </div>
   </section>
-
-  <audio id="jihoAudio" src="{{ url_for('static', filename='audio/Jiho.wav') }}" preload="auto" playsinline></audio>
 
   <section class="card chrony-summary mb-3">
     <div class="card-body">
@@ -188,11 +191,13 @@
   let loading = false;
   let clockSyncing = false;
   let clockSample = null;
-  let jihoUnlocked = false;
+  let jihoAudioContext = null;
   let jihoErrorMessage = '';
-  let lastJihoBoundary = null;
-  const JIHO_STORAGE_KEY = 'mfuChronyJihoEnabled';
+  let lastScheduledJihoSecond = null;
+  const JIHO_VOLUME_STORAGE_KEY = 'mfuChronyJihoVolume';
   const HOUR_MS = 60 * 60 * 1000;
+  const SECOND_MS = 1000;
+  const JIHO_SCHEDULE_AHEAD_MS = 250;
 
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -236,9 +241,9 @@
     return value;
   }
 
-  function nextJihoTrigger(ntpNow) {
-    const nextHour = (Math.floor(ntpNow / HOUR_MS) + 1) * HOUR_MS;
-    return nextHour - 3000;
+  function currentNtpTime() {
+    if (!clockSample) return null;
+    return clockSample.ntpAnchorMs + (performance.now() - clockSample.perfAnchor);
   }
 
   function updateJihoStatus(ntpNow) {
@@ -249,65 +254,78 @@
     }
     if (!$('jihoEnabled').checked) {
       $('jihoStatus').className = 'small text-muted mt-2';
-      $('jihoStatus').textContent = '時報は無効です。';
+      $('jihoStatus').textContent = '毎秒時報は無効です。';
       return;
     }
-    const trigger = nextJihoTrigger(ntpNow);
     $('jihoStatus').className = 'small text-primary mt-2';
-    $('jihoStatus').textContent = `次回の時報: ${formatClock(trigger)}（正時の3秒前から再生）`;
+    $('jihoStatus').textContent = `NTP基準で毎秒440Hz、正時の0秒に880Hzを鳴らします。現在: ${formatClock(ntpNow)}`;
   }
 
-  async function playJiho(boundary) {
-    if (lastJihoBoundary === boundary) return;
-    lastJihoBoundary = boundary;
-    const audio = $('jihoAudio');
-    try {
-      audio.currentTime = 0;
-      audio.muted = false;
-      audio.volume = 1;
-      await audio.play();
-      jihoErrorMessage = '';
-      $('jihoStatus').className = 'small text-success mt-2';
-      $('jihoStatus').textContent = '時報を再生しています。';
-    } catch (error) {
-      lastJihoBoundary = null;
-      $('jihoEnabled').checked = false;
-      localStorage.setItem(JIHO_STORAGE_KEY, '0');
-      jihoErrorMessage = 'ブラウザーに再生を止められました。時報スイッチをもう一度有効にしてください。';
-      updateJihoStatus(Date.now());
+  function createJihoAudioContext() {
+    if (!jihoAudioContext || jihoAudioContext.state === 'closed') {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) throw new Error('このブラウザーは電子音の再生に対応していません。');
+      jihoAudioContext = new AudioContextClass();
     }
+    return jihoAudioContext;
+  }
+
+  function scheduleJihoTone(ntpSecond, ntpNow) {
+    const context = createJihoAudioContext();
+    if (context.state !== 'running') return;
+    const isExactHour = ((ntpSecond % HOUR_MS) + HOUR_MS) % HOUR_MS === 0;
+    const startAt = context.currentTime + Math.max(0, (ntpSecond - ntpNow) / SECOND_MS);
+    const duration = isExactHour ? 0.5 : 0.09;
+    const volume = Number($('jihoVolume').value) / 100;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(isExactHour ? 880 : 440, startAt);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume * 0.3), startAt + 0.008);
+    gain.gain.setValueAtTime(Math.max(0.0001, volume * 0.3), startAt + Math.max(0.009, duration - 0.025));
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startAt);
+    oscillator.stop(startAt + duration + 0.01);
   }
 
   function checkJiho(ntpNow) {
-    if (!$('jihoEnabled').checked) return;
-    const currentHour = Math.floor(ntpNow / HOUR_MS) * HOUR_MS;
-    const nextHour = currentHour + HOUR_MS;
-    const boundary = ntpNow >= nextHour - 3000 ? nextHour : currentHour;
-    if (ntpNow >= boundary - 3000 && ntpNow < boundary + 3000) playJiho(boundary);
+    if (!$('jihoEnabled').checked || !clockSample || !jihoAudioContext || jihoAudioContext.state !== 'running') return;
+    const latestSchedulable = ntpNow + JIHO_SCHEDULE_AHEAD_MS;
+    if (lastScheduledJihoSecond == null || lastScheduledJihoSecond < ntpNow - SECOND_MS) {
+      lastScheduledJihoSecond = Math.floor(ntpNow / SECOND_MS) * SECOND_MS;
+    }
+    let target = lastScheduledJihoSecond + SECOND_MS;
+    while (target <= latestSchedulable) {
+      if (target >= ntpNow - 30) scheduleJihoTone(target, ntpNow);
+      lastScheduledJihoSecond = target;
+      target += SECOND_MS;
+    }
   }
 
   async function setJihoEnabled(enabled, userGesture=false) {
     if (userGesture) jihoErrorMessage = '';
     $('jihoEnabled').checked = enabled;
-    localStorage.setItem(JIHO_STORAGE_KEY, enabled ? '1' : '0');
     if (!enabled) {
-      const audio = $('jihoAudio');
-      audio.pause();
-      audio.currentTime = 0;
-      jihoUnlocked = false;
-    } else if (userGesture && !jihoUnlocked) {
-      const audio = $('jihoAudio');
+      lastScheduledJihoSecond = null;
+      if (jihoAudioContext?.state === 'running') await jihoAudioContext.suspend();
+    } else if (userGesture) {
       try {
-        audio.muted = true;
-        await audio.play();
-        audio.pause();
-        audio.currentTime = 0;
-        audio.muted = false;
-        jihoUnlocked = true;
+        const context = createJihoAudioContext();
+        await context.resume();
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        gain.gain.value = 0.0001;
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start();
+        oscillator.stop(context.currentTime + 0.01);
+        lastScheduledJihoSecond = null;
       } catch (error) {
         $('jihoEnabled').checked = false;
-        localStorage.setItem(JIHO_STORAGE_KEY, '0');
-        jihoErrorMessage = '時報を有効化できませんでした。ブラウザーの音声再生設定を確認してください。';
+        jihoErrorMessage = error.message || '毎秒時報を有効化できませんでした。ブラウザーの音声再生設定を確認してください。';
         updateJihoStatus(Date.now());
         return;
       }
@@ -344,7 +362,6 @@
     $('piClock').textContent = formatClock(piNow);
     $('clientClock').textContent = formatClock(clientNow, true);
     updateJihoStatus(ntpNow);
-    checkJiho(ntpNow);
     const piMeta = differenceMeta(piDiff, true);
     const clientMeta = differenceMeta(clientDiff, false);
     $('piDifference').className = `clock-difference text-${piMeta[0]}`;
@@ -394,6 +411,7 @@
         piAnchorMs: clientNow + best.piOffsetMs,
         ntpAnchorMs: clientNow + best.ntpOffsetMs
       };
+      lastScheduledJihoSecond = null;
       $('clockReference').textContent = best.referenceId || '-';
       $('clockStratum').textContent = best.stratum ?? '-';
       $('clockRtt').textContent = `${best.rttMs.toFixed(1)} ms`;
@@ -544,10 +562,26 @@
   $('resyncClocks').addEventListener('click', () => synchronizeClocks(5));
   $('showMilliseconds').addEventListener('change', renderClocks);
   $('jihoEnabled').addEventListener('change', event => setJihoEnabled(event.currentTarget.checked, true));
+  $('jihoVolume').addEventListener('input', event => {
+    const value = String(event.currentTarget.value);
+    $('jihoVolumeValue').textContent = `${value}%`;
+    localStorage.setItem(JIHO_VOLUME_STORAGE_KEY, value);
+  });
   $('autoRefresh').addEventListener('change', resetTimer);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) lastScheduledJihoSecond = null;
+  });
   $('clientTimezone').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || '不明';
-  $('jihoEnabled').checked = localStorage.getItem(JIHO_STORAGE_KEY) === '1';
-  setInterval(renderClocks, 100);
+  // Web Audioは利用者の操作を起点に開始する必要があるため、再読み込み後は常に無効から始めます。
+  $('jihoEnabled').checked = false;
+  const savedJihoVolume = Number(localStorage.getItem(JIHO_VOLUME_STORAGE_KEY));
+  if (Number.isFinite(savedJihoVolume) && savedJihoVolume >= 0 && savedJihoVolume <= 100) $('jihoVolume').value = String(savedJihoVolume);
+  $('jihoVolumeValue').textContent = `${$('jihoVolume').value}%`;
+  setInterval(() => {
+    renderClocks();
+    const ntpNow = currentNtpTime();
+    if (ntpNow != null) checkJiho(ntpNow);
+  }, 50);
   resetTimer();
   synchronizeClocks(5);
   refresh();
