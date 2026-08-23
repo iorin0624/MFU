@@ -8,8 +8,10 @@ shell.
 
 from datetime import datetime, timezone
 import os
+import re
 import shutil
 import subprocess
+import time
 
 from flask import jsonify
 
@@ -59,6 +61,31 @@ def _run_fixed(command, timeout=5):
         }
 
 
+def _parse_tracking_value(text, key):
+    for line in (text or "").splitlines():
+        if ":" not in line:
+            continue
+        current_key, value = (part.strip() for part in line.split(":", 1))
+        if current_key == key:
+            return value
+    return ""
+
+
+def _parse_system_offset_seconds(tracking_text):
+    value = _parse_tracking_value(tracking_text, "System time")
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", value)
+    if not match:
+        return None
+    offset = float(match.group(0))
+    # chronyc describes the local system clock relative to NTP time.
+    # Positive means the Pi clock is fast; negative means it is slow.
+    if "slow" in value.lower():
+        return -abs(offset)
+    if "fast" in value.lower():
+        return abs(offset)
+    return offset
+
+
 def register_chrony_endpoint(app):
     @app.get("/chrony")
     def chrony_status():
@@ -83,3 +110,53 @@ def register_chrony_endpoint(app):
             "commands": commands,
         }), 200 if ok else 503
 
+    @app.get("/chrony/time")
+    def chrony_time_sample():
+        """Return one lightweight, high-resolution Pi/NTP time sample."""
+        if shutil.which("chronyc") is None:
+            return jsonify({"ok": False, "error": "chronyc is not installed"}), 503
+
+        started_ns = time.time_ns()
+        tracking = _run_fixed(CHRONY_COMMANDS["tracking"], timeout=3)
+        finished_ns = time.time_ns()
+        sample_ns = (started_ns + finished_ns) // 2
+        offset_seconds = _parse_system_offset_seconds(tracking.get("stdout"))
+        reference_id = _parse_tracking_value(tracking.get("stdout"), "Reference ID")
+        leap_status = _parse_tracking_value(tracking.get("stdout"), "Leap status")
+        stratum_value = _parse_tracking_value(tracking.get("stdout"), "Stratum")
+        try:
+            stratum = int(stratum_value)
+        except (TypeError, ValueError):
+            stratum = None
+
+        ok = bool(
+            tracking.get("ok")
+            and offset_seconds is not None
+            and reference_id
+            and leap_status == "Normal"
+        )
+        payload = {
+            "ok": ok,
+            "sample_time_unix_ns": sample_ns,
+            "sample_time_unix_ms": sample_ns / 1_000_000,
+            "response_time_unix_ns": time.time_ns(),
+            "ntp_time_unix_ns": (
+                sample_ns - int(offset_seconds * 1_000_000_000)
+                if offset_seconds is not None else None
+            ),
+            "ntp_time_unix_ms": (
+                (sample_ns / 1_000_000) - (offset_seconds * 1_000)
+                if offset_seconds is not None else None
+            ),
+            "system_offset_seconds": offset_seconds,
+            "reference_id": reference_id,
+            "stratum": stratum,
+            "leap_status": leap_status,
+            "command_duration_ms": round((finished_ns - started_ns) / 1_000_000, 3),
+            "sampled_at": datetime.fromtimestamp(
+                sample_ns / 1_000_000_000, tz=timezone.utc
+            ).isoformat(),
+        }
+        if not tracking.get("ok"):
+            payload["error"] = tracking.get("stderr") or "chronyc tracking failed"
+        return jsonify(payload), 200 if ok else 503

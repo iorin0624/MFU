@@ -132,6 +132,7 @@ from app.utils.speedtest import (
 )
 from app.utils.chrony_monitor import (
     fetch_chrony_status,
+    fetch_chrony_time_sample,
     load_client_labels,
     save_client_label,
 )
@@ -5477,6 +5478,7 @@ def admin_nodes_data():
 # 管理: Raspberry Pi Chrony監視
 # ────────────────────────────────────────────
 CHRONY_METRICS_URL = "http://192.168.103.15:5055/chrony"
+CHRONY_TIME_URL = "http://192.168.103.15:5055/chrony/time"
 
 
 def _chrony_status_with_labels():
@@ -5507,6 +5509,20 @@ def admin_nodes_chrony_data():
             "messages": ["ラズパイからChrony情報を取得できませんでした。"],
             "error": str(exc),
         }), 502
+
+
+@app.get("/admin/nodes/chrony/time")
+@admin_required
+def admin_nodes_chrony_time():
+    try:
+        token = os.environ.get("NODE_METRICS_TOKEN", "")
+        sample = fetch_chrony_time_sample(CHRONY_TIME_URL, token=token, timeout=4)
+        response = jsonify(sample)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+    except Exception as exc:
+        app.logger.warning("chrony time sample failed: %s", exc)
+        return jsonify({"ok": False, "error": "Chrony時刻を取得できませんでした。"}), 502
 
 
 @app.post("/admin/nodes/chrony/client-label")
