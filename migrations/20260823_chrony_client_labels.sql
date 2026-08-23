@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS chrony_client_labels (
+    client_address VARCHAR(255) NOT NULL PRIMARY KEY,
+    display_name VARCHAR(100) NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;

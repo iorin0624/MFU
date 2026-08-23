@@ -8,6 +8,7 @@
       <small class="text-muted">（更新: <span id="js-now">{{ now }}</span> / 自動更新: 1秒）</small>
     </h3>
     <div class="d-flex align-items-center gap-2">
+      <a href="{{ url_for('admin_nodes_chrony') }}" class="btn btn-sm btn-outline-primary">Chrony時刻同期</a>
       <button id="btnRefresh" class="btn btn-sm btn-outline-secondary">今すぐ更新</button>
     </div>
   </div>

@@ -130,6 +130,11 @@ from app.utils.speedtest import (
     parse_expected_bytes as parse_speedtest_expected_bytes,
     validate_content_length as validate_speedtest_content_length,
 )
+from app.utils.chrony_monitor import (
+    fetch_chrony_status,
+    load_client_labels,
+    save_client_label,
+)
 from app.utils.upload_notifications import send_discord_upload_notification
 from app.utils.upload_download_history import (
     DOWNLOAD_KIND_LABELS,
@@ -5466,6 +5471,55 @@ def admin_nodes_data():
         results.append(info)
 
     return jsonify({"nodes": results, "now": int(time.time())})
+
+
+# ────────────────────────────────────────────
+# 管理: Raspberry Pi Chrony監視
+# ────────────────────────────────────────────
+CHRONY_METRICS_URL = "http://192.168.103.15:5055/chrony"
+
+
+def _chrony_status_with_labels():
+    token = os.environ.get("NODE_METRICS_TOKEN", "")
+    status = fetch_chrony_status(CHRONY_METRICS_URL, token=token, timeout=5)
+    labels = load_client_labels(get_db())
+    for client in status.get("clients", []):
+        client["display_name"] = labels.get(client.get("address"), "")
+    return status
+
+
+@app.get("/admin/nodes/chrony")
+@admin_required
+def admin_nodes_chrony():
+    return render_template("admin_nodes_chrony.html")
+
+
+@app.get("/admin/nodes/chrony/data")
+@admin_required
+def admin_nodes_chrony_data():
+    try:
+        return jsonify(_chrony_status_with_labels())
+    except Exception as exc:
+        app.logger.warning("chrony monitor fetch failed: %s", exc)
+        return jsonify({
+            "ok": False,
+            "level": "error",
+            "messages": ["ラズパイからChrony情報を取得できませんでした。"],
+            "error": str(exc),
+        }), 502
+
+
+@app.post("/admin/nodes/chrony/client-label")
+@admin_required
+def admin_nodes_chrony_client_label():
+    payload = request.get_json(silent=True) or request.form
+    try:
+        address, name = save_client_label(
+            get_db(), payload.get("address"), payload.get("display_name")
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "address": address, "display_name": name})
 
 # ─────────────────────────────────────────
 # 管理: アクセスログから即BAN（103.15へSSH実行）
