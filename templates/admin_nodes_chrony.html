@@ -189,6 +189,7 @@
   let clockSyncing = false;
   let clockSample = null;
   let jihoUnlocked = false;
+  let jihoErrorMessage = '';
   let lastJihoBoundary = null;
   const JIHO_STORAGE_KEY = 'mfuChronyJihoEnabled';
   const HOUR_MS = 60 * 60 * 1000;
@@ -241,6 +242,11 @@
   }
 
   function updateJihoStatus(ntpNow) {
+    if (jihoErrorMessage) {
+      $('jihoStatus').className = 'small text-danger mt-2';
+      $('jihoStatus').textContent = jihoErrorMessage;
+      return;
+    }
     if (!$('jihoEnabled').checked) {
       $('jihoStatus').className = 'small text-muted mt-2';
       $('jihoStatus').textContent = '時報は無効です。';
@@ -260,14 +266,15 @@
       audio.muted = false;
       audio.volume = 1;
       await audio.play();
+      jihoErrorMessage = '';
       $('jihoStatus').className = 'small text-success mt-2';
       $('jihoStatus').textContent = '時報を再生しています。';
     } catch (error) {
       lastJihoBoundary = null;
       $('jihoEnabled').checked = false;
       localStorage.setItem(JIHO_STORAGE_KEY, '0');
-      $('jihoStatus').className = 'small text-danger mt-2';
-      $('jihoStatus').textContent = 'ブラウザーに再生を止められました。時報スイッチをもう一度有効にしてください。';
+      jihoErrorMessage = 'ブラウザーに再生を止められました。時報スイッチをもう一度有効にしてください。';
+      updateJihoStatus(Date.now());
     }
   }
 
@@ -280,6 +287,7 @@
   }
 
   async function setJihoEnabled(enabled, userGesture=false) {
+    if (userGesture) jihoErrorMessage = '';
     $('jihoEnabled').checked = enabled;
     localStorage.setItem(JIHO_STORAGE_KEY, enabled ? '1' : '0');
     if (!enabled) {
@@ -299,8 +307,8 @@
       } catch (error) {
         $('jihoEnabled').checked = false;
         localStorage.setItem(JIHO_STORAGE_KEY, '0');
-        $('jihoStatus').className = 'small text-danger mt-2';
-        $('jihoStatus').textContent = '時報を有効化できませんでした。ブラウザーの音声再生設定を確認してください。';
+        jihoErrorMessage = '時報を有効化できませんでした。ブラウザーの音声再生設定を確認してください。';
+        updateJihoStatus(Date.now());
         return;
       }
     }
