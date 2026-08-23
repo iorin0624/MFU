@@ -130,8 +130,8 @@
         </div>
         <div class="table-responsive">
           <table class="table table-hover mb-0">
-            <thead><tr><th>状態</th><th>表示名 / IP</th><th>NTP要求</th><th>最終応答</th><th>破棄</th><th>表示名設定</th></tr></thead>
-            <tbody id="clientsBody"><tr><td colspan="6" class="text-muted">読み込み中...</td></tr></tbody>
+            <thead><tr><th>状態</th><th>表示名 / IP</th><th>NTP要求</th><th>最終応答</th><th title="各端末が最後にNTP同期した際の時刻差">時間差</th><th>破棄</th><th>表示名設定</th></tr></thead>
+            <tbody id="clientsBody"><tr><td colspan="7" class="text-muted">読み込み中...</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -327,6 +327,20 @@
     })[status] || ['未判定', 'secondary'];
   }
 
+  function formatClientOffset(timeSync) {
+    if (!timeSync || !Number.isFinite(Number(timeSync.offset_seconds))) {
+      return '<span class="text-muted">未取得</span>';
+    }
+    const seconds = Number(timeSync.offset_seconds);
+    const absoluteMs = Math.abs(seconds * 1000);
+    const value = absoluteMs < 1
+      ? `${seconds < 0 ? '-' : '+'}${Math.abs(seconds * 1000000).toFixed(0)} µs`
+      : `${seconds < 0 ? '-' : '+'}${absoluteMs.toFixed(3)} ms`;
+    const color = timeSync.synchronized === false ? 'danger' : (absoluteMs <= 10 ? 'success' : (absoluteMs <= 100 ? 'warning' : 'danger'));
+    const title = [timeSync.server, timeSync.sampled_at ? `取得: ${fmtDate(timeSync.sampled_at)}` : ''].filter(Boolean).join(' / ');
+    return `<span class="badge text-bg-${color}" title="${esc(title)}">${esc(value)}</span>`;
+  }
+
   function render(data) {
     const tracking = data.tracking || {};
     const levelMeta = ({normal:['正常','success'], warning:['注意','warning'], error:['異常','danger']})[data.level] || ['不明','secondary'];
@@ -351,13 +365,14 @@
         <td><strong>${esc(title)}</strong><div class="small text-muted">${esc(subtitle)}</div></td>
         <td>${Number(client.ntp_hits || 0).toLocaleString()}回</td>
         <td>${esc(fmtSeconds(client.ntp_last_seconds))}</td>
+        <td>${formatClientOffset(client.time_sync)}</td>
         <td>${Number(client.ntp_drops || 0).toLocaleString()}回</td>
         <td><form class="d-flex gap-1 client-label-form" data-address="${esc(client.address)}">
           <input class="form-control form-control-sm" name="display_name" maxlength="100" value="${esc(client.display_name || '')}" placeholder="例: メインPC">
           <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
         </form></td>
       </tr>`;
-    }).join('') : '<tr><td colspan="6" class="text-muted">クライアント記録はありません。</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="text-muted">クライアント記録はありません。</td></tr>';
 
     document.querySelectorAll('.client-label-form').forEach(form => form.addEventListener('submit', saveLabel));
 
