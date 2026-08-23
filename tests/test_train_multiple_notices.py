@@ -122,3 +122,76 @@ def test_removing_one_of_two_notices_is_an_update_not_a_recovery():
 
     assert current[url]["normal"] is False
     assert TRAIN_ALERT._event_for(previous[url], current[url]) == "updated"
+
+
+def test_summary_groups_identical_earthquake_messages_but_keeps_variant_separate():
+    common = "地震の影響で、一部列車に遅れや運休が出ています。 &#x20;"
+    raw = {
+        "updated": "8月23日 6時30分",
+        "source": "https://transit.yahoo.co.jp/diainfo/area/4",
+        "lines": [
+            {
+                "line_name": name,
+                "status": "列車遅延",
+                "message": common,
+                "update_time_text": f"8月23日 6時{minute:02d}分",
+            }
+            for name, minute in (("内房線", 10), ("外房線", 20), ("京葉線", 30))
+        ]
+        + [
+            {
+                "line_name": "成田線",
+                "status": "列車遅延",
+                "message": (
+                    "地震の影響で、一部列車に遅れや運休が出ています。"
+                    "なお、成田線との直通運転を中止しています。"
+                ),
+                "update_time_text": "8月23日 6時25分",
+            }
+        ],
+    }
+
+    summary = JREAST.build_summary(raw)
+
+    assert len(summary["lines"]) == 2
+    grouped = next(row for row in summary["lines"] if row.get("group_type") == "shared_message")
+    assert grouped["line_name"] == "地震による一部列車に遅れや運休がある路線"
+    assert grouped["message"] == "地震の影響で、一部列車に遅れや運休が出ています。"
+    assert grouped["affected_lines"] == ["内房線", "外房線", "京葉線"]
+    assert grouped["affected_count"] == 3
+    assert grouped["update_time_text"] == "8月23日 6時30分"
+    individual = next(row for row in summary["lines"] if row["line_name"] == "成田線")
+    assert "直通運転を中止" in individual["message"]
+
+
+def test_discord_groups_simultaneous_identical_earthquake_updates():
+    changes = []
+    for index, name in enumerate(("内房線", "外房線", "京葉線"), start=1):
+        url = f"https://transit.yahoo.co.jp/diainfo/{index}/0"
+        changes.append(
+            {
+                "url": url,
+                "event": "updated",
+                "previous": {},
+                "current": {
+                    "url": url,
+                    "line_name": name,
+                    "status": "列車遅延",
+                    "message": "地震の影響で、一部列車に遅れや運休が出ています。",
+                    "notices": [],
+                },
+            }
+        )
+
+    grouped = TRAIN_ALERT._group_shared_message_changes(changes)
+    embeds = TRAIN_ALERT.build_embeds(
+        grouped[0],
+        "https://mfu.iori0624.jp/train-status",
+        "2026-08-23T06:30:00+09:00",
+    )
+
+    assert len(grouped) == 1
+    assert len(grouped[0]["member_changes"]) == 3
+    assert embeds[0]["title"].startswith("🕒 地震による")
+    affected = next(field for field in embeds[0]["fields"] if field["name"] == "影響路線")
+    assert affected["value"] == "内房線　外房線　京葉線"

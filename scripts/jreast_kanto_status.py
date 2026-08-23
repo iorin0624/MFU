@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import urllib.request
+import hashlib
+import html
 import json
 import os
 import re
@@ -23,6 +25,106 @@ SHINKANSEN_LINES = [
     ("北陸新幹線", "https://transit.yahoo.co.jp/diainfo/624/0"),
     ("東海道新幹線", "https://transit.yahoo.co.jp/diainfo/7/0"),
 ]
+
+EARTHQUAKE_DELAY_MESSAGE = "地震の影響で、一部列車に遅れや運休が出ています。"
+EARTHQUAKE_GROUP_TITLE = "地震による一部列車に遅れや運休がある路線"
+EARTHQUAKE_DELAY_ONLY_MESSAGE = "地震の影響で、一部列車に遅れが出ています。"
+EARTHQUAKE_DELAY_ONLY_GROUP_TITLE = "地震による一部列車に遅れがある路線"
+
+
+def normalize_shared_message(value: str) -> str:
+    """HTML実体参照と空白差を除き、共通運行情報の完全一致判定に使う。"""
+    return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
+
+
+def shared_message_group_title(value: str) -> str:
+    return {
+        EARTHQUAKE_DELAY_MESSAGE: EARTHQUAKE_GROUP_TITLE,
+        EARTHQUAKE_DELAY_ONLY_MESSAGE: EARTHQUAKE_DELAY_ONLY_GROUP_TITLE,
+    }.get(normalize_shared_message(value), "")
+
+
+def shared_update_time_sort_key(value: str):
+    match = re.search(
+        r"(?P<month>\d{1,2})月(?P<day>\d{1,2})日\s*"
+        r"(?P<hour>\d{1,2})時(?P<minute>\d{1,2})分",
+        str(value or ""),
+    )
+    if not match:
+        return float("-inf")
+    now = datetime.now()
+    parts = {name: int(match.group(name)) for name in ("month", "day", "hour", "minute")}
+    candidates = []
+    for year in (now.year - 1, now.year, now.year + 1):
+        try:
+            candidates.append(datetime(year=year, **parts))
+        except ValueError:
+            continue
+    if not candidates:
+        return float("-inf")
+    nearest = min(candidates, key=lambda candidate: abs((candidate - now).total_seconds()))
+    return nearest.timestamp()
+
+
+def group_shared_messages(summary_lines: list[dict]) -> list[dict]:
+    """大量に並ぶ同一の地震情報を、影響路線付きの1行へまとめる。"""
+    line_counts = {}
+    for row in summary_lines:
+        name = str(row.get("line_name") or "").strip()
+        if name:
+            line_counts[name] = line_counts.get(name, 0) + 1
+
+    candidates = {}
+    for index, row in enumerate(summary_lines):
+        message = normalize_shared_message(row.get("message"))
+        title = shared_message_group_title(message)
+        status = str(row.get("status") or "").strip()
+        line_name = str(row.get("line_name") or "").strip()
+        if (
+            not title
+            or not line_name
+            or "運転見合わせ" in status
+            or row.get("affected_lines")
+            or line_counts.get(line_name, 0) != 1
+        ):
+            continue
+        candidates.setdefault((status, message, title), []).append((index, row))
+
+    grouped_at = {}
+    consumed = set()
+    for (status, message, title), items in candidates.items():
+        if len(items) < 2:
+            continue
+        first_index = items[0][0]
+        source_lines = [str(row.get("line_name") or "").strip() for _, row in items]
+        latest = max(
+            items,
+            key=lambda item: shared_update_time_sort_key(item[1].get("update_time_text")),
+        )[1]
+        digest = hashlib.sha256(f"{status}\n{message}".encode("utf-8")).hexdigest()[:16]
+        grouped_at[first_index] = {
+            "line_name": title,
+            "notice_id": f"shared-{digest}",
+            "status": status or "運行情報",
+            "message": message,
+            "affected_lines": source_lines,
+            "affected_count": len(source_lines),
+            "source_lines": source_lines,
+            "group_type": "shared_message",
+            "update_time_text": latest.get("update_time_text") or "",
+            "publish_time": latest.get("publish_time") or "",
+        }
+        consumed.update(index for index, _ in items)
+
+    result = []
+    for index, row in enumerate(summary_lines):
+        if index in grouped_at:
+            result.append(grouped_at[index])
+        elif index not in consumed:
+            clean = dict(row)
+            clean["message"] = normalize_shared_message(clean.get("message"))
+            result.append(clean)
+    return result
 
 
 def fetch_html(url: str) -> bytes:
@@ -576,7 +678,7 @@ def build_summary(raw_data: dict) -> dict:
     return {
         "updated": raw_data.get("updated"),
         "source": raw_data.get("source"),
-        "lines": summary_lines,
+        "lines": group_shared_messages(summary_lines),
     }
 
 
