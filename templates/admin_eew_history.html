@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}EEW受信履歴{% endblock %}
+{% block content %}
+<style>
+  .eew-page { max-width: 1600px; }
+  .eew-summary { border: 1px solid #e2e8f0; border-radius: .85rem; padding: 1rem; background: #fff; height: 100%; }
+  .eew-summary-label { color: #64748b; font-size: .8rem; }
+  .eew-summary-value { font-weight: 800; font-size: 1.45rem; font-variant-numeric: tabular-nums; }
+  .eew-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .eew-delay { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .eew-hypocenter { min-width: 10rem; }
+</style>
+<div class="container-fluid eew-page py-3">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div>
+      <h1 class="h3 mb-1">EEW受信履歴</h1>
+      <div class="text-muted small">JMA発表からP2P・Raspberry Pi受信までの時間をミリ秒単位で確認できます。</div>
+    </div>
+    <a href="{{ url_for('admin_nodes_chrony') }}" class="btn btn-outline-secondary">Chrony時刻同期へ</a>
+  </div>
+
+  {% if error %}<div class="alert alert-danger">EEW履歴DBを読み込めませんでした。<br><small>{{ error }}</small></div>{% endif %}
+
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-lg-3"><div class="eew-summary"><div class="eew-summary-label">報数</div><div class="eew-summary-value">{{ summary.reports or 0 }}</div></div></div>
+    <div class="col-6 col-lg-3"><div class="eew-summary"><div class="eew-summary-label">地震数</div><div class="eew-summary-value">{{ summary.events or 0 }}</div></div></div>
+    <div class="col-6 col-lg-3"><div class="eew-summary"><div class="eew-summary-label">取消</div><div class="eew-summary-value">{{ summary.cancelled_count or 0 }}</div></div></div>
+    <div class="col-6 col-lg-3"><div class="eew-summary"><div class="eew-summary-label">平均 JMA → Pi</div><div class="eew-summary-value">{% if summary.avg_jma_to_ws is not none %}{{ '%.3f'|format(summary.avg_jma_to_ws) }}<small class="fs-6"> 秒</small>{% else %}-{% endif %}</div></div></div>
+  </div>
+
+  <form method="get" class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="row g-2 align-items-end">
+        <div class="col-6 col-md-2"><label class="form-label">開始日</label><input type="date" name="date_from" value="{{ filters.date_from }}" class="form-control"></div>
+        <div class="col-6 col-md-2"><label class="form-label">終了日</label><input type="date" name="date_to" value="{{ filters.date_to }}" class="form-control"></div>
+        <div class="col-12 col-md-3"><label class="form-label">震源・eventId</label><input type="search" name="keyword" value="{{ filters.keyword }}" class="form-control" placeholder="例: 茨城県南部"></div>
+        <div class="col-6 col-md-2"><label class="form-label">受信経路</label><select name="source" class="form-select"><option value="">すべて</option><option value="ws" {% if filters.source=='ws' %}selected{% endif %}>WebSocketあり</option><option value="history" {% if filters.source=='history' %}selected{% endif %}>履歴補完あり</option><option value="both" {% if filters.source=='both' %}selected{% endif %}>両方あり</option></select></div>
+        <div class="col-6 col-md-1"><label class="form-label">取消</label><select name="cancelled" class="form-select"><option value="">全部</option><option value="0" {% if filters.cancelled=='0' %}selected{% endif %}>通常</option><option value="1" {% if filters.cancelled=='1' %}selected{% endif %}>取消</option></select></div>
+        <div class="col-6 col-md-1"><label class="form-label">Discord</label><select name="discord" class="form-select"><option value="">全部</option><option value="1" {% if filters.discord=='1' %}selected{% endif %}>通知済</option><option value="0" {% if filters.discord=='0' %}selected{% endif %}>未通知</option></select></div>
+        <div class="col-6 col-md-1 d-grid"><button class="btn btn-primary">検索</button></div>
+      </div>
+    </div>
+  </form>
+
+  <div class="d-flex justify-content-between align-items-center mb-2 small text-muted">
+    <span>{{ pagination.total }}件中 {{ ((pagination.page-1)*pagination.per_page+1) if pagination.total else 0 }}～{{ [pagination.page*pagination.per_page, pagination.total]|min }}件</span>
+    <span>DATETIME(3) / JST</span>
+  </div>
+  <div class="card shadow-sm mb-3">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead><tr><th>JMA発表</th><th>震源・規模</th><th>予想震度</th><th>受信経路</th><th>受信遅延</th><th>Discord</th><th>eventId / serial</th><th></th></tr></thead>
+        <tbody>
+        {% for row in rows %}
+          <tr>
+            <td class="eew-time">{{ row.formatted.jma_issue_time }}{% if row.cancelled %}<div><span class="badge text-bg-danger">取消</span></div>{% endif %}</td>
+            <td class="eew-hypocenter"><strong>{{ row.hypocenter_name or '不明' }}</strong><div class="small text-muted">M{{ row.magnitude if row.magnitude is not none else '-' }} / {{ row.depth_km if row.depth_km is not none else '-' }}km</div></td>
+            <td>{% if row.scale_from is not none %}{{ row.scale_from_label }}～{{ row.scale_to_label }}{% else %}-{% endif %}</td>
+            <td>{% if row.has_ws %}<span class="badge text-bg-primary">WS</span>{% endif %} {% if row.has_history %}<span class="badge text-bg-secondary">HIST</span>{% endif %}<div class="small text-muted">{{ row.receive_count }}回受信</div></td>
+            <td>{% if row.delays.jma_to_ws is not none %}<span class="eew-delay">{{ '%+.3f'|format(row.delays.jma_to_ws) }}秒</span><div class="small text-muted">JMA → Pi</div>{% else %}-{% endif %}</td>
+            <td>{% if row.discord_notified %}<span class="badge text-bg-success">通知済</span>{% else %}<span class="badge text-bg-secondary">未通知</span>{% endif %}</td>
+            <td><code>{{ row.event_id }}</code><div class="small text-muted">serial {{ row.serial }}</div></td>
+            <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('admin_eew_history_detail', report_id=row.id) }}">詳細</a></td>
+          </tr>
+        {% else %}<tr><td colspan="8" class="text-center text-muted py-4">該当するEEW履歴はありません。</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% if pagination.pages > 1 %}
+  <nav><ul class="pagination justify-content-center">
+    <li class="page-item {% if pagination.page <= 1 %}disabled{% endif %}"><a class="page-link" href="{{ prev_url }}">前へ</a></li>
+    <li class="page-item disabled"><span class="page-link">{{ pagination.page }} / {{ pagination.pages }}</span></li>
+    <li class="page-item {% if pagination.page >= pagination.pages %}disabled{% endif %}"><a class="page-link" href="{{ next_url }}">次へ</a></li>
+  </ul></nav>
+  {% endif %}
+</div>
+{% endblock %}
