@@ -11,12 +11,11 @@
   .eew-hypocenter { min-width: 10rem; }
 </style>
 <div class="container-fluid eew-page py-3">
-  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div class="mb-3">
     <div>
       <h1 class="h3 mb-1">EEW受信履歴</h1>
       <div class="text-muted small">JMA発表からP2P・Raspberry Pi受信までの時間をミリ秒単位で確認できます。</div>
     </div>
-    <a href="{{ url_for('admin_nodes_chrony') }}" class="btn btn-outline-secondary">Chrony時刻同期へ</a>
   </div>
 
   {% if error %}<div class="alert alert-danger">EEW履歴DBを読み込めませんでした。<br><small>{{ error }}</small></div>{% endif %}
