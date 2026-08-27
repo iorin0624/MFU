@@ -2211,7 +2211,7 @@ def album_thumb(album_id, child_id, filename):
     abort(404)
 
 @album_bp.route('/<album_id>/<child_id>/process_status', methods=['POST'])
-def update_process_status(album_id, child_id):
+def update_process_status(album_id, child_id, data_override=None):
     meta = load_meta(album_id)
     if not meta:
         return jsonify({"ok": False, "error": "album_not_found"}), 404
@@ -2220,7 +2220,7 @@ def update_process_status(album_id, child_id):
     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
-    data = request.get_json(silent=True) or {}
+    data = data_override if isinstance(data_override, dict) else (request.get_json(silent=True) or {})
     try:
         ext_user_id = int(data.get("ext_user_id"))
     except (TypeError, ValueError):
@@ -2919,7 +2919,7 @@ def _enforce_event_album_access():
         return
 
     # 入口は event_gate 側でログイン・参加承認を判定する。
-    if request.endpoint == "album.album_access":
+    if request.endpoint in {"album.album_access", "album.api_album_authenticate"}:
         return
 
     user = session.get("user")
@@ -2934,7 +2934,11 @@ def _enforce_event_album_access():
 
     # 以前の閲覧許可だけでは通さず、ログアウト・取消後は直ちに無効化する。
     _revoke_album_auth(str(album_id))
-    if request.endpoint in _EVENT_ALBUM_JSON_ENDPOINTS or request.is_json:
+    if (
+        request.endpoint in _EVENT_ALBUM_JSON_ENDPOINTS
+        or request.is_json
+        or request.path.startswith("/album/api/")
+    ):
         return jsonify({"ok": False, "error": "event_album_auth_required"}), 403
     return redirect(url_for("album.album_access", album_id=album_id))
 

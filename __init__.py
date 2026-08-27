@@ -360,6 +360,7 @@ _CSRF_PROTECTED_PREFIXES = (
     "/upload_delete/",
     "/layer_upload_delete/",
     "/layer_upload_list/",
+    "/album/api/",
 )
 _CSRF_PROTECTED_PATHS = {
     "/login",
@@ -495,7 +496,7 @@ def _log_csrf_debug(reason, **extra):
 
 
 def _is_json_error_response():
-    if request.path.startswith("/api/"):
+    if request.path.startswith("/api/") or request.path.startswith("/album/api/"):
         return True
     if request.is_json:
         return True
