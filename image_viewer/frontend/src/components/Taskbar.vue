@@ -40,10 +40,6 @@ onBeforeUnmount(() => {
 <template>
   <footer class="xp-taskbar">
     <button class="start-button" type="button" @click="desktop.openExplorer('')"><span class="start-logo">◆</span> スタート</button>
-    <div class="taskbar-launchers">
-      <button type="button" title="Instagram / Threads / X 画像取得" @click="desktop.openUtility('image-downloader')">IG</button>
-      <button type="button" title="Instagram / Threads / X 動画取得" @click="desktop.openUtility('video-downloader')">VD</button>
-    </div>
     <div class="task-buttons">
       <button
         v-for="win in desktop.windows"

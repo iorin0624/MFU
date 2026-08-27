@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_append_sequence_plan_preserves_extensions_and_orders_target_first():
     source = (ROOT / "image_viewer" / "catalog.py").read_text(encoding="utf-8")
     routes = (ROOT / "image_viewer" / "routes.py").read_text(encoding="utf-8")
-    template = (
-        ROOT / "image_viewer" / "template" / "image_viewer.html"
+    explorer = (
+        ROOT / "image_viewer" / "frontend" / "src" / "components" / "ExplorerWindow.vue"
     ).read_text(encoding="utf-8")
 
     assert "def build_append_sequence_plan" in source
@@ -18,9 +18,9 @@ def test_append_sequence_plan_preserves_extensions_and_orders_target_first():
     assert 'new_name = f"{sequence_stem}_{next_number}{extension}"' in source
     assert "def append_sequence_files" in source
     assert '@image_viewer_bp.post("/api/entries/append-sequence")' in routes
-    assert "後付け連番" in template
-    assert "function orderAppendSequenceSources" in template
-    assert "compareNaturalText(aName, bName)" in template
-    assert "const sources = orderAppendSequenceSources(entries);" in template
-    assert "chooseAppendSequenceTarget" in template
-    assert "Escキーでキャンセル" in template
+    assert "後付け連番の確認" in explorer
+    assert "model.value.selectedPaths.slice().sort" in explorer
+    assert "collator.compare(leftName, rightName)" in explorer
+    assert "appendPreview(dialog.sources, dialog.target)" in explorer
+    assert "imageViewerApi.appendSequence(sources, target.path)" in explorer
+    assert "event.key === 'Escape' && model.value.appendSources.length" in explorer

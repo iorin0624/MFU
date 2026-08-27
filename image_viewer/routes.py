@@ -4302,21 +4302,11 @@ def _refresh_image_list_cache_async() -> None:
 @image_viewer_bp.get("/")
 @login_required
 def index():
-    if not catalog.CATALOG_ENABLED:
-        _ensure_upload_root()
-        _refresh_image_list_cache_async()
-    return render_template("image_viewer.html")
-
-
-@image_viewer_bp.get("/vue-preview")
-@login_required
-def vue_preview():
-    """Serve the additive Vue migration preview without replacing the legacy UI."""
+    """Serve the Vue image viewer as the canonical UI."""
     if not catalog.CATALOG_ENABLED:
         _ensure_upload_root()
         _refresh_image_list_cache_async()
     config = {
-        "legacyUrl": url_for("image_viewer.index"),
         "imagesUrl": url_for("image_viewer.image_list"),
         "imagesVersionUrl": url_for("image_viewer.image_list_version"),
         "createFolderUrl": url_for("image_viewer.create_folder"),
@@ -4349,6 +4339,13 @@ def vue_preview():
         "image_viewer_vue.html",
         image_viewer_config=config,
     )
+
+
+@image_viewer_bp.get("/vue-preview")
+@login_required
+def vue_preview():
+    """Keep old preview bookmarks working after the Vue viewer became canonical."""
+    return redirect(url_for("image_viewer.index"), code=302)
 
 
 @image_viewer_bp.get("/manifest.webmanifest")

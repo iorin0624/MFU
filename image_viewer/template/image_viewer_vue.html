@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf-token" content="{{ csrf_token_value }}">
   <meta name="theme-color" content="#0b63dd">
-  <title>Image Viewer Desktop - Vue Preview</title>
+  <title>Image Viewer Desktop</title>
   <link rel="manifest" href="{{ url_for('image_viewer.pwa_manifest') }}">
   <link rel="apple-touch-icon" href="{{ url_for('image_viewer.pwa_icon', size=192) }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='image_viewer_vue/image-viewer.css') }}?v=202608280225">
+  <link rel="stylesheet" href="{{ url_for('static', filename='image_viewer_vue/image-viewer.css') }}?v=202608280330">
   {% if session.get('user') == 'admin' %}
   <script defer src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
   <script defer src="{{ url_for('static', filename='js/admin-passkey-stepup.js') }}"></script>
@@ -17,7 +17,16 @@
 <body>
   <div id="image-viewer-app"></div>
   <script id="image-viewer-config" type="application/json">{{ image_viewer_config|tojson }}</script>
-  <script type="module" src="{{ url_for('static', filename='image_viewer_vue/image-viewer.js') }}?v=202608280225"></script>
+  <script type="module" src="{{ url_for('static', filename='image_viewer_vue/image-viewer.js') }}?v=202608280330"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register("{{ url_for('image_viewer.pwa_service_worker') }}", {
+          scope: "{{ url_for('image_viewer.index') }}"
+        }).catch(() => {});
+      });
+    }
+  </script>
   <noscript>画像ビュアーを利用するにはJavaScriptを有効にしてください。</noscript>
 </body>
 </html>

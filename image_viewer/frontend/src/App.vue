@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
-import { runtimeConfig } from '@/config';
 import { useDesktopStore } from '@/stores/desktop';
 import { useNotificationStore } from '@/stores/notifications';
 import ExplorerWindow from '@/components/ExplorerWindow.vue';
@@ -22,15 +21,10 @@ onMounted(() => {
 
 <template>
   <main class="vue-desktop">
-    <div class="preview-ribbon">Vue Preview <a :href="runtimeConfig.legacyUrl">現行版へ戻る</a></div>
     <button class="desktop-icon" type="button" @dblclick="desktop.openExplorer('')">
       <span>🗂️</span>
       <b>画像ライブラリ</b>
     </button>
-    <a class="desktop-icon legacy-icon" :href="runtimeConfig.legacyUrl">
-      <span>↩️</span>
-      <b>現行版</b>
-    </a>
     <button class="desktop-icon image-download-icon" type="button" @dblclick="desktop.openUtility('image-downloader')">
       <span class="desktop-letter-icon">IG</span>
       <b>Instagram/X<br>画像取得</b>
