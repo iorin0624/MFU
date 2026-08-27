@@ -45,7 +45,6 @@ export interface ImageListPayload {
 }
 
 export interface RuntimeConfig {
-  legacyUrl: string;
   imagesUrl: string;
   imagesVersionUrl: string;
   createFolderUrl: string;

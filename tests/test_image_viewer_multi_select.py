@@ -67,19 +67,21 @@ class ImageViewerMultiSelectTest(unittest.TestCase):
         self.assertEqual(result["results"], [])
 
     def test_template_contains_requested_selection_and_batch_actions(self):
-        source = (ROOT / "image_viewer" / "template" / "image_viewer.html").read_text(
-            encoding="utf-8-sig"
-        )
+        source = (
+            ROOT / "image_viewer" / "frontend" / "src" / "components" / "ExplorerWindow.vue"
+        ).read_text(encoding="utf-8-sig")
+        grid = (
+            ROOT / "image_viewer" / "frontend" / "src" / "components" / "FileGrid.vue"
+        ).read_text(encoding="utf-8-sig")
 
         for expected in (
-            "selectFileFromEvent",
             "event.shiftKey",
-            "wireMarqueeSelection",
-            "deleteEntries",
-            "moveEntries",
-            "pasteInternalClipboard",
+            "deletePaths",
+            "movePaths",
+            "pasteFromClipboard",
         ):
             self.assertIn(expected, source)
+        self.assertIn("emit('marquee'", grid)
 
 
 if __name__ == "__main__":

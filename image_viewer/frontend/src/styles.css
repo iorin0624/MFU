@@ -21,21 +21,6 @@ button { touch-action: manipulation; }
   user-select: none;
 }
 
-.preview-ribbon {
-  position: fixed;
-  bottom: 50px;
-  right: 10px;
-  z-index: 9998;
-  padding: 6px 10px;
-  border: 1px solid #ffd45a;
-  border-radius: 6px;
-  background: rgba(255, 250, 210, .94);
-  color: #554200;
-  font-size: 12px;
-  box-shadow: 0 2px 9px #2348;
-}
-.preview-ribbon a { margin-left: 8px; color: #0645d8; }
-
 .desktop-icon {
   position: absolute;
   left: 18px;
@@ -56,9 +41,8 @@ button { touch-action: manipulation; }
 .desktop-icon:hover { border-color: #d7ebff; background: #358ee477; }
 .desktop-icon span { font-size: 39px; filter: drop-shadow(1px 2px 1px #1236); }
 .desktop-icon b { font-size: 12px; }
-.legacy-icon { top: 116px; }
-.image-download-icon { top: 208px; }
-.video-download-icon { top: 300px; }
+.image-download-icon { top: 116px; }
+.video-download-icon { top: 208px; }
 .desktop-icon .desktop-letter-icon {
   display: grid;
   place-items: center;
@@ -423,21 +407,7 @@ button.danger { color: #a41515; }
 }
 .ig-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ig-status { flex: 1; min-width: 180px; margin-left: auto; color: #1f3763; font-size: 12px; text-align: right; }
-.taskbar-launchers { display: flex; gap: 2px; padding-left: 5px; }
-.taskbar-launchers button {
-  width: 32px;
-  height: 31px;
-  padding: 0;
-  border: 1px solid #0d4d9c;
-  border-radius: 3px;
-  color: #fff;
-  background: linear-gradient(#4da4ee, #1559b8);
-  font-size: 11px;
-  font-weight: 800;
-}
-
 @media (max-width: 760px) {
-  .preview-ribbon { bottom: 48px; font-size: 10px; }
   .desktop-icon { display: none; }
   .xp-window:not(.minimized) { inset: 0 0 43px 0 !important; width: auto !important; height: auto !important; border-radius: 0; }
   .xp-resize-handle { display: none; }

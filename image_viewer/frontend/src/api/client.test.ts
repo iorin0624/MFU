@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const config = {
-  legacyUrl: '/image_viewer/', imagesUrl: '/image_viewer/api/images',
+  imagesUrl: '/image_viewer/api/images',
   imagesVersionUrl: '/image_viewer/api/images/version', createFolderUrl: '/image_viewer/api/folders',
   propertiesUrl: '/image_viewer/api/entries/properties', renameUrl: '/image_viewer/api/entries/rename',
   appendSequenceUrl: '/image_viewer/api/entries/append-sequence', deleteUrl: '/image_viewer/api/entries/delete',
@@ -39,4 +39,3 @@ describe('image viewer API client', () => {
     await expect(imageViewerApi.list('', 'asc')).rejects.toThrow('HTTP 500');
   });
 });
-
