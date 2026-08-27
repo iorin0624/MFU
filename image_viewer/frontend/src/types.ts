@@ -1,6 +1,12 @@
 export type SortDirection = 'asc' | 'desc';
 export type ViewSize = 'xxl' | 'xl' | 'lg';
-export type WindowKind = 'explorer' | 'image' | 'video';
+export type WindowKind =
+  | 'explorer'
+  | 'image'
+  | 'video'
+  | 'image-downloader'
+  | 'video-downloader'
+  | 'instagram-auth';
 
 export interface MediaItem {
   id?: number;
@@ -53,7 +59,38 @@ export interface RuntimeConfig {
   pasteUrl: string;
   thumbnailUrl: string;
   thumbnailJobUrl: string;
+  instagramFetchUrl: string;
+  instagramSaveUrl: string;
+  instagramJobUrl: string;
+  instagramCancelJobUrl: string;
+  instagramNextNumberUrl: string;
+  instagramBrowserStartUrl: string;
+  instagramBrowserSaveUrl: string;
+  instagramCredentialsStatusUrl: string;
+  instagramCredentialsSaveUrl: string;
+  videoFetchUrl: string;
+  videoFramesFetchUrl: string;
+  videoSaveUrl: string;
+  videoJobUrl: string;
   isAdmin: boolean;
+}
+
+export interface DownloadImageItem {
+  index: number;
+  url: string;
+  previewUrl?: string;
+  previewReady?: boolean;
+  filename?: string;
+  suffix?: string;
+}
+
+export interface DownloadVideoItem {
+  index: number;
+  url: string;
+  audioUrl?: string;
+  audioExpected?: boolean;
+  filename?: string;
+  suffix?: string;
 }
 
 export interface ExplorerWindowState {

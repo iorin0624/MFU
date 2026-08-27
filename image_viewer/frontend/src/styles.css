@@ -57,6 +57,20 @@ button { touch-action: manipulation; }
 .desktop-icon span { font-size: 39px; filter: drop-shadow(1px 2px 1px #1236); }
 .desktop-icon b { font-size: 12px; }
 .legacy-icon { top: 116px; }
+.image-download-icon { top: 208px; }
+.video-download-icon { top: 300px; }
+.desktop-icon .desktop-letter-icon {
+  display: grid;
+  place-items: center;
+  width: 43px;
+  height: 43px;
+  border-radius: 8px;
+  color: #fff;
+  background: linear-gradient(135deg, #fd9a22, #d32365 55%, #5034ba);
+  font-size: 18px;
+  font-weight: 800;
+}
+.video-download-icon .desktop-letter-icon { background: linear-gradient(135deg, #2f91eb, #08469e); }
 
 .xp-window {
   position: absolute;
@@ -283,6 +297,145 @@ button.danger { color: #a41515; }
 .toast-enter-active, .toast-leave-active { transition: opacity .18s, translate .18s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; translate: 0 10px; }
 
+.instagram-body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 10px;
+  background: #ece9d8;
+}
+.instagram-auth-body {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+  background: #ece9d8;
+}
+.ig-auth-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.instagram-auth-body input {
+  flex: 1;
+  min-width: 180px;
+  height: 28px;
+  padding: 2px 6px;
+  border: 1px solid #7f9db9;
+  background: #fff;
+}
+.instagram-auth-body button, .ig-form button, .ig-actions button {
+  min-height: 28px;
+  padding: 3px 9px;
+  border: 1px solid #aca899;
+  border-radius: 2px;
+  background: linear-gradient(#fff, #ece9d8);
+}
+.ig-auth-status { min-height: 36px; color: #1f3763; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+.ig-form {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) auto auto auto;
+  gap: 7px;
+  align-items: center;
+}
+.ig-form input {
+  min-width: 0;
+  height: 28px;
+  padding: 3px 6px;
+  border: 1px solid #7f9db9;
+  background: #fff;
+}
+.ig-options {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(90px, 1fr) minmax(80px, 1fr);
+  gap: 7px;
+  margin-top: 8px;
+}
+.ig-options.single-option { grid-template-columns: minmax(0, 1fr); }
+.ig-options label { display: grid; gap: 3px; font-size: 12px; }
+.ig-options input { width: 100%; height: 27px; padding: 3px 6px; border: 1px solid #7f9db9; background: #fff; }
+.ig-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid #aca899;
+  background: #fff;
+}
+.ig-grid .empty-folder { grid-column: 1/-1; margin: 70px auto; }
+.ig-item {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid #c7c3b1;
+  background: #fff;
+  cursor: pointer;
+  transition: opacity .12s, border-color .12s, background .12s;
+}
+.ig-item:not(.selected) { opacity: .68; }
+.ig-item.selected { padding: 4px; border: 3px solid #ffcc00; background: #316ac5; box-shadow: inset 0 0 0 2px #103d91; }
+.ig-item.selected::after {
+  content: "選択中";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 7px;
+  border: 1px solid #fff;
+  border-radius: 3px;
+  color: #111;
+  background: #ffcc00;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 1px 1px 2px #0007;
+}
+.ig-item.pending::after { content: "取得中"; background: #e6e6e6; }
+.ig-item.selected label { color: #fff; font-weight: 700; text-shadow: 1px 1px #103d91; }
+.ig-item label { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12px; }
+.ig-item label span { min-width: 0; overflow-wrap: anywhere; }
+.ig-item input[type="checkbox"] { width: 17px; height: 17px; accent-color: #ffcc00; }
+.ig-thumb, .video-download-thumb {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: #f5f5f5;
+  color: #4b5563;
+  font-size: 12px;
+}
+.ig-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.video-download-thumb {
+  border: 1px solid #6b8fd6;
+  color: #fff;
+  background: linear-gradient(135deg, #ffffff38, transparent 42%), linear-gradient(#163a7d, #061b46);
+  font-size: 22px;
+  font-weight: 800;
+  text-shadow: 1px 1px 2px #000c;
+}
+.ig-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ig-status { flex: 1; min-width: 180px; margin-left: auto; color: #1f3763; font-size: 12px; text-align: right; }
+.taskbar-launchers { display: flex; gap: 2px; padding-left: 5px; }
+.taskbar-launchers button {
+  width: 32px;
+  height: 31px;
+  padding: 0;
+  border: 1px solid #0d4d9c;
+  border-radius: 3px;
+  color: #fff;
+  background: linear-gradient(#4da4ee, #1559b8);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 @media (max-width: 760px) {
   .preview-ribbon { bottom: 48px; font-size: 10px; }
   .desktop-icon { display: none; }
@@ -300,6 +453,12 @@ button.danger { color: #a41515; }
   .start-button { min-width: 58px; width: 58px; font-size: 0; }
   .start-logo { font-size: 20px; }
   .xp-taskbar time { display: none; }
+  .ig-form, .ig-form.video-fetch-form { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .ig-form button:nth-of-type(n+2) { grid-row: 2; }
+  .ig-options { grid-template-columns: 1fr 1fr; }
+  .ig-options label:first-child { grid-column: 1/-1; }
+  .ig-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
+  .ig-status { flex-basis: 100%; text-align: left; }
 
   .append-confirm-header { display: none; }
   .append-confirm-row {
