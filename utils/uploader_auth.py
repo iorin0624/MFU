@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse
 
 from flask import Blueprint, abort, jsonify, redirect, render_template, render_template_string, request, session, url_for
@@ -19,10 +19,20 @@ TOKEN_SCOPE_DESKTOP = "desktop_upload"
 TOKEN_SCOPE_IOS = "ios_shortcut_upload"
 VALID_TOKEN_SCOPES = {TOKEN_SCOPE_DESKTOP, TOKEN_SCOPE_IOS}
 _schema_ready = False
+JST = timezone(timedelta(hours=9))
 
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _format_utc_as_jst(value: datetime | None) -> str:
+    """Format a timezone-naive MySQL UTC DATETIME for the admin UI."""
+    if not value:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(JST).strftime("%Y年%m月%d日 %H:%M:%S JST")
 
 
 def _ensure_schema() -> None:
@@ -241,6 +251,10 @@ def ios_shortcut_upload_admin():
                 notice = "対象のAPIキーは既に無効か、見つかりません。"
 
     tokens = list_uploader_tokens("admin", scope=TOKEN_SCOPE_IOS)
+    for token in tokens:
+        token["created_at_jst"] = _format_utc_as_jst(token.get("created_at"))
+        token["last_used_at_jst"] = _format_utc_as_jst(token.get("last_used_at"))
+        token["expires_at_jst"] = _format_utc_as_jst(token.get("expires_at"))
     return render_template(
         "admin_ios_shortcut_upload.html",
         tokens=tokens,
