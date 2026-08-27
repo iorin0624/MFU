@@ -1,10 +1,22 @@
 from pathlib import Path
 import sys
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from utils.ios_upload_images import looks_like_heif
+from utils.uploader_auth import _format_utc_as_jst
+
+
+def test_format_uploader_token_timestamp_as_jst():
+    expected = "2026年08月27日 12:04:05 JST"
+    assert _format_utc_as_jst(datetime(2026, 8, 27, 3, 4, 5)) == expected
+    assert (
+        _format_utc_as_jst(datetime(2026, 8, 27, 3, 4, 5, tzinfo=timezone.utc))
+        == expected
+    )
+    assert _format_utc_as_jst(None) == ""
 
 
 def test_heif_detection_uses_file_signature_not_only_extension():
