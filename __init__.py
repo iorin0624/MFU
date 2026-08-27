@@ -60,7 +60,9 @@ from app.utils.upload_security import (
     DEFAULT_ALLOWED_EXTENSIONS,
     can_access_upload_record,
     can_preview_upload_file,
+    build_upload_view_url,
     cleanup_legacy_view_auth_keys,
+    create_upload_access_token_hash,
     detect_mime_from_bytes,
     ensure_upload_password_schema,
     fetch_upload_file_record,
@@ -76,7 +78,9 @@ from app.utils.upload_security import (
     sanitize_filename,
     validate_upload_file,
     verify_upload_password,
+    verify_upload_access_token,
     upload_auth_method,
+    AUTH_ACCESS_TOKEN,
     AUTH_EMAIL_OTP,
     AUTH_PASSWORD,
 )
@@ -1551,6 +1555,7 @@ def submit_upload():
     )
     password = secrets.token_hex(4) if auth_method == AUTH_PASSWORD else ""
     password_hash = hash_upload_password(password) if password else None
+    access_token_hash = create_upload_access_token_hash(uid, auth_method)
 
     # 保存ルート（設定優先、なければ既定）
     storage_root = current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
@@ -1626,10 +1631,10 @@ def submit_upload():
     cur = db.cursor()
     cur.execute(
         """
-        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method, access_token_hash)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method),
+        (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method, access_token_hash),
     )
     upload_id = cur.lastrowid
     if filenames:
@@ -1658,7 +1663,10 @@ def submit_upload():
         "username": username,
         "nickname": nickname,
         "base_url": public_base.rstrip("/"),
-        "link": f"{public_base.rstrip('/')}/view/{uid}" if mode_config.get("enable_download_url") else "",
+        "link": build_upload_view_url(
+            public_base,
+            {"uuid": uid, "auth_method": auth_method},
+        ) if mode_config.get("enable_download_url") else "",
         "download_url": f"{public_base.rstrip('/')}/d/{uid}",
         "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
         "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
@@ -1946,7 +1954,7 @@ def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = N
             "username": username,
             "nickname": str(user_row.get("nickname") or "").strip() or username,
             "base_url": public_base,
-            "link": f"{public_base}/view/{uid}" if mode_config.get("enable_download_url") else "",
+            "link": build_upload_view_url(public_base, upload_row) if mode_config.get("enable_download_url") else "",
             "download_url": f"{public_base}/d/{uid}",
             "manage_url": f"{public_base}/m/{uid}",
             "layer_upload_url": f"{public_base}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
@@ -2078,6 +2086,7 @@ def submit_upload_start():
     )
     password = secrets.token_hex(4) if auth_method == AUTH_PASSWORD else ""
     password_hash = hash_upload_password(password) if password else None
+    access_token_hash = create_upload_access_token_hash(uid, auth_method)
     base_dir, original_dir, thumb_dir = _upload_dirs(uid)
     os.makedirs(original_dir, exist_ok=True)
     os.makedirs(thumb_dir, exist_ok=True)
@@ -2089,10 +2098,10 @@ def submit_upload_start():
     cur = db.cursor()
     cur.execute(
         """
-        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method, access_token_hash)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method),
+        (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method, access_token_hash),
     )
     db.commit()
     db.close()
@@ -2190,7 +2199,7 @@ def submit_upload_finish():
         "username": username,
         "nickname": nickname,
         "base_url": public_base.rstrip("/"),
-        "link": f"{public_base.rstrip('/')}/view/{uid}" if mode_config.get("enable_download_url") else "",
+        "link": build_upload_view_url(public_base, upload_row) if mode_config.get("enable_download_url") else "",
         "download_url": f"{public_base.rstrip('/')}/d/{uid}",
         "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
         "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
@@ -2490,6 +2499,55 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
 # =====================================
 # ③ 表示／配信
 # =====================================
+def _render_upload_access_token(upload, *, error=None, status=200):
+    return (
+        render_template(
+            "view_access_token.html",
+            upload=upload,
+            uuid=upload["uuid"],
+            error=error,
+            csrf_token_value=_get_csrf_token(),
+        ),
+        status,
+    )
+
+
+@app.get("/view/<uuid>/access")
+def view_upload_access_token(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        abort(404)
+    if upload_auth_method(upload) != AUTH_ACCESS_TOKEN:
+        abort(404)
+    if _can_access_upload_record(upload):
+        return redirect(url_for("view_upload", uuid=uuid))
+    return _render_upload_access_token(upload)
+
+
+@app.post("/view/<uuid>/access/verify")
+def view_upload_access_token_verify(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        abort(404)
+    if upload_auth_method(upload) != AUTH_ACCESS_TOKEN:
+        abort(404)
+    if _can_access_upload_record(upload):
+        return redirect(url_for("view_upload", uuid=uuid))
+
+    token = str(request.form.get("access_token") or "").strip()
+    if not verify_upload_access_token(upload, token):
+        current_app.logger.warning("UPLOAD_ACCESS_TOKEN_INVALID uuid=%s", uuid)
+        return _render_upload_access_token(
+            upload,
+            error="アクセスURLが無効です。送信者から案内されたURLをご確認ください。",
+            status=403,
+        )
+
+    _grant_view_auth(upload)
+    current_app.logger.info("UPLOAD_ACCESS_TOKEN_VERIFIED uuid=%s", uuid)
+    return redirect(url_for("view_upload", uuid=uuid, access_verified="1"))
+
+
 def _render_upload_email_otp(upload, *, error=None, sent=False, status=200):
     return (
         render_template(
@@ -2601,6 +2659,9 @@ def view_upload(uuid):
 
     if auth_method == AUTH_EMAIL_OTP and not _has_view_auth(upload):
         return _render_upload_email_otp(upload)
+
+    if auth_method == AUTH_ACCESS_TOKEN and not _has_view_auth(upload):
+        return _render_upload_access_token(upload)
 
     if not _has_view_auth(upload):
         return render_template("view_password.html", uuid=uuid)

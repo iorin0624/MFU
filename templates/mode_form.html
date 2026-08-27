@@ -29,7 +29,7 @@
     {% set selected_auth = (mode_data.auth_method if mode_data and mode_data.auth_method else ('password' if mode_data and mode_data.require_password else 'none')) %}
     <fieldset class="border rounded p-3 mb-3">
       <legend class="float-none w-auto px-2 fs-6 fw-bold">閲覧・ダウンロードの認証方式</legend>
-      {% for value, label in [('none', '認証なし'), ('password', 'パスワード認証'), ('email_otp', 'メールOTP認証')] %}
+      {% for value, label in [('none', '認証なし'), ('password', 'パスワード認証'), ('access_token', 'アクセストークン認証'), ('email_otp', 'メールOTP認証')] %}
       <div class="form-check">
         <input class="form-check-input" type="radio" name="auth_method" id="auth_{{ value }}" value="{{ value }}" {% if selected_auth == value %}checked{% endif %}>
         <label class="form-check-label" for="auth_{{ value }}">{{ label }}</label>

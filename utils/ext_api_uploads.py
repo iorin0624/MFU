@@ -30,7 +30,12 @@ import tempfile
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from flask import Blueprint, request, jsonify, abort, current_app, g
-from app.utils.upload_security import hash_upload_password
+from app.utils.upload_security import (
+    AUTH_PASSWORD,
+    create_upload_access_token_hash,
+    hash_upload_password,
+    normalize_upload_auth_method,
+)
 from app.utils.upload_security import detect_mime_from_bytes
 from app.utils.uploader_auth import (
     TOKEN_SCOPE_DESKTOP,
@@ -198,7 +203,7 @@ def _resolve_mode_config(username: str, mode: str) -> Optional[dict]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     cur.execute(
-        """SELECT username, mode, label, enable_download_url, require_password,
+        """SELECT username, mode, label, enable_download_url, require_password, auth_method,
                   enable_layer_upload_url, generate_thumbnails, template_key
            FROM upload_modes
            WHERE mode = %s
@@ -306,20 +311,24 @@ def create_upload():
     if not mode_config:
         return jsonify({"ok": False, "error": "unknown mode"}), 400
 
-    require_password = bool(mode_config.get("require_password"))
+    auth_method = normalize_upload_auth_method(
+        mode_config.get("auth_method"),
+        require_password=mode_config.get("require_password"),
+    )
 
     uuid32 = _uuid.uuid4().hex
-    password = secrets.token_hex(4) if require_password else ""
+    password = secrets.token_hex(4) if auth_method == AUTH_PASSWORD else ""
     password_hash = hash_upload_password(password) if password else None
+    access_token_hash = create_upload_access_token_hash(uuid32, auth_method)
     _mk_dirs(uuid32)
     expire_at = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
 
     db = get_db()
     cur = db.cursor()
     cur.execute(
-        """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (uuid32, title, date_str, expire_at, mode, username, "", password, password_hash),
+        """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash, auth_method, access_token_hash)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (uuid32, title, date_str, expire_at, mode, username, "", password, password_hash, auth_method, access_token_hash),
     )
     db.commit()
     cur.close()
@@ -635,7 +644,7 @@ def list_modes():
 
     if include_global:
         cur.execute(
-            """SELECT username, mode, label, enable_download_url, require_password,
+            """SELECT username, mode, label, enable_download_url, require_password, auth_method,
                       enable_layer_upload_url, generate_thumbnails, template_key
                FROM upload_modes
                WHERE (username = %s OR username IS NULL OR username = '' OR username = '*')
@@ -644,7 +653,7 @@ def list_modes():
         )
     else:
         cur.execute(
-            """SELECT username, mode, label, enable_download_url, require_password,
+            """SELECT username, mode, label, enable_download_url, require_password, auth_method,
                       enable_layer_upload_url, generate_thumbnails, template_key
                FROM upload_modes
                WHERE username = %s
@@ -757,7 +766,7 @@ def mark_upload_done():
     db = get_db()
     cur = db.cursor(dictionary=True)
     cur.execute(
-        "SELECT id, mode, username, title, date, expire_at, password FROM uploads WHERE uuid=%s AND username=%s",
+        "SELECT * FROM uploads WHERE uuid=%s AND username=%s",
         (uuid32, username),
     )
     up = cur.fetchone()

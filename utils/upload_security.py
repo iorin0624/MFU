@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import bcrypt
+import base64
+import hashlib
+import hmac
 import os
 import re
 from pathlib import Path
@@ -34,8 +37,10 @@ DEFAULT_ALLOWED_EXTENSIONS = {
 
 AUTH_NONE = "none"
 AUTH_PASSWORD = "password"
+AUTH_ACCESS_TOKEN = "access_token"
 AUTH_EMAIL_OTP = "email_otp"
-UPLOAD_AUTH_METHODS = {AUTH_NONE, AUTH_PASSWORD, AUTH_EMAIL_OTP}
+UPLOAD_AUTH_METHODS = {AUTH_NONE, AUTH_PASSWORD, AUTH_ACCESS_TOKEN, AUTH_EMAIL_OTP}
+UPLOAD_ACCESS_TOKEN_PREFIX = "mfu_view_"
 
 VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
 VIEW_AUTH_VERSION_SESSION_KEY = "view_auth_versions"
@@ -127,6 +132,56 @@ def normalize_upload_auth_method(value: object, *, require_password: object = Fa
         "1", "true", "t", "yes", "y", "on"
     }
     return AUTH_PASSWORD if password_enabled else AUTH_NONE
+
+
+def _upload_access_token_secret() -> bytes:
+    value = (
+        current_app.config.get("UPLOAD_ACCESS_TOKEN_SECRET")
+        or os.environ.get("UPLOAD_ACCESS_TOKEN_SECRET")
+        or current_app.secret_key
+    )
+    if not value:
+        raise RuntimeError("UPLOAD_ACCESS_TOKEN_SECRET or Flask SECRET_KEY is required")
+    return value if isinstance(value, bytes) else str(value).encode("utf-8")
+
+
+def generate_upload_access_token(uuid: str) -> str:
+    """Derive a stable, unguessable per-upload bearer token without storing it raw."""
+    digest = hmac.new(
+        _upload_access_token_secret(),
+        f"mfu-upload-access-v1:{str(uuid or '').strip()}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return UPLOAD_ACCESS_TOKEN_PREFIX + encoded
+
+
+def hash_upload_access_token(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def create_upload_access_token_hash(uuid: str, auth_method: object) -> str | None:
+    if normalize_upload_auth_method(auth_method) != AUTH_ACCESS_TOKEN:
+        return None
+    return hash_upload_access_token(generate_upload_access_token(uuid))
+
+
+def verify_upload_access_token(upload: dict | None, token: str) -> bool:
+    if upload_auth_method(upload) != AUTH_ACCESS_TOKEN:
+        return False
+    stored_hash = str((upload or {}).get("access_token_hash") or "").strip().lower()
+    if not stored_hash or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
+        return False
+    return hmac.compare_digest(stored_hash, hash_upload_access_token(token))
+
+
+def build_upload_view_url(public_base: str, upload: dict) -> str:
+    base = str(public_base or "").rstrip("/")
+    uuid = str((upload or {}).get("uuid") or "").strip()
+    if upload_auth_method(upload) == AUTH_ACCESS_TOKEN:
+        token = generate_upload_access_token(uuid)
+        return f"{base}/view/{uuid}/access#{token}"
+    return f"{base}/view/{uuid}"
 
 
 def validate_upload_file(
@@ -229,6 +284,10 @@ def ensure_upload_password_schema() -> None:
             cur.execute(
                 "ALTER TABLE uploads ADD COLUMN auth_version BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER otp_email"
             )
+        if "access_token_hash" not in columns:
+            cur.execute(
+                "ALTER TABLE uploads ADD COLUMN access_token_hash CHAR(64) NULL AFTER auth_version"
+            )
         if "upload_deleted_at" not in columns:
             cur.execute("ALTER TABLE uploads ADD COLUMN upload_deleted_at DATETIME NULL AFTER created_at")
         if "layer_deleted_at" not in columns:
@@ -249,7 +308,7 @@ def ensure_upload_password_schema() -> None:
             """
             UPDATE upload_modes
                SET auth_method=CASE WHEN require_password=1 THEN 'password' ELSE 'none' END
-             WHERE auth_method IS NULL OR auth_method NOT IN ('none','password','email_otp')
+             WHERE auth_method IS NULL OR auth_method NOT IN ('none','password','access_token','email_otp')
             """
         )
         cur.execute(
