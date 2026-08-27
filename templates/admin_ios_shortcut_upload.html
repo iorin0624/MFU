@@ -52,7 +52,7 @@
               <td>{{ token.label }}</td>
               <td>{{ token.created_at_jst or '-' }}</td>
               <td>{{ token.last_used_at_jst or '未使用' }}</td>
-              <td>{{ token.expires_at_jst or 'なし' }}</td>
+              <td>{{ token.expires_at_jst or '有効期限なし' }}</td>
               <td>{% if token.revoked_at %}<span class="badge bg-secondary">無効</span>{% else %}<span class="badge bg-success">有効</span>{% endif %}</td>
               <td class="text-end">
                 {% if not token.revoked_at %}
