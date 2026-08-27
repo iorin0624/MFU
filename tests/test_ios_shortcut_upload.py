@@ -10,7 +10,7 @@ from utils.uploader_auth import _format_utc_as_jst
 
 
 def test_format_uploader_token_timestamp_as_jst():
-    expected = "2026年08月27日 12:04:05 JST"
+    expected = "2026年08月27日 12:04:05"
     assert _format_utc_as_jst(datetime(2026, 8, 27, 3, 4, 5)) == expected
     assert (
         _format_utc_as_jst(datetime(2026, 8, 27, 3, 4, 5, tzinfo=timezone.utc))

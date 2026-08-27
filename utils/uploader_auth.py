@@ -32,7 +32,7 @@ def _format_utc_as_jst(value: datetime | None) -> str:
         return ""
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(JST).strftime("%Y年%m月%d日 %H:%M:%S JST")
+    return value.astimezone(JST).strftime("%Y年%m月%d日 %H:%M:%S")
 
 
 def _ensure_schema() -> None:
