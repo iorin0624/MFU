@@ -44,6 +44,7 @@ from app.utils.upload_download_history import (
     record_upload_download,
     request_ip as download_request_ip,
 )
+from app.utils.realtime import emit_download_event
 
 
 mobile_download_bp = Blueprint("mobile_download", __name__)
@@ -698,12 +699,9 @@ def shortcut_config():
     return response
 
 
-@mobile_download_bp.get(
-    "/mobile-download/api/shortcut-status/<launch_token>"
-)
-def shortcut_launch_status(launch_token: str):
+def read_shortcut_launch_state(launch_token: str) -> dict:
     if not launch_token.startswith(LAUNCH_TOKEN_PREFIX):
-        return jsonify({"ok": False, "error": "invalid_launch_token"}), 400
+        return {"ok": False, "error": "invalid_launch_token"}
     _ensure_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -721,23 +719,30 @@ def shortcut_launch_status(launch_token: str):
     finally:
         db.close()
     if not row:
-        return jsonify({"ok": False, "error": "job_not_found"}), 404
+        return {"ok": False, "error": "job_not_found"}
     now = datetime.utcnow()
     expired = bool(
         row.get("revoked_at")
         or not row.get("launch_expires_at")
         or row.get("launch_expires_at") <= now
     )
-    response = jsonify(
-        {
-            "ok": True,
-            "started": bool(row.get("exchanged_at")),
-            "completed": bool(row.get("completed_at")),
-            "expired": expired,
-        }
-    )
+    return {
+        "ok": True,
+        "started": bool(row.get("exchanged_at")),
+        "completed": bool(row.get("completed_at")),
+        "expired": expired,
+    }
+
+
+@mobile_download_bp.get(
+    "/mobile-download/api/shortcut-status/<launch_token>"
+)
+def shortcut_launch_status(launch_token: str):
+    state = read_shortcut_launch_state(launch_token)
+    status = 200 if state.get("ok") else (400 if state.get("error") == "invalid_launch_token" else 404)
+    response = jsonify(state)
     response.headers["Cache-Control"] = "no-store"
-    return response
+    return response, status
 
 
 def _admin_username() -> str:
@@ -952,6 +957,11 @@ def exchange_token():
             "mobile download history start insert failed job_id=%s",
             job.get("id"),
         )
+    emit_download_event(
+        "shortcut_progress_update",
+        {"launch_token": launch_token, "started": True, "completed": False, "expired": False},
+        room=f"shortcut:{_hash_token(launch_token)}",
+    )
     return jsonify({"ok": True, "access_token": access_token, "manifest": manifest})
 
 
@@ -1080,6 +1090,12 @@ def complete_job(job_id: int):
             "mobile download history insert failed job_id=%s",
             job_id,
         )
+    # The launch token itself is not retained; the hash is the private room id.
+    emit_download_event(
+        "shortcut_progress_update",
+        {"job_id": job_id, "started": True, "completed": True, "expired": False},
+        room=f"shortcut:{str(job.get('launch_token_hash') or '')}",
+    )
     return jsonify({"ok": True})
 
 

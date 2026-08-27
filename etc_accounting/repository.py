@@ -39,7 +39,10 @@ def ensure_schema() -> None:
                     exit_ic VARCHAR(191) NULL,
                     amount INT NOT NULL,
                     vehicle_type VARCHAR(64) NULL,
+                    vehicle_number VARCHAR(64) NULL,
                     card_mask VARCHAR(64) NULL,
+                    redemption_amount INT NULL,
+                    postpaid_amount INT NULL,
                     remarks VARCHAR(255) NULL,
                     source_json LONGTEXT NULL,
                     source_state VARCHAR(16) NOT NULL DEFAULT 'present',
@@ -82,6 +85,17 @@ def ensure_schema() -> None:
                 ("exit_at", "DATETIME NULL AFTER entry_at"),
             )
             for column_name, column_definition in route_time_columns:
+                cur.execute(f"SHOW COLUMNS FROM etc_freee_records LIKE '{column_name}'")
+                if not cur.fetchone():
+                    cur.execute(
+                        f"ALTER TABLE etc_freee_records ADD COLUMN {column_name} {column_definition}"
+                    )
+            payment_columns = (
+                ("vehicle_number", "VARCHAR(64) NULL AFTER vehicle_type"),
+                ("redemption_amount", "INT NULL AFTER card_mask"),
+                ("postpaid_amount", "INT NULL AFTER redemption_amount"),
+            )
+            for column_name, column_definition in payment_columns:
                 cur.execute(f"SHOW COLUMNS FROM etc_freee_records LIKE '{column_name}'")
                 if not cur.fetchone():
                     cur.execute(
@@ -441,14 +455,18 @@ def upsert_record(record: dict) -> dict:
             INSERT INTO etc_freee_records (
                 transaction_key, statement_month, used_at, entry_at, exit_at,
                 entry_ic, exit_ic, amount,
-                vehicle_type, card_mask, remarks, source_json, source_last_seen_at,
+                vehicle_type, vehicle_number, card_mask,
+                redemption_amount, postpaid_amount,
+                remarks, source_json, source_last_seen_at,
                 status, created_at, updated_at
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s)
             ON DUPLICATE KEY UPDATE
                 statement_month=VALUES(statement_month), used_at=VALUES(used_at),
                 entry_at=VALUES(entry_at), exit_at=VALUES(exit_at),
                 entry_ic=VALUES(entry_ic), exit_ic=VALUES(exit_ic), amount=VALUES(amount),
-                vehicle_type=VALUES(vehicle_type), card_mask=VALUES(card_mask),
+                vehicle_type=VALUES(vehicle_type), vehicle_number=VALUES(vehicle_number),
+                card_mask=VALUES(card_mask),
+                redemption_amount=VALUES(redemption_amount), postpaid_amount=VALUES(postpaid_amount),
                 remarks=VALUES(remarks), source_json=VALUES(source_json),
                 source_state='present', source_missing_count=0,
                 source_missing_since=NULL, source_deleted_at=NULL,
@@ -458,7 +476,8 @@ def upsert_record(record: dict) -> dict:
                 record["transaction_key"], record["statement_month"], record["used_at"],
                 record.get("entry_at"), record.get("exit_at"),
                 record.get("entry_ic"), record.get("exit_ic"), int(record.get("amount") or 0),
-                record.get("vehicle_type"), record.get("card_mask"), record.get("remarks"),
+                record.get("vehicle_type"), record.get("vehicle_number"), record.get("card_mask"),
+                record.get("redemption_amount"), record.get("postpaid_amount"), record.get("remarks"),
                 json.dumps(record, ensure_ascii=False, default=str), now, now, now,
             ),
         )
@@ -468,11 +487,18 @@ def upsert_record(record: dict) -> dict:
         if previous:
             compared_fields = (
                 "used_at", "entry_at", "exit_at", "entry_ic", "exit_ic",
-                "amount", "vehicle_type", "card_mask", "remarks",
+                "amount", "vehicle_type", "vehicle_number", "card_mask",
+                "redemption_amount", "postpaid_amount", "remarks",
             )
             row["_details_changed"] = any(previous.get(key) != row.get(key) for key in compared_fields)
+            pdf_fields = (
+                "used_at", "entry_at", "exit_at", "entry_ic", "exit_ic",
+                "amount", "vehicle_type", "card_mask", "remarks",
+            )
+            row["_pdf_refresh_required"] = any(previous.get(key) != row.get(key) for key in pdf_fields)
         else:
             row["_details_changed"] = False
+            row["_pdf_refresh_required"] = True
         row["_is_new"] = is_new
         row["_became_final"] = bool(
             previous

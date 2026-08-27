@@ -173,8 +173,9 @@
 {% endif %}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
-<script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
-<script src="{{ url_for('static', filename='js/mfu_shortcut_download.js', v='20260821-2') }}"></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+<script src="{{ url_for('static', filename='js/mfu_zip_download.js', v='20260824-ws1') }}"></script>
+<script src="{{ url_for('static', filename='js/mfu_shortcut_download.js', v='20260824-ws1') }}"></script>
 <script>
   /* ====== Lightbox ====== */
   window.addEventListener('DOMContentLoaded', ()=>{

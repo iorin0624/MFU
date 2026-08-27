@@ -5,15 +5,19 @@ import secrets
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse
 
-from flask import Blueprint, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Blueprint, abort, jsonify, redirect, render_template, render_template_string, request, session, url_for
 
 from app.utils.db import get_db
 
 
 uploader_auth_bp = Blueprint("uploader_auth", __name__, url_prefix="/desktop/uploader")
+uploader_admin_bp = Blueprint("uploader_admin", __name__)
 
 TOKEN_PREFIX = "mfu_up_"
 TOKEN_DAYS = 180
+TOKEN_SCOPE_DESKTOP = "desktop_upload"
+TOKEN_SCOPE_IOS = "ios_shortcut_upload"
+VALID_TOKEN_SCOPES = {TOKEN_SCOPE_DESKTOP, TOKEN_SCOPE_IOS}
 _schema_ready = False
 
 
@@ -34,6 +38,7 @@ def _ensure_schema() -> None:
           token_hash CHAR(64) NOT NULL,
           username VARCHAR(191) NOT NULL,
           label VARCHAR(120) NOT NULL DEFAULT 'MFU Uploader',
+          scope VARCHAR(32) NOT NULL DEFAULT 'desktop_upload',
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           expires_at DATETIME NULL,
           last_used_at DATETIME NULL,
@@ -45,6 +50,12 @@ def _ensure_schema() -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    cur.execute("SHOW COLUMNS FROM uploader_tokens LIKE 'scope'")
+    if not cur.fetchone():
+        cur.execute(
+            "ALTER TABLE uploader_tokens "
+            "ADD COLUMN scope VARCHAR(32) NOT NULL DEFAULT 'desktop_upload' AFTER label"
+        )
     db.commit()
     db.close()
     _schema_ready = True
@@ -68,8 +79,15 @@ def _bearer_token() -> str:
     return header.split(" ", 1)[1].strip()
 
 
-def issue_uploader_token(username: str, label: str = "MFU Uploader") -> str:
+def issue_uploader_token(
+    username: str,
+    label: str = "MFU Uploader",
+    *,
+    scope: str = TOKEN_SCOPE_DESKTOP,
+) -> str:
     _ensure_schema()
+    if scope not in VALID_TOKEN_SCOPES:
+        raise ValueError("invalid uploader token scope")
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     token_hash = _hash_token(token)
     expires_at = datetime.utcnow() + timedelta(days=TOKEN_DAYS)
@@ -78,17 +96,21 @@ def issue_uploader_token(username: str, label: str = "MFU Uploader") -> str:
     cur.execute(
         """
         INSERT INTO uploader_tokens
-            (token_hash, username, label, created_at, expires_at, last_used_at, revoked_at)
-        VALUES (%s, %s, %s, UTC_TIMESTAMP(), %s, NULL, NULL)
+            (token_hash, username, label, scope, created_at, expires_at, last_used_at, revoked_at)
+        VALUES (%s, %s, %s, %s, UTC_TIMESTAMP(), %s, NULL, NULL)
         """,
-        (token_hash, username, label[:120], expires_at),
+        (token_hash, username, label[:120], scope, expires_at),
     )
     db.commit()
     db.close()
     return token
 
 
-def verify_uploader_token(token: str | None = None) -> dict | None:
+def verify_uploader_token(
+    token: str | None = None,
+    *,
+    allowed_scopes: set[str] | None = None,
+) -> dict | None:
     raw = (token or _bearer_token()).strip()
     if not raw or not raw.startswith(TOKEN_PREFIX):
         return None
@@ -98,7 +120,7 @@ def verify_uploader_token(token: str | None = None) -> dict | None:
     cur = db.cursor(dictionary=True)
     cur.execute(
         """
-        SELECT id, username, label, expires_at, revoked_at
+        SELECT id, username, label, scope, expires_at, revoked_at
           FROM uploader_tokens
          WHERE token_hash = %s
          LIMIT 1
@@ -107,6 +129,10 @@ def verify_uploader_token(token: str | None = None) -> dict | None:
     )
     row = cur.fetchone()
     if not row or row.get("revoked_at"):
+        db.close()
+        return None
+    scope = str(row.get("scope") or TOKEN_SCOPE_DESKTOP)
+    if allowed_scopes is not None and scope not in allowed_scopes:
         db.close()
         return None
     expires_at = row.get("expires_at")
@@ -133,6 +159,94 @@ def revoke_uploader_token(token: str) -> bool:
     db.commit()
     db.close()
     return changed
+
+
+def list_uploader_tokens(username: str, *, scope: str | None = None) -> list[dict]:
+    _ensure_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    if scope:
+        cur.execute(
+            """
+            SELECT id, username, label, scope, created_at, expires_at, last_used_at, revoked_at
+              FROM uploader_tokens
+             WHERE username = %s AND scope = %s
+             ORDER BY id DESC
+            """,
+            (username, scope),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, username, label, scope, created_at, expires_at, last_used_at, revoked_at
+              FROM uploader_tokens
+             WHERE username = %s
+             ORDER BY id DESC
+            """,
+            (username,),
+        )
+    rows = cur.fetchall() or []
+    cur.close()
+    db.close()
+    return rows
+
+
+def revoke_uploader_token_by_id(username: str, token_id: int, *, scope: str | None = None) -> bool:
+    _ensure_schema()
+    db = get_db()
+    cur = db.cursor()
+    params: list[object] = [username, int(token_id)]
+    sql = (
+        "UPDATE uploader_tokens SET revoked_at = UTC_TIMESTAMP() "
+        "WHERE username = %s AND id = %s AND revoked_at IS NULL"
+    )
+    if scope:
+        sql += " AND scope = %s"
+        params.append(scope)
+    cur.execute(sql, tuple(params))
+    changed = cur.rowcount > 0
+    db.commit()
+    cur.close()
+    db.close()
+    return changed
+
+
+@uploader_admin_bp.route("/admin/ios-shortcut-upload", methods=["GET", "POST"])
+def ios_shortcut_upload_admin():
+    if str(session.get("user") or "") != "admin":
+        abort(403)
+
+    created_key = ""
+    notice = ""
+    if request.method == "POST":
+        action = str(request.form.get("action") or "").strip()
+        if action == "create":
+            label = str(request.form.get("label") or "").strip() or "iPhone Shortcut"
+            created_key = issue_uploader_token(
+                "admin",
+                label=label,
+                scope=TOKEN_SCOPE_IOS,
+            )
+            notice = "APIキーを発行しました。この画面を閉じると再表示できません。"
+        elif action == "revoke":
+            try:
+                token_id = int(request.form.get("token_id") or 0)
+            except (TypeError, ValueError):
+                token_id = 0
+            if token_id and revoke_uploader_token_by_id(
+                "admin", token_id, scope=TOKEN_SCOPE_IOS
+            ):
+                notice = "APIキーを無効化しました。"
+            else:
+                notice = "対象のAPIキーは既に無効か、見つかりません。"
+
+    tokens = list_uploader_tokens("admin", scope=TOKEN_SCOPE_IOS)
+    return render_template(
+        "admin_ios_shortcut_upload.html",
+        tokens=tokens,
+        created_key=created_key,
+        notice=notice,
+    )
 
 
 @uploader_auth_bp.get("/login/start")

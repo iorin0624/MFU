@@ -31,7 +31,17 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from flask import Blueprint, request, jsonify, abort, current_app, g
 from app.utils.upload_security import hash_upload_password
-from app.utils.uploader_auth import verify_uploader_token
+from app.utils.upload_security import detect_mime_from_bytes
+from app.utils.uploader_auth import (
+    TOKEN_SCOPE_DESKTOP,
+    TOKEN_SCOPE_IOS,
+    verify_uploader_token,
+)
+from app.utils.ios_upload_images import (
+    IOSUploadImageError,
+    convert_heif_to_jpeg,
+    looks_like_heif,
+)
 from app.utils.thumbs import enqueue_thumb_job
 
 # ---- 可変部: 既存ユーティリティの取り込み（無ければフォールバック） ----
@@ -60,17 +70,22 @@ UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
 
 # ---- Blueprint ----
 ext_up = Blueprint("ext_up", __name__, url_prefix="/api/ext/up")
+ios_up = Blueprint("ios_up", __name__, url_prefix="/api/ios-upload/v1")
 
 # ---- ユーティリティ ----
 def _auth_required() -> str:
     """MFU Windows Uploader 専用トークンを検証し、紐づく username を返す。"""
-    token_row = verify_uploader_token()
+    token_row = verify_uploader_token(
+        allowed_scopes={TOKEN_SCOPE_DESKTOP, TOKEN_SCOPE_IOS}
+    )
     if not token_row:
         abort(401)
     username = (token_row.get("username") or "").strip()
     if not username:
         abort(403)
     g.uploader_username = username
+    g.uploader_token_id = int(token_row.get("id") or 0)
+    g.uploader_token_scope = str(token_row.get("scope") or TOKEN_SCOPE_DESKTOP)
     return username
 
 
@@ -87,7 +102,9 @@ def _parse_date(d: Optional[str]) -> str:
     if not d:
         return datetime.now().strftime("%Y-%m-%d")
     try:
-        dt = datetime.strptime(d, "%Y-%m-%d")
+        raw = str(d).strip()
+        date_format = "%Y%m%d" if re.fullmatch(r"\d{8}", raw) else "%Y-%m-%d"
+        dt = datetime.strptime(raw, date_format)
         return dt.strftime("%Y-%m-%d")
     except Exception:
         return datetime.now().strftime("%Y-%m-%d")
@@ -263,14 +280,25 @@ def _ensure_upload_row(uuid32: str, username: str) -> Optional[dict]:
     return row
 
 
+@ios_up.route("/create", methods=["POST"])
 @ext_up.route("/create", methods=["POST"])
 def create_upload():
     """アップロード枠の作成"""
     username = _auth_required()
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
-    date_str = _parse_date(data.get("date"))
+    raw_date = data.get("date")
+    date_str = _parse_date(raw_date)
+    if getattr(g, "uploader_token_scope", "") == TOKEN_SCOPE_IOS:
+        normalized_raw = str(raw_date or "").strip()
+        if normalized_raw and normalized_raw not in {
+            date_str,
+            date_str.replace("-", ""),
+        }:
+            return jsonify({"ok": False, "error": "date must be yyyymmdd"}), 400
     mode = (data.get("mode") or "").strip()
+    if getattr(g, "uploader_token_scope", "") == TOKEN_SCOPE_IOS and not title:
+        return jsonify({"ok": False, "error": "missing title"}), 400
     if not mode:
         return jsonify({"ok": False, "error": "missing mode"}), 400
 
@@ -298,6 +326,7 @@ def create_upload():
     return jsonify({"ok": True, "uuid": uuid32, "password": password})
 
 
+@ios_up.route("/original", methods=["POST"])
 @ext_up.route("/original", methods=["POST"])
 def push_original():
     """原本ファイルの保存"""
@@ -501,22 +530,56 @@ def push_original():
             cur.close()
             db.close()
 
-    full, real_name = _unique_path(o_dir, safe_name)
-    try:
-        file.save(full)
-    except Exception:
+    is_ios = getattr(g, "uploader_token_scope", "") == TOKEN_SCOPE_IOS
+    header = file.stream.read(8192)
+    file.stream.seek(0)
+    detected_mime = detect_mime_from_bytes(header)
+    heif_input = looks_like_heif(header)
+    if is_ios and detected_mime not in {"image/jpeg", "image/png", "image/heif-bmff"}:
+        return jsonify({"ok": False, "error": "JPEG / PNG / HEIC / HEIF の写真だけを送信できます。"}), 400
+
+    if is_ios and heif_input:
+        fd, source_path = tempfile.mkstemp(prefix=".ios-upload-", suffix=".heic", dir=o_dir)
         try:
-            os.remove(full)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    chunk = file.stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+            _full, real_name = convert_heif_to_jpeg(source_path, o_dir, safe_name)
+        except IOSUploadImageError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 422
+        finally:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
+    else:
+        full, real_name = _unique_path(o_dir, safe_name)
+        try:
+            file.save(full)
+        except Exception:
+            try:
+                os.remove(full)
+            except OSError:
+                pass
+            raise
+        os.chmod(full, 0o640)
 
     db = get_db()
     cur = db.cursor()
     cur.execute("INSERT INTO files (upload_id, filename) VALUES (%s,%s)", (upload_id, real_name))
     db.commit()
     cur.close()
-    return jsonify({"ok": True, "saved": real_name, "uuid": uuid32})
+    return jsonify({
+        "ok": True,
+        "saved": real_name,
+        "uuid": uuid32,
+        "converted_to_jpeg": bool(is_ios and heif_input),
+    })
 
 
 @ext_up.route("/thumb", methods=["POST"])
@@ -557,6 +620,7 @@ def reconcile_thumbnails():
     return jsonify(result), status
 
 
+@ios_up.route("/config", methods=["GET"])
 @ext_up.route("/modes", methods=["GET"])
 def list_modes():
     """指定ユーザーの upload_modes 一覧を返すAPI。"""
@@ -606,7 +670,15 @@ def list_modes():
                 merged[m] = r
 
     modes = list(merged.values())
-    return jsonify({"ok": True, "username": username, "default_mode": default_mode, "modes": modes})
+    return jsonify({
+        "ok": True,
+        "username": username,
+        "default_mode": default_mode,
+        "modes": modes,
+        "accepted_extensions": ["jpg", "jpeg", "png", "heic", "heif"],
+        "date_format": "yyyymmdd",
+        "api_version": 1,
+    })
 
 
 def db_ping():
@@ -625,10 +697,54 @@ def db_ping():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+_ios_completion_schema_ready = False
+_ios_completion_schema_lock = threading.Lock()
+
+
+def _claim_ios_completion(upload_id: int) -> bool:
+    """Return True only for the first iOS completion request for an upload."""
+    global _ios_completion_schema_ready
+    if not _ios_completion_schema_ready:
+        with _ios_completion_schema_lock:
+            if not _ios_completion_schema_ready:
+                db = get_db()
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ios_shortcut_upload_completions (
+                        upload_id INT NOT NULL PRIMARY KEY,
+                        completed_at DATETIME NOT NULL,
+                        CONSTRAINT fk_ios_shortcut_upload_completion_upload
+                          FOREIGN KEY (upload_id) REFERENCES uploads(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                db.commit()
+                cur.close()
+                db.close()
+                _ios_completion_schema_ready = True
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT IGNORE INTO ios_shortcut_upload_completions (upload_id, completed_at) "
+            "VALUES (%s, UTC_TIMESTAMP())",
+            (int(upload_id),),
+        )
+        claimed = cur.rowcount > 0
+        db.commit()
+        return claimed
+    finally:
+        cur.close()
+        db.close()
+
+
 # __init__.py 側にある通知・完了画面用関数をインポート
 from app import _prepare_upload_completion, background_thumb_and_notify
 
 
+@ios_up.route("/done", methods=["POST"])
 @ext_up.route("/done", methods=["POST"])
 def mark_upload_done():
     """アップロード完了通知API"""
@@ -682,9 +798,17 @@ def mark_upload_done():
             except Exception:
                 print(f"[done] background notify failed: {e}")
 
-    threading.Thread(target=_runner, daemon=True).start()
+    notification_started = True
+    if getattr(g, "uploader_token_scope", "") == TOKEN_SCOPE_IOS:
+        notification_started = _claim_ios_completion(int(upload_id))
+    if notification_started:
+        threading.Thread(target=_runner, daemon=True).start()
     public_base = str(context.get("base_url") or "https://mfu.iori0624.jp").rstrip("/")
     return jsonify({
         "ok": True,
         "completion_url": f"{public_base}/upload/done/{uuid32}",
+        "view_url": str(context.get("link") or f"{public_base}/view/{uuid32}"),
+        "message": str(prepared.get("message") or ""),
+        "uploaded_count": len(filenames),
+        "notification_started": notification_started,
     })

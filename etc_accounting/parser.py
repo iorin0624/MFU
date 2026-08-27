@@ -27,6 +27,50 @@ def _amount(text: str) -> int:
     return int(values[-1].replace(",", "")) if values else 0
 
 
+def _amount_breakdown(cell) -> tuple[int | None, int | None]:
+    """Return ETC mileage redemption and postpaid amounts from the payment cell."""
+    values = [
+        int(value.replace(",", ""))
+        for value in re.findall(r"(?<!\d)(\d[\d,]*)", _text(cell))
+    ]
+    if not values:
+        return None, None
+    if len(values) == 1:
+        return 0, values[0]
+    return values[0], values[-1]
+
+
+def _line_values(cell) -> list[str]:
+    """Extract BR-separated values while preserving an empty vehicle-number line."""
+    if cell is None:
+        return []
+    fragment = BeautifulSoup(str(cell), "html.parser")
+    for br in fragment.find_all("br"):
+        br.replace_with("\n")
+    lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in fragment.get_text().split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def _vehicle_card_parts(cell) -> tuple[str, str, str]:
+    text = _text(cell)
+    card_match = re.search(r"\*+\d{4,}", text)
+    card_mask = card_match.group(0) if card_match else ""
+    lines = _line_values(cell)
+    if len(lines) >= 3:
+        return lines[0], lines[1], card_mask
+
+    # Test fixtures and older saved HTML may not retain BR elements.
+    prefix = text.replace(card_mask, " ") if card_mask else text
+    values = prefix.split()
+    vehicle_type = values[0] if values else ""
+    vehicle_number = values[1] if len(values) >= 2 else ""
+    return vehicle_type, vehicle_number, card_mask
+
+
 _ROUTE_DATETIME_RE = re.compile(r"(?P<date>\d{2}/\d{2}/\d{2})\s+(?P<time>\d{2}:\d{2})")
 
 
@@ -85,8 +129,8 @@ def parse_statement_page(html: str, statement_month: str) -> ETCStatementPage:
             entry_ic, entry_at, exit_ic, exit_at, used_at = _route_parts(cells[1])
         except ValueError:
             continue
-        card_text = _text(cells[4])
-        card_match = re.search(r"\*+\d{4,}", card_text)
+        vehicle_type, vehicle_number, card_mask = _vehicle_card_parts(cells[4])
+        redemption_amount, postpaid_amount = _amount_breakdown(cells[3])
         records.append(
             {
                 "transaction_key": str(checkbox.get("value") or "").strip(),
@@ -97,8 +141,11 @@ def parse_statement_page(html: str, statement_month: str) -> ETCStatementPage:
                 "entry_ic": entry_ic,
                 "exit_ic": exit_ic,
                 "amount": _amount(_text(cells[2])),
-                "vehicle_type": card_text.split(" ", 1)[0] if card_text else "",
-                "card_mask": card_match.group(0) if card_match else "",
+                "vehicle_type": vehicle_type,
+                "vehicle_number": vehicle_number,
+                "card_mask": card_mask,
+                "redemption_amount": redemption_amount,
+                "postpaid_amount": postpaid_amount,
                 "remarks": _text(cells[5]),
             }
         )

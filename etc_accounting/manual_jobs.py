@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
+from app.utils.realtime import emit_admin_event
+
 
 MANUAL_JOB_ROOT = Path(
     os.environ.get("ETC_MANUAL_JOB_DIR", "/mnt/mfu/tmp/etc_manual_fetch_jobs")
@@ -76,4 +78,9 @@ def update_manual_fetch_job(job_id: str, **fields) -> dict:
     current.update(fields)
     current["updatedAt"] = time.time()
     _write_job(path, current)
+    emit_admin_event(
+        "etc_manual_job_update",
+        current,
+        room=f"etc-manual:{job_id}",
+    )
     return current

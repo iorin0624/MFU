@@ -9,6 +9,10 @@
   .etc-travel-duration { color: #607080; font-size: .86rem; margin-top: .15rem; }
   .etc-amount { font-size: 1.35rem; font-weight: 700; }
   .etc-meta { color: #607080; font-size: .9rem; }
+  .etc-mileage-month { border: 1px solid #d8e4f0; border-radius: 12px; overflow: hidden; }
+  .etc-mileage-month > summary { cursor: pointer; list-style: none; padding: .85rem 1rem; }
+  .etc-mileage-month > summary::-webkit-details-marker { display: none; }
+  .etc-mileage-points { color: #0d6efd; font-size: 1.25rem; font-weight: 750; }
   .etc-batch-toolbar { position: sticky; top: .5rem; z-index: 20; }
   .etc-batch-select { border-bottom: 1px solid #edf1f5; margin: -0.15rem 0 .75rem; padding-bottom: .55rem; }
   .etc-batch-select .form-check-input { width: 1.2rem; height: 1.2rem; }
@@ -86,9 +90,72 @@
   </div>
 </div>
 
+<section class="card mb-4" aria-labelledby="etcMileageHeading">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+      <div>
+        <h2 class="h5 mb-1" id="etcMileageHeading">ETCマイレージ推定ポイント</h2>
+        <div class="small text-muted">
+          料金確定済みで車両番号がある明細のうち、対象事業者の後納料金だけを利用1件ごとに計算します。
+        </div>
+      </div>
+      <span class="badge bg-light text-dark border">公式残高ではなくMFUによる推定</span>
+    </div>
+    {% if mileage_months %}
+    <div class="d-grid gap-2">
+      {% for month in mileage_months %}
+      <details class="etc-mileage-month" {% if loop.first %}open{% endif %}>
+        <summary>
+          <div class="row g-2 align-items-center">
+            <div class="col-6 col-lg-3"><strong>{{ month.label }}</strong><div class="small text-muted">{{ month.credit_date }}</div></div>
+            <div class="col-6 col-lg-2 text-end text-lg-start"><span class="etc-mileage-points">{{ '{:,}'.format(month.total_points) }} pt</span></div>
+            <div class="col-6 col-lg-3 small">対象 {{ month.eligible_count }}件<br><strong>¥{{ '{:,}'.format(month.eligible_amount) }}</strong></div>
+            <div class="col-6 col-lg-2 small">基本 {{ '{:,}'.format(month.base_points) }} pt<br>月間加算 {{ '{:,}'.format(month.bonus_points) }} pt</div>
+            <div class="col-12 col-lg-2 small text-muted">対象外 {{ month.excluded_count }}件</div>
+          </div>
+        </summary>
+        <div class="border-top bg-light p-3">
+          {% if month.groups %}
+          <div class="table-responsive mb-2">
+            <table class="table table-sm align-middle mb-0">
+              <thead><tr><th>事業者</th><th>ETCカード</th><th class="text-end">件数</th><th class="text-end">対象料金</th><th class="text-end">基本</th><th class="text-end">月間加算</th><th class="text-end">推定合計</th></tr></thead>
+              <tbody>
+                {% for group in month.groups %}
+                <tr>
+                  <td>{{ group.label }}{% if group.bonus_unavailable %}<div class="small text-warning">道路未特定のため月間加算は未算入</div>{% endif %}</td>
+                  <td>{{ group.card_mask }}</td>
+                  <td class="text-end">{{ group.count }}</td>
+                  <td class="text-end">¥{{ '{:,}'.format(group.amount) }}</td>
+                  <td class="text-end">{{ '{:,}'.format(group.base_points) }}</td>
+                  <td class="text-end">{{ '{:,}'.format(group.bonus_points) }}</td>
+                  <td class="text-end fw-bold">{{ '{:,}'.format(group.total_points) }} pt</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="text-muted small mb-2">計算対象の明細はありません。</div>
+          {% endif %}
+          {% if month.exclusions %}
+          <div class="small text-muted">
+            対象外の内訳：{% for exclusion in month.exclusions %}{{ exclusion.reason }} {{ exclusion.count }}件{% if not loop.last %}／{% endif %}{% endfor %}
+          </div>
+          {% endif %}
+          {% if month.redemption_amount %}<div class="small text-muted">還元額適用：¥{{ '{:,}'.format(month.redemption_amount) }}（ポイント算定外）</div>{% endif %}
+        </div>
+      </details>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-muted">計算できるETC明細がまだありません。</div>
+    {% endif %}
+  </div>
+</section>
+
 <div class="d-flex flex-wrap gap-2 mb-3">
   {% for value, label in [('', 'すべて'), ('pending', '登録待ち'), ('error', 'エラー'), ('registered', '登録済み'), ('deleted', '削除された明細')] %}
-    <a class="btn btn-sm {{ ('btn-danger' if value == 'deleted' else 'btn-primary') if selected_status == value else ('btn-outline-danger' if value == 'deleted' else 'btn-outline-primary') }}" href="{{ url_for('etc_accounting.index', status=value, date_from=selected_date_from, date_to=selected_date_to, operator=selected_operator) }}">{{ label }}</a>
+    <a class="btn btn-sm {{ ('btn-danger' if value == 'deleted' else 'btn-primary') if selected_status == value else ('btn-outline-danger' if value == 'deleted' else 'btn-outline-primary') }}" href="{{ url_for('etc_accounting.index', status=value, filter_month=selected_month, operator=selected_operator) }}">{{ label }}</a>
   {% endfor %}
 </div>
 
@@ -99,29 +166,33 @@
 {% endif %}
 
 <form method="get" class="card mb-3">
-  <div class="card-body row g-3 align-items-end">
-    <input type="hidden" name="status" value="{{ selected_status }}">
-    <div class="col-sm-6 col-lg-3">
-      <label class="form-label" for="dateFrom">利用日（開始）</label>
-      <input class="form-control" type="date" id="dateFrom" name="date_from" value="{{ selected_date_from }}">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <input type="hidden" name="status" value="{{ selected_status }}">
+      <div class="col-sm-6 col-lg-4">
+        <label class="form-label" for="filterMonth">対象年月</label>
+        <input class="form-control" type="month" id="filterMonth" name="filter_month" value="{{ selected_month }}">
+      </div>
+      <div class="col-sm-6 col-lg-5">
+        <label class="form-label" for="operatorFilter">管轄会社</label>
+        <select class="form-select" id="operatorFilter" name="operator">
+          <option value="">すべて</option>
+          {% for operator_name in operator_options %}
+          <option value="{{ operator_name }}" {{ 'selected' if selected_operator == operator_name else '' }}>{{ operator_name }}</option>
+          {% endfor %}
+          <option value="__unmatched__" {{ 'selected' if selected_operator == '__unmatched__' else '' }}>未特定・候補複数</option>
+        </select>
+      </div>
+      <div class="col-lg-3 d-flex gap-2">
+        <button class="btn btn-primary flex-fill" type="submit">絞り込み</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index', status=selected_status) }}">クリア</a>
+      </div>
     </div>
-    <div class="col-sm-6 col-lg-3">
-      <label class="form-label" for="dateTo">利用日（終了）</label>
-      <input class="form-control" type="date" id="dateTo" name="date_to" value="{{ selected_date_to }}">
-    </div>
-    <div class="col-lg-4">
-      <label class="form-label" for="operatorFilter">管轄会社</label>
-      <select class="form-select" id="operatorFilter" name="operator">
-        <option value="">すべて</option>
-        {% for operator_name in operator_options %}
-        <option value="{{ operator_name }}" {{ 'selected' if selected_operator == operator_name else '' }}>{{ operator_name }}</option>
-        {% endfor %}
-        <option value="__unmatched__" {{ 'selected' if selected_operator == '__unmatched__' else '' }}>未特定・候補複数</option>
-      </select>
-    </div>
-    <div class="col-lg-2 d-flex gap-2">
-      <button class="btn btn-primary flex-fill" type="submit">絞り込み</button>
-      <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.index', status=selected_status) }}">クリア</a>
+    <div class="form-text mt-2">対象年月が未指定の場合は全期間を集計します。</div>
+    <div class="border-top mt-3 pt-3 d-flex flex-wrap align-items-center gap-3 gap-lg-4">
+      <div><span class="text-muted small">集計期間</span><div class="fw-semibold">{{ summary_period_label }}</div></div>
+      <div><span class="text-muted small">明細数</span><div class="fs-5 fw-bold">{{ '{:,}'.format(filtered_record_count) }}件</div></div>
+      <div><span class="text-muted small">合計金額</span><div class="fs-5 fw-bold text-primary">¥{{ '{:,}'.format(filtered_total_amount) }}</div></div>
     </div>
   </div>
 </form>
@@ -134,7 +205,7 @@
     </button>
     <ul class="dropdown-menu dropdown-menu-end">
       <li>
-        <a class="dropdown-item" href="{{ url_for('etc_accounting.export_csv', scope='filtered', status=selected_status, date_from=selected_date_from, date_to=selected_date_to, operator=selected_operator) }}">
+        <a class="dropdown-item" href="{{ url_for('etc_accounting.export_csv', scope='filtered', status=selected_status, filter_month=selected_month, operator=selected_operator) }}">
           現在の絞り込み結果
         </a>
       </li>
@@ -249,7 +320,11 @@
         </div>
         <div class="etc-amount">¥{{ '{:,}'.format(record.amount) }}</div>
       </div>
-      <div class="etc-meta mb-3">{{ record.remarks or '' }}{% if record.card_mask %} ／ {{ record.card_mask }}{% endif %}</div>
+      <div class="etc-meta mb-3">
+        {{ record.remarks or '' }}
+        ／ 車両番号：{{ record.vehicle_number or '未取得' }}
+        {% if record.card_mask %} ／ {{ record.card_mask }}{% endif %}
+      </div>
       {% if record.tollgate_match_status == 'matched' %}
       <div class="small text-muted mb-2">
         管轄：{{ record.tollgate_operator_name }}
@@ -382,6 +457,7 @@
     if (Number(result.restored_count || 0)) parts.push(`復活 ${result.restored_count}件`);
     return parts.join('、');
   };
+  let manualSocket = null;
   const poll = async (jobId) => {
     try {
       const response = await fetch(statusUrlTemplate.replace('__JOB_ID__', jobId), {
@@ -418,6 +494,34 @@
     }
   };
 
+  const watchJob = (jobId) => {
+    if (typeof window.io !== 'function') { poll(jobId); return; }
+    manualSocket?.disconnect();
+    manualSocket = window.io('/admin-system', {transports:['websocket','polling']});
+    manualSocket.on('connect', () => {
+      manualSocket.emit('admin_job_subscribe', {kind:'etc-manual', job_id:jobId});
+    });
+    manualSocket.on('etc_manual_job_update', (data) => {
+      if (data?.jobId !== jobId) return;
+      if (data.status === 'pending' || data.status === 'running') {
+        setProgress(data.status === 'pending' ? '取得処理の開始を待っています…' : 'ETC明細を取得しています…', 'info');
+        return;
+      }
+      manualSocket?.disconnect();
+      if (data.status === 'success') {
+        const result = data.result || {};
+        const summary = resultSummary(result);
+        if (Number(result.change_count || 0) > 0) {
+          setProgress(`取得完了：${summary || '明細を更新'}。画面を更新します。`, 'success');
+          window.setTimeout(() => window.location.reload(), 1000);
+        } else finishWithoutReload('取得完了：更新された明細はありません。', 'success');
+      } else if (data.status === 'maintenance') {
+        finishWithoutReload(data.result?.message || 'ETC側メンテナンス中です。', 'info');
+      } else finishWithoutReload(data.result?.error || data.error || 'ETC明細の取得に失敗しました。', 'danger');
+    });
+    manualSocket.on('connect_error', () => { manualSocket?.disconnect(); poll(jobId); });
+  };
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     button.disabled = true;
@@ -431,7 +535,7 @@
       });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      poll(data.jobId);
+      watchJob(data.jobId);
     } catch (error) {
       finishWithoutReload(`取得を開始できませんでした: ${error}`, 'danger');
     }

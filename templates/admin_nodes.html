@@ -5,9 +5,10 @@
 <div class="container py-3">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <h3 class="mb-0">ノード監視
-      <small class="text-muted">（更新: <span id="js-now">{{ now }}</span> / 自動更新: 1秒）</small>
+      <small class="text-muted">（更新: <span id="js-now">{{ now }}</span> / リアルタイム自動更新）</small>
     </h3>
     <div class="d-flex align-items-center gap-2">
+      <small id="nodesConnection" class="text-muted">● リアルタイム接続準備中…</small>
       <button id="btnRefresh" class="btn btn-sm btn-outline-secondary">今すぐ更新</button>
     </div>
   </div>
@@ -21,7 +22,7 @@
           <div class="card-header d-flex justify-content-between align-items-center">
             <div>
               <strong>{{ n.name }}</strong>
-              <span class="badge ms-2 js-status-badge {% if n.ok %}text-bg-success{% else %}text-bg-danger{% endif %}">{% if n.ok %}正常{% else %}異常{% endif %}</span>
+              <span class="badge ms-2 js-status-badge {% if n.ok %}text-bg-success{% elif n.error %}text-bg-danger{% else %}text-bg-secondary{% endif %}">{% if n.ok %}正常{% elif n.error %}異常{% else %}取得中{% endif %}</span>
             </div>
             <small class="text-muted">{{ n.url }}</small>
           </div>
@@ -98,8 +99,12 @@
   const GRID = document.getElementById('nodesGrid');
   const NOW = document.getElementById('js-now');
   const BTN = document.getElementById('btnRefresh');
+  const CONNECTION = document.getElementById('nodesConnection');
   const FETCH_URL = "{{ url_for('admin_nodes_data') }}";
-  const INTERVAL_MS = 1000;
+  const FALLBACK_INTERVAL_MS = 10000;
+  let socket = null;
+  let fallbackTimer = null;
+  let fallbackStartTimer = null;
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v || 0)));
   const barClass = (pct, warn=70, danger=85) => (pct>=danger) ? 'bg-danger' : (pct>=warn) ? 'bg-warning' : 'bg-success';
@@ -337,8 +342,9 @@
       const smart = Array.isArray(d.smart) ? d.smart : [];
 
       if (statusBadge){
-        statusBadge.className = `badge ms-2 js-status-badge ${n.ok ? 'text-bg-success' : 'text-bg-danger'}`;
-        statusBadge.textContent = n.ok ? '正常' : '異常';
+        const waiting = !n.ok && !n.error;
+        statusBadge.className = `badge ms-2 js-status-badge ${n.ok ? 'text-bg-success' : waiting ? 'text-bg-secondary' : 'text-bg-danger'}`;
+        statusBadge.textContent = n.ok ? '正常' : waiting ? '取得中' : '応答なし';
       }
 
       if (n.ok){
@@ -347,26 +353,19 @@
         if (d.os_version && d.os_version !== 'unknown') setText(osVerEl, d.os_version, 'unknown');
       }
 
+      if (!n.ok){
+        if (errorWrapEl) {
+          errorWrapEl.innerHTML = n.error
+            ? `<div class="alert alert-warning mb-0">取得失敗（直前の正常値を保持）: ${esc(n.error)}</div>`
+            : '<div class="text-muted">ノード情報を取得中です…</div>';
+        }
+        continue;
+      }
+
       setText(appStartedEl, formatJstDate(rt.app_started_at_jst, rt.app_started_at_ts));
       setText(systemStartedEl, formatJstDate(rt.system_booted_at_jst, rt.system_booted_at_ts));
       setText(appUptimeEl, formatDuration(rt.app_uptime_sec));
       setText(systemUptimeEl, formatDuration(rt.system_uptime_sec));
-
-      if (!n.ok){
-        setText(appUptimeEl, '不明');
-        setText(systemUptimeEl, '不明');
-        setText(cpuTempEl, '不明');
-        setText(cpuFreqEl, '不明');
-        if (perCoreEl) perCoreEl.innerHTML = '<span class="text-muted">不明</span>';
-        setText(ramTextEl, '不明');
-        if (ramBarEl){
-          ramBarEl.style.width = '0%';
-          ramBarEl.className = 'progress-bar js-ram-bar bg-info';
-          ramBarEl.setAttribute('aria-valuenow', '0');
-        }
-        if (errorWrapEl) errorWrapEl.innerHTML = `<div class="alert alert-danger mb-0">取得失敗: ${esc(n.error || 'unknown error')}</div>`;
-        continue;
-      }
 
       if (errorWrapEl) errorWrapEl.innerHTML = '';
 
@@ -455,21 +454,83 @@
     }
   }
 
-  let timer = null;
-  function start(){
-    if (timer) clearInterval(timer);
-    timer = setInterval(() => {
-      if (!document.hidden) loadOnce();
-    }, INTERVAL_MS);
+  function setConnection(message, state='muted'){
+    if (!CONNECTION) return;
+    CONNECTION.textContent = message;
+    CONNECTION.className = state === 'ok' ? 'text-success' : state === 'warn' ? 'text-warning' : 'text-muted';
   }
 
-  BTN.addEventListener('click', loadOnce);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadOnce(); });
+  function stopFallback(){
+    if (fallbackStartTimer){
+      clearTimeout(fallbackStartTimer);
+      fallbackStartTimer = null;
+    }
+    if (fallbackTimer){
+      clearInterval(fallbackTimer);
+      fallbackTimer = null;
+    }
+  }
+
+  function startFallback(){
+    if (fallbackTimer) return;
+    setConnection('● WebSocket再接続中（HTTPで更新中）', 'warn');
+    loadOnce();
+    fallbackTimer = setInterval(() => {
+      if (!document.hidden) loadOnce();
+    }, FALLBACK_INTERVAL_MS);
+  }
+
+  function scheduleFallback(){
+    if (fallbackStartTimer || fallbackTimer) return;
+    fallbackStartTimer = setTimeout(() => {
+      fallbackStartTimer = null;
+      if (!socket || !socket.connected) startFallback();
+    }, 5000);
+  }
+
+  function connectSocket(){
+    if (!window.io){
+      startFallback();
+      return;
+    }
+    socket = window.io('/admin-system', {
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      timeout: 8000
+    });
+    socket.on('connect', () => {
+      stopFallback();
+      setConnection('● リアルタイム接続中', 'ok');
+      socket.emit('nodes_subscribe');
+    });
+    socket.on('nodes_status_update', data => {
+      if (!data || !Array.isArray(data.nodes)) return;
+      if (!sameNodeLayout(data.nodes)) buildNodeSkeleton(data.nodes);
+      applyNodeData(data.nodes, data.now);
+    });
+    socket.on('disconnect', () => {
+      setConnection('● リアルタイム接続が切れました', 'warn');
+      scheduleFallback();
+    });
+    socket.on('connect_error', scheduleFallback);
+  }
+
+  BTN.addEventListener('click', () => {
+    if (socket && socket.connected) socket.emit('nodes_refresh_request');
+    else loadOnce();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && (!socket || !socket.connected)) loadOnce();
+  });
 
   const initialNodes = {{ nodes|tojson }};
   applyNodeData(initialNodes, {{ now|tojson }});
-  loadOnce();
-  start();
+  window.addEventListener('load', connectSocket, {once: true});
+  window.addEventListener('pagehide', () => {
+    stopFallback();
+    if (socket) socket.close();
+  });
 })();
 </script>
 {% endblock %}

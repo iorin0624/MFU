@@ -633,7 +633,7 @@
     }
     .ig-form {
       display: grid;
-      grid-template-columns: auto 1fr auto auto;
+      grid-template-columns: auto 1fr auto auto auto;
       gap: 7px;
       align-items: center;
     }
@@ -1086,6 +1086,32 @@
       text-overflow: ellipsis;
     }
     .clock { font-size: 12px; color: #fff; min-width: 86px; text-align: right; text-shadow: 1px 1px 0 rgba(0,0,0,.45); }
+    .taskbar-vue-link {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      padding: 0 12px;
+      border: 1px solid #c58b00;
+      border-bottom-color: #8f6500;
+      border-right-color: #8f6500;
+      background: linear-gradient(#fff8c9, #f4df7b 52%, #e4bd38);
+      color: #17365d;
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      text-shadow: 1px 1px 0 rgba(255,255,255,.7);
+      box-shadow: inset 1px 1px 0 rgba(255,255,255,.7);
+      white-space: nowrap;
+    }
+    .taskbar-vue-link:hover,
+    .taskbar-vue-link:focus-visible {
+      border-color: #ffe082;
+      background: linear-gradient(#fffde7, #ffe88b 52%, #efc841);
+      outline: 1px dotted #17365d;
+      outline-offset: -4px;
+    }
     .taskbar-fullscreen {
       height: 30px;
       min-width: 42px;
@@ -1456,6 +1482,7 @@
     <footer class="taskbar">
       <button class="start" type="button" id="showExplorerBtn" title="Explorer">スタート</button>
       <div class="task-list" id="taskList"></div>
+      <a class="taskbar-vue-link" href="{{ url_for('image_viewer.vue_preview') }}" title="新しい画像ビュアーを開く">新バージョン</a>
       <div class="clock" id="clock"></div>
       <button class="taskbar-fullscreen" type="button" id="taskbarFullscreenBtn" title="全画面">FS</button>
     </footer>
@@ -4662,7 +4689,7 @@
       el.innerHTML = `
         <header class="titlebar" data-drag-handle>
           <div class="title-icon" aria-hidden="true">IG</div>
-          <div class="title-text">Instagram / X Image Downloader</div>
+          <div class="title-text">Instagram / Threads / X Image Downloader</div>
           <div class="win-actions">
             <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
             <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
@@ -4673,7 +4700,8 @@
           <div>
             <div class="ig-form">
               <label for="igUrl">URL</label>
-              <input id="igUrl" type="text" placeholder="https://www.instagram.com/p/... / https://x.com/.../status/...">
+              <input id="igUrl" type="text" placeholder="x.com / instagram.com / threads.com のURL">
+              <button type="button" id="igClipboardBtn">貼付</button>
               <button type="button" id="igFetchBtn">取得</button>
               <button type="button" id="igCancelBtn" hidden>キャンセル</button>
             </div>
@@ -4684,7 +4712,7 @@
             </div>
           </div>
           <div class="ig-grid" id="igGrid">
-            <div class="empty">InstagramまたはXの投稿URLを入力して取得してください。</div>
+            <div class="empty">Instagram / Threads / X のURLを入力して取得してください。</div>
           </div>
           <div class="ig-actions">
             <button type="button" id="igLoginBtn">Instagramログイン</button>
@@ -4698,7 +4726,7 @@
         <div class="resize-handle" data-resize-handle></div>
       `;
       desktopGrid.appendChild(el);
-      registerWindow('instagram', el, 'Instagram / X Image Downloader', 'instagram');
+      registerWindow('instagram', el, 'Instagram / Threads / X Image Downloader', 'instagram');
       wireInstagramWindow(el);
       return el;
     }
@@ -4800,6 +4828,85 @@
 
     function setInstagramStatus(el, text) {
       el.querySelector('#igStatus').textContent = text || '';
+    }
+
+    const supportedMediaDomains = ['x.com', 'twitter.com', 'instagram.com', 'threads.com', 'threads.net'];
+
+    function extractSupportedMediaUrls(text) {
+      const matches = String(text || '').match(/https?:\/\/[^\s<>"']+/gi) || [];
+      const urls = [];
+      const seen = new Set();
+      matches.forEach(raw => {
+        const candidate = raw.replace(/[.,;:!?\)\]\}>\u3001\u3002\uff01\uff1f\u3011\u300d\u300f]+$/u, '');
+        try {
+          const parsed = new URL(candidate);
+          const hostname = parsed.hostname.replace(/\.$/, '').toLowerCase();
+          const supported = supportedMediaDomains.some(domain => hostname === domain || hostname.endsWith(`.${domain}`));
+          if (supported && !seen.has(candidate)) {
+            seen.add(candidate);
+            urls.push(candidate);
+          }
+        } catch (_) {}
+      });
+      return urls;
+    }
+
+    function wireMediaUrlClipboard(el, inputSelector, buttonSelector, setStatus) {
+      const input = el.querySelector(inputSelector);
+      const button = el.querySelector(buttonSelector);
+      let lastClipboardText = '';
+
+      const applyText = (text, announce = false) => {
+        const urls = extractSupportedMediaUrls(text);
+        if (!urls.length) return false;
+        if (input.value !== urls[0]) {
+          input.value = urls[0];
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          if (announce) setStatus(`${urls[0]} をクリップボードから入力しました。`);
+        }
+        return true;
+      };
+
+      const readClipboard = async (announce = false) => {
+        if (!navigator.clipboard?.readText) {
+          if (announce) setStatus('このブラウザーでは自動読取が使えません。URLを貼り付けてください。');
+          return;
+        }
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text || text === lastClipboardText) return;
+          lastClipboardText = text;
+          if (!applyText(text, announce) && announce) {
+            setStatus('クリップボードにInstagram / Threads / X のURLがありません。');
+          }
+        } catch (_) {
+          if (announce) setStatus('クリップボードを読み取れません。URLを貼り付けてください。');
+        }
+      };
+
+      input.addEventListener('paste', event => {
+        const text = event.clipboardData?.getData('text/plain') || '';
+        const urls = extractSupportedMediaUrls(text);
+        if (!urls.length) return;
+        event.preventDefault();
+        input.value = urls[0];
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        setStatus(`${urls[0]} を貼り付けました。`);
+      });
+      input.addEventListener('focus', () => readClipboard(false));
+      button?.addEventListener('click', () => readClipboard(true));
+
+      navigator.permissions?.query?.({ name: 'clipboard-read' }).then(permission => {
+        if (permission.state !== 'granted') return;
+        const timer = window.setInterval(() => {
+          if (!el.isConnected) {
+            window.clearInterval(timer);
+            return;
+          }
+          if (!document.hidden) readClipboard(false);
+        }, 1000);
+        readClipboard(false);
+      }).catch(() => {});
     }
 
     function setInstagramAuthStatus(el, text) {
@@ -5020,6 +5127,7 @@
 
     function wireInstagramWindow(el) {
       applyInstagramSettings(el);
+      wireMediaUrlClipboard(el, '#igUrl', '#igClipboardBtn', text => setInstagramStatus(el, text));
       updateInstagramNextNumber(el).catch(err => setInstagramStatus(el, err.message || '連番を取得できませんでした。'));
       const debouncedNextNumber = debounce(() => {
         saveInstagramSettings(el);
@@ -5170,7 +5278,7 @@
       el.innerHTML = `
         <header class="titlebar" data-drag-handle>
           <div class="title-icon" aria-hidden="true">VD</div>
-          <div class="title-text">Instagram / X Video Downloader</div>
+          <div class="title-text">Instagram / Threads / X Video Downloader</div>
           <div class="win-actions">
             <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
             <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
@@ -5181,7 +5289,8 @@
           <div>
             <div class="ig-form">
               <label for="vdUrl">URL</label>
-              <input id="vdUrl" type="text" placeholder="https://www.instagram.com/reel/... / https://x.com/.../status/...">
+              <input id="vdUrl" type="text" placeholder="x.com / instagram.com / threads.com のURL">
+              <button type="button" id="vdClipboardBtn">貼付</button>
               <button type="button" id="vdFetchBtn">取得</button>
               <button type="button" id="vdFrameFetchBtn">動画を写真で取得</button>
             </div>
@@ -5190,7 +5299,7 @@
             </div>
           </div>
           <div class="ig-grid" id="vdGrid">
-            <div class="empty">InstagramまたはXの投稿URLを入力して動画を取得してください。</div>
+            <div class="empty">Instagram / Threads / X のURLを入力して動画を取得してください。</div>
           </div>
           <div class="ig-actions">
             <button type="button" id="vdLoginBtn">Instagramログイン</button>
@@ -5204,7 +5313,7 @@
         <div class="resize-handle" data-resize-handle></div>
       `;
       desktopGrid.appendChild(el);
-      registerWindow('video-downloader', el, 'Instagram / X Video Downloader', 'downloader');
+      registerWindow('video-downloader', el, 'Instagram / Threads / X Video Downloader', 'downloader');
       wireVideoDownloaderWindow(el);
     }
 
@@ -5260,6 +5369,7 @@
 
     function wireVideoDownloaderWindow(el) {
       applyVideoDownloaderSettings(el);
+      wireMediaUrlClipboard(el, '#vdUrl', '#vdClipboardBtn', text => setVideoDownloaderStatus(el, text));
       el.querySelector('#vdFolder').addEventListener('change', () => saveVideoDownloaderSettings(el));
       el.querySelector('#vdFolder').addEventListener('input', () => saveVideoDownloaderSettings(el));
       el.querySelector('#vdLoginBtn').addEventListener('click', () => {

@@ -49,6 +49,7 @@
     let hasNext = false;
     let loading = false;
     let pollingTimer = null;
+    let notifSocketConnected = false;
     let lastId = 0;
     let currentUnreadCount = 0;
     const knownIds = new Set();
@@ -264,8 +265,10 @@
 
     const startPolling = () => {
       stopPolling();
+      if (notifSocketConnected) return;
       if (document.hidden || onlyUnread.checked) return;
-      pollingTimer = window.setInterval(pollUpdatesOnce, 2000);
+      // Socket.IO切断時だけ低頻度でフォールバックする。
+      pollingTimer = window.setInterval(pollUpdatesOnce, 30000);
     };
 
     onlyUnread.addEventListener('change', async () => {
@@ -335,8 +338,23 @@
       if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
     });
 
+    if (typeof window.io === 'function') {
+      const notifSocket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+      notifSocket.on('connect', () => { notifSocketConnected = true; stopPolling(); });
+      notifSocket.on('notif_unread', async () => {
+        await refreshUnreadCount();
+      });
+      notifSocket.on('notif_new', async (payload) => {
+        const item = payload?.item;
+        if (item && !onlyUnread.checked) prependNewItems([item]);
+        if (item?.id) lastId = Math.max(lastId, Number(item.id));
+      });
+      notifSocket.on('disconnect', () => { notifSocketConnected = false; startPolling(); });
+      notifSocket.on('connect_error', () => { notifSocketConnected = false; startPolling(); });
+    }
+
     load({ append: false }).then(async () => {
-      startPolling();
+      if (typeof window.io !== 'function') startPolling();
       await pollUpdatesOnce();
       await refreshUnreadCount();
       await syncAppBadgeSafe();

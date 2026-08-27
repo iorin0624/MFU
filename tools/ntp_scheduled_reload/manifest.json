@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "NTP Scheduled Reload",
+  "description": "Raspberry Pi / Chronyの基準時刻で、指定したタブを指定日時にリロードします。",
+  "version": "1.0.3",
+  "minimum_chrome_version": "150",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://192.168.103.15:5055/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "NTP Scheduled Reload",
+    "default_popup": "popup.html"
+  }
+}

@@ -810,11 +810,7 @@ function kindLabel(kind){
   return '—';
 }
 
-async function loadScanStatus(){
-  try{
-    const res = await fetch('/api/timer/scan-status', { credentials:'same-origin' });
-    if(!res.ok) return;
-    const data = await res.json();
+function applyScanStatus(data){
     const ls = (data && data.last_scan) ? data.last_scan : {};
     const raw  = String(ls.raw || '');
     const kind = String(ls.kind || '');
@@ -831,6 +827,13 @@ async function loadScanStatus(){
     $('#scan-ts').textContent   = fmtScanTs(ts);
 
     $('#scan-note').textContent = note ? note : '';
+}
+
+async function loadScanStatus(){
+  try{
+    const res = await fetch('/api/timer/scan-status', { credentials:'same-origin' });
+    if(!res.ok) return;
+    applyScanStatus(await res.json());
   }catch(e){
     // ここは静かに無視（タイマー画面全体を壊さない）
   }
@@ -844,7 +847,28 @@ document.addEventListener("DOMContentLoaded", () => {
   reloadJAN();
 
   loadScanStatus();
-  setInterval(loadScanStatus, 800);
+  let scanFallbackTimer = null;
+  const startScanFallback = () => {
+    if (scanFallbackTimer) return;
+    scanFallbackTimer = setInterval(loadScanStatus, 10000);
+  };
+  const stopScanFallback = () => {
+    if (!scanFallbackTimer) return;
+    clearInterval(scanFallbackTimer);
+    scanFallbackTimer = null;
+  };
+  if (typeof window.io === 'function') {
+    const scanSocket = window.io('/admin-system', {transports:['websocket','polling']});
+    scanSocket.on('connect', () => {
+      stopScanFallback();
+      scanSocket.emit('timer_scan_subscribe', {}, (reply) => applyScanStatus(reply || {}));
+    });
+    scanSocket.on('timer_scan_update', applyScanStatus);
+    scanSocket.on('disconnect', startScanFallback);
+    scanSocket.on('connect_error', startScanFallback);
+  } else {
+    startScanFallback();
+  }
 
   setInterval(loadTimers,  10000);
   setInterval(renderTimers, 1000);

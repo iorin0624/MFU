@@ -1450,15 +1450,20 @@ def api_event_chat_unread_counts():
         finally:
             cur.close(); db.close()
 
-    use_mfu_admin_scope = _is_chat_admin_alias_ext_user(int(me.get("id") or 0))
-    raw_counts = _load_event_chat_unread_counts(
-        event_ids=event_ids,
-        ext_user_id=int(me.get("id") or 0),
-        use_mfu_admin_scope=use_mfu_admin_scope,
-    )
-    counts = {str(k): int(v) for k, v in raw_counts.items()}
+    counts = load_event_chat_unread_counts_for_user(int(me.get("id") or 0), event_ids)
 
     return jsonify({"ok": True, "counts": counts})
+
+
+def load_event_chat_unread_counts_for_user(ext_user_id: int, event_ids: list[int]) -> dict[str, int]:
+    normalized = list(dict.fromkeys(int(value) for value in event_ids if int(value) > 0))[:200]
+    use_mfu_admin_scope = _is_chat_admin_alias_ext_user(int(ext_user_id))
+    raw_counts = _load_event_chat_unread_counts(
+        event_ids=normalized,
+        ext_user_id=int(ext_user_id),
+        use_mfu_admin_scope=use_mfu_admin_scope,
+    )
+    return {str(key): int(value) for key, value in raw_counts.items()}
 
 @bp.route("/me")
 def me():

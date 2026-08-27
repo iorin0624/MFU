@@ -50,6 +50,9 @@
   const scannedEl = document.getElementById('job-scanned');
   const netinfoEl = document.getElementById('job-netinfo');
   const errorEl = document.getElementById('job-error');
+  const jobId = {{ job_id|tojson }};
+  let fallbackTimer = null;
+  let socketConnected = false;
 
   function fmtNum(value) {
     if (value === null || value === undefined || value === '') return '-';
@@ -65,6 +68,27 @@
     progressEl.setAttribute('aria-valuenow', String(Math.round(percent)));
   }
 
+  function applyStatus(data) {
+      const st = data.status || 'unknown';
+      setProgress(data.percent);
+      phaseEl.textContent = data.phase || (st === 'running' ? '集計中' : '待機中');
+      statusEl.textContent = data.message || (st === 'running' ? '処理中です...' : '待機中です...');
+      const scanned = fmtNum(data.scanned);
+      const total = fmtNum(data.sql_total);
+      scannedEl.textContent = data.sql_total ? `${scanned} / ${total} 件` : `${scanned} 件`;
+      if (data.netinfo_total !== null && data.netinfo_total !== undefined) {
+        netinfoEl.textContent = `${fmtNum(data.netinfo_done)} / ${fmtNum(data.netinfo_total)} 件`;
+      }
+      if (st === 'done') { window.location.href = resultUrl; return true; }
+      if (st === 'error') {
+        errorEl.classList.remove('d-none');
+        errorEl.textContent = data.error_message || '処理に失敗しました。';
+        phaseEl.textContent = 'エラー';
+        return true;
+      }
+      return false;
+  }
+
   async function poll() {
     try {
       const resp = await fetch(statusUrl, {cache: 'no-store'});
@@ -75,36 +99,29 @@
       }
 
       const data = await resp.json();
-      const st = data.status || 'unknown';
-      setProgress(data.percent);
-      phaseEl.textContent = data.phase || (st === 'running' ? '集計中' : '待機中');
-      statusEl.textContent = data.message || (st === 'running' ? '処理中です...' : '待機中です...');
-
-      const scanned = fmtNum(data.scanned);
-      const total = fmtNum(data.sql_total);
-      scannedEl.textContent = data.sql_total ? `${scanned} / ${total} 件` : `${scanned} 件`;
-
-      if (data.netinfo_total !== null && data.netinfo_total !== undefined) {
-        netinfoEl.textContent = `${fmtNum(data.netinfo_done)} / ${fmtNum(data.netinfo_total)} 件`;
-      }
-
-      if (st === 'done') {
-        window.location.href = resultUrl;
-        return;
-      }
-      if (st === 'error') {
-        errorEl.classList.remove('d-none');
-        errorEl.textContent = data.error_message || '処理に失敗しました。';
-        phaseEl.textContent = 'エラー';
-        return;
-      }
+      if (applyStatus(data)) return;
     } catch (_err) {
       statusEl.textContent = '通信を再試行しています...';
     }
-    setTimeout(poll, 1200);
+    if (!socketConnected) fallbackTimer = setTimeout(poll, 5000);
   }
 
-  poll();
+  const startFallback = () => { if (!fallbackTimer) fallbackTimer = setTimeout(poll, 1000); };
+  const stopFallback = () => { if (fallbackTimer) clearTimeout(fallbackTimer); fallbackTimer = null; };
+  if (typeof window.io === 'function') {
+    const socket = window.io('/admin-system', {transports:['websocket','polling']});
+    socket.on('connect', () => {
+      socketConnected = true;
+      stopFallback();
+      socket.emit('admin_job_subscribe', {kind:'admin-logs', job_id:jobId});
+      poll(); // initial authoritative snapshot
+    });
+    socket.on('admin_logs_job_update', (data) => {
+      if (data?.job_id === jobId) applyStatus(data);
+    });
+    socket.on('disconnect', () => { socketConnected = false; startFallback(); });
+    socket.on('connect_error', () => { socketConnected = false; startFallback(); });
+  } else startFallback();
 })();
 </script>
 {% endblock %}

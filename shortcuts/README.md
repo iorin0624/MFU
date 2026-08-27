@@ -29,3 +29,13 @@ Appleの仕様により、ショートカットの署名と実機への読み込
 ```bash
 python3 scripts/validate_shortcut.py /path/to/MFU写真保存.xml --target-platform all
 ```
+
+## MFU写真アップロード
+
+写真アプリの共有シートからMFUへ送るショートカットの基礎定義は
+`MFU写真アップロード.base.json` にあります。サーバー契約とアクションの詳細は
+`docs/mfu_ios_upload_shortcut_contract.md` を参照してください。
+
+このJSONはAPIキーを含まない設計資料で、署名済み `.shortcut` ではありません。
+macOSのショートカット.appまたはShortcuts Playgroundで各アクションへ変換し、
+MFU管理画面で発行した端末専用APIキーを設定してから実機へ登録します。

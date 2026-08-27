@@ -134,12 +134,31 @@
       launching.hidden = false;
       install.hidden = true;
       const deadline = Date.now() + Number(config.detection_timeout_seconds || 10) * 1000;
+      const launchToken = decodeURIComponent(String(jobData.shortcut_status_url || '').split('/').pop() || '');
+      let progressSocket = null;
+
+      const finishStarted = () => {
+        progressSocket?.disconnect();
+        dialog.remove();
+      };
+
+      if (launchToken && typeof window.io === 'function') {
+        progressSocket = window.io('/download-progress', {transports:['websocket','polling']});
+        progressSocket.on('connect', () => {
+          progressSocket.emit('shortcut_progress_subscribe', {launch_token: launchToken}, (state) => {
+            if (state?.started) finishStarted();
+          });
+        });
+        progressSocket.on('shortcut_progress_update', (state) => {
+          if (state?.started) finishStarted();
+        });
+      }
 
       const check = async () => {
         if (currentAttempt !== attemptId || !dialog.isConnected) return;
         const status = await readStatus(jobData.shortcut_status_url);
         if (status?.started) {
-          dialog.remove();
+          finishStarted();
           return;
         }
         if (status?.expired) {
@@ -150,7 +169,8 @@
           showInstall();
           return;
         }
-        window.setTimeout(check, 900);
+        // WebSocket切断時だけHTTPで確認する。
+        window.setTimeout(check, progressSocket?.connected ? 3000 : 900);
       };
 
       window.setTimeout(check, 900);

@@ -53,6 +53,13 @@ except Exception:  # pragma: no cover - optional dependency
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+SUPPORTED_MEDIA_DOMAINS = {
+    "x.com",
+    "twitter.com",
+    "instagram.com",
+    "threads.com",
+    "threads.net",
+}
 UPLOAD_ROOT = Path(os.environ.get("IMAGE_VIEWER_UPLOAD_DIR", "/mnt/mfu/image_viewer_uploads")).expanduser()
 THUMB_DIR_NAME = ".thumbs"
 THUMB_ROOT = UPLOAD_ROOT / THUMB_DIR_NAME
@@ -389,6 +396,16 @@ def _extract_threads_post_id(value: str) -> str:
 
 def _extract_media_identifier(value: str) -> tuple[str, str]:
     text = (value or "").strip()
+    if "://" in text:
+        try:
+            hostname = (urlparse(text).hostname or "").rstrip(".").lower()
+        except ValueError:
+            return "", ""
+        if not any(
+            hostname == domain or hostname.endswith(f".{domain}")
+            for domain in SUPPORTED_MEDIA_DOMAINS
+        ):
+            return "", ""
     story_username = _extract_instagram_story_username(text)
     if story_username:
         return "instagram_story", story_username
@@ -4291,6 +4308,36 @@ def index():
     return render_template("image_viewer.html")
 
 
+@image_viewer_bp.get("/vue-preview")
+@login_required
+def vue_preview():
+    """Serve the additive Vue migration preview without replacing the legacy UI."""
+    if not catalog.CATALOG_ENABLED:
+        _ensure_upload_root()
+        _refresh_image_list_cache_async()
+    config = {
+        "legacyUrl": url_for("image_viewer.index"),
+        "imagesUrl": url_for("image_viewer.image_list"),
+        "imagesVersionUrl": url_for("image_viewer.image_list_version"),
+        "createFolderUrl": url_for("image_viewer.create_folder"),
+        "propertiesUrl": url_for("image_viewer.entry_properties"),
+        "renameUrl": url_for("image_viewer.rename_entry"),
+        "appendSequenceUrl": url_for("image_viewer.append_sequence_entries"),
+        "deleteUrl": url_for("image_viewer.delete_entry"),
+        "moveUrl": url_for("image_viewer.move_entry"),
+        "copyUrl": url_for("image_viewer.copy_entry"),
+        "uploadUrl": url_for("image_viewer.upload_images"),
+        "pasteUrl": url_for("image_viewer.paste_images"),
+        "thumbnailUrl": url_for("image_viewer.create_thumbnails"),
+        "thumbnailJobUrl": url_for("image_viewer.thumbnail_job", job_id="__JOB_ID__"),
+        "isAdmin": session.get("user") == "admin",
+    }
+    return render_template(
+        "image_viewer_vue.html",
+        image_viewer_config=config,
+    )
+
+
 @image_viewer_bp.get("/manifest.webmanifest")
 def pwa_manifest():
     manifest = {
@@ -4767,7 +4814,9 @@ def _delete_entry_operation(data: dict) -> tuple[dict, int]:
         except catalog.CatalogNotFound as exc:
             return {"ok": False, "error": str(exc)}, 404
         except catalog.CatalogConflict as exc:
-            return {"ok": False, "error": str(exc)}, 409
+            error = "フォルダー内にファイルまたはサブフォルダーがあるため削除できません。" \
+                if entry_type == "folder" and "not empty" in str(exc).lower() else str(exc)
+            return {"ok": False, "error": error}, 409
         except catalog.CatalogError as exc:
             return {"ok": False, "error": str(exc)}, 400
     _ensure_upload_root()
@@ -4784,10 +4833,13 @@ def _delete_entry_operation(data: dict) -> tuple[dict, int]:
     if entry_type != "folder" and not target.is_file():
         return {"ok": False, "error": "ファイルが見つかりません。"}, 404
     try:
-        _delete_thumb_for_path(target)
         if target.is_dir():
-            shutil.rmtree(target)
+            if any(target.iterdir()):
+                return {"ok": False, "error": "フォルダー内にファイルまたはサブフォルダーがあるため削除できません。"}, 409
+            _delete_thumb_for_path(target)
+            target.rmdir()
         else:
+            _delete_thumb_for_path(target)
             target.unlink()
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "削除に失敗しました。"}, 500
@@ -4927,10 +4979,17 @@ def _batch_entry_response(data: dict, operation) -> dict | None:
 @image_viewer_bp.post("/api/entries/delete")
 @login_required
 def delete_entry():
-    guard = require_admin_passkey("image_delete")
+    data = request.get_json(silent=True) or {}
+    entries = data.get("entries") if isinstance(data.get("entries"), list) else []
+    contains_folder = str(data.get("type") or "file") == "folder" or any(
+        isinstance(entry, dict) and str(entry.get("type") or "file") == "folder"
+        for entry in entries
+    )
+    if contains_folder and session.get("user") != "admin":
+        return jsonify({"ok": False, "error": "フォルダー削除は管理者のみ実行できます。"}), 403
+    guard = require_admin_passkey("image_folder_delete" if contains_folder else "image_delete")
     if guard:
         return guard
-    data = request.get_json(silent=True) or {}
     batch = _batch_entry_response(data, _delete_entry_operation)
     if batch is not None:
         return jsonify(batch)
