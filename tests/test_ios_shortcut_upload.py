@@ -31,6 +31,7 @@ def test_ios_api_is_scoped_and_reuses_upload_completion_pipeline():
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
 
     assert 'TOKEN_SCOPE_IOS = "ios_shortcut_upload"' in auth_source
+    assert "if scope == TOKEN_SCOPE_IOS" in auth_source
     assert 'url_prefix="/api/ios-upload/v1"' in api_source
     assert '@ios_up.route("/config", methods=["GET"])' in api_source
     assert '@ios_up.route("/create", methods=["POST"])' in api_source

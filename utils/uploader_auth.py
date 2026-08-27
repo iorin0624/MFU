@@ -100,7 +100,11 @@ def issue_uploader_token(
         raise ValueError("invalid uploader token scope")
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     token_hash = _hash_token(token)
-    expires_at = datetime.utcnow() + timedelta(days=TOKEN_DAYS)
+    expires_at = (
+        None
+        if scope == TOKEN_SCOPE_IOS
+        else datetime.utcnow() + timedelta(days=TOKEN_DAYS)
+    )
     db = get_db()
     cur = db.cursor()
     cur.execute(
