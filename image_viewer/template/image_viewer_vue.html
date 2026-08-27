@@ -8,7 +8,7 @@
   <title>Image Viewer Desktop - Vue Preview</title>
   <link rel="manifest" href="{{ url_for('image_viewer.pwa_manifest') }}">
   <link rel="apple-touch-icon" href="{{ url_for('image_viewer.pwa_icon', size=192) }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='image_viewer_vue/image-viewer.css') }}?v=202608271145">
+  <link rel="stylesheet" href="{{ url_for('static', filename='image_viewer_vue/image-viewer.css') }}?v=202608280225">
   {% if session.get('user') == 'admin' %}
   <script defer src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
   <script defer src="{{ url_for('static', filename='js/admin-passkey-stepup.js') }}"></script>
@@ -17,7 +17,7 @@
 <body>
   <div id="image-viewer-app"></div>
   <script id="image-viewer-config" type="application/json">{{ image_viewer_config|tojson }}</script>
-  <script type="module" src="{{ url_for('static', filename='image_viewer_vue/image-viewer.js') }}?v=202608271145"></script>
+  <script type="module" src="{{ url_for('static', filename='image_viewer_vue/image-viewer.js') }}?v=202608280225"></script>
   <noscript>画像ビュアーを利用するにはJavaScriptを有効にしてください。</noscript>
 </body>
 </html>

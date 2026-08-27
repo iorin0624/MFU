@@ -77,6 +77,34 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
     activeId.value = id;
   }
 
+  function openUtility(kind: 'image-downloader' | 'video-downloader' | 'instagram-auth') {
+    const existing = windows.value.find((entry) => entry.kind === kind);
+    if (existing) {
+      activate(existing.id);
+      return existing.id;
+    }
+    const definitions = {
+      'image-downloader': {
+        id: 'vue-image-downloader', title: 'Instagram / Threads / X Image Downloader',
+        x: 96, y: 72, width: 820, height: 640,
+      },
+      'video-downloader': {
+        id: 'vue-video-downloader', title: 'Instagram / Threads / X Video Downloader',
+        x: 128, y: 96, width: 820, height: 640,
+      },
+      'instagram-auth': {
+        id: 'vue-instagram-auth', title: 'Instagram Login',
+        x: 160, y: 120, width: 520, height: 300,
+      },
+    } as const;
+    const definition = definitions[kind];
+    windows.value.push({
+      ...definition, kind, z: ++topZ, minimized: false, maximized: false,
+    });
+    activeId.value = definition.id;
+    return definition.id;
+  }
+
   function close(id: string) {
     windows.value = windows.value.filter((entry) => entry.id !== id);
     if (activeId.value === id) {
@@ -107,6 +135,6 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
 
   return {
     windows, activeId, activeWindow,
-    activate, openExplorer, openMedia, close, minimize, toggleMaximize, updateGeometry,
+    activate, openExplorer, openMedia, openUtility, close, minimize, toggleMaximize, updateGeometry,
   };
 });
