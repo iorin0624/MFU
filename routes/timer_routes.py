@@ -18,6 +18,7 @@ from app.utils.jan_mapping import (
     get_timer_by_jan, get_info_by_jan,
     upsert_mapping, list_mapping, delete_mapping
 )
+from app.utils.realtime import emit_admin_event
 
 timer_bp = Blueprint("timer", __name__)
 
@@ -557,6 +558,11 @@ def api_timer_scan_report():
     }
     with _last_scan_lock:
         _save_last_scan(payload)
+    emit_admin_event(
+        "timer_scan_update",
+        {"last_scan": payload},
+        room="admin_timer_scan",
+    )
     return jsonify({"status": "ok"})
 
 @timer_bp.route("/api/timer/scan-status", methods=["GET"])

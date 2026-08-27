@@ -19,11 +19,15 @@
 <div class="container mb-4">
   <div class="alert alert-info">
     <strong>💾 ストレージ使用状況：</strong><br>
-    合計 {{ storage.total_gb }} GB ／ 使用済み {{ storage.used_gb }} GB（{{ storage.percent }}%） ／ 空き {{ storage.free_gb }} GB
+    <span id="storage-usage-text">合計 {{ storage.total_gb }} GB ／ 使用済み {{ storage.used_gb }} GB（{{ storage.percent }}%） ／ 空き {{ storage.free_gb }} GB</span>
     <div class="progress mt-2">
-      <div class="progress-bar bg-success" role="progressbar" style="width: {{ storage.percent }}%;" aria-valuenow="{{ storage.percent }}" aria-valuemin="0" aria-valuemax="100">
+      <div id="storage-usage-bar" class="progress-bar bg-success" role="progressbar" style="width: {{ storage.percent }}%;" aria-valuenow="{{ storage.percent }}" aria-valuemin="0" aria-valuemax="100">
         {{ storage.percent }}%
       </div>
+    </div>
+
+    <div id="system-usage-connection" class="small text-muted mt-2" aria-live="polite">
+      ● リアルタイム接続準備中…
     </div>
 
     <!-- ✅ CPU情報をここに追加 -->
@@ -259,6 +263,68 @@
 
 {% if session.user == 'admin' %}
 <script>
+const usageFallbackTimers = [];
+let usageFallbackStartTimer = null;
+let usageSocket = null;
+
+function setUsageConnection(message, state = 'muted') {
+  const element = document.getElementById('system-usage-connection');
+  if (!element) return;
+  element.textContent = message;
+  element.className = `small mt-2 ${state === 'ok' ? 'text-success' : state === 'warn' ? 'text-warning' : 'text-muted'}`;
+}
+
+function renderStorageUsage(data) {
+  if (!data || data.error) return;
+  const text = document.getElementById('storage-usage-text');
+  const bar = document.getElementById('storage-usage-bar');
+  if (text) {
+    text.textContent = `合計 ${data.total_gb} GB ／ 使用済み ${data.used_gb} GB（${data.percent}%） ／ 空き ${data.free_gb} GB`;
+  }
+  if (bar) {
+    const percent = Math.max(0, Math.min(100, Number(data.percent) || 0));
+    bar.style.width = `${percent}%`;
+    bar.setAttribute('aria-valuenow', String(percent));
+    bar.textContent = `${percent}%`;
+  }
+}
+
+function renderCpuUsage(data) {
+  const values = data && Array.isArray(data.cores) ? data.cores : (data && Array.isArray(data.cpu) ? data.cpu : null);
+  const div = document.getElementById('cpu-usage-info');
+  if (!div || !values) return;
+  const rows = values.map((value, index) => {
+    const percent = Number(value).toFixed(1);
+    return `<div class="mb-1"><div><strong>コア${index}</strong>：${percent}%</div>` +
+      `<div class="progress"><div class="progress-bar bg-info" role="progressbar" style="width:${percent}%;" ` +
+      `aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div></div></div>`;
+  }).join('');
+  div.innerHTML = `<strong>🧠 CPU使用率：</strong><br>${rows}`;
+}
+
+function renderVcgencmd(data) {
+  const div = document.getElementById('vcgencmd-info');
+  if (!div || !data || data.error) return;
+  const messages = Array.isArray(data.throttled_human) ? data.throttled_human : [];
+  div.innerHTML = `<strong>🔧 Raspberry Pi 状態：</strong><br>` +
+    `🌡️ 温度: ${data.temperature}<br>⚡ 電圧: ${data.voltage}<br>` +
+    `🧯 スロットル: ${data.throttled_raw}<br>` +
+    `${messages.map(message => '　- ' + message).join('<br>')}<br>` +
+    `🚀 CPUクロック: ${data.clock_human}（${data.clock_raw}）`;
+}
+
+function renderEnvironment(data) {
+  const div = document.getElementById('env-info');
+  if (!div || !data || data.loading) return;
+  if (data.error || !data.indoor || !data.outdoor) {
+    div.textContent = '🏠 室内温度: 取得エラー';
+    return;
+  }
+  div.innerHTML = `<strong>🌍 環境一覧：</strong><br>` +
+    `🏠 室内｜🌡️ ${data.indoor.temperature} ℃｜💧 ${data.indoor.humidity} %<br>` +
+    `🌳 屋外｜🌡️ ${data.outdoor.temperature} ℃｜💧 ${data.outdoor.humidity} %`;
+}
+
 function updateEnvInfo() {
   fetch('/api/temp_sensor')
     .then(res => res.json())
@@ -332,15 +398,76 @@ function updateCpuUsage() {
     });
 }
 
-updateCpuUsage();
-setInterval(updateCpuUsage, 1000);
+function updateStorageUsage() {
+  fetch('/api/storage_usage', {cache: 'no-store'})
+    .then(response => response.json())
+    .then(renderStorageUsage)
+    .catch(() => {});
+}
 
-// ✅ これを追加！
-updateEnvInfo();
-setInterval(updateEnvInfo, 60000);
+function stopUsageFallback() {
+  if (usageFallbackStartTimer) {
+    clearTimeout(usageFallbackStartTimer);
+    usageFallbackStartTimer = null;
+  }
+  while (usageFallbackTimers.length) clearInterval(usageFallbackTimers.pop());
+}
 
-updateVcgencmd();
-setInterval(updateVcgencmd, 5000);
+function startUsageFallback() {
+  if (usageFallbackTimers.length) return;
+  setUsageConnection('● WebSocket再接続中（HTTPで更新中）', 'warn');
+  updateCpuUsage();
+  updateStorageUsage();
+  updateVcgencmd();
+  updateEnvInfo();
+  usageFallbackTimers.push(setInterval(updateCpuUsage, 5000));
+  usageFallbackTimers.push(setInterval(updateStorageUsage, 10000));
+  usageFallbackTimers.push(setInterval(updateVcgencmd, 10000));
+  usageFallbackTimers.push(setInterval(updateEnvInfo, 60000));
+}
+
+function scheduleUsageFallback() {
+  if (usageFallbackStartTimer || usageFallbackTimers.length) return;
+  usageFallbackStartTimer = setTimeout(() => {
+    usageFallbackStartTimer = null;
+    if (!usageSocket || !usageSocket.connected) startUsageFallback();
+  }, 5000);
+}
+
+function connectSystemUsageSocket() {
+  if (!window.io) {
+    startUsageFallback();
+    return;
+  }
+  usageSocket = window.io('/admin-system', {
+    path: '/socket.io',
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    timeout: 8000
+  });
+  usageSocket.on('connect', () => {
+    stopUsageFallback();
+    setUsageConnection('● リアルタイム接続中', 'ok');
+    usageSocket.emit('system_usage_subscribe');
+  });
+  usageSocket.on('system_usage_update', payload => {
+    renderStorageUsage(payload.storage);
+    renderCpuUsage(payload.cpu);
+    renderVcgencmd(payload.system);
+    renderEnvironment(payload.environment);
+  });
+  usageSocket.on('disconnect', () => {
+    setUsageConnection('● リアルタイム接続が切れました', 'warn');
+    scheduleUsageFallback();
+  });
+  usageSocket.on('connect_error', scheduleUsageFallback);
+}
+
+window.addEventListener('load', connectSystemUsageSocket, {once: true});
+window.addEventListener('pagehide', () => {
+  stopUsageFallback();
+  if (usageSocket) usageSocket.close();
+});
 </script>
 {% endif %}
 

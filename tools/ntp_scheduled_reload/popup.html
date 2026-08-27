@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NTP Scheduled Reload</title><link rel="stylesheet" href="popup.css"></head>
+<body><main>
+  <h1>NTP Scheduled Reload</h1>
+  <section id="ntp" class="card">NTP状態を確認中…</section>
+  <section class="card"><h2>対象タブ</h2><strong id="tab-title">取得中…</strong><small id="tab-url"></small></section>
+  <section id="reservation-section" class="card"><h2>予約一覧 <span id="reservation-count">0件</span></h2><div id="reservations"></div></section>
+  <form id="form" class="card">
+    <label>実行日時（JST・分単位）<input id="target" type="datetime-local" step="60" required></label>
+    <label>実行補正（ms）<input id="offset" type="number" min="-1000" max="5000" step="1" value="0"></label>
+    <p id="offset-warning" class="warning hidden">指定時刻より前にアクセスする可能性があります。</p>
+    <label class="check"><input id="focus" type="checkbox" checked> 実行前に対象タブを前面化</label>
+    <label>NTP取得失敗時<select id="failure"><option value="abort">実行中止</option><option value="pc_clock">PC時計で強行</option></select></label>
+    <button type="submit" class="primary">このタブを予約</button>
+  </form>
+  <div class="test-buttons"><button data-test="10">10秒後にテスト</button><button data-test="30">30秒後にテスト</button><button id="open-benchmark">精度テスト</button></div>
+  <p class="notice">PCがスリープすると実行できません。リロードにより待機列やセッションへ影響するサイトがあります。</p>
+  <section><h2>最近のログ</h2><div id="logs"></div></section>
+  <p id="message" role="status"></p>
+</main><script type="module" src="popup.js"></script></body></html>

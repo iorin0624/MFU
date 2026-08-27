@@ -123,6 +123,7 @@ def fetch_month(statement_month: str, *, force_record_ids: set[int] | None = Non
                     record_id = int(stored["id"])
                     is_new = bool(stored.pop("_is_new", False))
                     details_changed = bool(stored.pop("_details_changed", False))
+                    pdf_refresh_required = bool(stored.pop("_pdf_refresh_required", details_changed))
                     became_final = bool(stored.pop("_became_final", False))
                     restored = bool(stored.pop("_restored", False))
                     if is_new:
@@ -161,7 +162,7 @@ def fetch_month(statement_month: str, *, force_record_ids: set[int] | None = Non
                     )
                     if (
                         record_id not in force_ids
-                        and not details_changed
+                        and not pdf_refresh_required
                         and not final_pdf_incomplete
                         and current_path
                         and Path(current_path).is_file()

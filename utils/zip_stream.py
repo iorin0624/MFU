@@ -30,6 +30,7 @@ from app.utils.upload_download_history import (
     request_ip as download_request_ip,
     track_upload_download_response,
 )
+from app.utils.realtime import emit_download_event
 
 # ------------------------------------------------------------
 # Blueprint（他モジュールで使っていればそのまま生かす）
@@ -111,6 +112,11 @@ def _progress_write(key: str, data: dict):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, p)
+    emit_download_event(
+        "zip_progress_update",
+        {"key": key, "progress": data},
+        room=f"zip:{key}",
+    )
 
 def _progress_read(key: str):
     with _PROGRESS_IO_LOCK:

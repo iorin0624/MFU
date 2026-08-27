@@ -7736,6 +7736,7 @@ def chat_connect():
     if ext_user_id:
         try:
             join_room(f"external_user:{ext_user_id}")
+            join_room("external_users")
             register_external_user_socket(ext_user_id, _socket_sid())
             ext_user_joined = True
         except Exception:
@@ -7778,6 +7779,27 @@ def chat_disconnect():
     ext_user_id = _external_user_id_for_actor(actor)
     if ext_user_id > 0:
         unregister_external_user_socket(ext_user_id, sid)
+
+
+@socketio.on("external_event_unread_counts")
+def external_event_unread_counts(data=None):
+    ext_user_id = int(session.get("ext_user_id") or 0)
+    if ext_user_id <= 0 or not is_external_user_active(ext_user_id):
+        return {"ok": False, "error": "unauthorized"}
+    raw_ids = (data or {}).get("event_ids") or []
+    event_ids = []
+    for value in raw_ids[:200]:
+        try:
+            event_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if event_id > 0:
+            event_ids.append(event_id)
+    from app.external_login_user.users import load_event_chat_unread_counts_for_user
+    return {
+        "ok": True,
+        "counts": load_event_chat_unread_counts_for_user(ext_user_id, event_ids),
+    }
 
 
 @socketio.on("chat_join")

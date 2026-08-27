@@ -732,6 +732,10 @@
 
     // ログイン時のみサーバが show:true を返すので、常に呼んでOK
     document.addEventListener('DOMContentLoaded', fetchCheckAndMaybeShow);
+    if (typeof window.io === 'function') {
+      const updateSocket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+      updateSocket.on('external_update_changed', fetchCheckAndMaybeShow);
+    }
   })();
 
 
@@ -899,9 +903,16 @@
       });
     };
 
+    let unreadSocket = null;
     const refreshEventUnread = async () => {
       const eventIds = Array.from(byEventId.keys());
       if (!eventIds.length) return;
+      if (unreadSocket?.connected) {
+        unreadSocket.emit('external_event_unread_counts', {event_ids: eventIds}, (data) => {
+          if (data?.ok) applyCounts(data.counts || {});
+        });
+        return;
+      }
       try {
         const qs = encodeURIComponent(eventIds.join(','));
         const res = await fetch(`/external-login/api/events/chat-unread-counts?event_ids=${qs}`, {
@@ -923,7 +934,13 @@
     window.addEventListener('pageshow', refreshEventUnread);
     window.addEventListener('online', refreshEventUnread);
     window.addEventListener('external:notif_unread', refreshEventUnread);
-    window.setInterval(refreshEventUnread, 30000);
+    if (typeof window.io === 'function') {
+      unreadSocket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+      unreadSocket.on('notif_unread', refreshEventUnread);
+      unreadSocket.on('connect', refreshEventUnread);
+    } else {
+      window.setInterval(refreshEventUnread, 60000);
+    }
   })();
 
   (() => {

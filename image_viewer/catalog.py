@@ -693,7 +693,7 @@ def rename_entry(path: str, new_name: str, entry_type: str) -> str:
         except Exception as exc:
             conn.rollback()
             if getattr(exc, "errno", None) == 1062:
-                raise CatalogConflict("An entry with that name already exists") from exc
+                raise CatalogConflict("同名のファイルまたはフォルダーが既にあります。") from exc
             raise
         return f"{parent_path}/{new_name}".strip("/")
     finally:
@@ -708,6 +708,14 @@ def build_append_sequence_plan(source_paths: list[str], target_path: str) -> lis
     normalized_sources = [_normalise_virtual_path(path) for path in source_paths]
     if len(set(normalized_sources)) != len(normalized_sources):
         raise CatalogError("同じファイルが重複して選択されています。")
+    # Numbering must be stable regardless of click order or the Explorer's
+    # current ascending/descending display direction.
+    normalized_sources.sort(
+        key=lambda value: (
+            _natural_sort_key(PurePosixPath(value).name),
+            _natural_sort_key(value),
+        )
+    )
     normalized_target = _normalise_virtual_path(target_path)
     if normalized_target in normalized_sources:
         raise CatalogConflict("基準ファイルは後ろへ付けるファイルとは別にしてください。")
@@ -715,6 +723,9 @@ def build_append_sequence_plan(source_paths: list[str], target_path: str) -> lis
     target_stem = Path(target_name).stem
     if not target_stem:
         raise CatalogError("基準ファイルの名前を確認してください。")
+    sequence_match = re.fullmatch(r"(.+)_([0-9]+)", target_stem)
+    sequence_stem = sequence_match.group(1) if sequence_match else target_stem
+    sequence_number = int(sequence_match.group(2)) if sequence_match else 0
     ordered_paths = [normalized_target, *normalized_sources]
     plan = []
     for index, source_path in enumerate(ordered_paths, start=1):
@@ -722,7 +733,11 @@ def build_append_sequence_plan(source_paths: list[str], target_path: str) -> lis
         if parent_path != target_parent:
             raise CatalogConflict("すべて同じフォルダー内のファイルを選択してください。")
         extension = Path(source_name).suffix
-        new_name = f"{target_stem}_{index}{extension}"
+        if sequence_match and index == 1:
+            new_name = source_name
+        else:
+            next_number = sequence_number + index - (1 if sequence_match else 0)
+            new_name = f"{sequence_stem}_{next_number}{extension}"
         if len(new_name) > 255:
             raise CatalogError("生成されるファイル名が長すぎます。")
         new_path = f"{target_parent}/{new_name}".strip("/")

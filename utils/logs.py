@@ -133,6 +133,7 @@ SKIP_PREFIXES = [
     "/tickets/api/zip/",
     "/tickets/api/files/",
     "/admin/nodes/data",
+    "/api/speedtest/",  # ping/upload/resultは測定中に大量発生するためDBへ記録しない
     "/api/timer/status",
     "/apple-touch-icon",  # ← これを追加（*.png / *-120x120 など全部まとめて対象）
 ]
@@ -142,9 +143,11 @@ SKIP_PATHS = [
     "/robots.txt",
     "/healthz",
     "/api/cpu_usage",
+    "/api/storage_usage",
     "/api_temp_sensor",
     "/api_vcgencmd",
     "/api/zip-progress",  # ZIP進捗ポーリングを除外
+    "/admin/nodes/chrony/data",  # Chrony監視画面の定期ポーリングを除外
 ]
 
 SKIP_ENDPOINTS = {

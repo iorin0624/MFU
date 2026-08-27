@@ -5,7 +5,7 @@ import re
 import secrets
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from .credentials import (
 from .csv_export import render_csv
 from .freee_sync import INTEGRATION_KEY, register_record, update_registered_record
 from .manual_jobs import create_manual_fetch_job, read_manual_fetch_job, update_manual_fetch_job
+from .mileage import calculate_monthly_points
 from .notifications import send_test_notification
 from .parser import is_provisional_record
 from .presentation import (
@@ -172,6 +173,21 @@ def _parse_filter_date(value: str):
         return None
 
 
+def _parse_filter_month(value: str):
+    value = (value or "").strip()
+    if not value:
+        return None, None
+    try:
+        first_day = datetime.strptime(value, "%Y-%m").date().replace(day=1)
+    except ValueError:
+        return None, None
+    if first_day.month == 12:
+        next_month = first_day.replace(year=first_day.year + 1, month=1)
+    else:
+        next_month = first_day.replace(month=first_day.month + 1)
+    return first_day, next_month - timedelta(days=1)
+
+
 def _normalize_status_filter(raw_status: str | None) -> str:
     status = "pending" if raw_status is None else raw_status.strip()
     if status not in {"", "pending", "registering", "updating", "registered", "error", "deleted"}:
@@ -188,8 +204,10 @@ def _ensure_schema() -> None:
 @login_required
 def index():
     status = _normalize_status_filter(request.args.get("status"))
-    date_from_text = (request.args.get("date_from") or "").strip()
-    date_to_text = (request.args.get("date_to") or "").strip()
+    selected_month = (request.args.get("filter_month") or "").strip()
+    date_from, date_to = _parse_filter_month(selected_month)
+    if selected_month and date_from is None:
+        selected_month = ""
     selected_operator = (request.args.get("operator") or "").strip()
     operator_options = list_tollgate_operators()
     if selected_operator not in {*operator_options, "__unmatched__"}:
@@ -203,10 +221,16 @@ def index():
     records = list_records(
         status=status,
         limit=None,
-        date_from=_parse_filter_date(date_from_text),
-        date_to=_parse_filter_date(date_to_text),
+        date_from=date_from,
+        date_to=date_to,
         operator_name=selected_operator,
     )
+    filtered_record_count = len(records)
+    filtered_total_amount = sum(int(record.get("amount") or 0) for record in records)
+    summary_period_label = (
+        f"{date_from.year}年{date_from.month:02d}月" if date_from else "全期間"
+    )
+    mileage_months = calculate_monthly_points(list_records(status="", limit=None))
     for record in records:
         record["source_deleted"] = record.get("source_state") == "deleted"
         record["is_provisional"] = is_provisional_record(record)
@@ -231,6 +255,10 @@ def index():
     return render_template(
         "etc_accounting/index.html",
         records=records,
+        filtered_record_count=filtered_record_count,
+        filtered_total_amount=filtered_total_amount,
+        summary_period_label=summary_period_label,
+        mileage_months=mileage_months,
         runs=list_runs(),
         selected_status=status,
         freee_connected=bool(freee_services.load_freee_token_row()),
@@ -239,8 +267,7 @@ def index():
         batch_jobs=list_batch_jobs(5) if session.get("user") == "admin" else [],
         month_options=_month_options(),
         scheduled_fetch_state=get_scheduled_fetch_state(),
-        selected_date_from=date_from_text,
-        selected_date_to=date_to_text,
+        selected_month=selected_month,
         selected_operator=selected_operator,
         operator_options=operator_options,
         csrf_token=_csrf_token(),
@@ -256,10 +283,11 @@ def export_csv():
         date_from = None
         date_to = None
         selected_operator = ""
+        selected_month = ""
     else:
         status = _normalize_status_filter(request.args.get("status"))
-        date_from = _parse_filter_date(request.args.get("date_from") or "")
-        date_to = _parse_filter_date(request.args.get("date_to") or "")
+        selected_month = (request.args.get("filter_month") or "").strip()
+        date_from, date_to = _parse_filter_month(selected_month)
         selected_operator = (request.args.get("operator") or "").strip()
         if selected_operator not in {*list_tollgate_operators(), "__unmatched__"}:
             selected_operator = ""

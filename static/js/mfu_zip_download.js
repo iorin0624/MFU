@@ -20,6 +20,7 @@
   function startProgressPolling(key, onProgress, intervalMs = 500) {
     let stopped = false;
     let timer = null;
+    let socket = null;
 
     const once = async () => {
       if (stopped) return null;
@@ -32,13 +33,39 @@
       }
     };
 
-    timer = global.setInterval(once, intervalMs);
+    const startFallback = () => {
+      if (stopped || timer) return;
+      timer = global.setInterval(once, Math.max(3000, intervalMs));
+    };
+    const stopFallback = () => {
+      if (timer) global.clearInterval(timer);
+      timer = null;
+    };
+    if (typeof global.io === 'function') {
+      socket = global.io('/download-progress', {transports:['websocket','polling']});
+      socket.on('connect', () => {
+        stopFallback();
+        socket.emit('zip_progress_subscribe', {key}, (reply) => {
+          if (reply?.progress && typeof onProgress === 'function') onProgress(reply.progress);
+        });
+      });
+      socket.on('zip_progress_update', (payload) => {
+        if (payload?.key === key && payload.progress && typeof onProgress === 'function') {
+          onProgress(payload.progress);
+        }
+      });
+      socket.on('disconnect', startFallback);
+      socket.on('connect_error', startFallback);
+    } else {
+      startFallback();
+    }
     return {
       once,
       stop() {
         stopped = true;
-        if (timer) global.clearInterval(timer);
-        timer = null;
+        stopFallback();
+        socket?.disconnect();
+        socket = null;
       },
     };
   }
@@ -71,14 +98,19 @@
   }
 
   async function waitUntilReady({ key, onProgress = null, intervalMs = 700 }) {
-    while (true) {
-      const progress = await readProgress(key);
-      if (!progress) throw new Error('zip_progress_not_found');
-      if (typeof onProgress === 'function') onProgress(progress);
-      if (progress.status === 'done') return progress;
-      if (progress.status === 'error') throw new Error(progress.message || 'zip_failed');
-      await sleep(intervalMs);
-    }
+    return new Promise((resolve, reject) => {
+      const watcher = startProgressPolling(key, (progress) => {
+        if (typeof onProgress === 'function') onProgress(progress);
+        if (progress.status === 'done') { watcher.stop(); resolve(progress); }
+        if (progress.status === 'error') { watcher.stop(); reject(new Error(progress.message || 'zip_failed')); }
+      }, intervalMs);
+      watcher.once().then((progress) => {
+        if (!progress) return;
+        if (typeof onProgress === 'function') onProgress(progress);
+        if (progress.status === 'done') { watcher.stop(); resolve(progress); }
+        if (progress.status === 'error') { watcher.stop(); reject(new Error(progress.message || 'zip_failed')); }
+      }).catch(() => {});
+    });
   }
 
   function startDownload(downloadUrl) {

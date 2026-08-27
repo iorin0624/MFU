@@ -137,14 +137,13 @@ WEB_CACHE_DIR = CONFIG_DIR / "web_cache"
 EXTERNAL_BROWSER_PROFILE_DIR = CONFIG_DIR / "external_browser_profile"
 STARTUP_REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_VALUE_NAME = "MFUMediaClipboard"
-URL_PATTERN = re.compile(
-    r"https?://(?:www\.)?(?:"
-    r"(?:instagram\.com/(?:[^/?#]+/)?(?:p|reel|tv)/[A-Za-z0-9_-]+/?[^ \r\n\t]*)|"
-    r"(?:instagram\.com/stories/[A-Za-z0-9._]+(?:/\d+)?/?[^ \r\n\t]*)|"
-    r"(?:threads\.(?:com|net)/(?:@[^/?#\s]+/post|t)/[A-Za-z0-9_-]+/?[^ \r\n\t]*)|"
-    r"(?:(?:x|twitter)\.com/[^/?#\s]+/status/\d+[^ \r\n\t]*)"
-    r")",
-    re.IGNORECASE,
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+SUPPORTED_MEDIA_DOMAINS = (
+    "x.com",
+    "twitter.com",
+    "instagram.com",
+    "threads.com",
+    "threads.net",
 )
 MAX_BATCH_URLS = 20
 URL_TRAILING_PUNCTUATION = ".,;:!?)]}>\u3001\u3002\uff01\uff1f\u3011\u300d\u300f"
@@ -156,6 +155,15 @@ def extract_media_urls(text: str) -> list[str]:
     seen: set[str] = set()
     for match in URL_PATTERN.finditer(str(text or "")):
         url = match.group(0).rstrip(URL_TRAILING_PUNCTUATION)
+        try:
+            hostname = (urlparse(url).hostname or "").rstrip(".").lower()
+        except ValueError:
+            continue
+        if not any(
+            hostname == domain or hostname.endswith(f".{domain}")
+            for domain in SUPPORTED_MEDIA_DOMAINS
+        ):
+            continue
         if not url or url in seen:
             continue
         seen.add(url)
@@ -1261,6 +1269,45 @@ class ManualUrlDialog(QDialog):
         self.ok_button = buttons.button(QDialogButtonBox.Ok)
         self.ok_button.setEnabled(False)
         self.url_edit.textChanged.connect(self._update_url_count)
+        self._last_clipboard_urls: tuple[str, ...] = ()
+        app = QApplication.instance()
+        self._clipboard = app.clipboard() if app else None
+        if self._clipboard is not None:
+            self._clipboard.dataChanged.connect(self._check_clipboard)
+        self._clipboard_timer = QTimer(self)
+        self._clipboard_timer.setInterval(750)
+        self._clipboard_timer.timeout.connect(self._check_clipboard)
+        self._clipboard_timer.start()
+        QTimer.singleShot(0, self._check_clipboard)
+
+    def _check_clipboard(self) -> None:
+        if self._clipboard is None:
+            return
+        clipboard_urls = extract_media_urls(self._clipboard.text() or "")
+        fingerprint = tuple(clipboard_urls)
+        if not fingerprint or fingerprint == self._last_clipboard_urls:
+            return
+        self._last_clipboard_urls = fingerprint
+        existing = self.urls()
+        existing_set = set(existing)
+        additions = [url for url in clipboard_urls if url not in existing_set]
+        if not additions:
+            return
+        current = self.url_edit.toPlainText().rstrip()
+        separator = "\n" if current else ""
+        self.url_edit.setPlainText(current + separator + "\n".join(additions))
+        cursor = self.url_edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.url_edit.setTextCursor(cursor)
+
+    def done(self, result: int) -> None:
+        self._clipboard_timer.stop()
+        if self._clipboard is not None:
+            try:
+                self._clipboard.dataChanged.disconnect(self._check_clipboard)
+            except (RuntimeError, TypeError):
+                pass
+        super().done(result)
 
     def _update_url_count(self) -> None:
         count = len(self.urls())

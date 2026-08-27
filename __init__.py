@@ -39,6 +39,7 @@ from flask import (
     send_from_directory, send_file, abort, jsonify, current_app, after_this_request, g, Response,
 )
 from flask_login import LoginManager, current_user
+from flask_socketio import join_room
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename, safe_join
 
@@ -338,6 +339,7 @@ _CSRF_PROTECTED_PREFIXES = (
     "/admin/logs/404-ban",
     "/admin/mail-delivery/refresh",
     "/admin/mail-filters",
+    "/admin/ios-shortcut-upload",
     "/admin/maintenance",
     "/admin/settings/inapp-browser",
     "/admin/ticket-price",
@@ -826,6 +828,333 @@ def get_vcgencmd_info():
 
     return {"temperature": temp_str, "voltage": volt_str, "throttled": throttled, "clock": clock}
 
+
+def get_vcgencmd_status():
+    """Return the formatted system status used by both HTTP and Socket.IO."""
+
+    def parse_throttled(hex_str):
+        try:
+            val = int(str(hex_str).replace("throttled=", ""), 16)
+            messages = []
+            if val & (1 << 0):  messages.append("現在: 電圧低下中")
+            if val & (1 << 1):  messages.append("現在: 周波数制限中")
+            if val & (1 << 2):  messages.append("現在: 温度スロットル中")
+            if val & (1 << 16): messages.append("過去: 電圧低下あり")
+            if val & (1 << 17): messages.append("過去: 周波数制限あり")
+            if val & (1 << 18): messages.append("過去: 温度スロットルあり")
+            return messages if messages else ["正常"]
+        except Exception as exc:
+            return [f"解析失敗: {exc}"]
+
+    def run(cmd):
+        try:
+            return subprocess.check_output(["vcgencmd"] + cmd.split(), timeout=2).decode().strip()
+        except Exception:
+            return None
+
+    def format_clock_hz(hz):
+        if hz >= 1_000_000_000:
+            return f"{hz / 1_000_000_000:.2f} GHz"
+        if hz >= 1_000_000:
+            return f"{hz / 1_000_000:.0f} MHz"
+        return f"{hz} Hz"
+
+    throttled_raw = run("get_throttled")
+    if throttled_raw is not None:
+        clock_raw = run("measure_clock arm") or ""
+        try:
+            clock_hz = int(clock_raw.split("=")[-1]) if "frequency" in clock_raw else 0
+        except Exception:
+            clock_hz = 0
+        return {
+            "temperature": run("measure_temp") or "取得不可",
+            "voltage": run("measure_volts") or "N/A",
+            "throttled_raw": throttled_raw,
+            "throttled_human": parse_throttled(throttled_raw),
+            "clock_raw": clock_raw,
+            "clock_human": format_clock_hz(clock_hz),
+        }
+
+    temp_human = "取得不可"
+    try:
+        temps = psutil.sensors_temperatures(fahrenheit=False) or {}
+        for key in ("coretemp", "k10temp", "acpitz", "cpu-thermal"):
+            if key in temps and temps[key]:
+                values = [x.current for x in temps[key] if isinstance(x.current, (int, float))]
+                if values:
+                    temp_human = f"temp={sum(values) / len(values):.1f}'C"
+                    break
+    except Exception:
+        pass
+
+    freq = psutil.cpu_freq()
+    current_mhz = freq.current if freq else None
+    clock_human = "不明"
+    if current_mhz:
+        clock_human = f"{current_mhz / 1000:.2f} GHz" if current_mhz >= 1000 else f"{current_mhz:.0f} MHz"
+    return {
+        "temperature": temp_human,
+        "voltage": "N/A",
+        "throttled_raw": "non-rpi",
+        "throttled_human": ["非対応（Raspberry Pi 専用機能）"],
+        "clock_raw": f"frequency({int(current_mhz)}MHz)" if current_mhz else "frequency(unknown)",
+        "clock_human": clock_human,
+    }
+
+
+def get_environment_status():
+    """Fetch the two SwitchBot meters in parallel."""
+    db = get_db()
+    try:
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("SELECT token, secret FROM switchbot_tokens ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+    finally:
+        db.close()
+    if not row:
+        return {"error": "SwitchBotトークンが未登録です"}
+
+    token = row["token"]
+    secret = row["secret"]
+
+    def get_status(device_id):
+        try:
+            request_time = str(int(time.time() * 1000))
+            nonce = str(uuid.uuid4())
+            string_to_sign = token + request_time + nonce
+            sign = base64.b64encode(hmac.new(
+                secret.encode("utf-8"),
+                msg=string_to_sign.encode("utf-8"),
+                digestmod=hashlib.sha256,
+            ).digest()).decode("utf-8")
+            headers = {
+                "Authorization": token,
+                "sign": sign,
+                "nonce": nonce,
+                "t": request_time,
+                "Content-Type": "application/json",
+            }
+            response = requests.get(
+                f"https://api.switch-bot.com/v1.1/devices/{device_id}/status",
+                headers=headers,
+                timeout=10,
+            )
+            data = response.json()
+            if data.get("statusCode") == 100:
+                body = data["body"]
+                return {
+                    "temperature": body.get("temperature"),
+                    "humidity": body.get("humidity"),
+                    "device_id": device_id,
+                }
+            return {"error": f"APIエラー: statusCode {data.get('statusCode')}", "device_id": device_id}
+        except Exception as exc:
+            return {"error": f"通信エラー: {exc}", "device_id": device_id}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        indoor_future = executor.submit(get_status, "DD25F897C8B8")
+        outdoor_future = executor.submit(get_status, "E8DD055523AE")
+        return {"indoor": indoor_future.result(), "outdoor": outdoor_future.result()}
+
+
+_SYSTEM_USAGE_ROOM = "admin_system_usage"
+_SYSTEM_USAGE_THREAD_LOCK = threading.Lock()
+_SYSTEM_USAGE_THREAD_STARTED = False
+
+
+def _system_usage_environment_job():
+    with app.app_context():
+        return get_environment_status()
+
+
+def _system_usage_collector():
+    """Collect once and fan out to every subscribed admin through Redis."""
+    redis_lock = None
+    queue_url = app.config.get("SOCKETIO_MESSAGE_QUEUE")
+    if queue_url:
+        try:
+            import redis
+            redis_lock = redis.Redis.from_url(queue_url).lock(
+                "mfu:system-usage:collector",
+                timeout=15,
+                blocking_timeout=2,
+                thread_local=False,
+            )
+        except Exception:
+            app.logger.warning("system usage Redis lock setup failed", exc_info=True)
+            redis_lock = None
+
+    while True:
+        acquired = redis_lock is None
+        try:
+            if redis_lock is not None:
+                acquired = bool(redis_lock.acquire())
+            if not acquired:
+                socketio.sleep(5)
+                continue
+
+            psutil.cpu_percent(interval=None, percpu=True)
+            latest = {
+                "storage": None,
+                "cpu": None,
+                "system": None,
+                "environment": {"loading": True},
+            }
+            storage_due = 0.0
+            system_due = 0.0
+            environment_due = 0.0
+            environment_future = None
+            environment_pool = ThreadPoolExecutor(max_workers=1)
+
+            try:
+                while True:
+                    now = time.monotonic()
+                    latest["cpu"] = {"cores": psutil.cpu_percent(interval=None, percpu=True)}
+
+                    if now >= storage_due:
+                        try:
+                            latest["storage"] = get_storage_info("/mnt/mfu")
+                        except Exception as exc:
+                            latest["storage"] = {"error": str(exc)}
+                        storage_due = now + 5.0
+
+                    if now >= system_due:
+                        try:
+                            latest["system"] = get_vcgencmd_status()
+                        except Exception as exc:
+                            latest["system"] = {"error": str(exc)}
+                        system_due = now + 5.0
+
+                    if environment_future is not None and environment_future.done():
+                        try:
+                            latest["environment"] = environment_future.result()
+                        except Exception as exc:
+                            latest["environment"] = {"error": str(exc)}
+                        environment_future = None
+                        environment_due = now + 60.0
+                    if environment_future is None and now >= environment_due:
+                        environment_future = environment_pool.submit(_system_usage_environment_job)
+                        environment_due = float("inf")
+
+                    payload = dict(latest)
+                    payload["generated_at"] = datetime.now(JST).isoformat(timespec="seconds")
+                    socketio.emit(
+                        "system_usage_update",
+                        payload,
+                        namespace="/admin-system",
+                        room=_SYSTEM_USAGE_ROOM,
+                    )
+
+                    if redis_lock is not None:
+                        redis_lock.extend(15, replace_ttl=True)
+                    socketio.sleep(1)
+            finally:
+                environment_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            app.logger.exception("system usage collector stopped unexpectedly")
+            socketio.sleep(3)
+        finally:
+            if acquired and redis_lock is not None:
+                try:
+                    redis_lock.release()
+                except Exception:
+                    pass
+
+
+def _ensure_system_usage_collector():
+    global _SYSTEM_USAGE_THREAD_STARTED
+    with _SYSTEM_USAGE_THREAD_LOCK:
+        if _SYSTEM_USAGE_THREAD_STARTED:
+            return
+        _SYSTEM_USAGE_THREAD_STARTED = True
+        socketio.start_background_task(_system_usage_collector)
+
+
+@socketio.on("connect", namespace="/admin-system")
+def admin_system_connect(auth=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        app.logger.warning("admin system socket rejected ip=%s", request.remote_addr)
+        return False
+    return True
+
+
+@socketio.on("system_usage_subscribe", namespace="/admin-system")
+def admin_system_usage_subscribe(_data=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        return False
+    join_room(_SYSTEM_USAGE_ROOM)
+    _ensure_system_usage_collector()
+    return {"ok": True}
+
+
+@socketio.on("timer_scan_subscribe", namespace="/admin-system")
+def admin_timer_scan_subscribe(_data=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        return False
+    join_room("admin_timer_scan")
+    try:
+        from app.routes.timer_routes import _last_scan_lock, _load_last_scan
+        with _last_scan_lock:
+            last_scan = _load_last_scan()
+    except Exception:
+        last_scan = {}
+    return {"ok": True, "last_scan": last_scan}
+
+
+@socketio.on("admin_job_subscribe", namespace="/admin-system")
+def admin_job_subscribe(data=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        return False
+    data = data or {}
+    kind = str(data.get("kind") or "")
+    job_id = str(data.get("job_id") or "")
+    if kind == "admin-logs" and re.fullmatch(r"adminlogs_[0-9a-f]{32}", job_id):
+        join_room(f"admin-logs:{job_id}")
+    elif kind == "etc-manual" and re.fullmatch(r"[0-9a-f]{32}", job_id):
+        join_room(f"etc-manual:{job_id}")
+    elif kind == "etc-batch" and re.fullmatch(r"[0-9a-f]{32}", job_id):
+        join_room(f"etc-batch:{job_id}")
+    else:
+        return {"ok": False, "error": "invalid_job"}
+    return {"ok": True}
+
+
+@socketio.on("connect", namespace="/download-progress")
+def download_progress_connect(auth=None):
+    return True
+
+
+@socketio.on("zip_progress_subscribe", namespace="/download-progress")
+def download_zip_progress_subscribe(data=None):
+    key = str((data or {}).get("key") or "")
+    if not re.fullmatch(r"[0-9A-Za-z._:-]{8,}", key):
+        return {"ok": False, "error": "invalid_key"}
+    try:
+        from app.utils.zip_stream import _job_access_allowed, _progress_read
+        progress = _progress_read(key)
+        if progress and not _job_access_allowed(progress):
+            return {"ok": False, "error": "forbidden"}
+        if not progress and len(key) < 20:
+            return {"ok": False, "error": "not_found"}
+    except Exception:
+        return {"ok": False, "error": "not_found"}
+    join_room(f"zip:{key}")
+    return {"ok": True, "progress": progress or None}
+
+
+@socketio.on("shortcut_progress_subscribe", namespace="/download-progress")
+def download_shortcut_progress_subscribe(data=None):
+    token = str((data or {}).get("launch_token") or "")
+    try:
+        from app.utils.mobile_download import _hash_token, read_shortcut_launch_state
+        state = read_shortcut_launch_state(token)
+    except Exception:
+        return {"ok": False, "error": "not_found"}
+    if not state.get("ok"):
+        return state
+    join_room(f"shortcut:{_hash_token(token)}")
+    return state
+
 def auto_end_maintenance():
     try:
         app.logger.info("🔁 メンテ時間到達 → モードOFF＆再起動フラグ作成")
@@ -915,6 +1244,16 @@ def _progress_write(key: str, data: dict):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, p)
+    if str(key).startswith("adminlogs_"):
+        try:
+            from app.utils.realtime import emit_admin_event
+            emit_admin_event(
+                "admin_logs_job_update",
+                {"job_id": key, **data},
+                room=f"admin-logs:{key}",
+            )
+        except Exception:
+            pass
 
 def _progress_read(key: str):
     p = _progress_path(key)
@@ -5085,6 +5424,17 @@ def mode_delete(mode):
 # =====================================
 # ⑥ API（デバッグ／センサー／CPU）
 # =====================================
+@app.route("/api/storage_usage")
+@admin_required
+def api_storage_usage():
+    try:
+        response = jsonify(get_storage_info("/mnt/mfu"))
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return response
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/speedtest", methods=["GET"])
 @admin_required
 def speedtest_page():
@@ -5392,45 +5742,66 @@ def release_pooled_database_connections(_error=None):
 # ─────────────────────────────────────────
 # 管理: ノードメトリクス集約表示（103.16 / 103.15）
 # ─────────────────────────────────────────
+NODE_METRICS_TARGETS = (
+    {"name": "103.15 (Raspberry Pi)", "url": "http://192.168.103.15:5055/metrics"},
+    {"name": "103.16 (x86)", "url": "http://192.168.103.16:5055/metrics"},
+    {"name": "103.17 (MySQL)", "url": "http://192.168.103.17:5055/metrics"},
+    {"name": "103.21 (FreePBX)", "url": "http://192.168.103.21:5055/metrics"},
+)
+
+
+def _node_metrics_placeholder(target):
+    return {
+        "name": target["name"],
+        "url": target["url"],
+        "ok": False,
+        "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
+        "error": None,
+    }
+
+
+def _fetch_node_metrics(target, headers):
+    info = _node_metrics_placeholder(target)
+    try:
+        response = requests.get(target["url"], headers=headers, timeout=2)
+        response.raise_for_status()
+        data = response.json() or {}
+        data["host"] = data.get("host") or "unknown"
+        data["os"] = data.get("os") or "unknown"
+        data["os_version"] = data.get("os_version") or "unknown"
+        info["data"] = data
+        info["ok"] = True
+    except Exception as exc:
+        info["error"] = str(exc)
+    return info
+
+
+def _collect_node_metrics():
+    token = os.environ.get("NODE_METRICS_TOKEN", "")
+    headers = {"X-Node-Token": token} if token else {}
+    by_url = {}
+    with ThreadPoolExecutor(max_workers=len(NODE_METRICS_TARGETS)) as executor:
+        pending = {
+            executor.submit(_fetch_node_metrics, target, headers): target["url"]
+            for target in NODE_METRICS_TARGETS
+        }
+        for future in as_completed(pending):
+            url = pending[future]
+            try:
+                by_url[url] = future.result()
+            except Exception as exc:
+                target = next(item for item in NODE_METRICS_TARGETS if item["url"] == url)
+                info = _node_metrics_placeholder(target)
+                info["error"] = str(exc)
+                by_url[url] = info
+    return [by_url[target["url"]] for target in NODE_METRICS_TARGETS]
+
+
 @app.route("/admin/nodes")
 @admin_required
 def admin_nodes():
-    token = os.environ.get("NODE_METRICS_TOKEN", "")  # 任意。未設定なら無認証
-    headers = {"X-Node-Token": token} if token else {}
-
-    targets = [
-        {"name": "103.15 (Raspberry Pi)", "url": "http://192.168.103.15:5055/metrics"},
-        {"name": "103.16 (x86)",   "url": "http://192.168.103.16:5055/metrics"},
-        {"name": "103.17 (MySQL)", "url": "http://192.168.103.17:5055/metrics"},
-        {"name": "103.21 (FreePBX)", "url": "http://192.168.103.21:5055/metrics"},
-
-    ]
-
-    results = []
-    for t in targets:
-        info = {
-            "name": t["name"],
-            "url": t["url"],
-            "ok": False,
-            "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
-            "error": None,
-        }
-        try:
-            r = requests.get(t["url"], headers=headers, timeout=2)
-            r.raise_for_status()
-            data = r.json() or {}
-            data["host"] = data.get("host") or "unknown"
-            data["os"] = data.get("os") or "unknown"
-            data["os_version"] = data.get("os_version") or "unknown"
-            if "runtime" in data:
-                data["runtime"] = data.get("runtime")
-            info["data"] = data
-            info["ok"] = True
-        except Exception as e:
-            info["error"] = str(e)
-        results.append(info)
-
-    return render_template("admin_nodes.html", nodes=results, now=int(time.time()))
+    placeholders = [_node_metrics_placeholder(target) for target in NODE_METRICS_TARGETS]
+    return render_template("admin_nodes.html", nodes=placeholders, now=int(time.time()))
 
 # ─────────────────────────────────────────
 # 管理: ノードメトリクス JSON（/admin/nodes/data）
@@ -5438,41 +5809,99 @@ def admin_nodes():
 @app.route("/admin/nodes/data")
 @admin_required
 def admin_nodes_data():
-    token = os.environ.get("NODE_METRICS_TOKEN", "")
-    headers = {"X-Node-Token": token} if token else {}
+    return jsonify({"nodes": _collect_node_metrics(), "now": int(time.time())})
 
-    targets = [
-        {"name": "103.15 (Raspberry Pi)", "url": "http://192.168.103.15:5055/metrics"},
-        {"name": "103.16 (x86)",   "url": "http://192.168.103.16:5055/metrics"},
-        {"name": "103.17 (MySQL)", "url": "http://192.168.103.17:5055/metrics"},
-        {"name": "103.21 (FreePBX)", "url": "http://192.168.103.21:5055/metrics"},
-    ]
 
-    results = []
-    for t in targets:
-        info = {
-            "name": t["name"],
-            "url": t["url"],
-            "ok": False,
-            "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
-            "error": None,
-        }
+_ADMIN_NODES_ROOM = "admin_nodes"
+_ADMIN_NODES_THREAD_LOCK = threading.Lock()
+_ADMIN_NODES_THREAD_STARTED = False
+_ADMIN_NODES_MANUAL_LOCK = threading.Lock()
+
+
+def _admin_nodes_emit_snapshot():
+    payload = {"nodes": _collect_node_metrics(), "now": int(time.time())}
+    socketio.emit(
+        "nodes_status_update",
+        payload,
+        namespace="/admin-system",
+        room=_ADMIN_NODES_ROOM,
+    )
+    return payload
+
+
+def _admin_nodes_collector():
+    redis_lock = None
+    queue_url = app.config.get("SOCKETIO_MESSAGE_QUEUE")
+    if queue_url:
         try:
-            r = requests.get(t["url"], headers=headers, timeout=2)
-            r.raise_for_status()
-            data = r.json() or {}
-            data["host"] = data.get("host") or "unknown"
-            data["os"] = data.get("os") or "unknown"
-            data["os_version"] = data.get("os_version") or "unknown"
-            if "runtime" in data:
-                data["runtime"] = data.get("runtime")
-            info["data"] = data
-            info["ok"] = True
-        except Exception as e:
-            info["error"] = str(e)
-        results.append(info)
+            import redis
+            redis_lock = redis.Redis.from_url(queue_url).lock(
+                "mfu:admin-nodes:collector",
+                timeout=15,
+                blocking_timeout=2,
+                thread_local=False,
+            )
+        except Exception:
+            app.logger.warning("admin nodes Redis lock setup failed", exc_info=True)
+            redis_lock = None
 
-    return jsonify({"nodes": results, "now": int(time.time())})
+    while True:
+        acquired = redis_lock is None
+        try:
+            if redis_lock is not None:
+                acquired = bool(redis_lock.acquire())
+            if not acquired:
+                socketio.sleep(5)
+                continue
+
+            while True:
+                started = time.monotonic()
+                _admin_nodes_emit_snapshot()
+                if redis_lock is not None:
+                    redis_lock.extend(15, replace_ttl=True)
+                # A full node snapshot currently takes about 1.5 seconds.  Use a
+                # two-second cadence and never overlap one collection with the next.
+                socketio.sleep(max(0.1, 2.0 - (time.monotonic() - started)))
+        except Exception:
+            app.logger.exception("admin nodes collector stopped unexpectedly")
+            socketio.sleep(3)
+        finally:
+            if acquired and redis_lock is not None:
+                try:
+                    redis_lock.release()
+                except Exception:
+                    pass
+
+
+def _ensure_admin_nodes_collector():
+    global _ADMIN_NODES_THREAD_STARTED
+    with _ADMIN_NODES_THREAD_LOCK:
+        if _ADMIN_NODES_THREAD_STARTED:
+            return
+        _ADMIN_NODES_THREAD_STARTED = True
+        socketio.start_background_task(_admin_nodes_collector)
+
+
+@socketio.on("nodes_subscribe", namespace="/admin-system")
+def admin_nodes_subscribe(_data=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        return False
+    join_room(_ADMIN_NODES_ROOM)
+    _ensure_admin_nodes_collector()
+    return {"ok": True}
+
+
+@socketio.on("nodes_refresh_request", namespace="/admin-system")
+def admin_nodes_refresh_request(_data=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        return False
+    if not _ADMIN_NODES_MANUAL_LOCK.acquire(blocking=False):
+        return {"ok": False, "busy": True}
+    try:
+        _admin_nodes_emit_snapshot()
+        return {"ok": True}
+    finally:
+        _ADMIN_NODES_MANUAL_LOCK.release()
 
 
 # ────────────────────────────────────────────
@@ -5730,10 +6159,13 @@ app.register_blueprint(mfa_bp)
 from app.routes.timer_routes import timer_bp
 app.register_blueprint(timer_bp)
 
-from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
+from app.utils.ext_api_uploads import ext_up, ios_up
+app.register_blueprint(ext_up)
+app.register_blueprint(ios_up)
 
-from app.utils.uploader_auth import uploader_auth_bp
+from app.utils.uploader_auth import uploader_admin_bp, uploader_auth_bp
 app.register_blueprint(uploader_auth_bp)
+app.register_blueprint(uploader_admin_bp)
 
 from app.utils.mobile_download import mobile_download_bp
 app.register_blueprint(mobile_download_bp)

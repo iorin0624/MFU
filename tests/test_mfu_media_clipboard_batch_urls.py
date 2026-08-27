@@ -48,6 +48,26 @@ def test_extract_media_urls_accepts_instagram_story_urls():
     ]
 
 
+def test_extract_media_urls_accepts_any_path_on_supported_domains():
+    module = _load_module()
+    urls = [
+        "https://x.com/home?from=test",
+        "https://m.instagram.com/new-kind/abc123?share=1",
+        "https://www.threads.com/@example/unknown-format/xyz",
+    ]
+
+    assert module.extract_media_urls("\n".join(urls)) == urls
+
+
+def test_extract_media_urls_rejects_lookalike_and_unrelated_domains():
+    module = _load_module()
+
+    assert module.extract_media_urls(
+        "https://instagram.com.example.jp/p/abc\n"
+        "https://example.jp/?next=https://x.com/example/status/1"
+    ) == []
+
+
 def test_manual_url_dialog_accepts_multiple_urls_and_enforces_batch_limit():
     module = _load_module()
     app = module.QApplication.instance() or module.QApplication([])
@@ -71,6 +91,26 @@ def test_manual_url_dialog_accepts_multiple_urls_and_enforces_batch_limit():
 
     assert len(dialog.urls()) == module.MAX_BATCH_URLS + 1
     assert not dialog.ok_button.isEnabled()
+    dialog.close()
+
+
+def test_manual_url_dialog_appends_supported_clipboard_urls_without_duplicates():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+    clipboard = app.clipboard()
+    clipboard.clear()
+    dialog = module.ManualUrlDialog()
+    first = "https://www.instagram.com/p/first/"
+    second = "https://www.threads.com/@example/post/second"
+
+    clipboard.setText(first)
+    app.processEvents()
+    dialog._check_clipboard()
+    clipboard.setText(f"{first}\n{second}")
+    app.processEvents()
+    dialog._check_clipboard()
+
+    assert dialog.urls() == [first, second]
     dialog.close()
 
 

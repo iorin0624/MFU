@@ -859,6 +859,38 @@ def _emit_notif_new_mfu(
     )
 
 
+def _emit_notif_new_external(
+    user_id: int,
+    *,
+    notification_id: int | None,
+    kind: str,
+    title: str,
+    body: str,
+    target_url: str,
+    sender_label: str,
+    room_type: str | None,
+    room_id: str | None,
+) -> None:
+    if socketio is None or int(user_id) <= 0:
+        return
+    socketio.emit(
+        "notif_new",
+        {"item": _serialize_mfu_notification_item({
+            "id": notification_id,
+            "kind": kind,
+            "title": title,
+            "body": body,
+            "target_url": target_url,
+            "sender_label": sender_label,
+            "room_type": room_type,
+            "room_id": room_id,
+            "read_at": None,
+            "created_at": _now_utc(),
+        }), "scope": "external"},
+        room=f"external_user:{int(user_id)}",
+    )
+
+
 def _record_notification_delivery(
     *,
     notification_id: int | None,
@@ -1016,6 +1048,17 @@ def _create_notification_core(
         if inserted:
             if user_kind == "external":
                 _emit_notif_unread(int(storage_user_id), reason="created", latest_id=notification_id)
+                _emit_notif_new_external(
+                    int(storage_user_id),
+                    notification_id=notification_id,
+                    kind=normalized_kind,
+                    title=(title or "").strip()[:255] or "お知らせ",
+                    body=(body or "").strip(),
+                    target_url=(target_url or "").strip() or "/external-login/",
+                    sender_label=normalized_sender_label,
+                    room_type=normalized_room_type,
+                    room_id=normalized_room_id,
+                )
             elif user_kind == "mfu" and normalized_recipient_key:
                 _emit_notif_unread_mfu(normalized_recipient_key, reason="created", latest_id=notification_id)
                 _emit_notif_new_mfu(
