@@ -18,9 +18,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from flask import jsonify, request, session, url_for
+from flask import current_app, jsonify, request, session, url_for
 
-from app.external_login_user.utils import is_withdrawn_ext_user
+from app.external_login_user.utils import _event_acl_role, is_withdrawn_ext_user
 from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.utils.thumbs import enqueue_thumb_job
 from app.utils.zip_stream import read_zip_progress, start_zip_entries_job
@@ -48,6 +48,7 @@ from .routes import (
     db_get_one,
     delete_album_row,
     delete_child_row,
+    ensure_album_child_creator_schema,
     load_meta,
     request_process,
     release_lock_db,
@@ -116,6 +117,7 @@ def _current_external_user_id() -> int | None:
 
 
 def _album_context(album_id: str, *, require_view: bool = True) -> tuple[dict | None, tuple | None]:
+    ensure_album_child_creator_schema()
     meta = load_meta(album_id)
     gate = _fetch_album_meta(album_id)
     if not meta or not gate:
@@ -126,19 +128,27 @@ def _album_context(album_id: str, *, require_view: bool = True) -> tuple[dict | 
     is_owner = bool(username and username == str(meta.get("owner") or ""))
     access_mode = str(gate.get("access_mode") or "token")
     event_id = gate.get("event_id")
+    acl_role = _event_acl_role(int(event_id), username) if event_id and username else None
+    is_event_acl = bool(acl_role)
     event_member = False
 
-    if access_mode == "event" and event_id and not (is_admin or is_owner):
+    if access_mode == "event" and event_id and not (is_admin or is_owner or is_event_acl):
         event_member = _is_event_member_approved(int(event_id))
         if event_member:
             _grant_album_auth(album_id)
         else:
             _revoke_album_auth(album_id)
-    elif is_admin or is_owner:
+    elif is_admin or is_owner or is_event_acl:
         _grant_album_auth(album_id)
 
     has_session_access = _has_album_auth(album_id)
-    can_view = bool(is_admin or is_owner or event_member or (access_mode == "token" and has_session_access))
+    can_view = bool(
+        is_admin
+        or is_owner
+        or is_event_acl
+        or event_member
+        or (access_mode == "token" and has_session_access)
+    )
     if require_view and not can_view:
         error = "event_album_auth_required" if access_mode == "event" else "album_auth_required"
         return None, _error(
@@ -150,6 +160,8 @@ def _album_context(album_id: str, *, require_view: bool = True) -> tuple[dict | 
 
     if is_admin:
         role = "admin"
+    elif is_event_acl:
+        role = "event_acl"
     elif is_owner:
         role = "owner"
     elif event_member:
@@ -166,11 +178,14 @@ def _album_context(album_id: str, *, require_view: bool = True) -> tuple[dict | 
         "username": username,
         "is_admin": is_admin,
         "is_owner": is_owner,
+        "is_event_acl": is_event_acl,
+        "event_acl_role": acl_role,
+        "current_ext_user_id": _current_external_user_id(),
         "event_member": event_member,
         "can_view": can_view,
-        "can_manage": bool(is_admin or is_owner),
-        "can_upload": can_view,
-        "can_manage_processing": bool(is_admin or is_owner or event_member),
+        "can_manage": bool(is_admin or is_owner or is_event_acl),
+        "can_create_child": bool(is_admin or is_owner or is_event_acl or event_member),
+        "can_manage_processing": bool(is_admin or is_owner or is_event_acl or event_member),
         "role": role,
     }
     return ctx, None
@@ -180,7 +195,8 @@ def _permissions(ctx: dict) -> dict:
     return {
         "role": ctx["role"],
         "canView": ctx["can_view"],
-        "canUpload": ctx["can_upload"],
+        "canUpload": ctx["can_create_child"],
+        "canCreateChild": ctx["can_create_child"],
         "canRename": ctx["can_manage"],
         "canDeleteMedia": ctx["can_manage"],
         "canManageChildren": ctx["can_manage"],
@@ -188,6 +204,50 @@ def _permissions(ctx: dict) -> dict:
         "canManageProcessing": ctx["can_manage_processing"],
         "deleteRequiresPasskey": ctx["is_admin"],
     }
+
+
+def _child_permissions(ctx: dict, child: dict) -> dict:
+    creator_id = child.get("created_by_ext_user_id")
+    current_ext_user_id = ctx.get("current_ext_user_id")
+    created_by_current_user = bool(
+        creator_id is not None
+        and current_ext_user_id is not None
+        and int(creator_id) == int(current_ext_user_id)
+    )
+    creator_can_manage = bool(created_by_current_user and ctx.get("event_member"))
+    can_manage_child = bool(ctx["can_manage"] or creator_can_manage)
+    return {
+        "canView": ctx["can_view"],
+        "canDownload": ctx["can_view"],
+        "canUpload": can_manage_child,
+        "canRenameChild": can_manage_child,
+        "canDeleteMedia": can_manage_child,
+        "canDeleteChild": can_manage_child,
+        "canRenameMedia": ctx["can_manage"],
+        "createdByCurrentUser": created_by_current_user,
+        "deleteRequiresPasskey": bool(ctx["is_admin"]),
+    }
+
+
+def _require_child_permission(ctx: dict, child: dict, permission: str):
+    if not _child_permissions(ctx, child).get(permission):
+        return _error("forbidden", 403, "この子アルバムを変更する権限がありません。")
+    return None
+
+
+def _audit_child_action(action: str, ctx: dict, child: dict, **details: Any) -> None:
+    payload = {
+        "action": action,
+        "album_id": ctx.get("album_id"),
+        "child_id": child.get("folder"),
+        "actor_user": ctx.get("username") or None,
+        "actor_ext_user_id": ctx.get("current_ext_user_id"),
+        **details,
+    }
+    current_app.logger.info(
+        "ALBUM_CHILD_ACTION %s",
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+    )
 
 
 def _child(ctx: dict, child_id: str) -> dict | None:
@@ -338,9 +398,12 @@ def _child_payload(ctx: dict, child: dict) -> dict:
         "rowId": _json_value(child.get("id")),
         "name": child.get("name"),
         "mode": child.get("mode") or "normal",
+        "createdAt": _json_value(child.get("created_at")),
+        "updatedAt": _json_value(child.get("updated_at")),
         "mediaCount": len(rows),
         "mediaUnit": "本" if child.get("mode") == "movie" else "枚",
         "processing": processing,
+        "permissions": _child_permissions(ctx, child),
         "urls": {
             "view": url_for("album.view_child", album_id=ctx["album_id"], child_id=child.get("folder")),
             "upload": url_for("album.upload_child", album_id=ctx["album_id"], child_id=child.get("folder")),
@@ -381,8 +444,15 @@ def api_albums():
         )
     elif username:
         rows = db_get_all(
-            "SELECT id, album_name, owner, event_id, access_mode FROM albums WHERE owner=%s ORDER BY album_name ASC",
-            (username,),
+            """
+            SELECT DISTINCT a.id, a.album_name, a.owner, a.event_id, a.access_mode
+              FROM albums AS a
+              LEFT JOIN mfu_event_admin_acl AS acl
+                ON acl.event_id=a.event_id AND acl.username=%s
+             WHERE a.owner=%s OR acl.id IS NOT NULL
+             ORDER BY a.album_name ASC
+            """,
+            (username, username),
         )
     elif ext_user_id:
         rows = db_get_all(
@@ -505,9 +575,8 @@ def api_album_child_create(album_id: str):
     ctx, failure = _album_context(album_id)
     if failure:
         return failure
-    guard = _require_manage(ctx)
-    if guard:
-        return guard
+    if not ctx["can_create_child"]:
+        return _error("forbidden", 403, "子アルバムを作成する権限がありません。")
     payload = request.get_json(silent=True) or {}
     name = str(payload.get("name") or "").strip()
     mode = str(payload.get("mode") or "normal").lower()
@@ -517,10 +586,12 @@ def api_album_child_create(album_id: str):
         return _error("invalid_mode", 400)
     if any(str(item.get("name")) == name for item in ctx["meta"].get("children", [])):
         return _error("child_name_exists", 409)
-    child_id = add_child_row(album_id, name, mode)
+    creator_id = ctx.get("current_ext_user_id") if ctx.get("event_member") else None
+    child_id = add_child_row(album_id, name, mode, created_by_ext_user_id=creator_id)
     os.makedirs(storage_child_dir(album_id, child_id, mode), exist_ok=True)
     refreshed, _ = _album_context(album_id)
     child = _child(refreshed, child_id)
+    _audit_child_action("create", refreshed, child, name=name, mode=mode)
     return _ok(child=_child_payload(refreshed, child)), 201
 
 
@@ -529,17 +600,18 @@ def api_album_child_rename(album_id: str, child_id: str):
     ctx, failure = _album_context(album_id)
     if failure:
         return failure
-    guard = _require_manage(ctx)
-    if guard:
-        return guard
     child = _child(ctx, child_id)
     if not child:
         return _error("child_not_found", 404)
+    guard = _require_child_permission(ctx, child, "canRenameChild")
+    if guard:
+        return guard
     payload = request.get_json(silent=True) or {}
     name = str(payload.get("name") or "").strip()
     if not name:
         return _error("name_required", 400)
     db_exec("UPDATE album_children SET name=%s WHERE album_id=%s AND folder=%s", (name, album_id, child_id))
+    _audit_child_action("rename", ctx, child, before=child.get("name"), after=name)
     child = {**child, "name": name}
     return _ok(child=_child_payload(ctx, child))
 
@@ -549,21 +621,23 @@ def api_album_child_delete(album_id: str, child_id: str):
     ctx, failure = _album_context(album_id)
     if failure:
         return failure
-    guard = _require_manage(ctx)
-    if guard:
-        return guard
     child = _child(ctx, child_id)
     if not child:
         return _error("child_not_found", 404)
-    passkey = require_admin_passkey(f"album_child_delete:{album_id}:{child_id}")
-    if passkey:
-        return passkey
+    guard = _require_child_permission(ctx, child, "canDeleteChild")
+    if guard:
+        return guard
+    if ctx["is_admin"]:
+        passkey = require_admin_passkey(f"album_child_delete:{album_id}:{child_id}")
+        if passkey:
+            return passkey
     try:
         release_lock_db(album_id, child_id, username=None, force=True)
     except Exception:
         pass
     shutil.rmtree(storage_child_dir(album_id, child_id, child.get("mode")), ignore_errors=True)
     delete_child_row(album_id, child_id)
+    _audit_child_action("delete", ctx, child, name=child.get("name"))
     return _ok(deleted=True, childId=child_id)
 
 
@@ -580,7 +654,7 @@ def api_album_media(album_id: str, child_id: str):
         child=_child_payload(ctx, child),
         media=rows,
         pagination=pagination,
-        permissions=_permissions(ctx),
+        permissions=_child_permissions(ctx, child),
     )
 
 
@@ -592,8 +666,9 @@ def api_album_media_upload(album_id: str, child_id: str):
     child = _child(ctx, child_id)
     if not child:
         return _error("child_not_found", 404)
-    if not ctx["can_upload"]:
-        return _error("forbidden", 403)
+    guard = _require_child_permission(ctx, child, "canUpload")
+    if guard:
+        return guard
     if not request.files.getlist("file"):
         return _error("files_required", 400)
 
@@ -604,6 +679,7 @@ def api_album_media_upload(album_id: str, child_id: str):
     if status >= 400:
         return response
     rows = _media_rows(ctx, child)
+    _audit_child_action("upload", ctx, child, media_count=len(rows))
     return _ok(uploaded=True, mediaCount=len(rows), media=rows[-20:])
 
 
@@ -671,15 +747,16 @@ def api_album_media_delete(album_id: str, child_id: str):
     ctx, failure = _album_context(album_id)
     if failure:
         return failure
-    guard = _require_manage(ctx)
-    if guard:
-        return guard
     child = _child(ctx, child_id)
     if not child:
         return _error("child_not_found", 404)
-    passkey = require_admin_passkey(f"album_media_delete:{album_id}:{child_id}")
-    if passkey:
-        return passkey
+    guard = _require_child_permission(ctx, child, "canDeleteMedia")
+    if guard:
+        return guard
+    if ctx["is_admin"]:
+        passkey = require_admin_passkey(f"album_media_delete:{album_id}:{child_id}")
+        if passkey:
+            return passkey
     payload = request.get_json(silent=True) or {}
     names = payload.get("names") or []
     if not isinstance(names, list) or not names:
@@ -708,6 +785,8 @@ def api_album_media_delete(album_id: str, child_id: str):
             enqueue_thumb_job("album", album_id, child_id)
         except Exception:
             pass
+    if deleted:
+        _audit_child_action("delete_media", ctx, child, names=deleted)
     return _ok(deleted=deleted, missing=missing)
 
 

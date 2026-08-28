@@ -262,7 +262,14 @@ _ALLOW_UNVERIFIED_ENDPOINTS = {
     "external_login_user.verify_email_pin",
     "external_login_user.email_verify",
     "external_login_user.avatar_file",   # ★ 追加：アバター画像の配信は許可
+    "external_login_user.user_api_session",
+    "external_login_user.user_api_bootstrap",
+    "external_login_user.user_api_logout",
 }
+
+
+def _is_vue_user_api_request() -> bool:
+    return request.path.startswith("/external-login/api/vue/")
 
 def _endpoint_allowed_when_unverified(ep: str | None) -> bool:
     if not ep:
@@ -309,6 +316,8 @@ def _lock_deleted_external_user():
         for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname", "ext_after_login_next", "ext_after_verify_next"):
             session.pop(k, None)
         if request.blueprint == "external_login_user":
+            if _is_vue_user_api_request():
+                return jsonify({"ok": False, "error": "account_deleted"}), 401
             return redirect(url_for("external_login_user.index"))
     return None
 
@@ -346,6 +355,8 @@ def _lock_unverified_globally():
         # 既に専用ページにいるなら何もしない
         if request.endpoint == "external_login_user.unverified":
             return None
+        if _is_vue_user_api_request():
+            return jsonify({"ok": False, "error": "email_verification_required"}), 403
         # next で戻れるよう保持して未確認ページへ
         return redirect(url_for("external_login_user.unverified", next=request.full_path or ""))
     except Exception:
@@ -367,6 +378,9 @@ _ALLOW_PRIVACY_POLICY_ENDPOINTS = {
     "external_login_user.email_verify",
     "external_login_user.resend_verify_email",
     "external_login_user.avatar_file",
+    "external_login_user.user_api_session",
+    "external_login_user.user_api_bootstrap",
+    "external_login_user.user_api_logout",
 }
 
 
@@ -410,6 +424,8 @@ def _lock_privacy_policy_globally():
         if not _is_disallowed_ext_redirect_path(raw_next_url) and raw_next_url not in {"/external-login/", "/external-login"}:
             next_url = raw_next_url
             session["ext_after_privacy_policy_next"] = next_url
+        if _is_vue_user_api_request():
+            return jsonify({"ok": False, "error": "privacy_agreement_required"}), 403
         return redirect(url_for("external_login_user.index"))
     except Exception:
         current_app.logger.exception("privacy policy global lock failed")
@@ -425,3 +441,4 @@ from . import users  # noqa: F401
 from . import admin  # noqa: F401
 from . import admin_users  # ← 外部ログインユーザー管理ルートを有効化
 from . import notifications  # noqa: F401
+from . import user_api  # noqa: F401,E402

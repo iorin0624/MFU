@@ -27,6 +27,7 @@ from functools import wraps
 from datetime import datetime
 import subprocess
 import shlex
+import threading
 
 from mysql.connector import errors as MySQLErrors
 from app.utils.db import get_db  #
@@ -38,7 +39,82 @@ from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
 from app.utils.push import send_push
-from app.external_login_user.utils import _get_ext_user_by_social, is_withdrawn_ext_user
+from app.external_login_user.utils import _event_acl_role, _get_ext_user_by_social, is_withdrawn_ext_user
+
+
+_ALBUM_CHILD_CREATOR_SCHEMA_LOCK = threading.Lock()
+_album_child_creator_schema_ready = False
+
+
+def ensure_album_child_creator_schema() -> None:
+    """Add creator/audit columns without guessing ownership of legacy rows."""
+    global _album_child_creator_schema_ready
+    if _album_child_creator_schema_ready:
+        return
+    with _ALBUM_CHILD_CREATOR_SCHEMA_LOCK:
+        if _album_child_creator_schema_ready:
+            return
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT COLUMN_NAME
+                  FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA=DATABASE()
+                   AND TABLE_NAME='album_children'
+                   AND COLUMN_NAME IN ('created_by_ext_user_id','created_at','updated_at')
+                """
+            )
+            existing = {
+                str(row[0] if isinstance(row, tuple) else row.get("COLUMN_NAME"))
+                for row in (cur.fetchall() or [])
+            }
+            if "created_by_ext_user_id" not in existing:
+                cur.execute(
+                    "ALTER TABLE album_children "
+                    "ADD COLUMN created_by_ext_user_id BIGINT UNSIGNED NULL AFTER mode"
+                )
+            if "created_at" not in existing:
+                cur.execute(
+                    "ALTER TABLE album_children "
+                    "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                    "AFTER created_by_ext_user_id"
+                )
+            if "updated_at" not in existing:
+                cur.execute(
+                    "ALTER TABLE album_children "
+                    "ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
+                    "ON UPDATE CURRENT_TIMESTAMP AFTER created_at"
+                )
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                  FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA=DATABASE()
+                   AND TABLE_NAME='album_children'
+                   AND INDEX_NAME='idx_album_children_creator'
+                """
+            )
+            index_row = cur.fetchone()
+            index_count = int(
+                index_row[0]
+                if isinstance(index_row, tuple)
+                else next(iter(index_row.values()))
+            )
+            if index_count == 0:
+                cur.execute(
+                    "CREATE INDEX idx_album_children_creator "
+                    "ON album_children (created_by_ext_user_id, album_id)"
+                )
+            db.commit()
+            _album_child_creator_schema_ready = True
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            cur.close()
+            db.close()
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
 print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD固定保存) loaded")
@@ -667,18 +743,31 @@ def _new_token_hex() -> str:
     return secrets.token_bytes(_def_token_bytes).hex()  # 64文字 hex
 
 def load_meta(album_id: str):
+    ensure_album_child_creator_schema()
     album = db_get_one("SELECT id, album_name, owner, access_token FROM albums WHERE id=%s", (album_id,))
     if not album:
         return None
     children = db_get_all(
-        "SELECT id, name, folder, mode FROM album_children WHERE album_id=%s ORDER BY name ASC",
+        "SELECT id, name, folder, mode, created_by_ext_user_id, created_at, updated_at "
+        "FROM album_children WHERE album_id=%s ORDER BY name ASC",
         (album_id,)
     )
     return {
         "album_name": album["album_name"],
         "owner": album["owner"],
         "access_token": album["access_token"],
-        "children": [{"id": c["id"], "name": c["name"], "folder": c["folder"], "mode": c["mode"]} for c in children]
+        "children": [
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "folder": c["folder"],
+                "mode": c["mode"],
+                "created_by_ext_user_id": c.get("created_by_ext_user_id"),
+                "created_at": c.get("created_at"),
+                "updated_at": c.get("updated_at"),
+            }
+            for c in children
+        ]
     }
 
 def create_album_row(album_id: str, album_name: str, owner: str) -> str:
@@ -707,13 +796,16 @@ def list_albums_for_admin():
         "FROM albums ORDER BY album_name ASC"
     )
 
-def add_child_row(album_id: str, child_name: str, mode: str):
+def add_child_row(album_id: str, child_name: str, mode: str, created_by_ext_user_id: int | None = None):
     """mode は normal / process / movie を許可"""
+    ensure_album_child_creator_schema()
     child_uuid = str(uuid.uuid4())
     norm_mode = (mode if mode in ('normal', 'process', 'movie') else 'normal')
     db_exec(
-        "INSERT INTO album_children (id, album_id, name, folder, mode) VALUES (%s,%s,%s,%s,%s)",
-        (child_uuid, album_id, child_name, child_uuid, norm_mode)
+        "INSERT INTO album_children "
+        "(id, album_id, name, folder, mode, created_by_ext_user_id) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (child_uuid, album_id, child_name, child_uuid, norm_mode, created_by_ext_user_id)
     )
     return child_uuid
 
@@ -2923,11 +3015,15 @@ def _enforce_event_album_access():
         return
 
     user = session.get("user")
-    if user == "admin" or (user and user == meta.get("owner")):
+    event_id = meta.get("event_id")
+    if (
+        user == "admin"
+        or (user and user == meta.get("owner"))
+        or (event_id and user and _event_acl_role(int(event_id), str(user)))
+    ):
         return
 
     session["_gate_album_id"] = str(album_id)
-    event_id = meta.get("event_id")
     if event_id and _is_event_member_approved(int(event_id)):
         _grant_album_auth(str(album_id))
         return

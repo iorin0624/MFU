@@ -361,6 +361,7 @@ _CSRF_PROTECTED_PREFIXES = (
     "/layer_upload_delete/",
     "/layer_upload_list/",
     "/album/api/",
+    "/external-login/api/vue/",
 )
 _CSRF_PROTECTED_PATHS = {
     "/login",
@@ -496,7 +497,11 @@ def _log_csrf_debug(reason, **extra):
 
 
 def _is_json_error_response():
-    if request.path.startswith("/api/") or request.path.startswith("/album/api/"):
+    if (
+        request.path.startswith("/api/")
+        or request.path.startswith("/album/api/")
+        or request.path.startswith("/external-login/api/vue/")
+    ):
         return True
     if request.is_json:
         return True
