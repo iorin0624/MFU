@@ -32,6 +32,7 @@ API_PAGE_SIZE_MAX = 200
 
 
 @bp.get("/vue-preview", defaults={"vue_path": ""})
+@bp.get("/vue-preview/", defaults={"vue_path": ""})
 @bp.get("/vue-preview/<path:vue_path>")
 def user_vue_preview(vue_path: str):
     """Serve the participant Vue client without replacing legacy pages."""
