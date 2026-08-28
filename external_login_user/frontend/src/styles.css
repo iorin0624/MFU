@@ -176,7 +176,7 @@ a { color: inherit; }
 .workspace-media-card.selected { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(37,99,235,.18); }
 .workspace-media-card .media-preview { width: 100%; height: 100%; padding: 0; border: 0; cursor: zoom-in; }
 .workspace-media-card .media-preview img,
-.workspace-media-card .media-preview video { width: 100%; height: 100%; object-fit: contain; background: #e9eef5; }
+.workspace-media-card .media-preview video { position: absolute; inset: 0; display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain !important; object-position: center; background: #e9eef5; }
 .workspace-media-card .select-media { top: 7px; left: 7px; }
 .load-sentinel { height: 2px; }
 .inline-loading { margin: 14px 0 0; text-align: center; color: var(--muted); font-size: .82rem; }
@@ -186,6 +186,8 @@ a { color: inherit; }
 .album-selection-bar strong { min-width: 110px; text-align: center; font-size: .88rem; }
 .album-selection-bar .zip-action { border-color: #4f9b70; background: #67ae83; color: #fff; }
 .album-selection-bar .shortcut-action { border-color: #3776d1; background: #4e88dd; color: #fff; }
+.album-selection-bar .delete-action { border-color: #ef9a9a; color: #c62828; background: #fff8f8; }
+.mobile-child-back { display: none; margin: 0 0 11px; padding: 8px 0; border: 0; background: transparent; color: var(--blue); font-weight: 750; }
 .album-lightbox { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 52px 70px; background: rgba(6,11,20,.94); }
 .album-lightbox > img, .album-lightbox > video { max-width: 100%; max-height: calc(100vh - 105px); object-fit: contain; box-shadow: 0 12px 50px rgba(0,0,0,.35); }
 .album-lightbox button { position: absolute; z-index: 2; border: 0; color: #fff; background: rgba(0,0,0,.38); cursor: pointer; }
@@ -240,8 +242,9 @@ a { color: inherit; }
   .album-title-block p { display: grid; gap: 2px; }
   .role-chip { align-self: start; }
   .album-workspace { display: block; min-height: 0; border-radius: 14px; overflow: visible; }
-  .album-sidebar { max-height: 42vh; overflow: auto; border-right: 0; border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; }
+  .album-sidebar { min-height: 58vh; border-right: 0; border-bottom: 0; border-radius: 14px; }
   .album-media-panel { padding: 12px 8px 18px; }
+  .mobile-child-back { display: inline-flex; }
   .media-panel-header { display: grid; gap: 10px; }
   .media-panel-controls { justify-content: flex-start; }
   .media-search { flex: 1; }

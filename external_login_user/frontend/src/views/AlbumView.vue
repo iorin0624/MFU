@@ -31,8 +31,8 @@ const mediaLoading = ref(false);
 const busy = ref(false);
 const error = ref('');
 const selected = ref<string[]>([]);
-const search = ref('');
 const sort = ref<'asc' | 'desc'>('asc');
+const isMobile = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const loadSentinel = ref<HTMLElement | null>(null);
 const dialog = ref<'create' | 'rename' | null>(null);
@@ -43,7 +43,7 @@ const saving = ref(false);
 const shortcutAvailable = ref(false);
 const lightboxIndex = ref(-1);
 let observer: IntersectionObserver | null = null;
-let searchTimer = 0;
+let mobileQuery: MediaQueryList | null = null;
 
 const groups = computed<ChildGroup[]>(() => {
   const ordered = new Map<string, AlbumChild[]>();
@@ -62,6 +62,9 @@ const roleLabel = computed(() => ({
   admin: '管理者', event_acl: 'イベント管理者', owner: '所有者', event_member: '参加者', token_viewer: '閲覧者',
 }[album.value?.permissions.role || ''] || '閲覧者'));
 const visibleLightboxItem = computed(() => lightboxIndex.value >= 0 ? media.value[lightboxIndex.value] : null);
+const childRouteId = computed(() => String(route.params.childId || ''));
+const showChildList = computed(() => !isMobile.value || !childRouteId.value);
+const showMediaList = computed(() => !isMobile.value || Boolean(childRouteId.value));
 
 function childDisplayName(child: AlbumChild) {
   return String(child.name || '').replace(/^【[^】]+】\s*/, '') || child.name;
@@ -81,8 +84,8 @@ async function load() {
     const [albumResponse, childResponse] = await Promise.all([portalApi.album(albumId), portalApi.children(albumId)]);
     album.value = albumResponse.album;
     children.value = childResponse.children;
-    const requested = String(route.query.child || '');
-    const first = children.value.find((child) => child.id === requested) || children.value[0] || null;
+    const requested = childRouteId.value || String(route.query.child || '');
+    const first = children.value.find((child) => child.id === requested) || (!isMobile.value ? children.value[0] : null) || null;
     if (first) await selectChild(first, false);
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : 'アルバムを取得できませんでした。';
@@ -92,13 +95,24 @@ async function load() {
 }
 
 async function selectChild(child: AlbumChild, updateUrl = true) {
-  if (activeChild.value?.id === child.id && media.value.length) return;
+  if (activeChild.value?.id === child.id && media.value.length) {
+    if (updateUrl && isMobile.value && !childRouteId.value) {
+      await router.push({ name: 'album-child', params: { albumId, childId: child.id } });
+    }
+    return;
+  }
   activeChild.value = child;
   selected.value = [];
   media.value = [];
   pagination.value = null;
   lightboxIndex.value = -1;
-  if (updateUrl) await router.replace({ query: { ...route.query, child: child.id } });
+  if (updateUrl) {
+    if (isMobile.value) {
+      await router.push({ name: 'album-child', params: { albumId, childId: child.id } });
+    } else {
+      await router.replace({ query: { ...route.query, child: child.id } });
+    }
+  }
   await loadMedia(1, false);
 }
 
@@ -108,7 +122,7 @@ async function loadMedia(page = 1, append = false) {
   error.value = '';
   try {
     const childId = activeChild.value.id;
-    const response = await portalApi.media(albumId, childId, page, sort.value, search.value);
+    const response = await portalApi.media(albumId, childId, page, sort.value);
     if (activeChild.value?.id !== childId) return;
     activeChild.value = response.child;
     media.value = append ? [...media.value, ...response.media] : response.media;
@@ -197,7 +211,8 @@ async function deleteChild(child: AlbumChild) {
     if (activeChild.value?.id === child.id) {
       activeChild.value = null;
       media.value = [];
-      if (children.value[0]) await selectChild(children.value[0]);
+      if (isMobile.value) await router.replace({ name: 'album', params: { albumId } });
+      else if (children.value[0]) await selectChild(children.value[0]);
     }
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '削除できませんでした。';
@@ -276,13 +291,34 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'ArrowRight') moveViewer(1);
 }
 
-watch([sort, search], () => {
-  window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(() => void loadMedia(1, false), 260);
+function backToEvent() {
+  const uuid = album.value?.event?.event_uuid;
+  if (uuid) void router.push({ name: 'event', params: { uuid } });
+  else void router.push({ name: 'events' });
+}
+
+function backToChildren() {
+  void router.push({ name: 'album', params: { albumId } });
+}
+
+function updateMobileLayout(event?: MediaQueryListEvent) {
+  const wasMobile = isMobile.value;
+  isMobile.value = event?.matches ?? mobileQuery?.matches ?? false;
+  if (wasMobile && !isMobile.value && !activeChild.value && children.value[0]) void selectChild(children.value[0]);
+}
+
+watch(sort, () => void loadMedia(1, false));
+watch(childRouteId, (childId) => {
+  if (!childId || !isMobile.value) return;
+  const child = children.value.find((item) => item.id === childId);
+  if (child && activeChild.value?.id !== child.id) void selectChild(child, false);
 });
 
 onMounted(async () => {
   document.addEventListener('keydown', onKeydown);
+  mobileQuery = window.matchMedia('(max-width: 560px)');
+  updateMobileLayout();
+  mobileQuery.addEventListener('change', updateMobileLayout);
   await load();
   const shortcut = window.MFUShortcutDownload;
   if (shortcut?.isIOSDevice()) {
@@ -293,7 +329,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   observer?.disconnect();
   document.removeEventListener('keydown', onKeydown);
-  window.clearTimeout(searchTimer);
+  mobileQuery?.removeEventListener('change', updateMobileLayout);
 });
 </script>
 
@@ -302,7 +338,7 @@ onBeforeUnmount(() => {
   <div v-else-if="error && !album" class="alert error">{{ error }}</div>
   <template v-else-if="album">
     <header class="album-workspace-header">
-      <button type="button" class="back-link" @click="router.back()">← アルバム一覧</button>
+      <button type="button" class="back-link" @click="backToEvent">← イベント詳細</button>
       <div class="album-title-block">
         <h1>{{ album.name }}</h1>
         <p v-if="album.event">
@@ -317,7 +353,7 @@ onBeforeUnmount(() => {
     <div v-if="error" class="alert error compact-alert">{{ error }}</div>
 
     <div class="album-workspace">
-      <aside class="album-sidebar" aria-label="子アルバム">
+      <aside v-show="showChildList" class="album-sidebar" aria-label="子アルバム">
         <div class="sidebar-title"><strong>子アルバム</strong><span>{{ children.length }}</span></div>
         <EmptyState v-if="!children.length" icon="📂" title="まだありません" text="" />
         <details v-for="group in groups" v-else :key="group.label" class="folder-group" open>
@@ -339,13 +375,13 @@ onBeforeUnmount(() => {
         <button v-if="album.permissions.canCreateChild" type="button" class="sidebar-add" @click="openCreate">＋ 追加</button>
       </aside>
 
-      <main class="album-media-panel">
+      <main v-show="showMediaList" class="album-media-panel">
         <template v-if="activeChild">
+          <button v-if="isMobile" type="button" class="mobile-child-back" @click="backToChildren">← 子アルバム一覧</button>
           <div class="media-panel-header">
             <div><h2>{{ childDisplayName(activeChild) }}</h2><span>{{ total }}{{ activeChild.mediaUnit }}</span></div>
             <div class="media-panel-controls">
-              <label class="media-search">🔍<input v-model="search" type="search" placeholder="写真を検索"></label>
-              <select v-model="sort" aria-label="並び順"><option value="asc">名前順</option><option value="desc">名前順（降順）</option></select>
+              <select v-model="sort" aria-label="並び順"><option value="asc">撮影順</option><option value="desc">撮影降順</option></select>
               <label v-if="activeChild.permissions.canUpload" class="button primary compact upload-button">
                 ＋ 追加
                 <input ref="fileInput" type="file" multiple :accept="activeChild.mode === 'movie' ? 'video/*' : 'image/*'" :disabled="busy" @change="upload(($event.target as HTMLInputElement).files)">
@@ -375,13 +411,13 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <div v-if="activeChild && media.length" class="album-selection-bar">
+    <div v-if="activeChild && media.length && showMediaList" class="album-selection-bar">
       <button type="button" @click="selectAll">全選択</button>
       <button type="button" @click="clearSelection">全解除</button>
       <strong>{{ selectedCountLabel }}</strong>
       <button type="button" class="zip-action" :disabled="!selected.length || busy" @click="downloadZip">{{ busy ? '処理中…' : 'ZIPでDL' }}</button>
       <button v-if="shortcutAvailable" type="button" class="shortcut-action" :disabled="!selected.length || busy" @click="downloadShortcut">SCでDL</button>
-      <button v-if="activeChild.permissions.canDeleteMedia" type="button" :disabled="!selected.length || busy" @click="removeSelected">その他</button>
+      <button v-if="activeChild.permissions.canDeleteMedia" type="button" class="delete-action" :disabled="!selected.length || busy" @click="removeSelected">削除</button>
     </div>
   </template>
 
