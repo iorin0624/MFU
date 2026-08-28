@@ -145,6 +145,8 @@ export interface MediaItem {
   kind: 'image' | 'video';
   size: number;
   modifiedAt?: string;
+  capturedAt?: string | null;
+  sortSource?: 'exif' | 'filename';
   viewUrl: string;
   downloadUrl: string;
   thumbnailUrl?: string | null;

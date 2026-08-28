@@ -9,6 +9,7 @@ authorization model.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import current_app, jsonify, request, session, url_for
+from PIL import Image
 
 from app.external_login_user.utils import _event_acl_role, is_withdrawn_ext_user
 from app.utils.admin_passkey_stepup import require_admin_passkey
@@ -310,7 +312,88 @@ def _processing_payload(ctx: dict, child: dict) -> dict:
     }
 
 
-def _media_rows(ctx: dict, child: dict) -> list[dict]:
+_CAPTURE_CACHE_NAME = ".capture-times.json"
+_EXIF_DATETIME_TAGS = (36867, 36868, 306)  # DateTimeOriginal, DateTimeDigitized, DateTime
+
+
+def _natural_name_key(value: str) -> tuple:
+    return tuple(int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", value))
+
+
+def _parse_exif_datetime(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    text = str(value or "").strip(" \x00")
+    for pattern in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], pattern).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _image_capture_times(base: Path, paths: list[Path]) -> dict[str, str | None]:
+    """Read EXIF once and retain the result in the server-side media cache."""
+    cache_dir = Path(current_app.config.get("ALBUM_CAPTURE_CACHE_DIR") or "/mnt/mfu/tmp/album_capture_times")
+    cache_key = hashlib.sha256(str(base.resolve()).encode("utf-8")).hexdigest()
+    cache_path = cache_dir / f"{cache_key}-{_CAPTURE_CACHE_NAME}"
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.is_file() else {}
+    except (OSError, ValueError, TypeError):
+        cached = {}
+
+    changed = False
+    result: dict[str, str | None] = {}
+    live_names = {path.name for path in paths}
+    for name in list(cached):
+        if name not in live_names:
+            cached.pop(name, None)
+            changed = True
+
+    for path in paths:
+        try:
+            stat = path.stat()
+            signature = f"{stat.st_size}:{stat.st_mtime_ns}"
+        except OSError:
+            continue
+        entry = cached.get(path.name)
+        if isinstance(entry, dict) and entry.get("signature") == signature:
+            result[path.name] = entry.get("capturedAt") or None
+            continue
+        captured_at = None
+        try:
+            with Image.open(path) as image:
+                exif = image.getexif()
+                exif_sets = [exif]
+                try:
+                    exif_sets.insert(0, exif.get_ifd(34665))  # ExifIFD
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    pass
+                for values in exif_sets:
+                    for tag in _EXIF_DATETIME_TAGS:
+                        captured_at = _parse_exif_datetime(values.get(tag))
+                        if captured_at:
+                            break
+                    if captured_at:
+                        break
+        except (OSError, ValueError, TypeError):
+            pass
+        cached[path.name] = {"signature": signature, "capturedAt": captured_at}
+        result[path.name] = captured_at
+        changed = True
+
+    if changed:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(cached, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            temporary.replace(cache_path)
+        except OSError:
+            current_app.logger.warning("album capture-time cache could not be written: %s", cache_path)
+    return result
+
+
+def _media_rows(ctx: dict, child: dict, *, include_capture_times: bool = False) -> list[dict]:
     album_id = ctx["album_id"]
     child_id = str(child["folder"])
     mode = str(child.get("mode") or "normal")
@@ -343,6 +426,7 @@ def _media_rows(ctx: dict, child: dict) -> list[dict]:
                 })
     else:
         base = Path(storage_child_dir(album_id, child_id, mode))
+        image_paths: list[Path] = []
         if base.is_dir():
             for path in base.iterdir():
                 if not path.is_file() or not allowed_file(path.name):
@@ -351,6 +435,7 @@ def _media_rows(ctx: dict, child: dict) -> list[dict]:
                     continue
                 if mode != "process" and path.name.startswith("latest."):
                     continue
+                image_paths.append(path)
                 rows.append({
                     "id": path.name,
                     "name": path.name,
@@ -361,7 +446,12 @@ def _media_rows(ctx: dict, child: dict) -> list[dict]:
                     "downloadUrl": url_for("album.image", album_id=album_id, child_id=child_id, filename=path.name, download=1),
                     "thumbnailUrl": resolve_thumb_url(album_id, child_id, path.name),
                 })
-    rows.sort(key=lambda row: (str(row.get("name") or "").casefold(), str(row.get("name") or "")))
+        if include_capture_times and image_paths:
+            capture_times = _image_capture_times(base, image_paths)
+            for row in rows:
+                row["capturedAt"] = capture_times.get(str(row.get("name") or ""))
+                row["sortSource"] = "exif" if row["capturedAt"] else "filename"
+    rows.sort(key=lambda row: _natural_name_key(str(row.get("name") or "")))
     return rows
 
 
@@ -377,8 +467,15 @@ def _paginate(rows: list[dict]) -> tuple[list[dict], dict]:
         per_page = min(API_MAX_PAGE_SIZE, max(1, int(request.args.get("perPage", 100))))
     except (TypeError, ValueError):
         per_page = 100
-    if str(request.args.get("sort") or "asc").lower() == "desc":
-        rows = list(reversed(rows))
+    descending = str(request.args.get("sort") or "asc").lower() in {"desc", "captured_desc"}
+    captured = [row for row in rows if row.get("capturedAt")]
+    unnamed = [row for row in rows if not row.get("capturedAt")]
+    captured.sort(
+        key=lambda row: (str(row.get("capturedAt")), _natural_name_key(str(row.get("name") or ""))),
+        reverse=descending,
+    )
+    unnamed.sort(key=lambda row: _natural_name_key(str(row.get("name") or "")), reverse=descending)
+    rows = captured + unnamed
     total = len(rows)
     pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, pages)
@@ -652,7 +749,7 @@ def api_album_media(album_id: str, child_id: str):
     child = _child(ctx, child_id)
     if not child:
         return _error("child_not_found", 404)
-    rows, pagination = _paginate(_media_rows(ctx, child))
+    rows, pagination = _paginate(_media_rows(ctx, child, include_capture_times=True))
     return _ok(
         child=_child_payload(ctx, child),
         media=rows,

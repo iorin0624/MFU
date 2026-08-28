@@ -13,7 +13,8 @@ export const router = createRouter({
     { path: '/albums/:albumId', name: 'album', component: AlbumView },
     {
       path: '/albums/:albumId/children/:childId',
-      redirect: (to) => ({ path: `/albums/${String(to.params.albumId)}`, query: { child: String(to.params.childId) } }),
+      name: 'album-child',
+      component: AlbumView,
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
