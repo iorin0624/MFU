@@ -14,12 +14,13 @@ import os
 import re
 import secrets
 import shutil
+import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from flask import current_app, jsonify, request, session, url_for
+from flask import current_app, jsonify, request, send_file, session, url_for
 from PIL import Image
 
 from app.external_login_user.utils import _event_acl_role, is_withdrawn_ext_user
@@ -45,6 +46,7 @@ from .routes import (
     album_bp,
     allowed_file,
     allowed_movie,
+    find_latest_filename,
     db_exec,
     db_get_all,
     db_get_one,
@@ -56,8 +58,10 @@ from .routes import (
     release_lock_db,
     resolve_thumb_url,
     storage_child_dir,
+    try_acquire_lock_db,
     update_process_status,
     upload_child,
+    LOCK_TTL_SEC,
 )
 
 
@@ -218,10 +222,11 @@ def _child_permissions(ctx: dict, child: dict) -> dict:
     )
     creator_can_manage = bool(created_by_current_user and ctx.get("event_member"))
     can_manage_child = bool(ctx["can_manage"] or creator_can_manage)
+    process_upload = bool(child.get("mode") == "process" and ctx.get("can_manage_processing"))
     return {
         "canView": ctx["can_view"],
         "canDownload": ctx["can_view"],
-        "canUpload": can_manage_child,
+        "canUpload": bool(can_manage_child or process_upload),
         "canRenameChild": can_manage_child,
         "canDeleteMedia": can_manage_child,
         "canDeleteChild": can_manage_child,
@@ -266,7 +271,14 @@ def _lock_payload(album_id: str, child_id: str) -> dict | None:
     )
     if not row:
         return None
-    return {key: _json_value(value) for key, value in row.items()}
+    payload = {key: _json_value(value) for key, value in row.items()}
+    expires_at = row.get("expires_at")
+    remaining = None
+    if isinstance(expires_at, datetime):
+        remaining = max(0, int((expires_at - datetime.now(expires_at.tzinfo)).total_seconds()))
+    payload["remainingSeconds"] = remaining
+    payload["expired"] = remaining == 0 if remaining is not None else False
+    return payload
 
 
 def _processing_payload(ctx: dict, child: dict) -> dict:
@@ -301,14 +313,24 @@ def _processing_payload(ctx: dict, child: dict) -> dict:
 
     current_id = _current_external_user_id()
     current = next((member for member in members if int(member.get("user_id") or 0) == current_id), None)
+    requested_members = [member for member in members if member.get("requestFlag")]
+    completed = bool(requested_members) and all(member.get("completeFlag") for member in requested_members)
+    lock = _lock_payload(album_id, child_id)
+    current_username = _get_ext_user_nickname() or ctx.get("username") or None
+    lock_user = str((lock or {}).get("username") or "")
+    current_holds_lock = bool(lock_user and current_username and lock_user == current_username)
     return {
         "mode": child.get("mode") or "normal",
-        "lock": _lock_payload(album_id, child_id),
+        "lock": lock,
         "history": history,
         "members": members,
         "currentExternalUserId": current_id,
         "currentUserStatus": current,
-        "workerName": _get_ext_user_nickname() or ctx.get("username") or None,
+        "workerName": current_username,
+        "currentUserHoldsLock": current_holds_lock,
+        "canUnlock": bool(current_holds_lock or ctx["can_manage"]),
+        "canForceUnlock": bool(ctx["is_admin"]),
+        "completed": completed,
     }
 
 
@@ -769,6 +791,10 @@ def api_album_media_upload(album_id: str, child_id: str):
     guard = _require_child_permission(ctx, child, "canUpload")
     if guard:
         return guard
+    if child.get("mode") == "process" and _media_rows(ctx, child):
+        processing = _processing_payload(ctx, child)
+        if not processing.get("currentUserHoldsLock"):
+            return _error("processing_lock_required", 409, "加工済み画像のアップロードには加工ロックが必要です。")
     if not request.files.getlist("file"):
         return _error("files_required", 400)
 
@@ -901,6 +927,94 @@ def api_album_processing(album_id: str, child_id: str):
     return _ok(processing=_processing_payload(ctx, child), permissions=_permissions(ctx))
 
 
+@album_bp.post("/api/albums/<album_id>/children/<child_id>/processing/begin")
+def api_album_processing_begin(album_id: str, child_id: str):
+    ctx, failure = _album_context(album_id)
+    if failure:
+        return failure
+    child = _child(ctx, child_id)
+    if not child or child.get("mode") != "process":
+        return _error("process_child_required", 400, "加工用の子アルバムではありません。")
+    filename = find_latest_filename(album_id, child_id)
+    if not filename:
+        return _error("latest_media_not_found", 404, "加工用画像がありません。")
+    username = str(_get_ext_user_nickname() or ctx.get("username") or "").strip() or "不明"
+    ok, message = try_acquire_lock_db(album_id, child_id, username, ttl_sec=LOCK_TTL_SEC)
+    if not ok:
+        return _error("processing_locked", 409, str(message))
+    lock_path = Path(storage_child_dir(album_id, child_id, "process")) / "lock.json"
+    try:
+        lock_path.write_text(
+            json.dumps({"user": username, "timestamp": int(time.time())}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        current_app.logger.warning("processing lock sidecar could not be written: %s", lock_path)
+    return _ok(
+        message=f"{username} さんとして加工を開始しました。",
+        downloadUrl=url_for(
+            "album.api_album_processing_latest",
+            album_id=album_id,
+            child_id=child_id,
+        ),
+        processing=_processing_payload(ctx, child),
+    )
+
+
+@album_bp.get("/api/albums/<album_id>/children/<child_id>/processing/latest")
+def api_album_processing_latest(album_id: str, child_id: str):
+    ctx, failure = _album_context(album_id)
+    if failure:
+        return failure
+    child = _child(ctx, child_id)
+    if not child or child.get("mode") != "process":
+        return _error("process_child_required", 400)
+    processing = _processing_payload(ctx, child)
+    if not (processing.get("currentUserHoldsLock") or ctx["can_manage"]):
+        return _error("processing_lock_required", 409, "先に加工ロックを取得してください。")
+    filename = find_latest_filename(album_id, child_id)
+    path = _media_path(child, album_id, child_id, filename) if filename else None
+    if not path:
+        return _error("latest_media_not_found", 404, "加工用画像がありません。")
+    return send_file(path, as_attachment=True, download_name=path.name, conditional=True)
+
+
+def _remove_processing_lock(album_id: str, child_id: str, child: dict, *, force: bool, username: str | None) -> None:
+    release_lock_db(album_id, child_id, username=username, force=force)
+    lock_path = Path(storage_child_dir(album_id, child_id, child.get("mode"))) / "lock.json"
+    lock_path.unlink(missing_ok=True)
+
+
+@album_bp.post("/api/albums/<album_id>/children/<child_id>/processing/unlock")
+def api_album_processing_unlock(album_id: str, child_id: str):
+    ctx, failure = _album_context(album_id)
+    if failure:
+        return failure
+    child = _child(ctx, child_id)
+    if not child or child.get("mode") != "process":
+        return _error("process_child_required", 400)
+    processing = _processing_payload(ctx, child)
+    if not processing.get("canUnlock"):
+        return _error("forbidden", 403, "この加工ロックを解除できません。")
+    username = str(processing.get("workerName") or "").strip() or None
+    _remove_processing_lock(album_id, child_id, child, force=bool(ctx["can_manage"]), username=username)
+    return _ok(unlocked=True, processing=_processing_payload(ctx, child))
+
+
+@album_bp.post("/api/albums/<album_id>/children/<child_id>/processing/force-unlock")
+def api_album_processing_force_unlock(album_id: str, child_id: str):
+    ctx, failure = _album_context(album_id)
+    if failure:
+        return failure
+    if not ctx["is_admin"]:
+        return _error("forbidden", 403)
+    child = _child(ctx, child_id)
+    if not child or child.get("mode") != "process":
+        return _error("process_child_required", 400)
+    _remove_processing_lock(album_id, child_id, child, force=True, username=None)
+    return _ok(unlocked=True, processing=_processing_payload(ctx, child))
+
+
 @album_bp.put("/api/albums/<album_id>/children/<child_id>/processing/requests")
 def api_album_processing_requests(album_id: str, child_id: str):
     ctx, failure = _album_context(album_id)
@@ -936,6 +1050,10 @@ def api_album_processing_member(album_id: str, child_id: str, ext_user_id: int):
     if not ctx["can_manage"] and current_ext_user_id != ext_user_id:
         return _error("forbidden", 403, "参加者は自分の加工状態だけを変更できます。")
     payload = dict(request.get_json(silent=True) or {})
+    if payload.get("complete_flag") and current_ext_user_id == ext_user_id and not ctx["can_manage"]:
+        processing = _processing_payload(ctx, child)
+        if not processing.get("currentUserHoldsLock"):
+            return _error("processing_lock_required", 409, "加工完了には加工ロックが必要です。")
     payload["ext_user_id"] = ext_user_id
     # Reuse the existing notification/lock workflow with a normalized payload.
     return update_process_status(album_id, child_id, payload)

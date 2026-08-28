@@ -124,7 +124,46 @@ export interface AlbumChild {
   mediaCount: number;
   mediaUnit: string;
   permissions: ChildPermissions;
+  processing?: ProcessingState | null;
   urls: { view: string; upload: string };
+}
+
+export interface ProcessingMember {
+  user_id: number;
+  nickname?: string | null;
+  email?: string | null;
+  process?: number | boolean;
+  requestFlag: boolean;
+  completeFlag: boolean;
+  updatedAt?: string | null;
+}
+
+export interface ProcessingLock {
+  username: string;
+  acquired_at?: string | null;
+  expires_at?: string | null;
+  remainingSeconds?: number | null;
+  expired?: boolean;
+}
+
+export interface ProcessingHistoryItem {
+  user?: string | null;
+  timestamp?: number | null;
+  datetime?: string | null;
+}
+
+export interface ProcessingState {
+  mode: 'process';
+  lock?: ProcessingLock | null;
+  history: ProcessingHistoryItem[];
+  members: ProcessingMember[];
+  currentExternalUserId?: number | null;
+  currentUserStatus?: ProcessingMember | null;
+  workerName?: string | null;
+  currentUserHoldsLock: boolean;
+  canUnlock: boolean;
+  canForceUnlock: boolean;
+  completed: boolean;
 }
 
 export interface AlbumItem {
