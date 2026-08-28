@@ -366,6 +366,9 @@ def _media_rows(ctx: dict, child: dict) -> list[dict]:
 
 
 def _paginate(rows: list[dict]) -> tuple[list[dict], dict]:
+    search = str(request.args.get("search") or "").strip().casefold()
+    if search:
+        rows = [row for row in rows if search in str(row.get("name") or "").casefold()]
     try:
         page = max(1, int(request.args.get("page", 1)))
     except (TypeError, ValueError):

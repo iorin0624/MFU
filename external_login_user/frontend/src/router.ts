@@ -3,7 +3,6 @@ import { runtimeConfig } from '@/config';
 import EventListView from '@/views/EventListView.vue';
 import EventDetailView from '@/views/EventDetailView.vue';
 import AlbumView from '@/views/AlbumView.vue';
-import ChildAlbumView from '@/views/ChildAlbumView.vue';
 
 export const router = createRouter({
   history: createWebHistory(runtimeConfig.basePath.replace(/\/$/, '')),
@@ -12,7 +11,10 @@ export const router = createRouter({
     { path: '/', name: 'events', component: EventListView },
     { path: '/events/:uuid', name: 'event', component: EventDetailView },
     { path: '/albums/:albumId', name: 'album', component: AlbumView },
-    { path: '/albums/:albumId/children/:childId', name: 'child-album', component: ChildAlbumView },
+    {
+      path: '/albums/:albumId/children/:childId',
+      redirect: (to) => ({ path: `/albums/${String(to.params.albumId)}`, query: { child: String(to.params.childId) } }),
+    },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 });
