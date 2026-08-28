@@ -44,6 +44,7 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         for relative in (
             "views/EventListView.vue",
             "views/EventDetailView.vue",
+            "views/EventPassView.vue",
             "views/AlbumView.vue",
             "views/ChildAlbumView.vue",
             "components/AppHeader.vue",
@@ -57,6 +58,7 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             '"/api/vue/bootstrap"',
             '"/api/vue/events"',
             '"/api/vue/events/<event_uuid>"',
+            '"/api/vue/events/<event_uuid>/pass"',
             '"/api/vue/events/<event_uuid>/members"',
             '"/api/vue/events/<event_uuid>/my-role"',
             '"/api/vue/logout"',
@@ -80,6 +82,22 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertIn('membership.get("is_canceled")', source)
         self.assertIn('"canOpenAlbum"', source)
         self.assertIn('"canOpenChat"', source)
+        self.assertIn('"canOpenPass"', source)
+
+    def test_vue_participant_pass_rechecks_external_approved_membership(self):
+        source = function_source(API_PATH, "user_api_event_pass")
+        self.assertIn('actor.get("kind") != "external"', source)
+        self.assertIn('_latest_membership', source)
+        self.assertIn('membership.get("status")', source)
+        self.assertIn('membership.get("is_canceled")', source)
+        self.assertIn('"venue_qr" if checked_in else None', source)
+
+    def test_vue_participant_pass_does_not_generate_a_pass_qr_code(self):
+        source = function_source(API_PATH, "user_api_event_pass")
+        component = (VUE_FRONTEND_PATH / "views" / "EventPassView.vue").read_text(encoding="utf-8-sig")
+        self.assertNotIn("qrcode", source.lower())
+        self.assertNotIn("qr-code", component.lower())
+        self.assertIn("会場に掲示されたQRコード", component)
 
     def test_vue_mutations_are_csrf_protected_and_json(self):
         source = APP_PATH.read_text(encoding="utf-8-sig")

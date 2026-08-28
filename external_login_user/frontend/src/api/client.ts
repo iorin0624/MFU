@@ -6,6 +6,7 @@ import type {
   EventItem,
   MediaItem,
   Pagination,
+  ParticipantPass,
   ProcessingState,
   PortalSession,
   ShortcutDownloadJob,
@@ -71,6 +72,9 @@ export const portalApi = {
     `${runtimeConfig.eventsUrl}?scope=${encoded(scope)}&page=${page}&perPage=50`,
   ),
   event: (uuid: string) => requestJson<{ok: true; event: EventItem}>(`${runtimeConfig.eventsUrl}/${encoded(uuid)}`),
+  participantPass: (uuid: string) => requestJson<{ok: true; participantPass: ParticipantPass}>(
+    `${runtimeConfig.eventsUrl}/${encoded(uuid)}/pass`,
+  ),
   logout: () => requestJson<{ok: true; loggedOut: boolean}>(`${runtimeConfig.bootstrapUrl.replace(/\/bootstrap$/, '/logout')}`, { method: 'POST' }),
   album: (albumId: string) => requestJson<{ok: true; album: AlbumItem}>(`${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}`),
   renameAlbum: (albumId: string, name: string) => requestJson<{ok: true; album: Pick<AlbumItem, 'id' | 'name'>}>(
