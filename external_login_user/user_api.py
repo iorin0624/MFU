@@ -11,7 +11,7 @@ import secrets
 from datetime import date, datetime
 from typing import Any
 
-from flask import current_app, jsonify, request, session, url_for
+from flask import current_app, jsonify, render_template, request, session, url_for
 
 from app.utils.db import get_db
 
@@ -29,6 +29,22 @@ from .utils import (
 
 
 API_PAGE_SIZE_MAX = 200
+
+
+@bp.get("/vue-preview", defaults={"vue_path": ""})
+@bp.get("/vue-preview/<path:vue_path>")
+def user_vue_preview(vue_path: str):
+    """Serve the participant Vue client without replacing legacy pages."""
+    return render_template(
+        "external_login_vue.html",
+        event_vue_config={
+            "basePath": url_for("external_login_user.user_vue_preview"),
+            "bootstrapUrl": url_for("external_login_user.user_api_bootstrap"),
+            "eventsUrl": url_for("external_login_user.user_api_events"),
+            "albumApiBase": "/album/api",
+            "loginUrl": url_for("external_login_user.index"),
+        },
+    )
 
 
 def _value(value: Any):
