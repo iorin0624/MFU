@@ -1,11 +1,13 @@
 import type {
   AlbumChild,
   AlbumItem,
+  AlbumDownloadJob,
   ApiFailure,
   EventItem,
   MediaItem,
   Pagination,
   PortalSession,
+  ShortcutDownloadJob,
 } from '@/types';
 import { runtimeConfig } from '@/config';
 
@@ -81,9 +83,9 @@ export const portalApi = {
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}`,
     { method: 'DELETE' },
   ),
-  media: (albumId: string, childId: string, page = 1) => requestJson<{
+  media: (albumId: string, childId: string, page = 1, sort = 'asc', search = '') => requestJson<{
     ok: true; child: AlbumChild; media: MediaItem[]; pagination: Pagination; permissions: AlbumChild['permissions'];
-  }>(`${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/media?page=${page}&perPage=100`),
+  }>(`${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/media?page=${page}&perPage=100&sort=${encoded(sort)}&search=${encoded(search)}`),
   uploadMedia: (albumId: string, childId: string, files: File[]) => {
     const form = new FormData();
     files.forEach((file) => form.append('file', file, file.name));
@@ -95,5 +97,16 @@ export const portalApi = {
   deleteMedia: (albumId: string, childId: string, names: string[]) => requestJson<{ok: true; deleted: string[]; missing: string[]}>(
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/media`,
     { method: 'DELETE', body: JSON.stringify({ names }) },
+  ),
+  createAlbumDownload: (albumId: string, childId: string, names: string[]) => requestJson<{ok: true; job: AlbumDownloadJob}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/download-jobs`,
+    { method: 'POST', body: JSON.stringify({ childId, names }) },
+  ),
+  albumDownloadStatus: (albumId: string, jobId: string) => requestJson<{ok: true; job: AlbumDownloadJob}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/download-jobs/${encoded(jobId)}`,
+  ),
+  createShortcutDownload: (albumId: string, childId: string, filenames: string[]) => requestJson<ShortcutDownloadJob>(
+    '/mobile-download/api/jobs',
+    { method: 'POST', body: JSON.stringify({ source_type: 'album', album_id: albumId, child_id: childId, filenames }) },
   ),
 };

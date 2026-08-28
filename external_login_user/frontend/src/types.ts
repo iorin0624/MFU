@@ -133,7 +133,7 @@ export interface AlbumItem {
   owner?: string;
   accessMode: string;
   eventId?: number | null;
-  event?: { id: number; title: string; startsAt?: string | null } | null;
+  event?: { id: number; event_uuid?: string; title: string; starts_at?: string | null; place_name?: string | null } | null;
   permissions: AlbumPermissions;
   childrenUrl: string;
   accessUrl: string;
@@ -166,4 +166,21 @@ export interface ApiFailure {
   error?: string;
   message?: string;
   joinUrl?: string;
+}
+
+export interface AlbumDownloadJob {
+  id: string;
+  status: string;
+  progressUrl?: string;
+  downloadUrl?: string | null;
+  progress?: number;
+  error?: string;
+}
+
+export interface ShortcutDownloadJob {
+  ok: true;
+  job_id: number;
+  count: number;
+  shortcut_url: string;
+  shortcut_status_url: string;
 }
