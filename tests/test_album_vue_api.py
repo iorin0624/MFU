@@ -30,6 +30,10 @@ class AlbumVueApiSourceTests(unittest.TestCase):
             '"/api/albums/<album_id>/children"',
             '"/api/albums/<album_id>/children/<child_id>/media"',
             '"/api/albums/<album_id>/children/<child_id>/processing"',
+            '"/api/albums/<album_id>/children/<child_id>/processing/begin"',
+            '"/api/albums/<album_id>/children/<child_id>/processing/latest"',
+            '"/api/albums/<album_id>/children/<child_id>/processing/unlock"',
+            '"/api/albums/<album_id>/children/<child_id>/processing/force-unlock"',
             '"/api/albums/<album_id>/download-jobs"',
         )
         for route in expected:
@@ -91,6 +95,29 @@ class AlbumVueApiSourceTests(unittest.TestCase):
         source = function_source(API_PATH, "api_album_media_rename")
         self.assertIn('child.get("mode") == "process"', source)
         self.assertIn("process_media_rename_not_allowed", source)
+
+    def test_process_replacement_upload_requires_current_lock_holder(self):
+        source = function_source(API_PATH, "api_album_media_upload")
+        self.assertIn('child.get("mode") == "process"', source)
+        self.assertIn("currentUserHoldsLock", source)
+        self.assertIn("processing_lock_required", source)
+
+    def test_processing_begin_reuses_lock_and_latest_media_helpers(self):
+        source = function_source(API_PATH, "api_album_processing_begin")
+        self.assertIn("find_latest_filename", source)
+        self.assertIn("try_acquire_lock_db", source)
+        self.assertIn("LOCK_TTL_SEC", source)
+
+    def test_processing_latest_requires_lock_or_album_manager(self):
+        source = function_source(API_PATH, "api_album_processing_latest")
+        self.assertIn("currentUserHoldsLock", source)
+        self.assertIn('ctx["can_manage"]', source)
+
+    def test_processing_unlock_and_force_unlock_have_distinct_permissions(self):
+        normal = function_source(API_PATH, "api_album_processing_unlock")
+        force = function_source(API_PATH, "api_album_processing_force_unlock")
+        self.assertIn("canUnlock", normal)
+        self.assertIn('ctx["is_admin"]', force)
 
     def test_withdrawn_users_are_hidden_from_processing_history(self):
         source = function_source(API_PATH, "_processing_payload")

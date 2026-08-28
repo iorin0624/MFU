@@ -6,6 +6,7 @@ import type {
   EventItem,
   MediaItem,
   Pagination,
+  ProcessingState,
   PortalSession,
   ShortcutDownloadJob,
 } from '@/types';
@@ -25,6 +26,10 @@ export class ApiError extends Error {
 
 export function setCsrfToken(value: string): void {
   csrfToken = value || '';
+}
+
+function passkeyHeader(token?: string): HeadersInit | undefined {
+  return token ? { 'X-MFU-Admin-Passkey': token } : undefined;
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -68,6 +73,14 @@ export const portalApi = {
   event: (uuid: string) => requestJson<{ok: true; event: EventItem}>(`${runtimeConfig.eventsUrl}/${encoded(uuid)}`),
   logout: () => requestJson<{ok: true; loggedOut: boolean}>(`${runtimeConfig.bootstrapUrl.replace(/\/bootstrap$/, '/logout')}`, { method: 'POST' }),
   album: (albumId: string) => requestJson<{ok: true; album: AlbumItem}>(`${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}`),
+  renameAlbum: (albumId: string, name: string) => requestJson<{ok: true; album: Pick<AlbumItem, 'id' | 'name'>}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}`,
+    { method: 'PATCH', body: JSON.stringify({ name }) },
+  ),
+  deleteAlbum: (albumId: string, passkeyToken?: string) => requestJson<{ok: true; deleted: boolean}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}`,
+    { method: 'DELETE', headers: passkeyHeader(passkeyToken) },
+  ),
   children: (albumId: string) => requestJson<{ok: true; children: AlbumChild[]; permissions: AlbumItem['permissions']}>(
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children`,
   ),
@@ -79,9 +92,9 @@ export const portalApi = {
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}`,
     { method: 'PATCH', body: JSON.stringify({ name }) },
   ),
-  deleteChild: (albumId: string, childId: string) => requestJson<{ok: true; deleted: boolean}>(
+  deleteChild: (albumId: string, childId: string, passkeyToken?: string) => requestJson<{ok: true; deleted: boolean}>(
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}`,
-    { method: 'DELETE' },
+    { method: 'DELETE', headers: passkeyHeader(passkeyToken) },
   ),
   media: (albumId: string, childId: string, page = 1, sort = 'asc', search = '') => requestJson<{
     ok: true; child: AlbumChild; media: MediaItem[]; pagination: Pagination; permissions: AlbumChild['permissions'];
@@ -94,9 +107,32 @@ export const portalApi = {
       { method: 'POST', body: form },
     );
   },
-  deleteMedia: (albumId: string, childId: string, names: string[]) => requestJson<{ok: true; deleted: string[]; missing: string[]}>(
+  renameMedia: (albumId: string, childId: string, filename: string, name: string) => requestJson<{ok: true; renamed: boolean; name: string}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/media/${encoded(filename)}`,
+    { method: 'PATCH', body: JSON.stringify({ name }) },
+  ),
+  deleteMedia: (albumId: string, childId: string, names: string[], passkeyToken?: string) => requestJson<{ok: true; deleted: string[]; missing: string[]}>(
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/media`,
-    { method: 'DELETE', body: JSON.stringify({ names }) },
+    { method: 'DELETE', headers: passkeyHeader(passkeyToken), body: JSON.stringify({ names }) },
+  ),
+  processing: (albumId: string, childId: string) => requestJson<{ok: true; processing: ProcessingState}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/processing`,
+  ),
+  beginProcessing: (albumId: string, childId: string) => requestJson<{ok: true; downloadUrl: string; processing: ProcessingState}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/processing/begin`,
+    { method: 'POST' },
+  ),
+  unlockProcessing: (albumId: string, childId: string, force = false) => requestJson<{ok: true; processing: ProcessingState}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/processing/${force ? 'force-unlock' : 'unlock'}`,
+    { method: 'POST' },
+  ),
+  saveProcessingRequests: (albumId: string, childId: string, members: Array<{ext_user_id: number; request_flag: boolean; complete_flag: boolean}>) => requestJson<{ok: true; sent: number}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/processing/requests`,
+    { method: 'PUT', body: JSON.stringify({ members }) },
+  ),
+  saveProcessingMember: (albumId: string, childId: string, extUserId: number, requestFlag: boolean, completeFlag: boolean) => requestJson<{ok: true}>(
+    `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/children/${encoded(childId)}/processing/members/${extUserId}`,
+    { method: 'PUT', body: JSON.stringify({ request_flag: requestFlag, complete_flag: completeFlag }) },
   ),
   createAlbumDownload: (albumId: string, childId: string, names: string[]) => requestJson<{ok: true; job: AlbumDownloadJob}>(
     `${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}/download-jobs`,
