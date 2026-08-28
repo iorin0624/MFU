@@ -225,6 +225,7 @@ def _event_permissions(event: dict[str, Any], membership: dict[str, Any] | None,
         "canOpenChat": bool(elevated or approved),
         "canOpenAlbum": bool((elevated or approved) and event.get("album_id")),
         "canViewMembers": bool(elevated or approved),
+        "canOpenPass": bool(role == "member" and approved),
         "canEditOwnRole": bool(not elevated and active),
         "canManageEvent": bool(elevated),
     }
@@ -283,6 +284,11 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
             ),
             "members": url_for("external_login_user.member_list", event_uuid=event_uuid),
             "payment": url_for("external_login_user.pay_start", event_uuid=event_uuid),
+            "pass": (
+                url_for("external_login_user.user_vue_preview", vue_path=f"events/{event_uuid}/pass")
+                if permissions.get("canOpenPass")
+                else None
+            ),
         },
     }
 
@@ -404,6 +410,72 @@ def user_api_event(event_uuid: str):
     if not allowed:
         return _error("forbidden", 403)
     return _ok(event=_event_payload(event, membership, role))
+
+
+@bp.get("/api/vue/events/<event_uuid>/pass")
+def user_api_event_pass(event_uuid: str):
+    """Return the participant's own pass without weakening legacy access rules."""
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401, "参加者としてのログインが必要です。")
+    event = _event_by_uuid_str(event_uuid)
+    if not event:
+        return _error("event_not_found", 404)
+    membership = _latest_membership(int(event.get("id") or 0), int(actor["external"].get("id") or 0))
+    approved = bool(
+        membership
+        and str(membership.get("status") or "").strip().lower() == "approved"
+        and int(membership.get("is_canceled") or 0) == 0
+    )
+    if not approved:
+        return _error("forbidden", 403, "承認済みの参加者のみ参加証を利用できます。")
+
+    fee_yen = int(event.get("fee_yen") or 0)
+    require_payment = bool(
+        int(membership.get("require_payment") if membership.get("require_payment") is not None else 1)
+    )
+    payment_status = str(membership.get("payment_status") or "unpaid")
+    if not require_payment or fee_yen <= 0:
+        payment_key = "free"
+        payment_label = "支払不要"
+    elif payment_status == "paid":
+        payment_key = "paid"
+        payment_label = "支払済み"
+    else:
+        payment_key = "unpaid"
+        payment_label = "未支払"
+
+    checked_in = bool(membership.get("checkin_at"))
+    user = actor["external"]
+    return _ok(
+        participantPass={
+            "event": {
+                "uuid": event_uuid,
+                "title": str(event.get("title") or ""),
+                "startsAt": _value(event.get("starts_at")),
+                "placeName": event.get("place_name"),
+            },
+            "participant": {
+                "id": int(user.get("id") or 0),
+                "nickname": str(user.get("nickname") or ""),
+                "avatarUrl": avatar_url_for(user),
+            },
+            "payment": {
+                "status": payment_status,
+                "key": payment_key,
+                "label": payment_label,
+                "amountYen": membership.get("paid_amount_yen"),
+                "paidAt": _value(membership.get("paid_at")),
+                "receiptUrl": membership.get("receipt_url"),
+            },
+            "checkin": {
+                "checkedIn": checked_in,
+                "at": _value(membership.get("checkin_at")),
+                "method": "venue_qr" if checked_in else None,
+                "methodLabel": "会場掲示QRコード" if checked_in else None,
+            },
+        }
+    )
 
 
 @bp.get("/api/vue/events/<event_uuid>/members")

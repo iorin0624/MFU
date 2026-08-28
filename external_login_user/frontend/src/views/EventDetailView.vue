@@ -81,7 +81,15 @@ onMounted(async () => {
           <div><dt>支払状態</dt><dd>{{ event.membership.paymentStatus === 'paid' ? '入金済み' : '未入金' }}</dd></div>
           <div v-if="event.membership.participantRole !== 'none'"><dt>参加区分</dt><dd>{{ event.membership.participantRole }}</dd></div>
           <div v-if="event.membership.costumeLabel"><dt>内容</dt><dd>{{ event.membership.costumeLabel }}</dd></div>
+          <div><dt>受付状態</dt><dd>{{ event.membership.checkinAt ? '受付済み' : '未受付' }}</dd></div>
+          <div v-if="event.membership.checkinAt"><dt>受付日時</dt><dd>{{ formatDateTime(event.membership.checkinAt) }}</dd></div>
         </dl>
+        <button
+          v-if="event.permissions.canOpenPass"
+          type="button"
+          class="button primary participant-pass-button"
+          @click="router.push({ name: 'event-pass', params: { uuid: event.uuid } })"
+        >🎫 参加証を開く</button>
       </section>
     </div>
   </template>

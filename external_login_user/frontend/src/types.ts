@@ -58,6 +58,7 @@ export interface EventPermissions {
   canOpenChat: boolean;
   canOpenAlbum: boolean;
   canViewMembers: boolean;
+  canOpenPass: boolean;
   canEditOwnRole: boolean;
   canManageEvent: boolean;
 }
@@ -87,6 +88,35 @@ export interface EventItem {
     album?: string | null;
     members: string;
     payment: string;
+    pass?: string | null;
+  };
+}
+
+export interface ParticipantPass {
+  event: {
+    uuid: string;
+    title: string;
+    startsAt?: string | null;
+    placeName?: string | null;
+  };
+  participant: {
+    id: number;
+    nickname: string;
+    avatarUrl?: string | null;
+  };
+  payment: {
+    status: string;
+    key: 'paid' | 'unpaid' | 'free';
+    label: string;
+    amountYen?: number | null;
+    paidAt?: string | null;
+    receiptUrl?: string | null;
+  };
+  checkin: {
+    checkedIn: boolean;
+    at?: string | null;
+    method?: 'venue_qr' | null;
+    methodLabel?: string | null;
   };
 }
 
