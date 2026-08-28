@@ -25,3 +25,4 @@ tools/**/dist_v*/
 *.pkg
 *.pyz
 image_viewer/frontend/node_modules/
+external_login_user/frontend/node_modules/
