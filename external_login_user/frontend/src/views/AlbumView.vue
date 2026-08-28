@@ -2,9 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import EmptyState from '@/components/EmptyState.vue';
+import InAppBrowserAlbumNotice from '@/components/InAppBrowserAlbumNotice.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import { ApiError, portalApi } from '@/api/client';
 import type { AlbumChild, AlbumItem, MediaItem, Pagination, ProcessingState } from '@/types';
+import { isInAppBrowser } from '@/utils/inAppBrowser';
 
 declare global {
   interface Window {
@@ -31,6 +33,8 @@ const loading = ref(true);
 const mediaLoading = ref(false);
 const busy = ref(false);
 const error = ref('');
+const blockedByInAppBrowser = isInAppBrowser();
+const externalAlbumUrl = window.location.href;
 const selected = ref<string[]>([]);
 const sort = ref<'asc' | 'desc'>('asc');
 const isMobile = ref(false);
@@ -488,6 +492,10 @@ watch(childRouteId, (childId) => {
 });
 
 onMounted(async () => {
+  if (blockedByInAppBrowser) {
+    loading.value = false;
+    return;
+  }
   document.addEventListener('keydown', onKeydown);
   mobileQuery = window.matchMedia('(max-width: 560px)');
   updateMobileLayout();
@@ -507,7 +515,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <LoadingBlock v-if="loading">アルバムを読み込んでいます</LoadingBlock>
+  <InAppBrowserAlbumNotice v-if="blockedByInAppBrowser" :target-url="externalAlbumUrl" />
+  <LoadingBlock v-else-if="loading">アルバムを読み込んでいます</LoadingBlock>
   <div v-else-if="error && !album" class="alert error">{{ error }}</div>
   <template v-else-if="album">
     <header class="album-workspace-header">

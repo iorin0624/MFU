@@ -1,16 +1,33 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import InAppBrowserAlbumNotice from '@/components/InAppBrowserAlbumNotice.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import { portalApi } from '@/api/client';
 import type { EventItem } from '@/types';
 import { formatDateTime, formatMoney, membershipLabel } from '@/utils/format';
+import { isInAppBrowser } from '@/utils/inAppBrowser';
 
 const route = useRoute();
 const router = useRouter();
 const event = ref<EventItem | null>(null);
 const loading = ref(true);
 const error = ref('');
+const showInAppAlbumNotice = ref(false);
+const albumUrl = computed(() => {
+  if (!event.value?.albumId) return window.location.href;
+  const path = router.resolve({ name: 'album', params: { albumId: event.value.albumId } }).href;
+  return new URL(path, window.location.origin).href;
+});
+
+function openAlbum() {
+  if (!event.value?.albumId) return;
+  if (isInAppBrowser()) {
+    showInAppAlbumNotice.value = true;
+    return;
+  }
+  void router.push({ name: 'album', params: { albumId: event.value.albumId } });
+}
 
 onMounted(async () => {
   try {
@@ -59,7 +76,7 @@ onMounted(async () => {
 
       <section class="panel action-panel">
         <h2>イベントメニュー</h2>
-        <button v-if="event.permissions.canOpenAlbum && event.albumId" class="feature-link album" type="button" @click="router.push(`/albums/${event.albumId}`)">
+        <button v-if="event.permissions.canOpenAlbum && event.albumId" class="feature-link album" type="button" @click="openAlbum">
           <span class="feature-icon">📷</span><span><strong>アルバム</strong><small>写真・動画を見る</small></span><b>›</b>
         </button>
         <a v-if="event.permissions.canOpenChat" class="feature-link chat" :href="event.urls.chat">
@@ -93,4 +110,13 @@ onMounted(async () => {
       </section>
     </div>
   </template>
+
+  <div v-if="showInAppAlbumNotice" class="modal-backdrop" @click.self="showInAppAlbumNotice = false">
+    <div class="modal-card inapp-album-modal">
+      <InAppBrowserAlbumNotice :target-url="albumUrl" />
+      <div class="modal-actions">
+        <button type="button" class="button secondary" @click="showInAppAlbumNotice = false">閉じる</button>
+      </div>
+    </div>
+  </div>
 </template>
