@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 API_PATH = ROOT / "external_login_user" / "user_api.py"
+UTILS_PATH = ROOT / "external_login_user" / "utils.py"
 VUE_TEMPLATE_PATH = ROOT / "external_login_user" / "template" / "external_login_vue.html"
 VUE_FRONTEND_PATH = ROOT / "external_login_user" / "frontend" / "src"
 EXT_INIT_PATH = ROOT / "external_login_user" / "__init__.py"
@@ -28,11 +29,16 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
     def test_preview_shell_is_registered_without_replacing_legacy_routes(self):
         source = API_PATH.read_text(encoding="utf-8-sig")
         self.assertIn('"/vue-preview"', source)
+        self.assertIn('"/vue-preview/"', source)
         self.assertIn('"/vue-preview/<path:vue_path>"', source)
         self.assertIn('"external_login_vue.html"', source)
         template = VUE_TEMPLATE_PATH.read_text(encoding="utf-8-sig")
         self.assertIn("event-portal.js", template)
         self.assertIn("event-portal.css", template)
+
+    def test_vue_profile_loads_the_saved_privacy_agreement_revision(self):
+        source = function_source(UTILS_PATH, "_get_ext_user_by_social")
+        self.assertIn("privacy_policy_agreed_revised_date", source)
 
     def test_participant_vue_contains_requested_event_and_album_views(self):
         for relative in (
