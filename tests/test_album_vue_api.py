@@ -48,11 +48,33 @@ class AlbumVueApiSourceTests(unittest.TestCase):
         self.assertLess(event_branch, token_branch)
         self.assertIn("_is_event_member_approved", source[event_branch:token_branch])
 
-    def test_destructive_routes_require_management_and_admin_step_up(self):
-        for name in ("api_album_delete", "api_album_child_delete", "api_album_media_delete"):
+    def test_album_delete_keeps_management_and_admin_step_up(self):
+        source = function_source(API_PATH, "api_album_delete")
+        self.assertIn("_require_manage(ctx)", source)
+        self.assertIn("require_admin_passkey", source)
+
+    def test_child_destructive_routes_use_child_permissions_and_admin_step_up(self):
+        expectations = {
+            "api_album_child_delete": "canDeleteChild",
+            "api_album_media_delete": "canDeleteMedia",
+        }
+        for name, permission in expectations.items():
             source = function_source(API_PATH, name)
-            self.assertIn("_require_manage(ctx)", source)
+            self.assertIn("_require_child_permission", source)
+            self.assertIn(permission, source)
+            self.assertIn('ctx["is_admin"]', source)
             self.assertIn("require_admin_passkey", source)
+
+    def test_child_creator_permissions_require_current_active_event_member(self):
+        source = function_source(API_PATH, "_child_permissions")
+        self.assertIn("created_by_ext_user_id", source)
+        self.assertIn("current_ext_user_id", source)
+        self.assertIn('ctx.get("event_member")', source)
+
+    def test_event_member_child_creation_records_external_user_id(self):
+        source = function_source(API_PATH, "api_album_child_create")
+        self.assertIn('ctx["can_create_child"]', source)
+        self.assertIn("created_by_ext_user_id=creator_id", source)
 
     def test_existing_workflows_are_reused_for_upload_processing_and_zip(self):
         self.assertIn("upload_child(album_id, child_id)", function_source(API_PATH, "api_album_media_upload"))
