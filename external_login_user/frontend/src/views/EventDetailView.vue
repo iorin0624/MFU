@@ -30,7 +30,6 @@ const needsPayment = computed(() => Boolean(
   && Number(event.value?.feeYen || 0) > 0
   && event.value?.membership?.paymentStatus !== 'paid',
 ));
-const eventHasEnded = computed(() => Boolean(event.value?.startsAt && new Date(event.value.startsAt) < new Date()));
 
 async function copyText(value: string, key: string) {
   await navigator.clipboard.writeText(value);
@@ -114,22 +113,27 @@ onMounted(async () => {
         </div>
       </section>
 
+      <section v-if="event.participantMemo" class="panel participant-memo-panel">
+        <h2>参加者への連絡メモ</h2>
+        <p>{{ event.participantMemo }}</p>
+      </section>
+
       <section class="panel action-panel">
         <h2>イベントメニュー</h2>
         <button v-if="event.permissions.canOpenAlbum && event.albumId" class="feature-link album" type="button" @click="openAlbum">
           <span class="feature-icon">📷</span><span><strong>アルバム</strong><small>写真・動画を見る</small></span><b>›</b>
         </button>
-        <a v-if="event.permissions.canOpenChat" class="feature-link chat" :href="event.urls.chat">
+        <a v-if="event.permissions.canOpenChat && !event.lineOpenchatUrl && event.urls.chat" class="feature-link chat" :href="event.urls.chat">
           <span class="feature-icon">💬</span><span><strong>チャット</strong><small>参加者とやり取りする</small></span><b>›</b>
         </a>
-        <a v-if="event.permissions.canViewMembers" class="feature-link members" :href="event.urls.members">
+        <button v-if="event.permissions.canViewMembers" class="feature-link members" type="button" @click="router.push({ name: 'event-members', params: { uuid: event.uuid } })">
           <span class="feature-icon">👥</span><span><strong>参加者</strong><small>参加メンバーを見る</small></span><b>›</b>
-        </a>
+        </button>
         <button v-if="event.lineOpenchatUrl && event.permissions.canOpenChat" class="feature-link chat" type="button" @click="openOpenchat">
           <span class="feature-icon">💬</span><span><strong>LINEオープンチャット</strong><small>{{ event.lineOpenchatPass ? 'パスコードを確認して参加' : '連絡用チャットを開く' }}</small></span><b>›</b>
         </button>
         <button v-if="event.permissions.canViewMembers" class="feature-link members" type="button" @click="router.push({ name: 'event-social', params: { uuid: event.uuid } })">
-          <span class="feature-icon">🌐</span><span><strong>SNSリンク・貼付用</strong><small>X / Instagramの一覧とコピー</small></span><b>›</b>
+          <span class="feature-icon">📋</span><span><strong>SNS貼付用</strong><small>Instagram用・X用テキストをコピー</small></span><b>›</b>
         </button>
         <button v-if="event.permissions.canRequestParticipantsPngEmail" class="feature-link members" type="button" :disabled="participantsMailBusy" @click="requestParticipantsEmail">
           <span class="feature-icon">🖼️</span><span><strong>参加者一覧PNG</strong><small>確認済みメールアドレスで受け取る</small></span><b>›</b>
@@ -140,7 +144,7 @@ onMounted(async () => {
         <a v-if="event.membership?.paymentStatus === 'paid' && event.urls.receipt" class="feature-link payment" :href="event.urls.receipt" target="_blank" rel="noopener">
           <span class="feature-icon">🧾</span><span><strong>支払済みレシート</strong><small>PDFを開く</small></span><b>›</b>
         </a>
-        <button v-if="event.tipEnabled && eventHasEnded && event.membership && !event.membership.isCanceled" class="feature-link tip" type="button" @click="showTipDialog = true">
+        <button v-if="event.tipEnabled && event.membership && !event.membership.isCanceled" class="feature-link tip" type="button" @click="showTipDialog = true">
           <span class="feature-icon">🎁</span><span><strong>投げ銭</strong><small>Squareで主催者を応援する</small></span><b>›</b>
         </button>
         <div v-if="actionMessage" class="inline-notice">{{ actionMessage }}</div>

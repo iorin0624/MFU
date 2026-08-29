@@ -302,6 +302,7 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
         "address": event.get("address"),
         "mapsUrl": event.get("maps_url"),
         "snsHashtag": event.get("sns_hashtag"),
+        "participantMemo": event.get("memo_all") if active_features else None,
         "googleFormUrl": event.get("google_form_url"),
         "lineOpenchatUrl": event.get("line_openchat_url") if active_features else None,
         "lineOpenchatPass": event.get("line_openchat_pass") if active_features else None,
@@ -315,7 +316,11 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
         "permissions": permissions,
         "urls": {
             "detail": url_for("external_login_user.view_event", event_uuid=event_uuid),
-            "chat": f"/chat/events/{int(event.get('id') or 0)}",
+            "chat": (
+                None
+                if active_features and str(event.get("line_openchat_url") or "").strip()
+                else f"/chat/events/{int(event.get('id') or 0)}"
+            ),
             "album": (
                 url_for("external_login_user.event_album_direct", event_uuid=event_uuid)
                 if album_id
