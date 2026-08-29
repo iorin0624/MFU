@@ -81,6 +81,7 @@ export interface EventItem {
   address?: string | null;
   mapsUrl?: string | null;
   snsHashtag?: string | null;
+  participantMemo?: string | null;
   googleFormUrl?: string | null;
   lineOpenchatUrl?: string | null;
   lineOpenchatPass?: string | null;
@@ -94,7 +95,7 @@ export interface EventItem {
   permissions: EventPermissions;
   urls: {
     detail: string;
-    chat: string;
+    chat?: string | null;
     album?: string | null;
     members: string;
     social: string;

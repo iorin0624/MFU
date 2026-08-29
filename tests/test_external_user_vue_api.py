@@ -45,6 +45,7 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             "views/EventListView.vue",
             "views/EventDetailView.vue",
             "views/EventPassView.vue",
+            "views/EventMembersView.vue",
             "views/EventSocialView.vue",
             "views/AlbumView.vue",
             "views/ChildAlbumView.vue",
@@ -73,6 +74,7 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         source = function_source(API_PATH, "_event_payload")
         for marker in (
             '"lineOpenchatPass"',
+            '"participantMemo"',
             '"payFrom"',
             '"payUntil"',
             '"tipEnabled"',
@@ -80,6 +82,20 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             '"participantsEmail"',
         ):
             self.assertIn(marker, source)
+
+    def test_event_chat_and_line_openchat_are_exclusive(self):
+        source = function_source(API_PATH, "_event_payload")
+        self.assertIn('str(event.get("line_openchat_url") or "").strip()', source)
+        detail = (VUE_FRONTEND_PATH / "views" / "EventDetailView.vue").read_text(encoding="utf-8-sig")
+        self.assertIn("!event.lineOpenchatUrl", detail)
+
+    def test_member_links_and_sns_copy_are_separate_views(self):
+        members = (VUE_FRONTEND_PATH / "views" / "EventMembersView.vue").read_text(encoding="utf-8-sig")
+        social = (VUE_FRONTEND_PATH / "views" / "EventSocialView.vue").read_text(encoding="utf-8-sig")
+        self.assertIn("https://x.com", members)
+        self.assertIn("www.instagram.com", members)
+        self.assertIn("SNS貼付用", social)
+        self.assertNotIn("X / Instagramリンク", social)
 
     def test_vue_session_exposes_document_links(self):
         source = function_source(API_PATH, "_session_payload")

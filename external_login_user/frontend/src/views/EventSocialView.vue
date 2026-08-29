@@ -63,22 +63,8 @@ onMounted(async () => {
   <LoadingBlock v-if="loading">参加者のSNS情報を読み込んでいます</LoadingBlock>
   <div v-else-if="error" class="alert error">{{ error }}</div>
   <template v-else-if="event">
-    <section class="page-heading"><div><p class="eyebrow">SOCIAL</p><h1>SNSリンク・貼付用</h1><p>{{ event.title }}</p></div></section>
-    <div class="social-layout">
-      <section class="panel">
-        <h2>X / Instagramリンク</h2>
-        <div class="social-member-list">
-          <article v-for="member in members" :key="member.id" class="social-member">
-            <img v-if="member.avatarUrl" :src="member.avatarUrl" alt="" referrerpolicy="no-referrer">
-            <div><strong>{{ member.nickname }}</strong><small>{{ roleLabel(member) }}</small></div>
-            <div class="social-links">
-              <a v-if="member.xId" :href="`https://x.com/${member.xId.replace(/^@/, '')}`" target="_blank" rel="noopener">X</a>
-              <a v-if="member.instagramId" :href="`https://www.instagram.com/${member.instagramId.replace(/^@/, '')}/`" target="_blank" rel="noopener">Instagram</a>
-              <span v-if="!member.xId && !member.instagramId">未登録</span>
-            </div>
-          </article>
-        </div>
-      </section>
+    <section class="page-heading"><div><p class="eyebrow">SOCIAL COPY</p><h1>SNS貼付用</h1><p>{{ event.title }}</p></div></section>
+    <div class="social-copy-layout">
       <section class="panel social-copy-panel">
         <h2>SNS貼付用</h2>
         <label>Instagram用<textarea :value="instagramText" readonly rows="12"></textarea></label>
