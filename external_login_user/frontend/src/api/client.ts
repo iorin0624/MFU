@@ -4,6 +4,7 @@ import type {
   AlbumDownloadJob,
   ApiFailure,
   EventItem,
+  EventMemberItem,
   MediaItem,
   Pagination,
   ParticipantPass,
@@ -75,6 +76,14 @@ export const portalApi = {
   participantPass: (uuid: string) => requestJson<{ok: true; participantPass: ParticipantPass}>(
     `${runtimeConfig.eventsUrl}/${encoded(uuid)}/pass`,
   ),
+  eventMembers: (uuid: string) => requestJson<{ok: true; members: EventMemberItem[]}>(
+    `${runtimeConfig.eventsUrl}/${encoded(uuid)}/members`,
+  ),
+  requestParticipantsEmail: (uuid: string) => requestJson<{ok: true; accepted: boolean; message: string}>(
+    `${runtimeConfig.eventsUrl}/${encoded(uuid)}/participants-email`, { method: 'POST' },
+  ),
+  updatesCheck: () => requestJson<{show: boolean; text?: string; hash?: string; seen?: boolean}>('/external-login/updates/check'),
+  updatesAck: () => requestJson<{ok: true}>('/external-login/updates/ack', { method: 'POST' }),
   logout: () => requestJson<{ok: true; loggedOut: boolean}>(`${runtimeConfig.bootstrapUrl.replace(/\/bootstrap$/, '/logout')}`, { method: 'POST' }),
   album: (albumId: string) => requestJson<{ok: true; album: AlbumItem}>(`${runtimeConfig.albumApiBase}/albums/${encoded(albumId)}`),
   renameAlbum: (albumId: string, name: string) => requestJson<{ok: true; album: Pick<AlbumItem, 'id' | 'name'>}>(

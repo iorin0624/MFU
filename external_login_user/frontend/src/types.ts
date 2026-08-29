@@ -35,6 +35,11 @@ export interface PortalSession {
     privacyAgreementRequired: boolean;
   };
   unread: { notifications: number; chat?: number };
+  documents: {
+    privacyPolicyUrl?: string;
+    commerceLawUrl?: string;
+    participantTermsUrl?: string;
+  };
 }
 
 export interface EventMembership {
@@ -51,6 +56,9 @@ export interface EventMembership {
   isSubhost: boolean;
   process: boolean;
   checkinAt?: string | null;
+  checkinMethod?: string | null;
+  checkinMethodLabel?: string | null;
+  receiptUrl?: string | null;
 }
 
 export interface EventPermissions {
@@ -59,6 +67,7 @@ export interface EventPermissions {
   canOpenAlbum: boolean;
   canViewMembers: boolean;
   canOpenPass: boolean;
+  canRequestParticipantsPngEmail: boolean;
   canEditOwnRole: boolean;
   canManageEvent: boolean;
 }
@@ -74,6 +83,7 @@ export interface EventItem {
   snsHashtag?: string | null;
   googleFormUrl?: string | null;
   lineOpenchatUrl?: string | null;
+  lineOpenchatPass?: string | null;
   feeYen?: number | null;
   tipEnabled: boolean;
   payFrom?: string | null;
@@ -87,9 +97,26 @@ export interface EventItem {
     chat: string;
     album?: string | null;
     members: string;
+    social: string;
     payment: string;
+    receipt?: string | null;
+    tip: string;
+    participantsEmail: string;
     pass?: string | null;
   };
+}
+
+export interface EventMemberItem {
+  id: number;
+  nickname: string;
+  xId?: string | null;
+  instagramId?: string | null;
+  avatarUrl?: string | null;
+  participantRole: string;
+  costumeLabel: string;
+  isHost: boolean;
+  isSubhost: boolean;
+  checkinAt?: string | null;
 }
 
 export interface ParticipantPass {
