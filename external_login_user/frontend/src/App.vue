@@ -3,6 +3,8 @@ import { onMounted } from 'vue';
 import AppHeader from '@/components/AppHeader.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import EmptyState from '@/components/EmptyState.vue';
+import PortalFooter from '@/components/PortalFooter.vue';
+import PortalUtilities from '@/components/PortalUtilities.vue';
 import { runtimeConfig } from '@/config';
 import { usePortalStore } from '@/stores/portal';
 
@@ -36,6 +38,7 @@ onMounted(() => store.bootstrap());
       <strong>プライバシーポリシーへの同意が必要です</strong>
       <a class="button secondary" href="/external-login/">確認画面へ</a>
     </div>
-    <RouterView v-else-if="store.ready" />
+    <template v-else-if="store.ready"><RouterView /><PortalUtilities /></template>
   </main>
+  <PortalFooter v-if="store.session?.authenticated" />
 </template>

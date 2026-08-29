@@ -45,9 +45,12 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             "views/EventListView.vue",
             "views/EventDetailView.vue",
             "views/EventPassView.vue",
+            "views/EventSocialView.vue",
             "views/AlbumView.vue",
             "views/ChildAlbumView.vue",
             "components/AppHeader.vue",
+            "components/PortalUtilities.vue",
+            "components/PortalFooter.vue",
         ):
             self.assertTrue((VUE_FRONTEND_PATH / relative).is_file(), relative)
 
@@ -60,10 +63,35 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             '"/api/vue/events/<event_uuid>"',
             '"/api/vue/events/<event_uuid>/pass"',
             '"/api/vue/events/<event_uuid>/members"',
+            '"/api/vue/events/<event_uuid>/participants-email"',
             '"/api/vue/events/<event_uuid>/my-role"',
             '"/api/vue/logout"',
         ):
             self.assertIn(route, source)
+
+    def test_vue_event_payload_exposes_migrated_participant_features(self):
+        source = function_source(API_PATH, "_event_payload")
+        for marker in (
+            '"lineOpenchatPass"',
+            '"payFrom"',
+            '"payUntil"',
+            '"tipEnabled"',
+            '"receipt"',
+            '"participantsEmail"',
+        ):
+            self.assertIn(marker, source)
+
+    def test_vue_session_exposes_document_links(self):
+        source = function_source(API_PATH, "_session_payload")
+        self.assertIn('"privacyPolicyUrl"', source)
+        self.assertIn('"commerceLawUrl"', source)
+        self.assertIn('"participantTermsUrl"', source)
+
+    def test_participant_png_email_reuses_legacy_authorization_and_job(self):
+        source = function_source(API_PATH, "user_api_participants_email")
+        self.assertIn("_can_send_participants_png_mail", source)
+        self.assertIn("_start_participants_png_email_job", source)
+        self.assertIn("email_verified_at", source)
 
     def test_every_event_detail_request_rechecks_actor_access(self):
         source = function_source(API_PATH, "user_api_event")

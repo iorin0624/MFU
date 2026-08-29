@@ -19,6 +19,8 @@ from . import bp
 from .utils import (
     _event_acl_role,
     _event_by_uuid_str,
+    _get_current_commerce_law_config,
+    _get_current_participant_terms_config,
     _get_current_privacy_policy_config,
     _get_ext_user_by_social,
     _needs_privacy_policy_agreement,
@@ -159,6 +161,9 @@ def _session_payload() -> dict[str, Any]:
             )
         except Exception:
             privacy_required = False
+    privacy_config = _get_current_privacy_policy_config()
+    commerce_config = _get_current_commerce_law_config()
+    participant_terms_config = _get_current_participant_terms_config()
     return {
         "authenticated": bool(actor),
         "actorKind": (actor or {}).get("kind"),
@@ -176,6 +181,11 @@ def _session_payload() -> dict[str, Any]:
             "notifications": _notification_unread_count(
                 int(external.get("id") or 0) if external else None
             )
+        },
+        "documents": {
+            "privacyPolicyUrl": str(privacy_config.get("privacy_policy_url") or ""),
+            "commerceLawUrl": str(commerce_config.get("commerce_law_url") or ""),
+            "participantTermsUrl": str(participant_terms_config.get("participant_terms_url") or ""),
         },
     }
 
@@ -226,6 +236,12 @@ def _event_permissions(event: dict[str, Any], membership: dict[str, Any] | None,
         "canOpenAlbum": bool((elevated or approved) and event.get("album_id")),
         "canViewMembers": bool(elevated or approved),
         "canOpenPass": bool(role == "member" and approved),
+        "canRequestParticipantsPngEmail": bool(
+            role == "member"
+            and active
+            and membership
+            and (bool(membership.get("is_host")) or bool(membership.get("is_subhost")))
+        ),
         "canEditOwnRole": bool(not elevated and active),
         "canManageEvent": bool(elevated),
     }
@@ -248,6 +264,9 @@ def _membership_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "isSubhost": bool(row.get("is_subhost")),
         "process": bool(row.get("process")),
         "checkinAt": _value(row.get("checkin_at")),
+        "checkinMethod": "venue_qr" if row.get("checkin_at") else None,
+        "checkinMethodLabel": "会場掲示QRコード" if row.get("checkin_at") else None,
+        "receiptUrl": row.get("receipt_url"),
     }
 
 
@@ -255,6 +274,25 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
     event_uuid = str(event.get("event_uuid_str") or _uuid_bytes_to_str(event.get("event_uuid")) or "")
     album_id = str(event.get("album_id") or "") or None
     permissions = _event_permissions(event, membership, role)
+    custom_fee = membership.get("custom_fee_yen") if membership else None
+    effective_fee = custom_fee if custom_fee is not None else event.get("fee_yen")
+    receipt_pdf_url = None
+    if (
+        membership
+        and str(membership.get("payment_status") or "") == "paid"
+        and membership.get("id")
+        and (
+            int(membership.get("bank_transfer") or 0) == 1
+            or int(membership.get("paypay_transfer") or 0) == 1
+            or bool(str(membership.get("receipt_url") or "").strip())
+        )
+    ):
+        receipt_pdf_url = url_for(
+            "external_login_user.member_receipt_pdf",
+            event_uuid=event_uuid,
+            member_id=int(membership["id"]),
+        )
+    active_features = bool(permissions.get("canViewMembers"))
     return {
         "id": int(event.get("id") or 0),
         "uuid": event_uuid,
@@ -265,8 +303,9 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
         "mapsUrl": event.get("maps_url"),
         "snsHashtag": event.get("sns_hashtag"),
         "googleFormUrl": event.get("google_form_url"),
-        "lineOpenchatUrl": event.get("line_openchat_url"),
-        "feeYen": event.get("fee_yen"),
+        "lineOpenchatUrl": event.get("line_openchat_url") if active_features else None,
+        "lineOpenchatPass": event.get("line_openchat_pass") if active_features else None,
+        "feeYen": effective_fee,
         "tipEnabled": bool(event.get("tip_enabled")),
         "payFrom": _value(event.get("pay_from")),
         "payUntil": _value(event.get("pay_until")),
@@ -283,7 +322,11 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
                 else None
             ),
             "members": url_for("external_login_user.member_list", event_uuid=event_uuid),
+            "social": url_for("external_login_user.user_vue_preview", vue_path=f"events/{event_uuid}/social"),
             "payment": url_for("external_login_user.pay_start", event_uuid=event_uuid),
+            "receipt": receipt_pdf_url,
+            "tip": url_for("external_login_user.tip_start"),
+            "participantsEmail": url_for("external_login_user.user_api_participants_email", event_uuid=event_uuid),
             "pass": (
                 url_for("external_login_user.user_vue_preview", vue_path=f"events/{event_uuid}/pass")
                 if permissions.get("canOpenPass")
@@ -530,6 +573,27 @@ def user_api_event_members(event_uuid: str):
             }
         )
     return _ok(members=members)
+
+
+@bp.post("/api/vue/events/<event_uuid>/participants-email")
+def user_api_participants_email(event_uuid: str):
+    """Queue the existing participant PNG mail job for an authorized host."""
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    event = _event_by_uuid_str(event_uuid)
+    if not event:
+        return _error("event_not_found", 404)
+    user = actor["external"]
+    membership = _latest_membership(int(event.get("id") or 0), int(user.get("id") or 0))
+    from .users import _can_send_participants_png_mail, _start_participants_png_email_job
+
+    if not _can_send_participants_png_mail(membership):
+        return _error("forbidden", 403, "主催者または副主催者のみ利用できます。")
+    if not str(user.get("email") or "").strip() or not user.get("email_verified_at"):
+        return _error("verified_email_required", 400, "確認済みメールアドレスが必要です。")
+    _start_participants_png_email_job(event_uuid=event_uuid, ext_user_id=int(user["id"]))
+    return _ok(accepted=True, message="参加者一覧PNGを確認済みメールアドレスへ送信します。")
 
 
 @bp.patch("/api/vue/events/<event_uuid>/my-role")

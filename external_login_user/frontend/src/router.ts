@@ -3,6 +3,7 @@ import { runtimeConfig } from '@/config';
 import EventListView from '@/views/EventListView.vue';
 import EventDetailView from '@/views/EventDetailView.vue';
 import EventPassView from '@/views/EventPassView.vue';
+import EventSocialView from '@/views/EventSocialView.vue';
 import AlbumView from '@/views/AlbumView.vue';
 
 export const router = createRouter({
@@ -12,6 +13,7 @@ export const router = createRouter({
     { path: '/', name: 'events', component: EventListView },
     { path: '/events/:uuid', name: 'event', component: EventDetailView },
     { path: '/events/:uuid/pass', name: 'event-pass', component: EventPassView },
+    { path: '/events/:uuid/social', name: 'event-social', component: EventSocialView },
     { path: '/albums/:albumId', name: 'album', component: AlbumView },
     {
       path: '/albums/:albumId/children/:childId',
