@@ -41,6 +41,19 @@ a { color: inherit; }
 .button.primary:hover { background: var(--blue-dark); }
 .button.secondary { border-color: #c8d3e1; background: #fff; color: #344258; }
 .button.danger { background: #fff0f1; border-color: #f2c6cb; color: var(--danger); }
+.heading-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.event-admin-link { display: inline-flex; margin-top: 14px; }
+.restriction-panel { margin: 0 0 18px; padding: 16px 18px; border: 1px solid; border-radius: 16px; }
+.restriction-panel strong { display: block; margin-bottom: 5px; font-size: 1.02rem; }
+.restriction-panel p { margin: 0; line-height: 1.65; }
+.restriction-panel.warning { background: #fff8e8; border-color: #efcf7c; color: #694d00; }
+.restriction-panel.error { background: #fff0f1; border-color: #efb9bf; color: #8b1e2a; }
+.feature-link.disabled { cursor: default; opacity: .68; }
+.participant-settings-panel { display: grid; gap: 18px; }
+.participant-setting-block { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fafcff; }
+.participant-setting-block h3 { margin: 0; font-size: 1rem; }
+.participant-setting-block label:not(.toggle-line) { display: grid; gap: 6px; font-weight: 700; }
+.participant-setting-block select, .participant-setting-block input[type="text"], .participant-setting-block input:not([type]) { width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font: inherit; }
 .button.compact { min-height: 38px; padding: 7px 13px; font-size: .9rem; }
 .segmented { display: inline-flex; padding: 4px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
 .segmented button { border: 0; border-radius: 10px; padding: 9px 18px; background: transparent; color: #647086; font-weight: 700; cursor: pointer; }

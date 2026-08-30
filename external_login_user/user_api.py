@@ -338,6 +338,11 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
                 if permissions.get("canOpenPass")
                 else None
             ),
+            "admin": (
+                url_for("external_login_user.admin_event_view", event_id=int(event.get("id") or 0))
+                if permissions.get("canManageEvent")
+                else None
+            ),
         },
     }
 
@@ -602,7 +607,7 @@ def user_api_participants_email(event_uuid: str):
     return _ok(accepted=True, message="参加者一覧PNGを確認済みメールアドレスへ送信します。")
 
 
-@bp.patch("/api/vue/events/<event_uuid>/my-role")
+@bp.route("/api/vue/events/<event_uuid>/my-role", methods=["PATCH", "POST"])
 def user_api_update_my_role(event_uuid: str):
     actor = _actor()
     if not actor or actor["kind"] != "external":
@@ -657,6 +662,54 @@ def user_api_update_my_role(event_uuid: str):
         saved_role,
     )
     return _ok(participantRole=saved_role, costumeLabel=costume, degraded=bool(degraded))
+
+
+@bp.route("/api/vue/events/<event_uuid>/my-process", methods=["PATCH", "POST"])
+def user_api_update_my_process(event_uuid: str):
+    """Allow an active external participant to update their own processing preference."""
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    event = _event_by_uuid_str(event_uuid)
+    if not event:
+        return _error("event_not_found", 404)
+    membership = _latest_membership(int(event["id"]), int(actor["external"]["id"]))
+    if not membership or int(membership.get("is_canceled") or 0) == 1:
+        return _error("forbidden", 403, "キャンセル済みの参加では変更できません。")
+
+    payload = request.get_json(silent=True) or {}
+    process_flag = 1 if bool(payload.get("process")) else 0
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE mfu_event_member
+               SET process=%s
+             WHERE id=%s AND event_id=%s AND user_id=%s
+             LIMIT 1
+            """,
+            (
+                process_flag,
+                int(membership["id"]),
+                int(event["id"]),
+                int(actor["external"]["id"]),
+            ),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+        db.close()
+    current_app.logger.info(
+        "EVENT_USER_PROCESS_UPDATE event_id=%s ext_user_id=%s process=%s",
+        int(event["id"]),
+        int(actor["external"]["id"]),
+        process_flag,
+    )
+    return _ok(process=bool(process_flag))
 
 
 @bp.get("/api/vue/events/<event_uuid>/join")
@@ -750,7 +803,7 @@ def user_api_profile():
     })
 
 
-@bp.patch("/api/vue/profile")
+@bp.route("/api/vue/profile", methods=["PATCH", "POST"])
 def user_api_update_profile():
     actor = _actor()
     if not actor or actor.get("kind") != "external":

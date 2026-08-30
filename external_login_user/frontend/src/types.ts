@@ -104,6 +104,7 @@ export interface EventItem {
     tip: string;
     participantsEmail: string;
     pass?: string | null;
+    admin?: string | null;
   };
 }
 

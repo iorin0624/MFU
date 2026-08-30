@@ -26,11 +26,25 @@ async function open(item: Item) {
   window.location.assign(item.target_url || '/external-login/vue-preview/');
 }
 async function readAll() { await portalApi.markAllNotificationsRead(); items.value.forEach((item) => { item.read_at ||= new Date().toISOString(); }); }
+async function deleteAll() {
+  if (!window.confirm('通知一覧をすべて消去します。よろしいですか？')) return;
+  busy.value = true; error.value = '';
+  try {
+    await portalApi.deleteAllNotifications();
+    items.value = [];
+    page.value = 1;
+    hasNext.value = false;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '通知一覧を消去できませんでした。';
+  } finally {
+    busy.value = false;
+  }
+}
 onMounted(() => load());
 </script>
 
 <template>
-  <section class="page-heading"><div><p class="eyebrow">NOTIFICATIONS</p><h1>通知</h1><p>イベントやチャットの更新を確認できます。</p></div><button class="button secondary compact" type="button" @click="readAll">すべて既読</button></section>
+  <section class="page-heading"><div><p class="eyebrow">NOTIFICATIONS</p><h1>通知</h1><p>イベントやチャットの更新を確認できます。</p></div><div class="heading-actions"><button class="button secondary compact" type="button" :disabled="busy" @click="readAll">すべて既読</button><button class="button danger compact" type="button" :disabled="busy || !items.length" @click="deleteAll">一覧消去</button></div></section>
   <div class="segmented"><button :class="{ active: !unreadOnly }" @click="unreadOnly = false; load()">すべて</button><button :class="{ active: unreadOnly }" @click="unreadOnly = true; load()">未読のみ</button></div>
   <div v-if="error" class="alert error">{{ error }}</div>
   <div v-if="items.length" class="notification-list">
