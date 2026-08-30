@@ -72,6 +72,7 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             '"/api/vue/events/<event_uuid>/members"',
             '"/api/vue/events/<event_uuid>/participants-email"',
             '"/api/vue/events/<event_uuid>/my-role"',
+            '"/api/vue/events/<event_uuid>/my-process"',
             '"/api/vue/events/<event_uuid>/join"',
             '"/api/vue/profile"',
             '"/api/vue/email-verification/send"',
@@ -90,8 +91,31 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             '"tipEnabled"',
             '"receipt"',
             '"participantsEmail"',
+            '"admin"',
         ):
             self.assertIn(marker, source)
+
+    def test_vue_event_detail_exposes_participant_settings_and_restrictions(self):
+        detail = (VUE_FRONTEND_PATH / "views" / "EventDetailView.vue").read_text(encoding="utf-8-sig")
+        for marker in (
+            "加工回し設定を保存",
+            "参加区分・衣装／その他メモ",
+            "実際の支払金額",
+            "アンケート",
+            "準備中",
+            "参加申請は承認待ちです",
+            "参加申請は承認されませんでした",
+            "参加はキャンセル済みです",
+            "イベント管理画面へ",
+        ):
+            self.assertIn(marker, detail)
+
+    def test_vue_notifications_support_real_list_deletion(self):
+        notifications = (VUE_FRONTEND_PATH / "views" / "NotificationsView.vue").read_text(encoding="utf-8-sig")
+        backend = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
+        self.assertIn("deleteAllNotifications", notifications)
+        self.assertIn("一覧消去", notifications)
+        self.assertIn('@bp.post("/api/notifications/delete-all")', backend)
 
     def test_event_chat_and_line_openchat_are_exclusive(self):
         source = function_source(API_PATH, "_event_payload")

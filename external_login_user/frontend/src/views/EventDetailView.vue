@@ -20,6 +20,20 @@ const tipAmount = ref(1000);
 const copied = ref('');
 const participantsMailBusy = ref(false);
 const actionMessage = ref('');
+const participantRole = ref('none');
+const costumeLabel = ref('');
+const processRequired = ref(false);
+const participantSaving = ref(false);
+const participantMessage = ref('');
+const roleUsesMemo = computed(() => ['cosplayer', 'other'].includes(participantRole.value));
+const restriction = computed(() => {
+  const membership = event.value?.membership;
+  if (!membership) return null;
+  if (membership.isCanceled) return { tone: 'warning', title: '参加はキャンセル済みです', body: '参加者向けのチャット、アルバム、参加者一覧、参加証、アンケートは利用できません。支払済みのレシートは引き続き確認できます。再参加については主催者へお問い合わせください。' };
+  if (membership.status === 'pending') return { tone: 'warning', title: '参加申請は承認待ちです', body: '主催者の承認が完了するまで、チャット、アルバム、参加者一覧、参加証、アンケートは利用できません。承認後に自動で利用可能になります。' };
+  if (membership.status === 'rejected') return { tone: 'error', title: '参加申請は承認されませんでした', body: 'このイベントの参加者向け機能は利用できません。申請内容について確認が必要な場合は主催者へお問い合わせください。' };
+  return null;
+});
 const albumUrl = computed(() => {
   if (!event.value?.albumId) return window.location.href;
   const path = router.resolve({ name: 'album', params: { albumId: event.value.albumId } }).href;
@@ -66,9 +80,46 @@ function openAlbum() {
   void router.push({ name: 'album', params: { albumId: event.value.albumId } });
 }
 
+async function saveParticipantDetails() {
+  if (!event.value) return;
+  participantSaving.value = true; participantMessage.value = '';
+  try {
+    const response = await portalApi.saveMyEventRole(event.value.uuid, participantRole.value, roleUsesMemo.value ? costumeLabel.value : '');
+    participantRole.value = response.participantRole;
+    costumeLabel.value = response.costumeLabel || '';
+    if (event.value.membership) {
+      event.value.membership.participantRole = response.participantRole;
+      event.value.membership.costumeLabel = response.costumeLabel || '';
+    }
+    participantMessage.value = '参加区分・衣装／メモを保存しました。';
+  } catch (reason) {
+    participantMessage.value = reason instanceof Error ? reason.message : '参加情報を保存できませんでした。';
+  } finally {
+    participantSaving.value = false;
+  }
+}
+
+async function saveProcessRequired() {
+  if (!event.value) return;
+  participantSaving.value = true; participantMessage.value = '';
+  try {
+    const response = await portalApi.saveMyEventProcess(event.value.uuid, processRequired.value);
+    processRequired.value = response.process;
+    if (event.value.membership) event.value.membership.process = response.process;
+    participantMessage.value = '加工回し設定を保存しました。';
+  } catch (reason) {
+    participantMessage.value = reason instanceof Error ? reason.message : '加工回し設定を保存できませんでした。';
+  } finally {
+    participantSaving.value = false;
+  }
+}
+
 onMounted(async () => {
   try {
     event.value = (await portalApi.event(String(route.params.uuid))).event;
+    participantRole.value = event.value.membership?.participantRole || 'none';
+    costumeLabel.value = event.value.membership?.costumeLabel || '';
+    processRequired.value = Boolean(event.value.membership?.process);
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : 'イベントを取得できませんでした。';
   } finally {
@@ -92,6 +143,11 @@ onMounted(async () => {
       <p class="eyebrow">EVENT DETAIL</p>
       <h1>{{ event.title }}</h1>
       <p class="hero-date">{{ formatDateTime(event.startsAt) }}</p>
+      <a v-if="event.permissions.canManageEvent && event.urls.admin" class="button secondary compact event-admin-link" :href="event.urls.admin">イベント管理画面へ</a>
+    </section>
+
+    <section v-if="restriction" :class="['restriction-panel', restriction.tone]">
+      <strong>{{ restriction.title }}</strong><p>{{ restriction.body }}</p>
     </section>
 
     <div class="detail-layout">
@@ -147,6 +203,12 @@ onMounted(async () => {
         <button v-if="event.tipEnabled && event.membership && !event.membership.isCanceled" class="feature-link tip" type="button" @click="showTipDialog = true">
           <span class="feature-icon">🎁</span><span><strong>投げ銭</strong><small>Squareで主催者を応援する</small></span><b>›</b>
         </button>
+        <a v-if="event.permissions.canViewMembers && event.googleFormUrl" class="feature-link survey" :href="event.googleFormUrl" target="_blank" rel="noopener">
+          <span class="feature-icon">📝</span><span><strong>アンケート</strong><small>回答フォームを開く</small></span><b>›</b>
+        </a>
+        <div v-else-if="event.permissions.canViewMembers" class="feature-link survey disabled" aria-disabled="true">
+          <span class="feature-icon">📝</span><span><strong>アンケート</strong><small>準備中</small></span><b>—</b>
+        </div>
         <div v-if="actionMessage" class="inline-notice">{{ actionMessage }}</div>
         <div v-if="!event.permissions.canOpenAlbum && event.albumId" class="inline-notice">アルバムは参加承認後に閲覧できます。</div>
       </section>
@@ -156,6 +218,8 @@ onMounted(async () => {
         <dl class="detail-list">
           <div><dt>承認状態</dt><dd>{{ membershipLabel(event.membership.status, event.membership.isCanceled) }}</dd></div>
           <div><dt>支払状態</dt><dd>{{ event.membership.paymentStatus === 'paid' ? '入金済み' : '未入金' }}</dd></div>
+          <div v-if="event.membership.paidAt"><dt>支払日</dt><dd>{{ formatDateTime(event.membership.paidAt) }}</dd></div>
+          <div v-if="event.membership.paidAmountYen != null"><dt>実際の支払金額</dt><dd>{{ formatMoney(event.membership.paidAmountYen) }}</dd></div>
           <div v-if="event.membership.participantRole !== 'none'"><dt>参加区分</dt><dd>{{ event.membership.participantRole }}</dd></div>
           <div v-if="event.membership.costumeLabel"><dt>内容</dt><dd>{{ event.membership.costumeLabel }}</dd></div>
           <div><dt>受付状態</dt><dd>{{ event.membership.checkinAt ? '受付済み' : '未受付' }}</dd></div>
@@ -168,6 +232,22 @@ onMounted(async () => {
           class="button primary participant-pass-button"
           @click="router.push({ name: 'event-pass', params: { uuid: event.uuid } })"
         >🎫 参加証を開く</button>
+      </section>
+
+      <section v-if="event.membership && event.permissions.canEditOwnRole" class="panel participant-settings-panel">
+        <h2>本人の参加設定</h2>
+        <div class="participant-setting-block">
+          <h3>加工回し</h3>
+          <label class="toggle-line"><input v-model="processRequired" type="checkbox">加工回しが必要</label>
+          <button class="button secondary compact" type="button" :disabled="participantSaving" @click="saveProcessRequired">加工回し設定を保存</button>
+        </div>
+        <form class="participant-setting-block" @submit.prevent="saveParticipantDetails">
+          <h3>参加区分・衣装／その他メモ</h3>
+          <label>参加区分<select v-model="participantRole"><option value="none">未設定</option><option value="camera">カメラマン</option><option value="assistant">アシスタント</option><option value="cosplayer">衣装</option><option value="other">その他</option></select></label>
+          <label v-if="roleUsesMemo">{{ participantRole === 'cosplayer' ? '衣装名' : 'その他メモ' }}<input v-model="costumeLabel" maxlength="120"></label>
+          <button class="button primary compact" :disabled="participantSaving">参加情報を保存</button>
+        </form>
+        <p v-if="participantMessage" class="inline-notice">{{ participantMessage }}</p>
       </section>
     </div>
   </template>

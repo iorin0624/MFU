@@ -1715,6 +1715,40 @@ def api_notifications_mark_all_read():
         db.close()
 
 
+@bp.post("/api/notifications/delete-all")
+def api_notifications_delete_all():
+    """Remove the signed-in external user's notification list only."""
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    uid = int(session.get("ext_user_id") or 0)
+    _ensure_notification_schema()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            DELETE FROM mfu_notifications
+             WHERE user_kind='external'
+               AND user_id=%s
+            """,
+            (uid,),
+        )
+        deleted = int(cur.rowcount or 0)
+        db.commit()
+        _emit_notif_unread(uid, reason="delete_all")
+        current_app.logger.info(
+            "notifications delete-all success scope=external user_id=%s deleted=%s",
+            uid,
+            deleted,
+        )
+        return jsonify({"ok": True, "deleted": deleted})
+    finally:
+        cur.close()
+        db.close()
+
+
 def _external_user_has_active_event_membership(event_id: int, user_id: int) -> bool:
     db = get_db()
     cur = db.cursor(dictionary=True)

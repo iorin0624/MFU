@@ -87,9 +87,18 @@ export const portalApi = {
   ),
   markNotificationRead: (id: number) => requestJson<{ok: true}>(`/external-login/api/notifications/${id}/read`, { method: 'POST' }),
   markAllNotificationsRead: () => requestJson<{ok: true; updated: number}>('/external-login/api/notifications/read-all', { method: 'POST' }),
+  deleteAllNotifications: () => requestJson<{ok: true; deleted: number}>('/external-login/api/notifications/delete-all', { method: 'POST' }),
+  saveMyEventRole: (uuid: string, participantRole: string, costumeLabel: string) => requestJson<{ok: true; participantRole: string; costumeLabel?: string | null}>(
+    `${runtimeConfig.eventsUrl}/${encoded(uuid)}/my-role`,
+    { method: 'POST', body: JSON.stringify({ participantRole, costumeLabel }) },
+  ),
+  saveMyEventProcess: (uuid: string, process: boolean) => requestJson<{ok: true; process: boolean}>(
+    `${runtimeConfig.eventsUrl}/${encoded(uuid)}/my-process`,
+    { method: 'POST', body: JSON.stringify({ process }) },
+  ),
   profile: () => requestJson<{ok: true; profile: Record<string, unknown>}>('/external-login/api/vue/profile'),
   saveProfile: (form: FormData) => requestJson<{ok: true; saved: boolean; emailVerificationRequired: boolean; verificationSent: boolean}>(
-    '/external-login/api/vue/profile', { method: 'PATCH', body: form },
+    '/external-login/api/vue/profile', { method: 'POST', body: form },
   ),
   sendEmailVerification: () => requestJson<{ok: true; sent: boolean; email: string}>('/external-login/api/vue/email-verification/send', { method: 'POST' }),
   verifyEmail: (pin: string) => requestJson<{ok: true; verified: boolean; nextUrl?: string}>('/external-login/api/vue/email-verification/verify', { method: 'POST', body: JSON.stringify({ pin }) }),
