@@ -138,12 +138,12 @@ onMounted(async () => {
         <button v-if="event.permissions.canRequestParticipantsPngEmail" class="feature-link members" type="button" :disabled="participantsMailBusy" @click="requestParticipantsEmail">
           <span class="feature-icon">🖼️</span><span><strong>参加者一覧PNG</strong><small>確認済みメールアドレスで受け取る</small></span><b>›</b>
         </button>
-        <a v-if="needsPayment" class="feature-link payment" :href="event.urls.payment">
+        <button v-if="needsPayment" class="feature-link payment" type="button" @click="router.push({name:'event-payment',params:{uuid:event.uuid}})">
           <span class="feature-icon">💳</span><span><strong>お支払い</strong><small>参加費を確認する</small></span><b>›</b>
-        </a>
-        <a v-if="event.membership?.paymentStatus === 'paid' && event.urls.receipt" class="feature-link payment" :href="event.urls.receipt" target="_blank" rel="noopener">
+        </button>
+        <button v-if="event.membership?.paymentStatus === 'paid' && event.urls.receipt" class="feature-link payment" type="button" @click="router.push({name:'event-payment',params:{uuid:event.uuid}})">
           <span class="feature-icon">🧾</span><span><strong>支払済みレシート</strong><small>PDFを開く</small></span><b>›</b>
-        </a>
+        </button>
         <button v-if="event.tipEnabled && event.membership && !event.membership.isCanceled" class="feature-link tip" type="button" @click="showTipDialog = true">
           <span class="feature-icon">🎁</span><span><strong>投げ銭</strong><small>Squareで主催者を応援する</small></span><b>›</b>
         </button>

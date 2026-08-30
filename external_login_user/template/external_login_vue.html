@@ -7,7 +7,7 @@
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>Mimoria</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="{{ url_for('static', filename='external_login_vue/event-portal.css') }}?v=20260830-event-features2">
+  <link rel="stylesheet" href="{{ url_for('static', filename='external_login_vue/event-portal.css') }}?v=20260830-portal-features3">
 </head>
 <body>
   <div id="event-portal-app"></div>
@@ -15,7 +15,7 @@
   <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
   <script src="{{ url_for('static', filename='js/admin-passkey-stepup.js') }}"></script>
   <script src="{{ url_for('static', filename='js/mfu_shortcut_download.js') }}?v=20260828"></script>
-  <script type="module" src="{{ url_for('static', filename='external_login_vue/event-portal.js') }}?v=20260830-event-features2"></script>
+  <script type="module" src="{{ url_for('static', filename='external_login_vue/event-portal.js') }}?v=20260830-portal-features3"></script>
   <noscript>イベントページを利用するにはJavaScriptを有効にしてください。</noscript>
 </body>
 </html>

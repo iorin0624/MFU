@@ -15,6 +15,8 @@ function activate(item: { id: string; url: string }) {
     router.push('/');
     return;
   }
+  if (item.id === 'notifications') { router.push('/notifications'); return; }
+  if (item.id === 'account') { router.push('/profile'); return; }
   window.location.assign(item.url);
 }
 </script>

@@ -112,8 +112,8 @@ async function selectScope(value: typeof scope.value) {
           <div><dt>参加費</dt><dd>{{ formatMoney(event.feeYen) }}</dd></div>
         </dl>
         <div class="card-actions event-direct-actions" @click.stop>
-          <a v-if="event.membership?.paymentStatus === 'paid' && event.urls.receipt" :href="event.urls.receipt" target="_blank" rel="noopener">レシート</a>
-          <a v-else-if="event.membership?.requirePayment && Number(event.feeYen || 0) > 0 && event.membership.paymentStatus !== 'paid'" :href="event.urls.payment">支払</a>
+          <button v-if="event.membership?.paymentStatus === 'paid' && event.urls.receipt" type="button" @click="router.push({name:'event-payment',params:{uuid:event.uuid}})">レシート</button>
+          <button v-else-if="event.membership?.requirePayment && Number(event.feeYen || 0) > 0 && event.membership.paymentStatus !== 'paid'" type="button" @click="router.push({name:'event-payment',params:{uuid:event.uuid}})">支払</button>
           <button v-if="event.albumId && event.permissions.canOpenAlbum" type="button" @click="openAlbum(event)">アルバム</button>
           <button v-if="event.tipEnabled && event.membership && !event.membership.isCanceled" type="button" @click="tipEvent = event">投げ銭</button>
           <button type="button" @click="router.push(`/events/${event.uuid}`)">詳細</button>

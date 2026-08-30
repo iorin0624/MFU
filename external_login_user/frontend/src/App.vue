@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
 import AppHeader from '@/components/AppHeader.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import PortalFooter from '@/components/PortalFooter.vue';
 import PortalUtilities from '@/components/PortalUtilities.vue';
-import { runtimeConfig } from '@/config';
 import { usePortalStore } from '@/stores/portal';
 
 const store = usePortalStore();
+const route = useRoute();
+const publicRoute = computed(() => route.name === 'login');
+const verificationRoute = computed(() => route.name === 'email-verify');
 onMounted(() => store.bootstrap());
 </script>
 
@@ -21,18 +24,20 @@ onMounted(() => store.bootstrap());
       <span>{{ store.error }}</span>
       <button type="button" class="button secondary" @click="store.bootstrap(true)">再読み込み</button>
     </div>
+    <RouterView v-else-if="publicRoute" />
     <EmptyState
       v-else-if="store.session && !store.session.authenticated"
       icon="🔐"
       title="ログインが必要です"
       text="イベント情報を見るにはLINEログインまたはMFUログインを行ってください。"
     >
-      <a class="button primary" :href="runtimeConfig.loginUrl">ログイン画面へ</a>
+      <RouterLink class="button primary" to="/login">ログイン画面へ</RouterLink>
     </EmptyState>
+    <RouterView v-else-if="verificationRoute" />
     <div v-else-if="store.session?.prerequisites.emailVerificationRequired" class="alert warning">
       <strong>メール認証が必要です</strong>
       <span>登録済みメールアドレスの確認を完了してからご利用ください。</span>
-      <a class="button secondary" href="/external-login/unverified">メール認証へ</a>
+      <RouterLink class="button secondary" to="/email-verify">メール認証へ</RouterLink>
     </div>
     <div v-else-if="store.session?.prerequisites.privacyAgreementRequired" class="alert warning">
       <strong>プライバシーポリシーへの同意が必要です</strong>

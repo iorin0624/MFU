@@ -82,6 +82,20 @@ export const portalApi = {
   requestParticipantsEmail: (uuid: string) => requestJson<{ok: true; accepted: boolean; message: string}>(
     `${runtimeConfig.eventsUrl}/${encoded(uuid)}/participants-email`, { method: 'POST' },
   ),
+  notifications: (page = 1, unread = false) => requestJson<{items: Array<{id: number; kind?: string; title?: string; body: string; target_url: string; room_name?: string; created_at?: string; read_at?: string}>; pagination: {page: number; per_page: number; total: number; has_next: boolean}}>(
+    `/external-login/api/notifications?page=${page}&unread=${unread ? '1' : '0'}`,
+  ),
+  markNotificationRead: (id: number) => requestJson<{ok: true}>(`/external-login/api/notifications/${id}/read`, { method: 'POST' }),
+  markAllNotificationsRead: () => requestJson<{ok: true; updated: number}>('/external-login/api/notifications/read-all', { method: 'POST' }),
+  profile: () => requestJson<{ok: true; profile: Record<string, unknown>}>('/external-login/api/vue/profile'),
+  saveProfile: (form: FormData) => requestJson<{ok: true; saved: boolean; emailVerificationRequired: boolean; verificationSent: boolean}>(
+    '/external-login/api/vue/profile', { method: 'PATCH', body: form },
+  ),
+  sendEmailVerification: () => requestJson<{ok: true; sent: boolean; email: string}>('/external-login/api/vue/email-verification/send', { method: 'POST' }),
+  verifyEmail: (pin: string) => requestJson<{ok: true; verified: boolean}>('/external-login/api/vue/email-verification/verify', { method: 'POST', body: JSON.stringify({ pin }) }),
+  requestLoginPin: (email: string) => requestJson<{ok: boolean; message: string}>('/external-login/pin/request', { method: 'POST', body: JSON.stringify({ email }) }),
+  loginWithPin: (email: string, pin: string) => requestJson<{ok: true; loggedIn: boolean; nickname: string}>('/external-login/pin/login', { method: 'POST', body: JSON.stringify({ email, pin }) }),
+  joinInfo: (uuid: string) => requestJson<{ok: true; join: Record<string, any>}>(`${runtimeConfig.eventsUrl}/${encoded(uuid)}/join`),
   updatesCheck: () => requestJson<{show: boolean; text?: string; hash?: string; seen?: boolean}>('/external-login/updates/check'),
   updatesAck: () => requestJson<{ok: true}>('/external-login/updates/ack', { method: 'POST' }),
   logout: () => requestJson<{ok: true; loggedOut: boolean}>(`${runtimeConfig.bootstrapUrl.replace(/\/bootstrap$/, '/logout')}`, { method: 'POST' }),
