@@ -177,6 +177,22 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         app = (VUE_FRONTEND_PATH / "App.vue").read_text(encoding="utf-8-sig")
         self.assertNotIn("またはMFUログイン", app)
 
+    def test_vue_chat_admin_alias_is_limited_to_chat_and_notifications(self):
+        payload = function_source(API_PATH, "_session_payload")
+        self.assertIn('"chatAdminAlias"', payload)
+        self.assertIn('"notificationScope"', payload)
+        self.assertIn('_get_chat_admin_alias_ext_user_row', payload)
+
+        notifications = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
+        self.assertIn("COALESCE(kind,'') NOT IN ('chat_message', 'event_chat')", notifications)
+
+        client = (VUE_FRONTEND_PATH / "api" / "client.ts").read_text(encoding="utf-8-sig")
+        self.assertIn("scope === 'mfu' ? '/api/mfu-notifications'", client)
+
+        chat_actor = function_source(ROOT / "chat" / "__init__.py", "get_chat_actor")
+        self.assertLess(chat_actor.index('ext_user_id = session.get("ext_user_id")'), chat_actor.index('if session.get("user")'))
+        self.assertIn('"is_chat_admin_alias": True', chat_actor)
+
     def test_event_permissions_require_active_approved_membership(self):
         source = function_source(API_PATH, "_event_permissions")
         self.assertIn('membership.get("status")', source)

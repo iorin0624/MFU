@@ -142,8 +142,14 @@ def _notification_unread_count(external_user_id: int | None) -> int:
     if not external_user_id:
         return 0
     try:
-        from .notifications import _compute_unread_count_external
+        from .notifications import (
+            _compute_unread_count_external,
+            _compute_unread_count_mfu,
+            _get_chat_admin_alias_ext_user_row,
+        )
 
+        if _get_chat_admin_alias_ext_user_row(int(external_user_id)):
+            return int(_compute_unread_count_mfu("admin"))
         return int(_compute_unread_count_external(int(external_user_id)))
     except Exception:
         current_app.logger.warning("Vue event API unread count failed", exc_info=True)
@@ -153,6 +159,16 @@ def _notification_unread_count(external_user_id: int | None) -> int:
 def _session_payload() -> dict[str, Any]:
     actor = _actor()
     external = (actor or {}).get("external")
+    chat_admin_alias = False
+    if external:
+        try:
+            from .notifications import _get_chat_admin_alias_ext_user_row
+
+            chat_admin_alias = bool(
+                _get_chat_admin_alias_ext_user_row(int(external.get("id") or 0))
+            )
+        except Exception:
+            current_app.logger.warning("Vue event API admin alias lookup failed", exc_info=True)
     privacy_required = False
     if external:
         try:
@@ -171,6 +187,8 @@ def _session_payload() -> dict[str, Any]:
         "authenticated": bool(actor),
         "actorKind": (actor or {}).get("kind"),
         "profile": _profile(external) if external else None,
+        "chatAdminAlias": chat_admin_alias,
+        "notificationScope": "mfu" if chat_admin_alias else "external",
         "csrfToken": _csrf_token(),
         "navigation": _navigation(),
         "prerequisites": {

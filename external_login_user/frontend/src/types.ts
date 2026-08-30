@@ -27,6 +27,8 @@ export interface PortalSession {
   authenticated: boolean;
   actorKind?: 'external' | null;
   profile?: UserProfile | null;
+  chatAdminAlias: boolean;
+  notificationScope: 'external' | 'mfu';
   csrfToken: string;
   navigation: NavigationItem[];
   prerequisites: {

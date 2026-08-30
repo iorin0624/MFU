@@ -2667,6 +2667,28 @@ def _get_external_user_chat_admin_alias(ext_user_id: int) -> bool:
 
 def get_chat_actor() -> dict[str, Any] | None:
     """admin / acl / line を統一形式へ正規化。"""
+    # A LINE external user explicitly configured as the chat admin alias wins
+    # only inside chat, even when an MFU login remains in the same browser.
+    ext_user_id = session.get("ext_user_id")
+    if ext_user_id:
+        alias_row = _get_chat_admin_alias_row(int(ext_user_id))
+        if alias_row and int(alias_row.get("chat_admin_alias") or 0) == 1:
+            display_name = get_external_user_display_name(int(ext_user_id))
+            current_app.logger.info(
+                "chat admin alias login ext_user_id=%s social_id=%s",
+                ext_user_id,
+                alias_row.get("social_id"),
+            )
+            return {
+                "actor_type": "admin",
+                "actor_id": "admin",
+                "display_name": display_name,
+                "email": alias_row.get("email"),
+                "is_chat_admin_alias": True,
+                "source_ext_user_id": int(alias_row.get("id") or 0),
+                "source_social_id": alias_row.get("social_id"),
+            }
+
     if session.get("user"):
         username = str(session.get("user"))
         actor_type = "admin" if username == "admin" else "acl"
@@ -2690,28 +2712,12 @@ def get_chat_actor() -> dict[str, Any] | None:
             "email": email,
         }
 
-    ext_user_id = session.get("ext_user_id")
     if ext_user_id:
         row = _get_chat_admin_alias_row(int(ext_user_id))
         if not row:
             current_app.logger.warning("chat actor load failed for ext_user_id=%s", ext_user_id)
             return None
         display_name = get_external_user_display_name(int(ext_user_id))
-        if int(row.get("chat_admin_alias") or 0) == 1:
-            current_app.logger.info(
-                "chat admin alias login ext_user_id=%s social_id=%s",
-                ext_user_id,
-                row.get("social_id"),
-            )
-            return {
-                "actor_type": "admin",
-                "actor_id": "admin",
-                "display_name": display_name,
-                "email": row.get("email"),
-                "is_chat_admin_alias": True,
-                "source_ext_user_id": int(row.get("id") or 0),
-                "source_social_id": row.get("social_id"),
-            }
         return {
             "actor_type": "line",
             "actor_id": str(row["id"]),
