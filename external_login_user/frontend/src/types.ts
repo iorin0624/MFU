@@ -25,9 +25,8 @@ export interface UserProfile {
 
 export interface PortalSession {
   authenticated: boolean;
-  actorKind?: 'external' | 'mfu' | null;
+  actorKind?: 'external' | null;
   profile?: UserProfile | null;
-  mfuUsername?: string | null;
   csrfToken: string;
   navigation: NavigationItem[];
   prerequisites: {

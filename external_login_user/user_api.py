@@ -103,9 +103,11 @@ def _actor() -> dict[str, Any] | None:
     external = _external_user()
     if external:
         return {"kind": "external", "external": external, "username": None}
-    username = str(session.get("user") or "").strip()
-    if username:
-        return {"kind": "mfu", "external": None, "username": username}
+    # The participant-facing Vue portal intentionally accepts only an
+    # external-user session (LINE or the email-PIN login that resolves to the
+    # same external_login_user row).  An MFU administrator may be signed in in
+    # the same browser, but that session must never become the portal actor
+    # after the participant logs out.
     return None
 
 
@@ -169,7 +171,6 @@ def _session_payload() -> dict[str, Any]:
         "authenticated": bool(actor),
         "actorKind": (actor or {}).get("kind"),
         "profile": _profile(external) if external else None,
-        "mfuUsername": (actor or {}).get("username"),
         "csrfToken": _csrf_token(),
         "navigation": _navigation(),
         "prerequisites": {

@@ -165,11 +165,17 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertIn("_event_access(event, actor)", source)
         self.assertIn('return _error("forbidden", 403)', source)
 
-    def test_event_access_supports_external_membership_admin_and_acl(self):
-        source = function_source(API_PATH, "_event_access")
-        self.assertIn("_latest_membership", source)
-        self.assertIn('username == "admin"', source)
-        self.assertIn("_event_acl_role", source)
+    def test_participant_vue_actor_never_falls_back_to_mfu_login(self):
+        source = function_source(API_PATH, "_actor")
+        self.assertIn("_external_user", source)
+        self.assertNotIn('session.get("user")', source)
+        self.assertNotIn('"kind": "mfu"', source)
+
+        payload = function_source(API_PATH, "_session_payload")
+        self.assertNotIn('"mfuUsername"', payload)
+
+        app = (VUE_FRONTEND_PATH / "App.vue").read_text(encoding="utf-8-sig")
+        self.assertNotIn("またはMFUログイン", app)
 
     def test_event_permissions_require_active_approved_membership(self):
         source = function_source(API_PATH, "_event_permissions")
