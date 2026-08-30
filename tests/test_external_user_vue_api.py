@@ -116,9 +116,25 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertIn("markAllNotificationsRead", notifications)
         self.assertIn("window.confirm", notifications)
         self.assertIn("未読チャットは既読にはなりません", notifications)
-        self.assertIn("COALESCE(kind,'') <> 'chat_message'", backend)
+        self.assertIn("COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm')", backend)
         self.assertNotIn("deleteAllNotifications", notifications)
         self.assertNotIn('@bp.post("/api/notifications/delete-all")', backend)
+
+    def test_vue_notification_counts_are_split_and_realtime(self):
+        backend = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
+        header = (VUE_FRONTEND_PATH / "components" / "AppHeader.vue").read_text(encoding="utf-8-sig")
+        view = (VUE_FRONTEND_PATH / "views" / "NotificationsView.vue").read_text(encoding="utf-8-sig")
+        realtime = (VUE_FRONTEND_PATH / "services" / "notificationRealtime.ts").read_text(encoding="utf-8-sig")
+        self.assertIn('_CHAT_NOTIFICATION_KINDS = ("chat_message", "event_chat", "dm")', backend)
+        self.assertIn('"notifications": notice_count', backend)
+        self.assertIn('"chat": chat_count', backend)
+        self.assertIn("totalUnread", header)
+        self.assertIn("noticeUnread", header)
+        self.assertIn("chatUnread", header)
+        for marker in ("すべて", "未読", "お知らせ", "チャット"):
+            self.assertIn(marker, view)
+        self.assertIn("notif_unread", realtime)
+        self.assertIn("30_000", realtime)
 
     def test_event_chat_and_line_openchat_are_exclusive(self):
         source = function_source(API_PATH, "_event_payload")
@@ -184,7 +200,7 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertIn('_get_chat_admin_alias_ext_user_row', payload)
 
         notifications = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
-        self.assertIn("COALESCE(kind,'') NOT IN ('chat_message', 'event_chat')", notifications)
+        self.assertIn("COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm')", notifications)
 
         client = (VUE_FRONTEND_PATH / "api" / "client.ts").read_text(encoding="utf-8-sig")
         self.assertIn("scope === 'mfu' ? '/api/mfu-notifications'", client)

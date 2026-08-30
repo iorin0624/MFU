@@ -126,6 +126,22 @@ def _to_unread_only(value: Any, *, default: bool = False) -> bool:
     return unread_arg in {"1", "true", "yes", "on"}
 
 
+_CHAT_NOTIFICATION_KINDS = ("chat_message", "event_chat", "dm")
+
+
+def _notification_category(value: Any) -> str:
+    category = str(value or "all").strip().lower()
+    return category if category in {"all", "notice", "chat"} else "all"
+
+
+def _notification_category_sql(category: str) -> str:
+    if category == "chat":
+        return "COALESCE(kind,'') IN ('chat_message', 'event_chat', 'dm')"
+    if category == "notice":
+        return "COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm')"
+    return "1=1"
+
+
 def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
     scope = _resolve_notification_scope_for_session()
     if scope == "external":
@@ -332,14 +348,14 @@ def _prune_old_read_notifications(cur, user_id: int) -> int:
     return int(cur.rowcount or 0)
 
 
-def _compute_unread_count_external(uid: int) -> int:
+def _compute_unread_counts_external(uid: int) -> dict[str, int]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         room_cache: dict[str, tuple[int, str]] = {}
         cur.execute(
             """
-            SELECT id, target_url, event_id
+            SELECT id, kind, target_url, event_id
                  , chat_event_id, chat_room_id
               FROM mfu_notifications
              WHERE user_kind='external'
@@ -349,25 +365,37 @@ def _compute_unread_count_external(uid: int) -> int:
             (int(uid),),
         )
         unread_rows = cur.fetchall() or []
-        count = 0
+        notice_count = 0
+        chat_count = 0
         for row in unread_rows:
             visible, _room_name = _is_notification_visible_for_external(cur, int(uid), row, room_cache)
             if visible:
-                count += 1
-        return count
+                if str(row.get("kind") or "") in _CHAT_NOTIFICATION_KINDS:
+                    chat_count += 1
+                else:
+                    notice_count += 1
+        return {
+            "total": notice_count + chat_count,
+            "notifications": notice_count,
+            "chat": chat_count,
+        }
     finally:
         cur.close()
         db.close()
+
+
+def _compute_unread_count_external(uid: int) -> int:
+    return int(_compute_unread_counts_external(uid)["total"])
 
 
 def _emit_notif_unread(uid: int, reason: str = "sync", latest_id: int | None = None) -> None:
     if socketio is None:
         return
     try:
-        count = _compute_unread_count_external(int(uid))
+        counts = _compute_unread_counts_external(int(uid))
         socketio.emit(
             "notif_unread",
-            {"count": count, "latest_id": latest_id, "reason": reason},
+            {"count": counts["total"], **counts, "latest_id": latest_id, "reason": reason},
             room=f"external_user:{int(uid)}",
         )
     except Exception:
@@ -760,16 +788,18 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
     return summary
 
 
-def _compute_unread_count_mfu(username: str) -> int:
+def _compute_unread_counts_mfu(username: str) -> dict[str, int]:
     recipient = (username or "").strip()
     if not recipient:
-        return 0
+        return {"total": 0, "notifications": 0, "chat": 0}
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         cur.execute(
             """
-            SELECT COUNT(*) AS cnt
+            SELECT
+              SUM(CASE WHEN COALESCE(kind,'') IN ('chat_message', 'event_chat', 'dm') THEN 1 ELSE 0 END) AS chat_count,
+              SUM(CASE WHEN COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm') THEN 1 ELSE 0 END) AS notice_count
               FROM mfu_notifications
              WHERE user_kind='mfu'
                AND recipient_key=%s
@@ -777,10 +807,21 @@ def _compute_unread_count_mfu(username: str) -> int:
             """,
             (recipient,),
         )
-        return int((cur.fetchone() or {}).get("cnt") or 0)
+        row = cur.fetchone() or {}
+        notice_count = int(row.get("notice_count") or 0)
+        chat_count = int(row.get("chat_count") or 0)
+        return {
+            "total": notice_count + chat_count,
+            "notifications": notice_count,
+            "chat": chat_count,
+        }
     finally:
         cur.close()
         db.close()
+
+
+def _compute_unread_count_mfu(username: str) -> int:
+    return int(_compute_unread_counts_mfu(username)["total"])
 
 
 def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int | None = None) -> None:
@@ -790,10 +831,10 @@ def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int |
     if not recipient:
         return
     try:
-        count = _compute_unread_count_mfu(recipient)
+        counts = _compute_unread_counts_mfu(recipient)
         socketio.emit(
             "notif_unread",
-            {"count": count, "latest_id": latest_id, "reason": reason, "scope": "mfu"},
+            {"count": counts["total"], **counts, "latest_id": latest_id, "reason": reason, "scope": "mfu"},
             room=f"mfu_user:{recipient}",
         )
     except Exception:
@@ -823,6 +864,7 @@ def _serialize_mfu_notification_item(row: dict[str, Any]) -> dict[str, Any]:
         "room_type": row.get("room_type") or "",
         "room_id": row.get("room_id") or row.get("chat_room_id") or "",
         "is_read": bool(read_at),
+        "read_at": read_at.isoformat() if read_at else None,
         "created_at": created_at.isoformat() if created_at else None,
         "relative_time": _relative_time_from(created_at),
     }
@@ -1300,10 +1342,19 @@ def api_mfu_notifications_unread_count():
     username, error = _require_mfu_admin_acl()
     if error:
         return error
-    return jsonify({"ok": True, "unread_count": _compute_unread_count_mfu(username)})
+    counts = _compute_unread_counts_mfu(username)
+    return jsonify({"ok": True, "count": counts["total"], "unread_count": counts["total"], **counts})
 
 
-def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0, unread_only: bool = False) -> tuple[list[dict[str, Any]], int | None]:
+def _fetch_mfu_notifications(
+    recipient: str,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    since_id: int = 0,
+    unread_only: bool = False,
+    category: str = "all",
+) -> tuple[list[dict[str, Any]], int | None, int]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -1311,6 +1362,7 @@ def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int =
         params: list[Any] = [recipient]
         if unread_only:
             where_sql += " AND read_at IS NULL"
+        where_sql += f" AND {_notification_category_sql(category)}"
         if since_id > 0:
             where_sql += " AND id > %s"
             params.append(int(since_id))
@@ -1324,16 +1376,18 @@ def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int =
               FROM mfu_notifications
              WHERE {where_sql}
              {order_sql}
-             LIMIT %s
+             LIMIT %s OFFSET %s
             """,
-            tuple(params + [int(limit)]),
+            tuple(params + [int(limit), max(int(offset), 0)]),
         )
         rows = cur.fetchall() or []
         items = [_serialize_mfu_notification_item(r) for r in rows]
         if since_id <= 0:
             items = sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)
         latest_id = max((int(x.get("id") or 0) for x in items), default=0) or None
-        return items, latest_id
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM mfu_notifications WHERE {where_sql}", tuple(params))
+        total = int((cur.fetchone() or {}).get("cnt") or 0)
+        return items, latest_id, total
     finally:
         cur.close()
         db.close()
@@ -1346,14 +1400,26 @@ def api_mfu_notifications_list():
     if error:
         return error
     unread_only = _to_unread_only(request.args.get("unread"), default=False)
-    current_app.logger.info("mfu notifications list user=%s unread_only=%s", username, unread_only)
-    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0, unread_only=unread_only)
+    category = _notification_category(request.args.get("category"))
+    page = max(int(request.args.get("page") or 1), 1)
+    per_page = 20
+    items, latest_id, total = _fetch_mfu_notifications(
+        username,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        since_id=0,
+        unread_only=unread_only,
+        category=category,
+    )
+    counts = _compute_unread_counts_mfu(username)
+    current_app.logger.info("mfu notifications list user=%s unread_only=%s category=%s page=%s", username, unread_only, category, page)
     return jsonify({
         "ok": True,
         "items": items,
-        "unread_count": _compute_unread_count_mfu(username),
+        "unread_count": counts["total"],
+        "unread": counts,
         "latest_id": latest_id,
-        "pagination": {"has_next": False},
+        "pagination": {"page": page, "per_page": per_page, "total": total, "has_next": page * per_page < total},
     })
 
 
@@ -1365,11 +1431,14 @@ def api_mfu_notifications_updates():
         return error
     since_id = max(int(request.args.get("since_id") or 0), 0)
     unread_only = _to_unread_only(request.args.get("unread"), default=False)
-    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id, unread_only=unread_only)
+    category = _notification_category(request.args.get("category"))
+    items, latest_id, _total = _fetch_mfu_notifications(username, limit=20, since_id=since_id, unread_only=unread_only, category=category)
+    counts = _compute_unread_counts_mfu(username)
     return jsonify({
         "ok": True,
         "items": items,
-        "unread_count": _compute_unread_count_mfu(username),
+        "unread_count": counts["total"],
+        "unread": counts,
         "latest_id": latest_id or since_id,
     })
 
@@ -1416,7 +1485,7 @@ def api_mfu_notifications_mark_all_read():
             UPDATE mfu_notifications
                SET read_at=%s
               WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
-               AND COALESCE(kind,'') NOT IN ('chat_message', 'event_chat')
+               AND COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm')
             """,
             (datetime.utcnow(), username),
         )
@@ -1441,9 +1510,9 @@ def api_notifications_unread_count():
         return resp
 
     try:
-        count = _compute_unread_count_external(uid)
-        current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
-        resp = jsonify({"count": count})
+        counts = _compute_unread_counts_external(uid)
+        current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, counts["total"])
+        resp = jsonify({"count": counts["total"], "unread_count": counts["total"], **counts})
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"] = "no-cache"
         return resp
@@ -1461,6 +1530,7 @@ def api_notifications_list():
     uid = int(session.get("ext_user_id") or 0)
     _ensure_notification_schema()
     unread_only = _to_unread_only(request.args.get("unread"), default=True)
+    category = _notification_category(request.args.get("category"))
     page = max(int(request.args.get("page") or 1), 1)
     per_page = 20
     offset = (page - 1) * per_page
@@ -1469,6 +1539,7 @@ def api_notifications_list():
     params: list[Any] = [uid]
     if unread_only:
         where.append("read_at IS NULL")
+    where.append(_notification_category_sql(category))
 
     where_sql = " AND ".join(where)
     db = get_db()
@@ -1482,24 +1553,17 @@ def api_notifications_list():
               FROM mfu_notifications
              WHERE {where_sql}
              ORDER BY created_at DESC, id DESC
-             LIMIT %s OFFSET %s
             """,
-            tuple(params + [per_page, offset]),
+            tuple(params),
         )
         rows = cur.fetchall() or []
 
-        cur.execute(
-            f"SELECT COUNT(*) AS cnt FROM mfu_notifications WHERE {where_sql}",
-            tuple(params),
-        )
-        _ = int((cur.fetchone() or {}).get("cnt") or 0)
-
-        items = []
+        visible_items = []
         for row in rows:
             visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
             if not visible:
                 continue
-            items.append(
+            visible_items.append(
                 {
                     "id": int(row["id"]),
                     "kind": row.get("kind"),
@@ -1513,24 +1577,17 @@ def api_notifications_list():
                 }
             )
 
-        cur.execute(
-            f"SELECT id, target_url, event_id, chat_event_id, chat_room_id FROM mfu_notifications WHERE {where_sql}",
-            tuple(params),
-        )
-        all_rows = cur.fetchall() or []
-        total = 0
-        for row in all_rows:
-            visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
-            if visible:
-                total += 1
+        total = len(visible_items)
+        items = visible_items[offset:offset + per_page]
 
         latest_id = items[0]["id"] if items else None
         latest_created_at = items[0]["created_at"] if items else None
         current_app.logger.info(
-            "notifications list user_id=%s page=%s unread_only=%s returned=%s total=%s latest_id=%s latest_created_at=%s",
+            "notifications list user_id=%s page=%s unread_only=%s category=%s returned=%s total=%s latest_id=%s latest_created_at=%s",
             uid,
             page,
             unread_only,
+            category,
             len(items),
             total,
             latest_id,
@@ -1576,7 +1633,7 @@ def api_notifications_updates():
 
         cur.execute(
             """
-            SELECT id, title, body, target_url, event_id, created_at, read_at
+            SELECT id, kind, title, body, target_url, event_id, created_at, read_at
                  , chat_event_id, chat_room_id
               FROM mfu_notifications
              WHERE user_kind='external'
@@ -1619,6 +1676,7 @@ def api_notifications_updates():
             items.append(
                 {
                     "id": item_id,
+                    "kind": row.get("kind"),
                     "title": row.get("title"),
                     "body": row.get("body") or "",
                     "target_url": row.get("target_url") or "/external-login/",
@@ -1705,7 +1763,7 @@ def api_notifications_mark_all_read():
              WHERE user_kind='external'
                AND user_id=%s
                AND read_at IS NULL
-               AND COALESCE(kind,'') <> 'chat_message'
+               AND COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm')
             """,
             (datetime.utcnow(), uid),
         )

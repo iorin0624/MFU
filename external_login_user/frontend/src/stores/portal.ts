@@ -34,6 +34,22 @@ export const usePortalStore = defineStore('portal', {
       const response = await portalApi.events(scope);
       this.events = response.events;
     },
+    applyUnread(payload: Partial<{ total: number; notifications: number; chat: number }>) {
+      if (!this.session) return;
+      const current = this.session.unread || { total: 0, notifications: 0, chat: 0 };
+      const notifications = Math.max(0, Number(payload.notifications ?? current.notifications ?? 0));
+      const chat = Math.max(0, Number(payload.chat ?? current.chat ?? 0));
+      this.session.unread = {
+        notifications,
+        chat,
+        total: Math.max(0, Number(payload.total ?? (notifications + chat))),
+      };
+    },
+    async refreshUnread() {
+      if (!this.session?.authenticated) return;
+      const counts = await portalApi.notificationUnread(this.session.notificationScope);
+      this.applyUnread(counts);
+    },
     async logout() {
       await portalApi.logout();
       this.session = null;

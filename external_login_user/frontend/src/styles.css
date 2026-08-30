@@ -30,6 +30,8 @@ a { color: inherit; }
 .account-chip img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; background: #edf1f7; }
 .menu-button { display: none; margin-left: auto; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 10px; }
 .menu-button span { display: block; height: 2px; margin: 5px 0; background: #354158; }
+.menu-button { position: relative; }
+.menu-badge { position: absolute; top: -7px; right: -7px; min-width: 21px; height: 21px; padding: 0 5px; border: 2px solid #fff; border-radius: 12px; display: grid; place-items: center; background: #e02f44; color: #fff; font-size: .65rem; line-height: 1; }
 .app-main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 80px; }
 .page-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
 .page-heading h1, .event-hero h1 { margin: 3px 0 7px; line-height: 1.25; font-size: clamp(1.8rem, 4vw, 2.55rem); }
