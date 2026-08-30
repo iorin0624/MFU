@@ -47,6 +47,12 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             "views/EventPassView.vue",
             "views/EventMembersView.vue",
             "views/EventSocialView.vue",
+            "views/NotificationsView.vue",
+            "views/ProfileView.vue",
+            "views/LoginView.vue",
+            "views/EmailVerifyView.vue",
+            "views/JoinEventView.vue",
+            "views/EventPaymentView.vue",
             "views/AlbumView.vue",
             "views/ChildAlbumView.vue",
             "components/AppHeader.vue",
@@ -66,6 +72,10 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
             '"/api/vue/events/<event_uuid>/members"',
             '"/api/vue/events/<event_uuid>/participants-email"',
             '"/api/vue/events/<event_uuid>/my-role"',
+            '"/api/vue/events/<event_uuid>/join"',
+            '"/api/vue/profile"',
+            '"/api/vue/email-verification/send"',
+            '"/api/vue/email-verification/verify"',
             '"/api/vue/logout"',
         ):
             self.assertIn(route, source)
@@ -96,6 +106,20 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertIn("www.instagram.com", members)
         self.assertIn("SNS貼付用", social)
         self.assertNotIn("X / Instagramリンク", social)
+
+    def test_vue_account_and_notification_navigation_stays_inside_portal(self):
+        source = function_source(API_PATH, "_navigation")
+        self.assertIn('/notifications', source)
+        self.assertIn('/profile', source)
+        header = (VUE_FRONTEND_PATH / "components" / "AppHeader.vue").read_text(encoding="utf-8-sig")
+        self.assertIn("router.push('/notifications')", header)
+        self.assertIn("router.push('/profile')", header)
+
+    def test_payment_view_hands_sensitive_input_to_existing_square_route(self):
+        component = (VUE_FRONTEND_PATH / "views" / "EventPaymentView.vue").read_text(encoding="utf-8-sig")
+        self.assertIn("event.urls.payment", component)
+        self.assertIn("event.urls.receipt", component)
+        self.assertIn("Square決済画面", component)
 
     def test_vue_session_exposes_document_links(self):
         source = function_source(API_PATH, "_session_payload")

@@ -2835,6 +2835,8 @@ def join_event(event_uuid: str):
             flash("参加申請を受け付けました。承認までお待ちください。", "success")
         else:
             flash("参加が承認されました。", "success")
+        if request.form.get("vue") == "1":
+            return redirect(f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/events/{ev_uuid_str}")
         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
 
     # =========================
@@ -4500,6 +4502,9 @@ def pin_request():
         except Exception:
             pass
 
+    if request.is_json:
+        return jsonify({"ok": bool(ok), "message": msg}), (200 if ok else 429)
+
     flash(msg, "success" if ok else "warning")
     return redirect(url_for("external_login_user.index"))
 
@@ -4522,6 +4527,8 @@ def pin_login():
             email = ""
 
     if not email or "@" not in email or not pin or not pin.isdigit() or len(pin) != 6:
+        if request.is_json:
+            return jsonify({"ok": False, "error": "invalid_input", "message": "メールアドレスと6桁のPINコードを入力してください。"}), 400
         flash("メールアドレスと6桁のPINコードを入力してください。", "warning")
         return redirect(url_for("external_login_user.index"))
 
@@ -4561,6 +4568,8 @@ def pin_login():
             break
 
     if not pin_ok:
+        if request.is_json:
+            return jsonify({"ok": False, "error": "invalid_pin", "message": "PINコードが一致しないか、有効期限が切れています。"}), 400
         flash("PINコードが一致しないか、有効期限が切れています。", "danger")
         return redirect(url_for("external_login_user.index"))
 
@@ -4576,6 +4585,8 @@ def pin_login():
     # ユーザーを email から特定 → ext セッションに反映
     target = _resolve_user_by_email(email)
     if not target or not target.get("social_id"):
+        if request.is_json:
+            return jsonify({"ok": False, "error": "user_not_found", "message": "このメールアドレスに対応するユーザーが見つかりません。"}), 404
         flash("このメールアドレスに対応するユーザーが見つかりません。プロフィールから登録してください。", "warning")
         return redirect(url_for("external_login_user.profile"))
 
@@ -4590,6 +4601,8 @@ def pin_login():
         pass
 
     _write_login_log(target["id"], target.get("nickname") or "", "PIN_LOGIN")
+    if request.is_json:
+        return jsonify({"ok": True, "loggedIn": True, "nickname": target.get("nickname") or ""})
     flash("PINコードでログインしました。", "success")
     return redirect(session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
 

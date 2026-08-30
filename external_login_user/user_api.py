@@ -7,6 +7,7 @@ membership/ACL on every request.
 
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import date, datetime
 from typing import Any
@@ -128,10 +129,10 @@ def _navigation() -> list[dict[str, Any]]:
         {
             "id": "notifications",
             "label": "通知",
-            "url": url_for("external_login_user.notifications_page"),
+            "url": f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/notifications",
             "badge": "notifications",
         },
-        {"id": "account", "label": "アカウント", "url": url_for("external_login_user.profile")},
+        {"id": "account", "label": "アカウント", "url": f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/profile"},
     ]
 
 
@@ -656,6 +657,205 @@ def user_api_update_my_role(event_uuid: str):
         saved_role,
     )
     return _ok(participantRole=saved_role, costumeLabel=costume, degraded=bool(degraded))
+
+
+@bp.get("/api/vue/events/<event_uuid>/join")
+def user_api_join_info(event_uuid: str):
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    event = _event_by_uuid_str(event_uuid)
+    if not event:
+        return _error("event_not_found", 404)
+    user = actor["external"]
+    membership = _latest_membership(int(event.get("id") or 0), int(user.get("id") or 0))
+    status = str((membership or {}).get("status") or "") or None
+    if membership and int(membership.get("is_canceled") or 0) == 1:
+        status = "canceled"
+    terms = _get_current_participant_terms_config()
+    effective = bool(terms.get("participant_terms_url") and terms.get("participant_terms_revised_date"))
+    if "ext_csrf" not in session:
+        session["ext_csrf"] = secrets.token_hex(16)
+    return _ok(join={
+        "event": {
+            "uuid": event_uuid,
+            "title": str(event.get("title") or ""),
+            "startsAt": _value(event.get("starts_at")),
+            "feeYen": event.get("fee_yen"),
+            "placeName": event.get("place_name"),
+            "address": event.get("address"),
+        },
+        "status": status,
+        "participantRole": str((membership or {}).get("participant_role") or "cosplayer"),
+        "costumeLabel": str((membership or {}).get("costume_label") or ""),
+        "process": bool((membership or {}).get("process")),
+        "termsRequired": effective,
+        "termsUrl": str(terms.get("participant_terms_url") or ""),
+        "csrfToken": str(session["ext_csrf"]),
+        "submitUrl": url_for("external_login_user.join_event", event_uuid=event_uuid),
+    })
+
+
+@bp.get("/api/vue/profile")
+def user_api_profile():
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    user_id = int(actor["external"].get("id") or 0)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, nickname, x_id, instagram_id, email, email_verified_at,
+                   avatar_file, avatar_url, updated_at,
+                   COALESCE(payment_mode,'manual') AS payment_mode,
+                   COALESCE(notify_album_upload,1) AS notify_album_upload,
+                   COALESCE(notify_album_process,1) AS notify_album_process
+              FROM external_login_user WHERE id=%s LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            """
+            SELECT card_brand, last4, exp_month, exp_year
+              FROM external_login_user_card_data
+             WHERE user_id=%s AND deleted_at IS NULL
+             ORDER BY is_default DESC, id DESC LIMIT 1
+            """,
+            (user_id,),
+        )
+        card = cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+    if not row:
+        return _error("profile_not_found", 404)
+    return _ok(profile={
+        **_profile(row),
+        "paymentMode": str(row.get("payment_mode") or "manual"),
+        "notifyAlbumUpload": bool(row.get("notify_album_upload")),
+        "notifyAlbumProcess": bool(row.get("notify_album_process")),
+        "hasCard": bool(card),
+        "cardSummary": (
+            f"{str(card.get('card_brand') or '').upper()} ****{card.get('last4') or '****'}"
+            if card else None
+        ),
+    })
+
+
+@bp.patch("/api/vue/profile")
+def user_api_update_profile():
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    user = actor["external"]
+    payload = request.form if request.form else (request.get_json(silent=True) or {})
+    nickname = str(payload.get("nickname") or "").strip()
+    x_id = str(payload.get("xId") or payload.get("x_id") or "").strip().lstrip("@") or None
+    instagram_id = str(payload.get("instagramId") or payload.get("instagram_id") or "").strip().lstrip("@") or None
+    email = str(payload.get("email") or "").strip() or None
+    payment_mode = str(payload.get("paymentMode") or payload.get("payment_mode") or "manual").strip().lower()
+    notify_upload = str(payload.get("notifyAlbumUpload") or payload.get("notify_album_upload") or "0").lower() in {"1", "true", "on", "yes"}
+    notify_process = str(payload.get("notifyAlbumProcess") or payload.get("notify_album_process") or "0").lower() in {"1", "true", "on", "yes"}
+    errors: dict[str, str] = {}
+    if not nickname:
+        errors["nickname"] = "ニックネームは必須です。"
+    if x_id and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", x_id):
+        errors["xId"] = "X IDは半角英数と_で1〜15文字で入力してください。"
+    if instagram_id and not (
+        re.fullmatch(r"[A-Za-z0-9._]{1,30}", instagram_id)
+        and not instagram_id.startswith(".") and not instagram_id.endswith(".") and ".." not in instagram_id
+    ):
+        errors["instagramId"] = "Instagram IDの形式が正しくありません。"
+    if not email or "@" not in email or len(email) > 255:
+        errors["email"] = "正しいメールアドレスを入力してください。"
+    if payment_mode not in {"manual", "auto"}:
+        errors["paymentMode"] = "決済方法が正しくありません。"
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT email, email_verified_at FROM external_login_user WHERE id=%s LIMIT 1", (int(user["id"]),))
+        before = cur.fetchone() or {}
+        cur.execute("SELECT 1 AS ok FROM external_login_user_card_data WHERE user_id=%s AND deleted_at IS NULL LIMIT 1", (int(user["id"]),))
+        has_card = bool(cur.fetchone())
+        if payment_mode == "auto" and not has_card:
+            errors["paymentMode"] = "自動決済にはカード登録が必要です。"
+        if errors:
+            return _error("validation_error", 400, "入力内容を確認してください。", errors=errors)
+        email_changed = str(before.get("email") or "").lower() != str(email or "").lower()
+        cur.execute(
+            """
+            UPDATE external_login_user
+               SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
+                   email_verified_at=IF(%s, NULL, email_verified_at),
+                   payment_mode=%s, notify_album_upload=%s, notify_album_process=%s,
+                   updated_at=NOW()
+             WHERE id=%s LIMIT 1
+            """,
+            (nickname, x_id, instagram_id, email, 1 if email_changed else 0,
+             payment_mode, int(notify_upload), int(notify_process), int(user["id"])),
+        )
+        avatar = request.files.get("avatar")
+        if avatar and getattr(avatar, "filename", ""):
+            from .users import _save_avatar
+            saved = _save_avatar(avatar)
+            if not saved:
+                db.rollback()
+                return _error("invalid_avatar", 400, "画像形式はPNG・JPEG・WEBP・GIFのみ対応しています。")
+            cur.execute("UPDATE external_login_user SET avatar_file=%s, updated_at=NOW() WHERE id=%s", (saved, int(user["id"])))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+        db.close()
+    session["ext_user_nickname"] = nickname
+    verification_sent = False
+    if email_changed and email:
+        try:
+            from .users import _issue_verify_pin, _send_verify_pin_mail
+            ok, _reason, pin = _issue_verify_pin(int(user["id"]), email)
+            if ok and pin:
+                _send_verify_pin_mail(email, pin)
+                verification_sent = True
+        except Exception:
+            current_app.logger.exception("Vue profile verification mail failed")
+    return _ok(saved=True, emailVerificationRequired=bool(email_changed), verificationSent=verification_sent)
+
+
+@bp.post("/api/vue/email-verification/send")
+def user_api_send_email_verification():
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    user = actor["external"]
+    email = str(user.get("email") or "").strip()
+    if not email:
+        return _error("email_required", 400, "プロフィールにメールアドレスを登録してください。")
+    from .users import _issue_verify_pin, _send_verify_pin_mail
+    ok, reason, pin = _issue_verify_pin(int(user["id"]), email)
+    if not ok or not pin:
+        return _error(reason or "send_failed", 429 if reason in {"cooldown", "rate_limited"} else 500)
+    _send_verify_pin_mail(email, pin)
+    return _ok(sent=True, email=email)
+
+
+@bp.post("/api/vue/email-verification/verify")
+def user_api_verify_email():
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    user = actor["external"]
+    email = str(user.get("email") or "").strip()
+    pin = str((request.get_json(silent=True) or {}).get("pin") or "").strip()
+    from .users import _consume_verify_pin
+    ok, reason = _consume_verify_pin(int(user["id"]), email, pin)
+    if not ok:
+        return _error(reason or "invalid_pin", 400, "PINコードが一致しないか、有効期限が切れています。")
+    return _ok(verified=True)
 
 
 @bp.post("/api/vue/logout")
