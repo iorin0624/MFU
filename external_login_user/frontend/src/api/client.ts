@@ -82,11 +82,11 @@ export const portalApi = {
   requestParticipantsEmail: (uuid: string) => requestJson<{ok: true; accepted: boolean; message: string}>(
     `${runtimeConfig.eventsUrl}/${encoded(uuid)}/participants-email`, { method: 'POST' },
   ),
-  notifications: (page = 1, unread = false) => requestJson<{items: Array<{id: number; kind?: string; title?: string; body: string; target_url: string; room_name?: string; created_at?: string; read_at?: string}>; pagination: {page: number; per_page: number; total: number; has_next: boolean}}>(
-    `/external-login/api/notifications?page=${page}&unread=${unread ? '1' : '0'}`,
+  notifications: (scope: 'external' | 'mfu', page = 1, unread = false) => requestJson<{items: Array<{id: number; kind?: string; title?: string; body: string; target_url: string; room_name?: string; created_at?: string; read_at?: string}>; pagination: {page?: number; per_page?: number; total?: number; has_next: boolean}}>(
+    `${scope === 'mfu' ? '/api/mfu-notifications' : '/external-login/api/notifications'}?page=${page}&unread=${unread ? '1' : '0'}`,
   ),
-  markNotificationRead: (id: number) => requestJson<{ok: true}>(`/external-login/api/notifications/${id}/read`, { method: 'POST' }),
-  markAllNotificationsRead: () => requestJson<{ok: true; updated: number}>('/external-login/api/notifications/read-all', { method: 'POST' }),
+  markNotificationRead: (scope: 'external' | 'mfu', id: number) => requestJson<{ok: true}>(`${scope === 'mfu' ? '/api/mfu-notifications' : '/external-login/api/notifications'}/${id}/read`, { method: 'POST' }),
+  markAllNotificationsRead: (scope: 'external' | 'mfu') => requestJson<{ok: true; updated: number}>(`${scope === 'mfu' ? '/api/mfu-notifications' : '/external-login/api/notifications'}/read-all`, { method: 'POST' }),
   saveMyEventRole: (uuid: string, participantRole: string, costumeLabel: string) => requestJson<{ok: true; participantRole: string; costumeLabel?: string | null}>(
     `${runtimeConfig.eventsUrl}/${encoded(uuid)}/my-role`,
     { method: 'POST', body: JSON.stringify({ participantRole, costumeLabel }) },

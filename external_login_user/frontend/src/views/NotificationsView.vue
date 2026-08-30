@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue';
 import { portalApi } from '@/api/client';
 import { formatDateTime } from '@/utils/format';
+import { usePortalStore } from '@/stores/portal';
 
 type Item = { id: number; kind?: string; title?: string; body: string; target_url: string; room_name?: string; created_at?: string; read_at?: string };
 const items = ref<Item[]>([]);
@@ -10,26 +11,31 @@ const hasNext = ref(false);
 const unreadOnly = ref(false);
 const busy = ref(false);
 const error = ref('');
+const store = usePortalStore();
+
+function notificationScope(): 'external' | 'mfu' {
+  return store.session?.notificationScope === 'mfu' ? 'mfu' : 'external';
+}
 
 async function load(reset = true) {
   busy.value = true; error.value = '';
   try {
-    const response = await portalApi.notifications(reset ? 1 : page.value, unreadOnly.value);
+    const response = await portalApi.notifications(notificationScope(), reset ? 1 : page.value, unreadOnly.value);
     items.value = reset ? response.items : [...items.value, ...response.items];
-    page.value = response.pagination.page;
+    page.value = response.pagination.page ?? (reset ? 1 : page.value);
     hasNext.value = response.pagination.has_next;
   } catch (reason) { error.value = reason instanceof Error ? reason.message : '通知を取得できませんでした。'; }
   finally { busy.value = false; }
 }
 async function open(item: Item) {
-  if (!item.read_at) { await portalApi.markNotificationRead(item.id); item.read_at = new Date().toISOString(); }
+  if (!item.read_at) { await portalApi.markNotificationRead(notificationScope(), item.id); item.read_at = new Date().toISOString(); }
   window.location.assign(item.target_url || '/external-login/vue-preview/');
 }
 async function readAll() {
   if (!window.confirm('通常通知をすべて既読にします。\n但し、未読チャットは既読にはなりません。')) return;
   busy.value = true; error.value = '';
   try {
-    await portalApi.markAllNotificationsRead();
+    await portalApi.markAllNotificationsRead(notificationScope());
     await load(true);
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '通知を既読にできませんでした。';

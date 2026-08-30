@@ -81,37 +81,38 @@ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | Non
 
 
 def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str | None]:
+    ext_user_id = int(session.get("ext_user_id") or 0)
+    if ext_user_id > 0:
+        alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
+        if alias_row:
+            current_app.logger.info(
+                "mfu notifications admin alias ext_user_id=%s social_id=%s",
+                ext_user_id,
+                alias_row.get("social_id"),
+            )
+            return "admin", "alias"
+
     username = str(session.get("user") or "").strip()
     if username:
         role = "admin" if username == "admin" else "acl"
         return username, role
 
-    ext_user_id = int(session.get("ext_user_id") or 0)
     if ext_user_id <= 0:
         return None, None
-    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-    if not alias_row:
-        return None, None
-    current_app.logger.info(
-        "mfu notifications admin alias ext_user_id=%s social_id=%s",
-        ext_user_id,
-        alias_row.get("social_id"),
-    )
-    return "admin", "alias"
+    return None, None
 
 
 def _resolve_notification_scope_for_session() -> str | None:
+    ext_user_id = int(session.get("ext_user_id") or 0)
+    if ext_user_id > 0:
+        alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
+        if alias_row:
+            return "mfu"
+        if not str(session.get("user") or "").strip():
+            return "external"
     if str(session.get("user") or "").strip():
         return "mfu"
-
-    ext_user_id = int(session.get("ext_user_id") or 0)
-    if ext_user_id <= 0:
-        return None
-
-    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-    if alias_row:
-        return "mfu"
-    return "external"
+    return "external" if ext_user_id > 0 else None
 
 
 def _is_notification_scope_mfu() -> bool:
@@ -1414,7 +1415,8 @@ def api_mfu_notifications_mark_all_read():
             """
             UPDATE mfu_notifications
                SET read_at=%s
-             WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
+              WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
+               AND COALESCE(kind,'') NOT IN ('chat_message', 'event_chat')
             """,
             (datetime.utcnow(), username),
         )
