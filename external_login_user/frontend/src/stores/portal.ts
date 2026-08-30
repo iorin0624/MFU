@@ -11,7 +11,7 @@ export const usePortalStore = defineStore('portal', {
     error: '',
   }),
   getters: {
-    displayName: (state) => state.session?.profile?.nickname || state.session?.mfuUsername || '',
+    displayName: (state) => state.session?.profile?.nickname || '',
   },
   actions: {
     async bootstrap(force = false) {

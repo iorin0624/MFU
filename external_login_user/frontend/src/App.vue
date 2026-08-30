@@ -29,7 +29,7 @@ onMounted(() => store.bootstrap());
       v-else-if="store.session && !store.session.authenticated"
       icon="🔐"
       title="ログインが必要です"
-      text="イベント情報を見るにはLINEログインまたはMFUログインを行ってください。"
+      text="イベント情報を見るにはLINEログインまたはメールPIN認証を行ってください。"
     >
       <RouterLink class="button primary" to="/login">ログイン画面へ</RouterLink>
     </EmptyState>
