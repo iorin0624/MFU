@@ -87,7 +87,6 @@ export const portalApi = {
   ),
   markNotificationRead: (id: number) => requestJson<{ok: true}>(`/external-login/api/notifications/${id}/read`, { method: 'POST' }),
   markAllNotificationsRead: () => requestJson<{ok: true; updated: number}>('/external-login/api/notifications/read-all', { method: 'POST' }),
-  deleteAllNotifications: () => requestJson<{ok: true; deleted: number}>('/external-login/api/notifications/delete-all', { method: 'POST' }),
   saveMyEventRole: (uuid: string, participantRole: string, costumeLabel: string) => requestJson<{ok: true; participantRole: string; costumeLabel?: string | null}>(
     `${runtimeConfig.eventsUrl}/${encoded(uuid)}/my-role`,
     { method: 'POST', body: JSON.stringify({ participantRole, costumeLabel }) },

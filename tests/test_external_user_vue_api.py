@@ -110,12 +110,14 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         ):
             self.assertIn(marker, detail)
 
-    def test_vue_notifications_support_real_list_deletion(self):
+    def test_vue_notifications_mark_all_excludes_unread_chat(self):
         notifications = (VUE_FRONTEND_PATH / "views" / "NotificationsView.vue").read_text(encoding="utf-8-sig")
         backend = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
-        self.assertIn("deleteAllNotifications", notifications)
-        self.assertIn("一覧消去", notifications)
-        self.assertIn('@bp.post("/api/notifications/delete-all")', backend)
+        self.assertIn("markAllNotificationsRead", notifications)
+        self.assertIn("未読チャットは既読になりません", notifications)
+        self.assertIn("COALESCE(kind,'') <> 'chat_message'", backend)
+        self.assertNotIn("deleteAllNotifications", notifications)
+        self.assertNotIn('@bp.post("/api/notifications/delete-all")', backend)
 
     def test_event_chat_and_line_openchat_are_exclusive(self):
         source = function_source(API_PATH, "_event_payload")
