@@ -35,7 +35,7 @@ export interface PortalSession {
     emailVerificationRequired: boolean;
     privacyAgreementRequired: boolean;
   };
-  unread: { notifications: number; chat?: number };
+  unread: { total: number; notifications: number; chat: number };
   documents: {
     privacyPolicyUrl?: string;
     commerceLawUrl?: string;

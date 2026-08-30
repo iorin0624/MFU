@@ -138,22 +138,22 @@ def _navigation() -> list[dict[str, Any]]:
     ]
 
 
-def _notification_unread_count(external_user_id: int | None) -> int:
+def _notification_unread_counts(external_user_id: int | None) -> dict[str, int]:
     if not external_user_id:
-        return 0
+        return {"total": 0, "notifications": 0, "chat": 0}
     try:
         from .notifications import (
-            _compute_unread_count_external,
-            _compute_unread_count_mfu,
+            _compute_unread_counts_external,
+            _compute_unread_counts_mfu,
             _get_chat_admin_alias_ext_user_row,
         )
 
         if _get_chat_admin_alias_ext_user_row(int(external_user_id)):
-            return int(_compute_unread_count_mfu("admin"))
-        return int(_compute_unread_count_external(int(external_user_id)))
+            return _compute_unread_counts_mfu("admin")
+        return _compute_unread_counts_external(int(external_user_id))
     except Exception:
         current_app.logger.warning("Vue event API unread count failed", exc_info=True)
-        return 0
+        return {"total": 0, "notifications": 0, "chat": 0}
 
 
 def _session_payload() -> dict[str, Any]:
@@ -197,11 +197,9 @@ def _session_payload() -> dict[str, Any]:
             ),
             "privacyAgreementRequired": privacy_required,
         },
-        "unread": {
-            "notifications": _notification_unread_count(
-                int(external.get("id") or 0) if external else None
-            )
-        },
+        "unread": _notification_unread_counts(
+            int(external.get("id") or 0) if external else None
+        ),
         "documents": {
             "privacyPolicyUrl": str(privacy_config.get("privacy_policy_url") or ""),
             "commerceLawUrl": str(commerce_config.get("commerce_law_url") or ""),

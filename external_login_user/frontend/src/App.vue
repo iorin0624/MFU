@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import AppHeader from '@/components/AppHeader.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
@@ -7,12 +7,23 @@ import EmptyState from '@/components/EmptyState.vue';
 import PortalFooter from '@/components/PortalFooter.vue';
 import PortalUtilities from '@/components/PortalUtilities.vue';
 import { usePortalStore } from '@/stores/portal';
+import { startNotificationRealtime, stopNotificationRealtime } from '@/services/notificationRealtime';
 
 const store = usePortalStore();
 const route = useRoute();
 const publicRoute = computed(() => route.name === 'login');
 const verificationRoute = computed(() => route.name === 'email-verify');
-onMounted(() => store.bootstrap());
+onMounted(async () => {
+  await store.bootstrap();
+  if (store.session?.authenticated) {
+    startNotificationRealtime(
+      store.session.notificationScope,
+      () => store.refreshUnread(),
+      (counts) => store.applyUnread(counts),
+    );
+  }
+});
+onBeforeUnmount(stopNotificationRealtime);
 </script>
 
 <template>
