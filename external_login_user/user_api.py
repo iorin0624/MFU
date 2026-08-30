@@ -676,6 +676,11 @@ def user_api_join_info(event_uuid: str):
     effective = bool(terms.get("participant_terms_url") and terms.get("participant_terms_revised_date"))
     if "ext_csrf" not in session:
         session["ext_csrf"] = secrets.token_hex(16)
+    iv = str(request.args.get("iv") or request.args.get("vi") or "").strip()
+    submit_url = url_for("external_login_user.join_event", event_uuid=event_uuid)
+    if iv:
+        from urllib.parse import quote
+        submit_url = f"{submit_url}?iv={quote(iv, safe='')}"
     return _ok(join={
         "event": {
             "uuid": event_uuid,
@@ -692,7 +697,7 @@ def user_api_join_info(event_uuid: str):
         "termsRequired": effective,
         "termsUrl": str(terms.get("participant_terms_url") or ""),
         "csrfToken": str(session["ext_csrf"]),
-        "submitUrl": url_for("external_login_user.join_event", event_uuid=event_uuid),
+        "submitUrl": submit_url,
     })
 
 
@@ -855,7 +860,7 @@ def user_api_verify_email():
     ok, reason = _consume_verify_pin(int(user["id"]), email, pin)
     if not ok:
         return _error(reason or "invalid_pin", 400, "PINコードが一致しないか、有効期限が切れています。")
-    return _ok(verified=True)
+    return _ok(verified=True, nextUrl=session.pop("ext_after_verify_next", None))
 
 
 @bp.post("/api/vue/logout")

@@ -6,7 +6,7 @@ import { formatDateTime, formatMoney } from '@/utils/format';
 const route = useRoute(); const router = useRouter(); const data = ref<any>(null); const error = ref('');
 const role = ref('cosplayer'); const costume = ref(''); const process = ref(false); const agreed = ref(false);
 const memoEnabled = computed(() => ['cosplayer', 'other'].includes(role.value));
-onMounted(async () => { try { const r = await portalApi.joinInfo(String(route.params.uuid)); data.value = r.join; role.value = r.join.participantRole || 'cosplayer'; costume.value = r.join.costumeLabel || ''; process.value = Boolean(r.join.process); } catch (e) { error.value = e instanceof Error ? e.message : '参加申請を読み込めません。'; } });
+onMounted(async () => { try { const r = await portalApi.joinInfo(String(route.params.uuid), String(route.query.iv || '')); data.value = r.join; role.value = r.join.participantRole || 'cosplayer'; costume.value = r.join.costumeLabel || ''; process.value = Boolean(r.join.process); } catch (e) { error.value = e instanceof Error ? e.message : '参加申請を読み込めません。'; } });
 </script>
 <template>
   <button class="back-link" type="button" @click="router.push('/')">← イベント一覧</button><div v-if="error" class="alert error">{{ error }}</div>

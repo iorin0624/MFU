@@ -2548,6 +2548,13 @@ def join_event(event_uuid: str):
     igid     = u.get("instagram_id") or ""
 
     # --- join 前段導線ガード（privacy -> profile -> unverified） ---
+    vue_base = url_for("external_login_user.user_vue_preview").rstrip("/")
+    if bool(session.get("ext_user_onboarding")) or _is_ext_profile_incomplete(u):
+        session["ext_after_login_next"] = request.url
+        return redirect(f"{vue_base}/profile")
+    if u.get("email") and not u.get("email_verified_at"):
+        session["ext_after_verify_next"] = request.url
+        return redirect(f"{vue_base}/email-verify")
     gate = _resolve_ext_login_prerequisite_redirect(
         u,
         request.url,
@@ -2557,6 +2564,15 @@ def join_event(event_uuid: str):
         if bool(session.get("ext_user_onboarding")) or _is_ext_profile_incomplete(u):
             flash("イベントに参加する前に、プロフィールの作成をお願いします。", "info")
         return gate
+
+    # 既存の招待URLは、ログインと必須項目の確認後にVue画面へ引き継ぐ。
+    if request.method == "GET" and request.args.get("legacy") != "1":
+        iv_for_vue = (request.args.get("iv") or request.args.get("vi") or "").strip()
+        target = f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/events/{event_uuid}/join"
+        if iv_for_vue:
+            from urllib.parse import quote
+            target = f"{target}?iv={quote(iv_for_vue, safe='')}"
+        return redirect(target)
 
     # --- イベント本体（テンプレが参照する列は必ず選ぶ） ---
     cur.execute("""
