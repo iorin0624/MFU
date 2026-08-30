@@ -26,6 +26,7 @@ async function open(item: Item) {
   window.location.assign(item.target_url || '/external-login/vue-preview/');
 }
 async function readAll() {
+  if (!window.confirm('通常通知をすべて既読にします。\n但し、未読チャットは既読にはなりません。')) return;
   busy.value = true; error.value = '';
   try {
     await portalApi.markAllNotificationsRead();
@@ -40,7 +41,7 @@ onMounted(() => load());
 </script>
 
 <template>
-  <section class="page-heading"><div><p class="eyebrow">NOTIFICATIONS</p><h1>通知</h1><p>イベントやチャットの更新を確認できます。</p><small>「すべて既読」では、未読チャットは既読になりません。</small></div><div class="heading-actions"><button class="button secondary compact" type="button" :disabled="busy" @click="readAll">すべて既読</button></div></section>
+  <section class="page-heading"><div><p class="eyebrow">NOTIFICATIONS</p><h1>通知</h1><p>イベントやチャットの更新を確認できます。</p></div><div class="heading-actions"><button class="button secondary compact" type="button" :disabled="busy" @click="readAll">すべて既読</button></div></section>
   <div class="segmented"><button :class="{ active: !unreadOnly }" @click="unreadOnly = false; load()">すべて</button><button :class="{ active: unreadOnly }" @click="unreadOnly = true; load()">未読のみ</button></div>
   <div v-if="error" class="alert error">{{ error }}</div>
   <div v-if="items.length" class="notification-list">
