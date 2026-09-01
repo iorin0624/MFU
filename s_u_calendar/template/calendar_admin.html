@@ -27,14 +27,39 @@
   .month-flag .desc { font-size:12px; color:#666; margin-top:4px; }
   .month-flag form { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 
+  .month-save-bar {
+    margin:10px; padding:10px 12px; border:1px solid #dbe2ec; border-radius:10px;
+    background:#f7f9fc; display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap;
+  }
+  .month-save-info { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .dirty-count { color:#666; font-size:13px; }
+  .dirty-count.has-changes { color:#b23a00; font-weight:700; }
+  .save-month-button {
+    padding:9px 14px; border:1px solid #1769d2; border-radius:8px;
+    background:#1769d2; color:#fff; font-weight:700; cursor:pointer;
+  }
+  .save-month-button:disabled { opacity:.45; cursor:not-allowed; }
+  .cell.changed { background:#fff9e8; box-shadow:0 0 0 2px #f0a000 inset; }
+  .cell.save-error { box-shadow:0 0 0 3px #d00 inset; }
+
   /* 7列グリッド（日曜はじまりの空白も埋める） */
   .grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:6px; padding:10px; }
   .w { font-size:12px; color:#666; text-align:center; }
 
   .cell { border:1px solid #eee; border-radius:10px; padding:6px; min-height:110px; display:flex; flex-direction:column; min-width:0; }
   .dnum { font-weight:700; }
-  .row { display:flex; gap:6px; align-items:center; margin-top:auto; }
-  .row form { display:flex; gap:6px; flex-wrap:wrap; }
+  .day-form-fields {
+    display:flex; flex-direction:column; align-items:stretch; gap:6px;
+    width:100%; min-width:0; margin-top:auto;
+  }
+  .day-form-fields select,
+  .day-form-fields input[type="text"] {
+    display:block; width:100%; min-width:0; max-width:100%;
+  }
+  .day-form-fields label {
+    display:flex; align-items:center; gap:4px; width:fit-content; max-width:100%;
+  }
   input[type="text"] { width:120px; padding:4px 6px; }
   select { padding:4px 6px; }
   label { font-size:12px; color:#666; }
@@ -50,6 +75,16 @@
 
   /* 予定ありだけ赤枠（inset でレイアウト不変） */
   .cell.busy { box-shadow: 0 0 0 2px #d00 inset; }
+  .cell.busy.changed { box-shadow:0 0 0 2px #f0a000 inset; }
+  .cell.save-error { box-shadow:0 0 0 3px #d00 inset !important; }
+
+  @media (max-width:767px) {
+    .month-save-bar.bottom {
+      position:sticky; bottom:0; z-index:8; margin:0; border-radius:0;
+      box-shadow:0 -4px 14px rgba(0,0,0,.12);
+    }
+    .save-month-button { flex:1; min-width:180px; }
+  }
 </style>
 
 <header class="cal-admin">
@@ -110,7 +145,19 @@
   <div class="desc">ONのとき、利用者側に「この月の撮影予定の追加は行っていません。」を表示します。</div>
 </div>
 
-<div class="grid">
+<form id="monthDaysForm" method="post" action="{{ url_for('s_u_calendar.admin_upsert_month_days') }}">
+  <input type="hidden" name="year" value="{{ year }}">
+  <input type="hidden" name="month" value="{{ month }}">
+
+  <div class="month-save-bar top">
+    <div class="month-save-info">
+      <strong>日別設定</strong>
+      <span class="dirty-count">未保存の変更：0日</span>
+    </div>
+    <button class="save-month-button" type="submit" disabled>この月をまとめて保存</button>
+  </div>
+
+  <div class="grid">
   {# 曜日ヘッダ：日→土 #}
   {% set wd = ["日","月","火","水","木","金","土"] %}
   {% for i in range(7) %}
@@ -127,7 +174,8 @@
     {% set key = it.key %}
     {% set status = it.status %}
     {% set w = d.weekday() %}
-    <div class="cell {{ status }} {{ 'holiday' if it.is_holiday else ('sun' if w==6 else ('sat' if w==5 else '')) }}">
+    <div class="cell {{ status }} {{ 'holiday' if it.is_holiday else ('sun' if w==6 else ('sat' if w==5 else '')) }}" data-date="{{ key }}">
+      <input type="hidden" name="dates" value="{{ key }}">
       <div class="dnum">
         {{ d.day }}（{{ ["月","火","水","木","金","土","日"][d.weekday()] }}）
       </div>
@@ -142,21 +190,26 @@
         / 公開：{{ "する" if it.is_public==1 else "しない" }}
       </div>
 
-      <div class="row">
-        <form method="post" action="{{ url_for('s_u_calendar.admin_upsert_day') }}">
-          <input type="hidden" name="date" value="{{ key }}">
-          <select name="status">
+      <div class="day-form-fields">
+          <select class="day-input" name="status__{{ key }}">
             <option value="free" {{ "selected" if status=="free" else "" }}>空き</option>
             <option value="busy" {{ "selected" if status=="busy" else "" }}>予定あり</option>
           </select>
-          <input type="text" name="label" placeholder="ラベル(任意)" value="{{ it.label or '' }}" maxlength="100">
-          <label><input type="checkbox" name="is_public" value="1" {{ "checked" if it.is_public==1 else "" }}> 公開</label>
-          <button type="submit">保存</button>
-        </form>
+          <input class="day-input" type="text" name="label__{{ key }}" placeholder="コメント(任意)" value="{{ it.label or '' }}" maxlength="100">
+          <label><input class="day-input" type="checkbox" name="is_public__{{ key }}" value="1" {{ "checked" if it.is_public==1 else "" }}> 公開</label>
       </div>
     </div>
   {% endfor %}
-</div>
+  </div>
+
+  <div class="month-save-bar bottom">
+    <div class="month-save-info">
+      <strong>{{ year }}年{{ month }}月の日別設定</strong>
+      <span class="dirty-count">未保存の変更：0日</span>
+    </div>
+    <button class="save-month-button" type="submit" disabled>この月をまとめて保存</button>
+  </div>
+</form>
 
 <!-- ▼ クイック登録（YYYYMMDD） -->
 <div class="quick">
@@ -190,6 +243,91 @@
 
 <script>
 (function(){
+  const monthForm = document.getElementById('monthDaysForm');
+  const saveButtons = Array.from(document.querySelectorAll('.save-month-button'));
+  const dirtyCounters = Array.from(document.querySelectorAll('.dirty-count'));
+  const dayCells = Array.from(document.querySelectorAll('#monthDaysForm .cell[data-date]'));
+  let isSaving = false;
+
+  function cellState(cell){
+    const status = cell.querySelector('select[name^="status__"]')?.value || '';
+    const label = cell.querySelector('input[name^="label__"]')?.value || '';
+    const isPublic = cell.querySelector('input[name^="is_public__"]')?.checked ? '1' : '0';
+    return JSON.stringify([status, label, isPublic]);
+  }
+
+  dayCells.forEach((cell)=>{ cell.dataset.initialState = cellState(cell); });
+
+  function refreshDirtyState(){
+    let dirtyCount = 0;
+    dayCells.forEach((cell)=>{
+      const changed = cellState(cell) !== cell.dataset.initialState;
+      cell.classList.toggle('changed', changed);
+      if(changed) dirtyCount += 1;
+    });
+    dirtyCounters.forEach((counter)=>{
+      counter.textContent = `未保存の変更：${dirtyCount}日`;
+      counter.classList.toggle('has-changes', dirtyCount > 0);
+    });
+    saveButtons.forEach((button)=>{ button.disabled = dirtyCount === 0 || isSaving; });
+    return dirtyCount;
+  }
+
+  monthForm?.addEventListener('input', refreshDirtyState);
+  monthForm?.addEventListener('change', refreshDirtyState);
+
+  monthForm?.addEventListener('submit', async (event)=>{
+    event.preventDefault();
+    const dirtyCount = refreshDirtyState();
+    if(dirtyCount === 0 || isSaving) return;
+
+    isSaving = true;
+    saveButtons.forEach((button)=>{
+      button.disabled = true;
+      button.textContent = '保存中…';
+    });
+    dayCells.forEach((cell)=>cell.classList.remove('save-error'));
+
+    try{
+      const response = await fetch(monthForm.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: new FormData(monthForm)
+      });
+      const data = await response.json().catch(()=>({}));
+      if(!response.ok || !data.ok){
+        const error = new Error(data.message || `HTTP ${response.status}`);
+        error.dateValue = data.date || '';
+        throw error;
+      }
+
+      window.location.href = data.redirect_url || window.location.href;
+    }catch(error){
+      isSaving = false;
+      if(error.dateValue){
+        const errorCell = dayCells.find((cell)=>cell.dataset.date === error.dateValue);
+        if(errorCell){
+          errorCell.classList.add('save-error');
+          errorCell.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+      }
+      alert('保存に失敗しました: ' + error.message);
+      saveButtons.forEach((button)=>{ button.textContent = 'この月をまとめて保存'; });
+      refreshDirtyState();
+    }
+  });
+
+  window.addEventListener('beforeunload', (event)=>{
+    if(!isSaving && refreshDirtyState() > 0){
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
+
   const btnMonth = document.getElementById('btnSyncMonth');
   const btnYM = document.getElementById('btnSyncYM');
 

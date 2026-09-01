@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "MFU 自動処理・外部連携",
+    "output": "mfu-automation-integrations.html",
+    "quality_profile": "showcase",
+    "viewBox": [1200, 720],
+    "views": [
+      {
+        "id": "scheduled-jobs",
+        "label": "定期処理",
+        "focus": ["timers", "workers", "features", "data_store"],
+        "note": "systemd timerがワーカーを起動し、取得・同期・削除・通知を実行します。"
+      },
+      {
+        "id": "browser-collection",
+        "label": "Chromium取得",
+        "focus": ["timers", "workers", "chromium", "information_sources", "features"],
+        "note": "APIだけで取得できないETC・SNS・TDRなどを実ブラウザで取得します。"
+      },
+      {
+        "id": "business-apis",
+        "label": "会計・決済",
+        "focus": ["operator", "features", "business_apis", "data_store"],
+        "note": "Square決済、freee会計、ETC証懑PDFをMFUの業務データと連携します。"
+      },
+      {
+        "id": "notifications",
+        "label": "通知",
+        "focus": ["features", "notification_services", "operator"],
+        "note": "Discord、SMTPメール、LINEを使って更新・異常・業務結果を通知します。"
+      }
+    ]
+  },
+  "components": [
+    {"id": "timers", "type": "backend", "label": "systemd timers", "sublabel": "2時間・毎日・期限ジョブ", "pos": [30, 320], "size": [160, 76]},
+    {"id": "workers", "type": "backend", "label": "MFUワーカー", "sublabel": "取得 / 同期 / 削除", "pos": [260, 320], "size": [170, 76]},
+    {"id": "chromium", "type": "backend", "label": "取得アダプター", "sublabel": "API / Chromium", "tag": "ログイン保持・重複起動防止", "pos": [510, 520], "size": [180, 76]},
+    {"id": "features", "type": "backend", "label": "MFU業務機能", "sublabel": "保存・判定・通知", "pos": [510, 320], "size": [180, 80]},
+    {"id": "operator", "type": "external", "label": "管理者", "sublabel": "設定 / 手動実行 / 確認", "pos": [260, 520], "size": [170, 76]},
+    {"id": "data_store", "type": "database", "label": "MFU保存層", "sublabel": "MySQL / /mnt/mfu", "tag": "業務データ・PDF・画像", "pos": [760, 100], "size": [170, 76]},
+    {"id": "business_apis", "type": "external", "label": "決済・会計API", "sublabel": "Square / freee", "pos": [1000, 200], "size": [170, 72]},
+    {"id": "notification_services", "type": "external", "label": "通知サービス", "sublabel": "Discord / SMTP / LINE", "pos": [1000, 350], "size": [170, 76]},
+    {"id": "information_sources", "type": "external", "label": "情報取得元", "sublabel": "ETC / TDR / SNS / 交通", "pos": [1000, 520], "size": [170, 76]}
+  ],
+  "boundaries": [
+    {"kind": "security-group", "label": "MFUサーバー内", "wraps": ["timers", "workers", "chromium", "features", "data_store"], "pad": 22}
+  ],
+  "connections": [
+    {"id": "timers_workers", "from": "timers", "to": "workers", "label": "systemd起動", "variant": "dashed"},
+    {"id": "workers_features", "from": "workers", "to": "features", "label": "ジョブ実行", "variant": "emphasis"},
+    {"id": "features_chromium", "from": "features", "to": "chromium", "label": "取得要求", "variant": "dashed", "labelAt": [600, 414]},
+    {"id": "operator_features", "from": "operator", "to": "features", "label": "手動実行 / 設定"},
+    {"id": "features_data", "from": "features", "to": "data_store", "label": "SQL / ファイル"},
+    {"id": "features_business", "from": "features", "to": "business_apis", "label": "REST API"},
+    {"id": "chromium_sources", "from": "chromium", "to": "information_sources", "label": "API / 実ブラウザ", "variant": "dashed"},
+    {"id": "features_notifications", "from": "features", "to": "notification_services", "label": "Webhook / SMTP", "labelDy": 18}
+  ],
+  "cards": [
+    {"dot": "amber", "title": "定期処理", "items": ["ETC取得、TDR更新、メール取得、アップロード期限、ログ保持をsystemdで管理", "管理画面から手動実行・結果確認も可能"]},
+    {"dot": "violet", "title": "Chromium", "items": ["APIがない、またはログインが必要な取得に使用", "Instagramなどと競合しないよう重複起動を抑止"]},
+    {"dot": "emerald", "title": "外部連携", "items": ["Square・freee・ETC・TDR・SNS・交通情報と連携", "Discord・SMTP・LINEで新着・異常・完了を通知し、失敗は分離記録"]}
+  ]
+}

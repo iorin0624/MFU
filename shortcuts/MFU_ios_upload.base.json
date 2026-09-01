@@ -1,0 +1,26 @@
+{
+  "name": "MFU写真アップロード",
+  "version": 1,
+  "note": "Shortcuts PlaygroundまたはmacOSショートカット.appで組み立てるための基礎定義です。APIキーは端末ごとに設定してください。",
+  "share_sheet_input": ["images", "media"],
+  "variables": {
+    "base_url": "https://mfu.iori0624.jp/api/ios-upload/v1",
+    "api_key": "PASTE_DEVICE_API_KEY_HERE",
+    "date_format": "yyyyMMdd"
+  },
+  "actions": [
+    {"type": "require_input", "source": "shortcut_input", "fallback": "select_photos", "multiple": true},
+    {"type": "ask_text", "prompt": "撮影タイトル", "save_as": "title"},
+    {"type": "current_date", "format": "yyyyMMdd", "save_as": "today"},
+    {"type": "ask_text", "prompt": "撮影日（yyyymmdd）", "default_variable": "today", "save_as": "shooting_date"},
+    {"type": "http", "method": "GET", "url": "${base_url}/config", "bearer": "${api_key}", "save_as": "config"},
+    {"type": "choose_mode", "items": "${config.modes}", "label_key": "label", "value_key": "mode", "default_value": "${config.default_mode}", "save_as": "mode"},
+    {"type": "http", "method": "POST", "url": "${base_url}/create", "bearer": "${api_key}", "json": {"title": "${title}", "date": "${shooting_date}", "mode": "${mode}"}, "save_as": "created"},
+    {"type": "repeat", "items": "${shortcut_input}", "actions": [
+      {"type": "http", "method": "POST", "url": "${base_url}/original", "bearer": "${api_key}", "form": {"uuid": "${created.uuid}", "file": "${repeat_item}"}}
+    ]},
+    {"type": "http", "method": "POST", "url": "${base_url}/done", "bearer": "${api_key}", "json": {"uuid": "${created.uuid}"}, "save_as": "completed"},
+    {"type": "copy_to_clipboard", "value": "${completed.message}"},
+    {"type": "show_result", "value": "${completed.uploaded_count}枚をアップロードしました\n${completed.view_url}\n\n${completed.message}"}
+  ]
+}

@@ -5,8 +5,11 @@ import EmptyState from '@/components/EmptyState.vue';
 import InAppBrowserAlbumNotice from '@/components/InAppBrowserAlbumNotice.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import { ApiError, portalApi } from '@/api/client';
-import type { AlbumChild, AlbumItem, MediaItem, Pagination, ProcessingState } from '@/types';
+import type { AlbumChild, AlbumDownloadJob, AlbumItem, MediaItem, Pagination, ProcessingState } from '@/types';
 import { isInAppBrowser } from '@/utils/inAppBrowser';
+import AlbumUploadDialog from '@/components/AlbumUploadDialog.vue';
+import { usePortalStore } from '@/stores/portal';
+import { CHILD_NAME_TEMPLATES, childTemplateMode } from '@/utils/albumUpload';
 
 declare global {
   interface Window {
@@ -23,8 +26,16 @@ type ChildGroup = { label: string; children: AlbumChild[] };
 
 const route = useRoute();
 const router = useRouter();
+const portal = usePortalStore();
+const uploadSelection = ref<{childId:string;childName:string;files:File[]}|null>(null);
+const childTemplate = ref('');
+const groupContainer = ref<HTMLElement|null>(null);
+function setAllGroups(open:boolean) { groupContainer.value?.querySelectorAll('details.folder-group').forEach(item=>{(item as HTMLDetailsElement).open=open;}); }
+function chooseChildTemplate() { childMode.value=childTemplateMode(childTemplate.value); }
 const albumId = String(route.params.albumId);
 const album = ref<AlbumItem | null>(null);
+const canChooseChildType = computed(() => Boolean(album.value?.permissions.canChooseChildType));
+const availableChildTemplates = computed(() => canChooseChildType.value ? CHILD_NAME_TEMPLATES : CHILD_NAME_TEMPLATES.filter(Boolean));
 const children = ref<AlbumChild[]>([]);
 const activeChild = ref<AlbumChild | null>(null);
 const media = ref<MediaItem[]>([]);
@@ -50,9 +61,12 @@ const processingSelections = ref<Record<number, boolean>>({});
 const processingBusy = ref(false);
 const saving = ref(false);
 const shortcutAvailable = ref(false);
+const downloadProgress = ref<AlbumDownloadJob | null>(null);
 const lightboxIndex = ref(-1);
 let observer: IntersectionObserver | null = null;
 let mobileQuery: MediaQueryList | null = null;
+let downloadSocket: any = null;
+let downloadFallbackTimer = 0;
 
 const groups = computed<ChildGroup[]>(() => {
   const ordered = new Map<string, AlbumChild[]>();
@@ -215,7 +229,8 @@ function clearSelection() { selected.value = []; }
 
 function openCreate() {
   target.value = null;
-  childName.value = '';
+  childName.value = portal.session?.profile?.nickname || '';
+  childTemplate.value = canChooseChildType.value ? '' : '【構図】';
   childMode.value = 'normal';
   dialog.value = 'create';
 }
@@ -268,7 +283,7 @@ async function saveDialog() {
       selected.value = [];
       await loadMedia(1, false);
     } else if (dialog.value === 'create') {
-      const response = await portalApi.createChild(albumId, name, childMode.value);
+      const response = await portalApi.createChild(albumId, `${childTemplate.value}${name}`, childMode.value);
       children.value.push(response.child);
       await selectChild(response.child);
     } else if (target.value) {
@@ -316,17 +331,10 @@ async function deleteAlbum() {
 
 async function upload(files: FileList | null) {
   if (!files?.length || !activeChild.value) return;
-  busy.value = true;
-  try {
-    await portalApi.uploadMedia(albumId, activeChild.value.id, Array.from(files));
-    await loadMedia(1, false);
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : 'アップロードできませんでした。';
-  } finally {
-    busy.value = false;
-    if (fileInput.value) fileInput.value.value = '';
-  }
+  uploadSelection.value={childId:activeChild.value.id,childName:activeChild.value.name,files:activeChild.value.mode==='process'?[files[0]]:Array.from(files)};
+  if (fileInput.value) fileInput.value.value = '';
 }
+async function uploaded(childId:string) { if(activeChild.value?.id===childId){try{await loadMedia(1,false);await refreshProcessing();}catch{error.value='アップロード後の一覧を更新できませんでした。再読み込みしてください。';}} }
 
 async function refreshProcessing() {
   if (!activeChild.value || activeChild.value.mode !== 'process') return;
@@ -427,19 +435,45 @@ async function downloadZip() {
   busy.value = true;
   try {
     const created = await portalApi.createAlbumDownload(albumId, activeChild.value.id, selected.value);
-    for (let count = 0; count < 600; count += 1) {
-      const response = await portalApi.albumDownloadStatus(albumId, created.job.id);
-      if (response.job.status === 'done' && response.job.downloadUrl) {
-        window.location.assign(response.job.downloadUrl);
-        return;
-      }
-      if (response.job.status === 'error' || response.job.status === 'failed') throw new Error(response.job.error || 'ZIP生成に失敗しました。');
-      await new Promise((resolve) => window.setTimeout(resolve, 500));
-    }
-    throw new Error('ZIP生成がタイムアウトしました。');
+    downloadProgress.value = created.job;
+    const completed = await waitForAlbumDownload(created.job.id);
+    if (!completed.downloadUrl) throw new Error('ZIPのダウンロードURLを取得できませんでした。');
+    window.location.assign(completed.downloadUrl);
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : 'ZIPを生成できませんでした。';
-  } finally { busy.value = false; }
+  } finally { stopDownloadWatcher(); busy.value = false; }
+}
+
+function formatBytes(value?: number) {
+  if (value == null) return '—';
+  const units=['B','KB','MB','GB']; let size=value; let index=0;
+  while(size>=1024&&index<units.length-1){size/=1024;index+=1;}
+  return `${size>=10||index===0?Math.round(size):size.toFixed(1)} ${units[index]}`;
+}
+function stopDownloadWatcher() {
+  window.clearInterval(downloadFallbackTimer); downloadFallbackTimer=0;
+  downloadSocket?.disconnect?.(); downloadSocket=null;
+}
+function waitForAlbumDownload(jobId:string):Promise<AlbumDownloadJob> {
+  stopDownloadWatcher();
+  return new Promise((resolve,reject)=>{
+    let finished=false;
+    const accept=(job:AlbumDownloadJob)=>{
+      if(finished)return; downloadProgress.value={...downloadProgress.value,...job,id:jobId};
+      if(job.status==='done'){finished=true;stopDownloadWatcher();resolve(downloadProgress.value);}
+      else if(job.status==='error'||job.status==='failed'){finished=true;stopDownloadWatcher();reject(new Error(job.error||'ZIP生成に失敗しました。'));}
+    };
+    const poll=()=>portalApi.albumDownloadStatus(albumId,jobId).then(response=>accept(response.job)).catch(()=>void 0);
+    const startFallback=()=>{if(!downloadFallbackTimer)downloadFallbackTimer=window.setInterval(poll,3000);};
+    const io=(window as any).io;
+    if(typeof io==='function'){
+      downloadSocket=io('/download-progress',{transports:['websocket','polling']});
+      downloadSocket.on('connect',()=>{window.clearInterval(downloadFallbackTimer);downloadFallbackTimer=0;downloadSocket.emit('zip_progress_subscribe',{key:jobId},(reply:any)=>{if(reply?.progress)accept({...reply.progress,id:jobId});});});
+      downloadSocket.on('zip_progress_update',(payload:any)=>{if(payload?.key===jobId&&payload.progress)accept({...payload.progress,id:jobId});});
+      downloadSocket.on('disconnect',startFallback); downloadSocket.on('connect_error',startFallback);
+    } else startFallback();
+    void poll();
+  });
 }
 
 async function downloadShortcut() {
@@ -508,6 +542,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  stopDownloadWatcher();
   observer?.disconnect();
   document.removeEventListener('keydown', onKeydown);
   mobileQuery?.removeEventListener('change', updateMobileLayout);
@@ -539,8 +574,9 @@ onBeforeUnmount(() => {
     <div v-if="error" class="alert error compact-alert">{{ error }}</div>
 
     <div class="album-workspace">
-      <aside v-show="showChildList" class="album-sidebar" aria-label="子アルバム">
+      <aside ref="groupContainer" v-show="showChildList" class="album-sidebar" aria-label="子アルバム">
         <div class="sidebar-title"><strong>子アルバム</strong><span>{{ children.length }}</span></div>
+        <div class="album-group-actions"><button type="button" @click="setAllGroups(true)">すべて展開</button><button type="button" @click="setAllGroups(false)">すべて折りたたむ</button></div>
         <EmptyState v-if="!children.length" icon="📂" title="まだありません" text="" />
         <details v-for="group in groups" v-else :key="group.label" class="folder-group" open>
           <summary>📁 {{ group.label }} <small>{{ group.children.length }}</small></summary>
@@ -675,6 +711,11 @@ onBeforeUnmount(() => {
       <button v-if="activeChild.permissions.canRenameMedia && selected.length === 1 && activeChild.mode !== 'process'" type="button" :disabled="busy" @click="openRenameMedia">名前変更</button>
       <button v-if="activeChild.permissions.canDeleteMedia" type="button" class="delete-action" :disabled="!selected.length || busy" @click="removeSelected">削除</button>
     </div>
+    <div v-if="busy && downloadProgress" class="album-download-progress" role="status" aria-live="polite">
+      <div><strong>ZIPを生成しています</strong><span>{{ downloadProgress.processed_files || 0 }} / {{ downloadProgress.total_files || selected.length }}件</span></div>
+      <progress :value="downloadProgress.percent || 0" max="100"></progress>
+      <div><span>{{ downloadProgress.percent || 0 }}%</span><span>{{ formatBytes(downloadProgress.processed_bytes) }} / {{ formatBytes(downloadProgress.total_bytes) }}</span></div>
+    </div>
   </template>
 
   <div v-if="dialog" class="modal-backdrop" @click.self="dialog = null">
@@ -683,11 +724,13 @@ onBeforeUnmount(() => {
       <label v-if="dialog === 'rename-album'">名前<input v-model="albumName" required maxlength="120" autofocus></label>
       <label v-else-if="dialog === 'rename-media'">名前（拡張子は変更されません）<input v-model="mediaName" required maxlength="200" autofocus></label>
       <label v-else>名前<input v-model="childName" required maxlength="120" autofocus></label>
-      <label v-if="dialog === 'create'">種類<select v-model="childMode"><option value="normal">写真</option><option value="movie">動画</option><option value="process">加工用</option></select></label>
+      <label v-if="dialog === 'create'">名前テンプレート<select v-model="childTemplate" @change="chooseChildTemplate"><option v-for="template in availableChildTemplates" :key="template" :value="template">{{template||'指定なし'}}</option></select><small>作成する名前：{{childTemplate}}{{childName}}</small></label>
+      <label v-if="dialog === 'create'">種類<select v-model="childMode" :disabled="!canChooseChildType"><option value="normal">写真</option><option value="movie">動画</option><option value="process">加工用</option></select><small v-if="!canChooseChildType">種類は名前テンプレートによって決まります。</small></label>
       <div class="modal-actions"><button type="button" class="button secondary" @click="dialog = null">キャンセル</button><button type="submit" class="button primary" :disabled="saving">{{ saving ? '保存中…' : '保存' }}</button></div>
     </form>
   </div>
 
+  <AlbumUploadDialog v-if="uploadSelection" :album-id="albumId" :child-id="uploadSelection.childId" :child-name="uploadSelection.childName" :files="uploadSelection.files" @close="uploadSelection=null" @completed="uploaded" />
   <div v-if="visibleLightboxItem" class="album-lightbox" role="dialog" aria-modal="true" @click.self="closeViewer">
     <button type="button" class="lightbox-close" aria-label="閉じる" @click="closeViewer">×</button>
     <button type="button" class="lightbox-prev" aria-label="前へ" :disabled="lightboxIndex === 0" @click="moveViewer(-1)">‹</button>

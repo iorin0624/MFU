@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "MFU 全体構成",
+    "output": "mfu-overall.html",
+    "quality_profile": "showcase",
+    "viewBox": [1200, 720],
+    "views": [
+      {
+        "id": "primary-request",
+        "label": "主要リクエスト",
+        "focus": ["users", "edge", "web", "features", "mysql", "storage"],
+        "note": "利用者のHTTPSリクエストがMFU機能と保存層へ到達する主経路です。"
+      },
+      {
+        "id": "admin-auth",
+        "label": "admin認証",
+        "focus": ["users", "edge", "web", "auth"],
+        "note": "ID・パスワードとMFA、Passkey、QR承認でadmin操作を保護します。"
+      },
+      {
+        "id": "device-access",
+        "label": "連携デバイス",
+        "focus": ["desktop", "signage", "edge", "web", "features", "storage"],
+        "note": "WindowsアプリとラズパイがWeb APIを通じてMFUと連携します。"
+      }
+    ]
+  },
+  "components": [
+    {"id": "users", "type": "external", "label": "利用者・管理者", "sublabel": "PC / スマートフォン", "pos": [30, 280], "size": [150, 70]},
+    {"id": "desktop", "type": "frontend", "label": "MFU連携アプリ", "sublabel": "Clipboard / Uploader", "pos": [30, 450], "size": [150, 72]},
+    {"id": "signage", "type": "frontend", "label": "ラズパイ", "sublabel": "サイネージ / API", "pos": [30, 610], "size": [150, 72]},
+    {"id": "edge", "type": "security", "label": "公開エッジ", "sublabel": "server-103-15", "tag": "HTTPSリバースプロキシ", "pos": [260, 280], "size": [160, 76]},
+    {"id": "web", "type": "backend", "label": "MFU Webアプリ", "sublabel": "Flask + Gunicorn", "tag": "server-103-16 / mfu.service", "pos": [500, 280], "size": [180, 80]},
+    {"id": "auth", "type": "security", "label": "認証・権限", "sublabel": "MFA / Passkey / QR / LINE", "pos": [500, 90], "size": [180, 74]},
+    {"id": "features", "type": "backend", "label": "機能Blueprint群", "sublabel": "45 Blueprints", "tag": "画像・アルバム・決済・請求・情報表示", "pos": [750, 280], "size": [190, 84]},
+    {"id": "mysql", "type": "database", "label": "MySQL", "sublabel": "業務データ / ログ", "pos": [1010, 150], "size": [160, 70]},
+    {"id": "storage", "type": "database", "label": "ファイル保存", "sublabel": "/mnt/mfu", "tag": "画像・PDF・サムネイル", "pos": [1010, 330], "size": [160, 74]}
+  ],
+  "boundaries": [
+    {"kind": "security-group", "label": "MFUアプリケーション境界", "wraps": ["web", "auth", "features", "mysql", "storage"], "pad": 22}
+  ],
+  "connections": [
+    {"id": "user_https", "from": "users", "to": "edge", "label": "HTTPS", "variant": "emphasis"},
+    {"id": "desktop_api", "from": "desktop", "to": "edge", "variant": "emphasis"},
+    {"id": "signage_api", "from": "signage", "to": "edge"},
+    {"id": "edge_web", "from": "edge", "to": "web", "variant": "emphasis"},
+    {"id": "auth_web", "from": "auth", "to": "web", "label": "MFA / セッション", "variant": "security", "labelAt": [590, 178]},
+    {"id": "web_features", "from": "web", "to": "features", "variant": "emphasis"},
+    {"id": "features_mysql", "from": "features", "to": "mysql", "label": "SQL"},
+    {"id": "features_storage", "from": "features", "to": "storage"}
+  ],
+  "cards": [
+    {"dot": "cyan", "title": "公開経路", "items": ["server-103-15がHTTPSを受け、server-103-16のMFUへ中継", "PC・スマートフォン・連携アプリ・ラズパイが利用"]},
+    {"dot": "emerald", "title": "アプリケーション", "items": ["Flask / Gunicornが45個のBlueprintを統合", "MySQLに業務データ、/mnt/mfuに画像・PDFを保存"]},
+    {"dot": "rose", "title": "認証と保護", "items": ["adminはMFA・Passkey・QR承認を利用", "DBと保存領域は公開エッジから分離"]}
+  ]
+}

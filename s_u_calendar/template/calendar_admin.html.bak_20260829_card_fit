@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+
+{% block title %}カレンダー管理{% endblock %}
+
+{% block content %}
+<style>
+  :root { --busy:#e35; --free:#1a9b3f; }
+
+  /* 横スクロール抑止＆レイアウト安定化 */
+  html, body { max-width:100vw; overflow-x:hidden; }
+  *, *::before, *::after { box-sizing:border-box; }
+
+  .cal-admin { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; position:sticky; top:0; background:#fff; border-bottom:1px solid #eee; z-index:5; }
+  .cal-admin .nav { text-decoration:none; padding:8px 12px; border:1px solid #ddd; border-radius:8px; color:#333; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cal-admin h1 { font-size:18px; margin:0; }
+
+  /* Outlook同期バー */
+  .sync { padding:10px 16px; display:flex; flex-wrap:wrap; gap:10px 14px; align-items:end; border-bottom:1px solid #f0f0f0; background:#fafafa; }
+  .sync h2 { font-size:15px; margin:0 12px 0 0; color:#333; }
+  .sync .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .sync input[type="month"], .sync select { padding:6px 8px; }
+  .sync .btn { padding:8px 12px; border:1px solid #ddd; background:#fff; border-radius:8px; cursor:pointer; }
+  .sync .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .sync .hint { font-size:12px; color:#666; }
+
+  .month-flag { padding:12px 16px; border-bottom:1px solid #eee; background:#fff; }
+  .month-flag .desc { font-size:12px; color:#666; margin-top:4px; }
+  .month-flag form { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+
+  .month-save-bar {
+    margin:10px; padding:10px 12px; border:1px solid #dbe2ec; border-radius:10px;
+    background:#f7f9fc; display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap;
+  }
+  .month-save-info { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .dirty-count { color:#666; font-size:13px; }
+  .dirty-count.has-changes { color:#b23a00; font-weight:700; }
+  .save-month-button {
+    padding:9px 14px; border:1px solid #1769d2; border-radius:8px;
+    background:#1769d2; color:#fff; font-weight:700; cursor:pointer;
+  }
+  .save-month-button:disabled { opacity:.45; cursor:not-allowed; }
+  .cell.changed { background:#fff9e8; box-shadow:0 0 0 2px #f0a000 inset; }
+  .cell.save-error { box-shadow:0 0 0 3px #d00 inset; }
+
+  /* 7列グリッド（日曜はじまりの空白も埋める） */
+  .grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:6px; padding:10px; }
+  .w { font-size:12px; color:#666; text-align:center; }
+
+  .cell { border:1px solid #eee; border-radius:10px; padding:6px; min-height:110px; display:flex; flex-direction:column; min-width:0; }
+  .dnum { font-weight:700; }
+  .row { display:flex; gap:6px; align-items:center; margin-top:auto; }
+  .row form { display:flex; gap:6px; flex-wrap:wrap; }
+  input[type="text"] { width:120px; padding:4px 6px; }
+  select { padding:4px 6px; }
+  label { font-size:12px; color:#666; }
+
+  .bulk { padding:12px 16px; border-top:1px solid #eee; }
+  .quick { padding:12px 16px; border-top:1px solid #eee; } /* クイック登録用 */
+
+  /* 土日/祝日色（数字を色付け）— 祝日が最優先で赤 */
+  .cell .dnum { color: inherit; }
+  .cell.sat .dnum { color:#06c; }   /* 土=青 */
+  .cell.sun .dnum { color:#d00; }   /* 日=赤 */
+  .cell.holiday .dnum { color:#d00; } /* 祝日=赤（優先） */
+
+  /* 予定ありだけ赤枠（inset でレイアウト不変） */
+  .cell.busy { box-shadow: 0 0 0 2px #d00 inset; }
+  .cell.busy.changed { box-shadow:0 0 0 2px #f0a000 inset; }
+  .cell.save-error { box-shadow:0 0 0 3px #d00 inset !important; }
+
+  @media (max-width:767px) {
+    .month-save-bar.bottom {
+      position:sticky; bottom:0; z-index:8; margin:0; border-radius:0;
+      box-shadow:0 -4px 14px rgba(0,0,0,.12);
+    }
+    .save-month-button { flex:1; min-width:180px; }
+  }
+</style>
+
+<header class="cal-admin">
+  <a class="nav" href="{{ url_for('s_u_calendar.admin_index', year=prev_year, month=prev_month) }}">〈 前の月</a>
+  <h1>カレンダー管理：{{ year }}年{{ "%02d"|format(month) }}月</h1>
+  <a class="nav" href="{{ url_for('s_u_calendar.admin_index', year=next_year, month=next_month) }}">次の月 〉</a>
+</header>
+
+<!-- ▼ Outlook同期バー（開始年月＋何ヶ月：サーバは from_year/from_month/months を受け付け） -->
+<div class="sync">
+  <h2>Outlook同期</h2>
+
+  <!-- ★ 追加：最終同期の表示（admin画面） -->
+  <div class="row" style="margin-right:auto; font-size:12px; color:#666;">
+    最終同期：<strong id="lastSyncText">{{ last_sync_at or "未実行" }}</strong>
+    {% if last_sync_range %}<span class="hint">（期間：{{ last_sync_range }}）</span>{% endif %}
+  </div>
+
+  <!-- 表示中の「この月」を同期（便利ボタン） -->
+  <div class="row">
+    <button class="btn" id="btnSyncMonth"
+      data-url="{{ url_for('s_u_calendar.sync_outlook_range') }}"
+      data-year="{{ year }}" data-month="{{ month }}">
+      この月を同期（Outlook → MFU）
+    </button>
+  </div>
+
+  <!-- 期間指定（YYYY-MM + 何ヶ月） -->
+  <div class="row" style="margin-left:auto">
+    <span class="hint">開始月：</span>
+    <input type="month" id="syncYM" value="{{ "%04d-%02d"|format(year, month) }}">
+    <span class="hint">期間：</span>
+    <select id="syncMonths">
+      {% for n in range(1,7) %}
+        <option value="{{ n }}" {{ "selected" if n==3 else "" }}>{{ n }}ヶ月</option>
+      {% endfor %}
+    </select>
+
+    <!-- ★ 削除反映オプション（Back側の clear_missing / clear_labels に対応） -->
+    <label class="hint" style="margin-left:10px;"><input type="checkbox" id="optClearMissing" checked> 削除も反映（空きに戻す）</label>
+    <label class="hint"><input type="checkbox" id="optClearLabels"> ラベルも消す</label>
+
+    <button class="btn" id="btnSyncYM"
+      data-url="{{ url_for('s_u_calendar.sync_outlook_range') }}">
+      指定の月から同期
+    </button>
+  </div>
+</div>
+<!-- ▲ Outlook同期バー -->
+
+<div class="month-flag">
+  <form method="post" action="{{ url_for('s_u_calendar.admin_upsert_month_flag') }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <input type="hidden" name="month" value="{{ month }}">
+    <label><input type="checkbox" name="show_closed_notice" value="1" {{ "checked" if show_closed_notice else "" }}> 利用者向け案内表示</label>
+    <button type="submit">保存</button>
+  </form>
+  <div class="desc">ONのとき、利用者側に「この月の撮影予定の追加は行っていません。」を表示します。</div>
+</div>
+
+<form id="monthDaysForm" method="post" action="{{ url_for('s_u_calendar.admin_upsert_month_days') }}">
+  <input type="hidden" name="year" value="{{ year }}">
+  <input type="hidden" name="month" value="{{ month }}">
+
+  <div class="month-save-bar top">
+    <div class="month-save-info">
+      <strong>日別設定</strong>
+      <span class="dirty-count">未保存の変更：0日</span>
+    </div>
+    <button class="save-month-button" type="submit" disabled>この月をまとめて保存</button>
+  </div>
+
+  <div class="grid">
+  {# 曜日ヘッダ：日→土 #}
+  {% set wd = ["日","月","火","水","木","金","土"] %}
+  {% for i in range(7) %}
+    {% set cls = "sun" if i==0 else ("sat" if i==6 else "") %}
+    <div class="w {{ cls }}">{{ wd[i] }}</div>
+  {% endfor %}
+
+  {# 先頭の空白セル（日曜はじまり用 first_w を利用） #}
+  {% for _ in range(first_w) %}<div></div>{% endfor %}
+
+  {# 日セル（Python側で用意した days を使用） #}
+  {% for it in days %}
+    {% set d = it.date %}
+    {% set key = it.key %}
+    {% set status = it.status %}
+    {% set w = d.weekday() %}
+    <div class="cell {{ status }} {{ 'holiday' if it.is_holiday else ('sun' if w==6 else ('sat' if w==5 else '')) }}" data-date="{{ key }}">
+      <input type="hidden" name="dates" value="{{ key }}">
+      <div class="dnum">
+        {{ d.day }}（{{ ["月","火","水","木","金","土","日"][d.weekday()] }}）
+      </div>
+
+      {% if it.is_holiday and it.holiday_name %}
+        <div style="font-size:12px; color:#b00000; margin-top:4px;">祝：{{ it.holiday_name }}</div>
+      {% endif %}
+
+      <div style="font-size:12px; color:#333; margin-top:4px;">
+        現在：{{ "予定あり" if status=="busy" else "空き" }}
+        {% if it.label %} / ラベル：{{ it.label }}{% endif %}
+        / 公開：{{ "する" if it.is_public==1 else "しない" }}
+      </div>
+
+      <div class="row">
+          <select class="day-input" name="status__{{ key }}">
+            <option value="free" {{ "selected" if status=="free" else "" }}>空き</option>
+            <option value="busy" {{ "selected" if status=="busy" else "" }}>予定あり</option>
+          </select>
+          <input class="day-input" type="text" name="label__{{ key }}" placeholder="コメント(任意)" value="{{ it.label or '' }}" maxlength="100">
+          <label><input class="day-input" type="checkbox" name="is_public__{{ key }}" value="1" {{ "checked" if it.is_public==1 else "" }}> 公開</label>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+
+  <div class="month-save-bar bottom">
+    <div class="month-save-info">
+      <strong>{{ year }}年{{ month }}月の日別設定</strong>
+      <span class="dirty-count">未保存の変更：0日</span>
+    </div>
+    <button class="save-month-button" type="submit" disabled>この月をまとめて保存</button>
+  </div>
+</form>
+
+<!-- ▼ クイック登録（YYYYMMDD） -->
+<div class="quick">
+  <h2 style="font-size:16px; margin:8px 0;">クイック登録（YYYYMMDD）</h2>
+  <form method="post" action="{{ url_for('s_u_calendar.admin_quick_add') }}" style="display:flex; gap:8px; flex-wrap:wrap;">
+    <input type="text" name="yyyymmdd" inputmode="numeric" pattern="\d{8}" placeholder="YYYYMMDD（例：20251022）" required>
+    <input type="text" name="label" placeholder="ラベル(任意)" maxlength="100">
+    <label><input type="checkbox" name="is_public" value="1" checked> 公開</label>
+    <button type="submit">追加</button>
+  </form>
+  <div style="font-size:12px; color:#666; margin-top:6px;">
+    ※ 追加時の状態は <b>予定あり</b> 固定です。既存日付は上書きされます。
+  </div>
+</div>
+<!-- ▲ クイック登録（YYYYMMDD） -->
+
+<div class="bulk">
+  <h2 style="font-size:16px; margin:8px 0;">範囲一括設定</h2>
+  <form method="post" action="{{ url_for('s_u_calendar.admin_bulk') }}" style="display:flex; gap:8px; flex-wrap:wrap;">
+    <label>From <input type="date" name="from" required value="{{ start_d }}"></label>
+    <label>To <input type="date" name="to" required value="{{ end_d }}"></label>
+    <select name="status">
+      <option value="busy" selected>予定あり</option>
+      <option value="free">空き</option>
+    </select>
+    <input type="text" name="label" placeholder="ラベル(任意)" maxlength="100">
+    <label><input type="checkbox" name="is_public" value="1" checked> 公開</label>
+    <button type="submit">一括保存</button>
+  </form>
+</div>
+
+<script>
+(function(){
+  const monthForm = document.getElementById('monthDaysForm');
+  const saveButtons = Array.from(document.querySelectorAll('.save-month-button'));
+  const dirtyCounters = Array.from(document.querySelectorAll('.dirty-count'));
+  const dayCells = Array.from(document.querySelectorAll('#monthDaysForm .cell[data-date]'));
+  let isSaving = false;
+
+  function cellState(cell){
+    const status = cell.querySelector('select[name^="status__"]')?.value || '';
+    const label = cell.querySelector('input[name^="label__"]')?.value || '';
+    const isPublic = cell.querySelector('input[name^="is_public__"]')?.checked ? '1' : '0';
+    return JSON.stringify([status, label, isPublic]);
+  }
+
+  dayCells.forEach((cell)=>{ cell.dataset.initialState = cellState(cell); });
+
+  function refreshDirtyState(){
+    let dirtyCount = 0;
+    dayCells.forEach((cell)=>{
+      const changed = cellState(cell) !== cell.dataset.initialState;
+      cell.classList.toggle('changed', changed);
+      if(changed) dirtyCount += 1;
+    });
+    dirtyCounters.forEach((counter)=>{
+      counter.textContent = `未保存の変更：${dirtyCount}日`;
+      counter.classList.toggle('has-changes', dirtyCount > 0);
+    });
+    saveButtons.forEach((button)=>{ button.disabled = dirtyCount === 0 || isSaving; });
+    return dirtyCount;
+  }
+
+  monthForm?.addEventListener('input', refreshDirtyState);
+  monthForm?.addEventListener('change', refreshDirtyState);
+
+  monthForm?.addEventListener('submit', async (event)=>{
+    event.preventDefault();
+    const dirtyCount = refreshDirtyState();
+    if(dirtyCount === 0 || isSaving) return;
+
+    isSaving = true;
+    saveButtons.forEach((button)=>{
+      button.disabled = true;
+      button.textContent = '保存中…';
+    });
+    dayCells.forEach((cell)=>cell.classList.remove('save-error'));
+
+    try{
+      const response = await fetch(monthForm.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: new FormData(monthForm)
+      });
+      const data = await response.json().catch(()=>({}));
+      if(!response.ok || !data.ok){
+        const error = new Error(data.message || `HTTP ${response.status}`);
+        error.dateValue = data.date || '';
+        throw error;
+      }
+
+      window.location.href = data.redirect_url || window.location.href;
+    }catch(error){
+      isSaving = false;
+      if(error.dateValue){
+        const errorCell = dayCells.find((cell)=>cell.dataset.date === error.dateValue);
+        if(errorCell){
+          errorCell.classList.add('save-error');
+          errorCell.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+      }
+      alert('保存に失敗しました: ' + error.message);
+      saveButtons.forEach((button)=>{ button.textContent = 'この月をまとめて保存'; });
+      refreshDirtyState();
+    }
+  });
+
+  window.addEventListener('beforeunload', (event)=>{
+    if(!isSaving && refreshDirtyState() > 0){
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
+
+  const btnMonth = document.getElementById('btnSyncMonth');
+  const btnYM = document.getElementById('btnSyncYM');
+
+  const optClearMissing = document.getElementById('optClearMissing');
+  const optClearLabels  = document.getElementById('optClearLabels');
+
+  async function postForm(url, payload){
+    const body = new URLSearchParams(payload);
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok){
+      throw new Error((data && (data.error || data.message)) || ('HTTP ' + res.status));
+    }
+    return data;
+  }
+
+  // この月を同期（from_year/from_month/months=1）
+  btnMonth?.addEventListener('click', async (e)=>{
+    e.preventDefault();
+    const base = btnMonth.dataset.url;
+    const y = btnMonth.dataset.year;
+    const m = btnMonth.dataset.month;
+    if(!base){ alert('同期エンドポイントが見つかりません。'); return; }
+    btnMonth.disabled = true; btnMonth.textContent = '同期中…';
+    try{
+      const payload = {
+        from_year: y,
+        from_month: m,
+        months: 1,
+        clear_missing: optClearMissing?.checked ? '1' : '0',
+        clear_labels:  optClearLabels?.checked ? '1' : '0'
+      };
+      const data = await postForm(base, payload);
+      alert('同期完了: ' + (data.count ?? '?') + '日 busy\n' + (data.busy_days ? data.busy_days.join(', ') : ''));
+      location.reload();
+    }catch(err){
+      alert('同期失敗: ' + err.message);
+    }finally{
+      btnMonth.disabled = false; btnMonth.textContent = 'この月を同期（Outlook → MFU）';
+    }
+  });
+
+  // YYYY-MM + months で同期（from_year/from_month で送る）
+  btnYM?.addEventListener('click', async (e)=>{
+    e.preventDefault();
+    const base = btnYM.dataset.url;
+    const ym = document.getElementById('syncYM').value;      // "YYYY-MM"
+    const months = document.getElementById('syncMonths').value;  // "1".."6"
+    if(!base){ alert('同期エンドポイントが見つかりません。'); return; }
+    if(!ym){ alert('開始月を指定してください'); return; }
+
+    const [yy, mm] = ym.split('-');
+    if(!yy || !mm){ alert('開始月の形式が不正です'); return; }
+
+    btnYM.disabled = true; btnYM.textContent = '同期中…';
+    try{
+      const payload = {
+        from_year: yy,
+        from_month: mm,
+        months: months,
+        clear_missing: optClearMissing?.checked ? '1' : '0',
+        clear_labels:  optClearLabels?.checked ? '1' : '0'
+      };
+      const data = await postForm(base, payload);
+      alert(
+        `同期完了: ${data.count ?? '?'}日 busy\n` +
+        `期間: ${data.range?.from} 〜 ${data.range?.to}`
+      );
+      location.reload();
+    }catch(err){
+      alert('同期失敗: ' + err.message);
+    }finally{
+      btnYM.disabled = false; btnYM.textContent = '指定の月から同期';
+    }
+  });
+})();
+</script>
+{% endblock %}

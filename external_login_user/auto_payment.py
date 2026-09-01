@@ -10,6 +10,7 @@ from flask import (
 )
 
 from . import bp
+from .utils import _external_login_choice_url
 from app.utils.db import get_db
 
 from pathlib import Path
@@ -265,10 +266,7 @@ def card():
         "[auto_payment.card] session.ext_user_social_id=%r", social_id
     )
     if not social_id:
-        return redirect(url_for(
-            "external_login_user.line_login",
-            next=session.get("ext_after_login_next") or request.url
-        ))
+        return redirect(_external_login_choice_url(session.get("ext_after_login_next") or request.url))
 
     # CSRF トークン
     if "ext_csrf" not in session:
@@ -295,10 +293,7 @@ def card():
     if not me:
         cur.close()
         db.close()
-        return redirect(url_for(
-            "external_login_user.line_login",
-            next=session.get("ext_after_login_next") or request.url
-        ))
+        return redirect(_external_login_choice_url(session.get("ext_after_login_next") or request.url))
 
     # 既存カードサマリ
     has_card, card_summary = load_default_card_summary(cur, me["id"])

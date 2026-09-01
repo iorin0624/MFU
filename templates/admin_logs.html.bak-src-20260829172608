@@ -1,0 +1,1168 @@
+{% extends "base.html" %}
+{% block title %}ログ確認{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2 class="mb-2">📜 ログ記録（サーバー側フィルタ／上限 {{ filters.limit or 1000 }} 件）</h2>
+  <div class="mb-3">
+    <a class="btn btn-sm btn-outline-danger" href="{{ url_for('admin_logs_404_ban_settings') }}">
+      404アクセスBAN判定を編集
+    </a>
+  </div>
+
+  {# 今日・昨日のクイックリンク #}
+  {% set today = (now().strftime('%Y-%m-%d')) %}
+  {% set yesterday = ((now() - timedelta(days=1)).strftime('%Y-%m-%d')) %}
+  {% set smtp_filter_param = filters.smtp_filter if filters.kind == 'SMTP' and filters.smtp_filter != 'ALL' else None %}
+  {% set smtp_filter_value = filters.smtp_filter if filters.kind == 'SMTP' else 'ALL' %}
+  {% set smtp_tag_param = 1 if filters.smtp_tag else None %}
+  {% set search_keyword_param = filters.search_keyword or None %}
+  {% set search_mode_param = filters.search_mode if filters.search_keyword else None %}
+  {% set search_ip_param = filters.search_ip or None %}
+  {% set search_status_param = filters.search_status or None %}
+  {% set search_method_param = filters.search_method or None %}
+  {% set search_path_param = filters.search_path or None %}
+  {% set search_endpoint_param = filters.search_endpoint or None %}
+  {% set search_user_param = filters.search_user or None %}
+  {% set search_ua_param = filters.search_ua or None %}
+  {% set search_date_from_param = filters.search_date_from or None %}
+  {% set search_date_to_param = filters.search_date_to or None %}
+
+  <!-- サーバー側フィルタ操作 -->
+  <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+    <div class="btn-group">
+      <a href="{{ url_for('admin_logs',
+                          date=today,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}" class="btn btn-sm btn-success">🔹今日</a>
+      <a href="{{ url_for('admin_logs',
+                          date=yesterday,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}" class="btn btn-sm btn-warning">🔸昨日</a>
+    </div>
+
+    <div class="btn-group ms-2">
+      <a class="btn btn-sm {{ 'btn-primary' if filters.kind=='LOGIN' else 'btn-outline-primary' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind='LOGIN',
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">[LOGIN] のみ</a>
+      <a class="btn btn-sm {{ 'btn-success' if filters.kind=='LINE_LOGIN' else 'btn-outline-success' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind='LINE_LOGIN',
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">[LINE_LOGIN] のみ</a>
+      <a class="btn btn-sm {{ 'btn-info text-dark' if filters.smtp_tag else 'btn-outline-info' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_tag=1,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">[SMTP]（全文）</a>
+      <a class="btn btn-sm {{ 'btn-outline-secondary' if filters.kind else 'btn-secondary' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">ALL</a>
+    </div>
+
+    {# ボタンの順序は「ローカル除外」「JP以外のみ」「/suc除外」 #}
+    <div class="btn-group ms-2">
+      <a class="btn btn-sm {{ 'btn-warning' if filters.exclude_local else 'btn-outline-warning' }}"
+         title="設定済みローカル網を除外"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=filters.kind or None,
+                          exclude_local=None if filters.exclude_local else 1,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">ローカル除外</a>
+
+      <a class="btn btn-sm {{ 'btn-danger' if filters.nonjp_only else 'btn-outline-danger' }}"
+         title="JP 以外のみ表示"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=None if filters.nonjp_only else 1,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">JP以外のみ</a>
+
+      <a class="btn btn-sm {{ 'btn-info text-dark' if filters.exclude_suc else 'btn-outline-info' }}"
+         title="/suc/ 配下のアクセスを除外"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=None if filters.exclude_suc else 1,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                          limit=filters.limit) }}">/suc 除外</a>
+    </div>
+
+    <!-- 件数上限（最大1000） -->
+    <form class="ms-2 d-flex align-items-center gap-2" method="get" action="{{ url_for('admin_logs') }}">
+      <input type="hidden" name="date" value="{{ selected_date }}">
+      {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+      {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+      {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+      {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+      {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+      {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+      {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+      {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+      {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+      {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+      {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+      {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+      {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+      {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+      {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+        {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+        {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
+      <label class="small text-muted">表示上限</label>
+      <select class="form-select form-select-sm" name="limit" onchange="this.form.submit()">
+        {% for n in [100,300,500,1000] %}
+          <option value="{{ n }}" {{ 'selected' if (filters.limit or 1000)==n else '' }}>{{ n }}</option>
+        {% endfor %}
+      </select>
+    </form>
+
+    {% if filters.kind == 'SMTP' %}
+      <form class="ms-2 d-flex align-items-center gap-2" method="get" action="{{ url_for('admin_logs') }}">
+        <input type="hidden" name="date" value="{{ selected_date }}">
+        <input type="hidden" name="kind" value="SMTP">
+        {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+        {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+        {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+        <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+        {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+        {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+        {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+        {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+        {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+        {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+        {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+        {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+    {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+    {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
+        <label class="small text-muted">SMTP詳細</label>
+        <select class="form-select form-select-sm" name="smtp_filter" onchange="this.form.submit()">
+          <option value="ALL" {{ 'selected' if smtp_filter_value=='ALL' else '' }}>ALL</option>
+          <option value="AUTHFAIL" {{ 'selected' if smtp_filter_value=='AUTHFAIL' else '' }}>AUTHFAIL</option>
+          <option value="REJECT" {{ 'selected' if smtp_filter_value=='REJECT' else '' }}>REJECT</option>
+          <option value="DISCONNECT" {{ 'selected' if smtp_filter_value=='DISCONNECT' else '' }}>DISCONNECT</option>
+          <option value="SENT" {{ 'selected' if smtp_filter_value=='SENT' else '' }}>SENT</option>
+        </select>
+      </form>
+    {% endif %}
+
+    <!-- 表示切替スイッチ -->
+    <div class="ms-2 d-flex align-items-center gap-2">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="togglePretty" checked>
+        <label class="form-check-label small" for="togglePretty">見やすい表示</label>
+      </div>
+      <span class="small text-muted">(切替：見やすい表示 / 原文)</span>
+    </div>
+  </div>
+
+  <!-- 日付絞り込み（サーバー側） -->
+  <form method="get" action="{{ url_for('admin_logs') }}" class="mb-3">
+    {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+    {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+    {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+    {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+    {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+    {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+    {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+    {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+    {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+    {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+    {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+    {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+    {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+    {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+    {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+    {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+    {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
+    <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+    <div class="input-group">
+      <input type="date" name="date" class="form-control" value="{{ selected_date }}">
+      <button class="btn btn-outline-primary" type="submit">日付で絞り込み</button>
+      {% if selected_date %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('admin_logs',
+                                                              kind=filters.kind or None,
+                                                              exclude_local=1 if filters.exclude_local else None,
+                                                              nonjp_only=1 if filters.nonjp_only else None,
+                                                              exclude_suc=1 if filters.exclude_suc else None,
+                                                              smtp_filter=smtp_filter_param,
+                                                              smtp_tag=smtp_tag_param,
+                                                              search_keyword=search_keyword_param,
+                                                              search_mode=search_mode_param,
+                                                              search_ip=search_ip_param,
+                                                              search_status=search_status_param,
+                                                              search_method=search_method_param,
+                                                              search_path=search_path_param,
+                                                              search_endpoint=search_endpoint_param,
+                                                              search_user=search_user_param,
+                                                              search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                                                              limit=filters.limit) }}">リセット</a>
+      {% endif %}
+    </div>
+  </form>
+
+  <!-- 現在の条件 -->
+  <div class="mb-2 small text-muted">
+    サーバー側条件:
+    <span class="badge {{ 'bg-secondary' if not filters.kind else 'bg-primary' }}">{{ filters.kind or 'ALL' }}</span>
+    <span class="badge {{ 'bg-warning text-dark' if filters.exclude_local else 'bg-light text-dark border' }}">ローカル除外: {{ 'ON' if filters.exclude_local else 'OFF' }}</span>
+    <span class="badge {{ 'bg-danger' if filters.nonjp_only else 'bg-light text-dark border' }}">JP以外のみ: {{ 'ON' if filters.nonjp_only else 'OFF' }}</span>
+    <span class="badge {{ 'bg-info text-dark' if filters.exclude_suc else 'bg-light text-dark border' }}">/suc 除外: {{ 'ON' if filters.exclude_suc else 'OFF' }}</span>
+    <span class="badge {{ 'bg-info text-dark' if filters.smtp_tag else 'bg-light text-dark border' }}">SMTPタグ: {{ 'ON' if filters.smtp_tag else 'OFF' }}</span>
+    {% if filters.kind == 'SMTP' %}
+      <span class="badge {{ 'bg-info text-dark' if smtp_filter_value != 'ALL' else 'bg-light text-dark border' }}">SMTP詳細: {{ smtp_filter_value }}</span>
+    {% endif %}
+    {% if filters.search_keyword %}
+      <span class="badge bg-secondary">検索: {{ filters.search_keyword }}</span>
+      <span class="badge bg-light text-dark border">条件: {{ 'AND' if filters.search_mode == 'and' else 'OR' }}</span>
+    {% endif %}
+    {% if filters.search_ip %}<span class="badge bg-light text-dark border">IP: {{ filters.search_ip }}</span>{% endif %}
+    {% if filters.search_status %}<span class="badge bg-light text-dark border">Status: {{ filters.search_status }}</span>{% endif %}
+    {% if filters.search_method %}<span class="badge bg-light text-dark border">Method: {{ filters.search_method }}</span>{% endif %}
+    {% if filters.search_path %}<span class="badge bg-light text-dark border">Path: {{ filters.search_path }}</span>{% endif %}
+    {% if filters.search_endpoint %}<span class="badge bg-light text-dark border">EP: {{ filters.search_endpoint }}</span>{% endif %}
+    {% if filters.search_user %}<span class="badge bg-light text-dark border">User: {{ filters.search_user }}</span>{% endif %}
+    {% if filters.search_ua %}<span class="badge bg-light text-dark border">UA: {{ filters.search_ua }}</span>{% endif %}
+    {% if filters.search_date_from or filters.search_date_to %}
+      <span class="badge bg-light text-dark border">期間: {{ filters.search_date_from or '未指定' }} 〜 {{ filters.search_date_to or '未指定' }}</span>
+    {% endif %}
+    {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
+    <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
+  </div>
+
+  <!-- 検索（サーバー側・全ページ対象） -->
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <h5 class="card-title mb-0">検索（全ページ対象）</h5>
+        <span class="small text-muted">※サーバー側で絞り込み</span>
+      </div>
+      <form method="get" action="{{ url_for('admin_logs') }}">
+        {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+        {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+        {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+        {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+        {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+        {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+        {% if selected_date %}<input type="hidden" name="date" value="{{ selected_date }}">{% endif %}
+        <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-lg-4">
+            <label class="form-label small">フリーワード</label>
+            <input type="text" class="form-control form-control-sm" name="search_keyword" value="{{ filters.search_keyword }}" placeholder="例: album access 200">
+            <div class="form-text small">半角/全角スペース区切り。IP/ログ全文を対象。</div>
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">開始日</label>
+            <input type="date" class="form-control form-control-sm" name="search_date_from" value="{{ filters.search_date_from }}">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">終了日</label>
+            <input type="date" class="form-control form-control-sm" name="search_date_to" value="{{ filters.search_date_to }}">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">キーワード条件</label>
+            <select class="form-select form-select-sm" name="search_mode">
+              <option value="and" {{ 'selected' if filters.search_mode == 'and' else '' }}>すべて含む (AND)</option>
+              <option value="or" {{ 'selected' if filters.search_mode == 'or' else '' }}>いずれか含む (OR)</option>
+            </select>
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">IP</label>
+            <input type="text" class="form-control form-control-sm" name="search_ip" value="{{ filters.search_ip }}" placeholder="例: 203.0.113.">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">ステータス</label>
+            <input type="text" class="form-control form-control-sm" name="search_status" value="{{ filters.search_status }}" placeholder="例: 200">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">メソッド</label>
+            <input type="text" class="form-control form-control-sm" name="search_method" value="{{ filters.search_method }}" placeholder="例: GET">
+          </div>
+          <div class="col-12 col-lg-4">
+            <label class="form-label small">パス/URL</label>
+            <input type="text" class="form-control form-control-sm" name="search_path" value="{{ filters.search_path }}" placeholder="/album/access/">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">エンドポイント</label>
+            <input type="text" class="form-control form-control-sm" name="search_endpoint" value="{{ filters.search_endpoint }}" placeholder="album.album_access">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">ユーザー</label>
+            <input type="text" class="form-control form-control-sm" name="search_user" value="{{ filters.search_user }}" placeholder="user=...">
+          </div>
+          <div class="col-12 col-lg-4">
+            <label class="form-label small">UA</label>
+            <input type="text" class="form-control form-control-sm" name="search_ua" value="{{ filters.search_ua }}" placeholder="Chrome/">
+          </div>
+          <div class="col-12 col-lg-2 d-flex gap-2 align-items-center">
+            <button type="submit" class="btn btn-sm btn-primary w-100">検索</button>
+            <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('admin_logs',
+                                                                              date=selected_date or None,
+                                                                              kind=filters.kind or None,
+                                                                              exclude_local=1 if filters.exclude_local else None,
+                                                                              nonjp_only=1 if filters.nonjp_only else None,
+                                                                              exclude_suc=1 if filters.exclude_suc else None,
+                                                                              smtp_filter=smtp_filter_param,
+                                                                              smtp_tag=smtp_tag_param,
+                                                                              limit=filters.limit) }}">条件クリア</a>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 一覧（5列：ID, 日時, IP, 内容, 操作） -->
+  <div class="table-responsive">
+    <table class="table table-sm table-striped table-bordered">
+      <thead class="table-light">
+        <tr>
+          <th>ID</th>
+          <th>日時</th>
+          <th>IPアドレス</th>
+          <th>内容</th>
+          <th class="text-center">操作</th>
+        </tr>
+      </thead>
+      <tbody id="logTableBody">
+        {% for log in logs %}
+          <tr>
+            <td class="text-muted">{{ log.id }}</td>
+            <td class="text-nowrap">{{ log.log_date }}</td>
+            <td>
+              {{ log.ip or '-' }}<br>
+              <small class="text-muted">
+                {{ (log.provider or log.netname) or '-' }}{% if log.country %}（{{ log.country }}）{% endif %}
+              </small>
+            </td>
+            <td class="text-break">
+              <!-- 原文：常に保持 -->
+              <code class="log-raw mono log-text">{{ log.log_text }}</code>
+              <!-- 見やすい表示：JSで生成して挿入 -->
+              <div class="log-pretty d-none"></div>
+            </td>
+            <td class="text-center align-middle">
+              {% if log.ip_valid %}
+                <div class="d-flex flex-column align-items-center gap-1">
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline-danger"
+                    data-ip="{{ log.ip }}"
+                    data-ip-version="{{ log.ip_version or '' }}"
+                    data-target="banStatus-{{ log.id }}"
+                    onclick="banFromBtn(this)"
+                    title="このIP/CIDRをBANします（IPv4は/24丸め、IPv6は/128維持）">
+                    BAN
+                  </button>
+                  <small id="banStatus-{{ log.id }}" class="text-muted"></small>
+                </div>
+              {% else %}
+                <span class="text-muted">-</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        {% if logs|length == 0 %}
+          <tr><td colspan="5" class="text-center text-muted">該当するログはありません。</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ページネーション（サーバー側フィルタを引き回し） -->
+  {% if total_pages > 1 %}
+    <nav class="mt-3">
+      <ul class="pagination pagination-sm justify-content-center">
+        {% if current_page > 1 %}
+          <li class="page-item">
+            <a class="page-link"
+               href="{{ url_for('admin_logs',
+                                date=selected_date or None,
+                                page=current_page-1,
+                                kind=filters.kind or None,
+                                exclude_local=1 if filters.exclude_local else None,
+                                nonjp_only=1 if filters.nonjp_only else None,
+                                exclude_suc=1 if filters.exclude_suc else None,
+                                smtp_filter=smtp_filter_param,
+                                smtp_tag=smtp_tag_param,
+                                search_keyword=search_keyword_param,
+                                search_mode=search_mode_param,
+                                search_ip=search_ip_param,
+                                search_status=search_status_param,
+                                search_method=search_method_param,
+                                search_path=search_path_param,
+                                search_endpoint=search_endpoint_param,
+                                search_user=search_user_param,
+                                search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                                limit=filters.limit) }}">← 前へ</a>
+          </li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">ページ {{ current_page }} / {{ total_pages }}</span></li>
+        {% if current_page < total_pages %}
+          <li class="page-item">
+            <a class="page-link"
+               href="{{ url_for('admin_logs',
+                                date=selected_date or None,
+                                page=current_page+1,
+                                kind=filters.kind or None,
+                                exclude_local=1 if filters.exclude_local else None,
+                                nonjp_only=1 if filters.nonjp_only else None,
+                                exclude_suc=1 if filters.exclude_suc else None,
+                                smtp_filter=smtp_filter_param,
+                                smtp_tag=smtp_tag_param,
+                                search_keyword=search_keyword_param,
+                                search_mode=search_mode_param,
+                                search_ip=search_ip_param,
+                                search_status=search_status_param,
+                                search_method=search_method_param,
+                                search_path=search_path_param,
+                                search_endpoint=search_endpoint_param,
+                                search_user=search_user_param,
+                                search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
+                                limit=filters.limit) }}">次へ →</a>
+          </li>
+        {% endif %}
+      </ul>
+    </nav>
+  {% endif %}
+</div>
+
+<style>
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+code { white-space: pre-wrap; word-break: break-word; }
+
+/* 表示切替（デフォルト：見やすい表示） */
+.show-pretty .log-pretty { display: block !important; }
+.show-pretty .log-raw    { display: none !important; }
+.show-raw    .log-pretty { display: none !important; }
+.show-raw    .log-raw    { display: block !important; }
+</style>
+
+<!-- 見やすい表示/原文 切り替え（グローバル）＋ LOGIN/LINELOGIN/SMTP 専用整形 -->
+<script>
+(() => {
+  const tableBody = document.getElementById('logTableBody');
+  const toggle = document.getElementById('togglePretty');
+
+  // ====== 共通 ======
+  const esc = (s) => String(s ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const badge = (label, cls) => '<span class="badge '+cls+' me-2">'+esc(label)+'</span>';
+
+  const statusClass = (code) => {
+    const c = parseInt(code,10);
+    if (c === 200) return 'bg-primary';
+    if (c === 302) return 'bg-success';
+    if (c === 404) return 'bg-danger';
+    if (c >= 500)  return 'bg-dark';
+    if (c >= 400)  return 'bg-danger';
+    if (c >= 300)  return 'bg-warning text-dark';
+    if (c >= 200)  return 'bg-success';
+    return 'bg-secondary';
+  };
+
+  const shortUA = (ua) => {
+    if (!ua) return '';
+    const m = ua.match(/(Chrome\/[\d.]+|Firefox\/[\d.]+|Safari\/[\d.]+|Edg\/[\d.]+|OPR\/[\d.]+|CriOS\/[\d.]+|FxiOS\/[\d.]+)/g);
+    return m ? m.slice(0,2).join(' ') : (ua.length>40 ? ua.slice(0,37)+'…' : ua);
+  };
+
+  // ====== LINE_LOGIN 用ヘルパ ======
+  const pickLineNumericId = (t) => {
+    const mHash = t.match(/#\s*(\d{1,9})/);
+    if (mHash) return mHash[1];
+    const keys = ['ext_user_id','member_id','user_id','id','uid'];
+    for (const k of keys) {
+      const m = t.match(new RegExp(`\\b${k}[=:]\\s*"?([0-9]{1,9})"?`, 'i'));
+      if (m) return m[1];
+    }
+    return '';
+  };
+  const pickLineDisplayName = (t) => {
+    const m1 = t.match(/\b(display|display_name|name|nickname|account_name|line_name|screen_name)\s*[:=]\s*"([^"]+)"/i);
+    if (m1) return m1[2].trim();
+    const m2 = t.match(/"name"\s*:\s*"([^"]+)"/i);
+    if (m2) return m2[1].trim();
+    const m3 = t.match(/#\s*\d{1,9}[\s\u3000]+([^"\s\u3000][^　\s]*)(?=[\s\u3000]*がログイン|["\s]|$)/);
+    if (m3) return m3[1].trim();
+    return '';
+  };
+
+  // ====== LOGIN 用：ユーザー名抽出（日本語原文対応を強化） ======
+  function pickLoginUser(t){
+    const mKey = t.match(/\buser(?:name)?\s*[:=]\s*"?([\w.@:-]+)"?/i);
+    if (mKey) return mKey[1];
+    const mJa = t.match(/ユーザー(?:名)?\s*[:：]\s*([^\s\u3000"']+)(?=[\s\u3000]*がログイン)/);
+    if (mJa) return mJa[1];
+    const mLoose = t.match(/ユーザー(?:名)?\s*[:：]?\s*([^\s\u3000"']+)/);
+    if (mLoose) return mLoose[1];
+    return '';
+  }
+
+  const resultBadge = (result) => {
+    const normalized = String(result || '').toLowerCase();
+    const label = normalized === 'ok' ? '成功' : (normalized === 'error' ? '失敗' : (result || '結果不明'));
+    const cls = normalized === 'ok' ? 'bg-success' : (normalized === 'error' ? 'bg-danger' : 'bg-secondary');
+    return badge(label, cls);
+  };
+
+  const parseJsonAudit = (t, prefix) => {
+    if (!t.startsWith(prefix + ' ')) return null;
+    try {
+      return JSON.parse(t.slice(prefix.length).trim());
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const auditEntity = (details) => {
+    if (!details || typeof details !== 'object') return {};
+    return details.after || details.before || details;
+  };
+
+  const appendPhoneEntity = (line, entity) => {
+    if (!entity || typeof entity !== 'object') return line;
+    if (entity.phone_number) line += ' <span class="mono fw-semibold">' + esc(entity.phone_number) + '</span>';
+    if (entity.name) line += ' <span class="ms-2">' + esc(entity.name) + '</span>';
+    if (entity.note) line += ' <span class="text-muted ms-2">備考: ' + esc(entity.note) + '</span>';
+    return line;
+  };
+
+  // ====== “見やすい表示” 生成 ======
+  function prettify(t){
+    if (/\[FARE_ESTIMATE_SEARCH\]/.test(t)) {
+      const result = (t.match(/結果：(成功|失敗)/)?.[1]) || '不明';
+      const destination = (
+        t.match(/到着地点：(.*?)\s+(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\/fare-estimate\b/)?.[1]
+      ) || '';
+
+      let line = badge('料金検索', 'bg-primary');
+      line += ' ' + badge(
+        result,
+        result === '成功' ? 'bg-success' : (result === '失敗' ? 'bg-danger' : 'bg-secondary')
+      );
+      line += ' <span>到着地点：' + esc(destination || '（未入力）') + '</span>';
+      return line;
+    }
+
+    if (/\[LINE_LOGIN_BLOCKED\]/.test(t)) {
+      const originalUserId = (t.match(/\boriginal_user_id=(\d+)/)?.[1]) || '';
+      let line = badge('LINEログイン拒否', 'bg-danger');
+      line += ' ' + badge('退会済みアカウント', 'bg-dark');
+      if (originalUserId) {
+        line += ' ' + badge('元ユーザーID ' + originalUserId, 'bg-light text-dark border');
+      }
+      line += ' <span>退会済みLINEアカウントからのログインを拒否しました</span>';
+      return line;
+    }
+
+    const loginVariant = t.match(/\[(LOGIN_PASSKEY|PIN_LOGIN|LOGIN_EMAIL_OTP|LOGIN_TOTP)\]/)?.[1] || '';
+    if (loginVariant) {
+      const labels = {
+        LOGIN_PASSKEY: 'パスキー認証',
+        PIN_LOGIN: 'PINログイン',
+        LOGIN_EMAIL_OTP: 'メールOTP認証',
+        LOGIN_TOTP: '認証アプリ（TOTP）',
+      };
+      const id = pickLineNumericId(t);
+      const displayName = pickLineDisplayName(t);
+      const loginUser = pickLoginUser(t);
+      const who = displayName
+        ? ((id ? '#' + id + '　' : '') + displayName)
+        : (loginUser || '（不明）');
+
+      let line = badge(labels[loginVariant] || loginVariant, 'bg-primary');
+      line += ' ' + badge('ログイン成功', 'bg-success');
+      line += ' <span>ユーザー: ' + esc(who) + '</span>';
+      return line;
+    }
+
+    const phoneWhitelist = parseJsonAudit(t, 'PHONE_WHITELIST');
+    if (phoneWhitelist) {
+      const action = String(phoneWhitelist.action || '');
+      const actionLabels = {
+        add: 'ホワイトリスト追加',
+        edit: 'ホワイトリスト編集',
+        delete: 'ホワイトリスト削除',
+        sync: '電話システム同期',
+        setting_change: '設定変更',
+        auto_expire: '一時許可の自動終了',
+        blacklist_add: 'ブラックリスト追加',
+        blacklist_delete: 'ブラックリスト削除',
+        blacklist_token_apply: '拒否登録リンク適用',
+        blacklist_token_inspect: '拒否登録リンク確認',
+      };
+      const details = phoneWhitelist.details || {};
+      const entity = auditEntity(details);
+
+      let line = badge('電話番号リスト', 'bg-primary');
+      line += ' ' + badge(actionLabels[action] || action || '操作不明', 'bg-info text-dark');
+      line += ' ' + resultBadge(phoneWhitelist.result);
+      line = appendPhoneEntity(line, entity);
+
+      if (details.setting) {
+        line += ' <span class="mono ms-2">' + esc(details.setting) + '</span>';
+        if (Object.prototype.hasOwnProperty.call(details, 'before') ||
+            Object.prototype.hasOwnProperty.call(details, 'after')) {
+          line += ' <span class="text-muted ms-1">' +
+                  esc(JSON.stringify(details.before)) + ' → ' +
+                  esc(JSON.stringify(details.after)) + '</span>';
+        }
+      }
+      if (details.entry_count !== undefined) {
+        line += ' ' + badge('登録件数 ' + details.entry_count, 'bg-light text-dark border');
+      }
+      if (details.input) line += ' <span class="mono ms-2">入力: ' + esc(details.input) + '</span>';
+      if (details.phone_number && !entity.phone_number) {
+        line += ' <span class="mono ms-2">' + esc(details.phone_number) + '</span>';
+      }
+      if (phoneWhitelist.error) {
+        line += ' <span class="text-danger ms-2">エラー: ' + esc(phoneWhitelist.error) + '</span>';
+      }
+      return line;
+    }
+
+    const phoneDiagnostics = parseJsonAudit(t, 'PHONE_DIAGNOSTICS');
+    if (phoneDiagnostics) {
+      const action = String(phoneDiagnostics.action || '');
+      const actionLabels = {
+        detail_start: '詳細診断開始',
+        detail_stop: '詳細診断終了',
+      };
+      const details = phoneDiagnostics.details || {};
+
+      let line = badge('電話診断', 'bg-info text-dark');
+      line += ' ' + badge(actionLabels[action] || action || '操作不明', 'bg-primary');
+      line += ' ' + resultBadge(phoneDiagnostics.result);
+      if (details.session_id) {
+        line += ' <span class="mono ms-2">セッション: ' + esc(details.session_id) + '</span>';
+      }
+      if (details.contact_ip) {
+        line += ' <span class="mono ms-2">対象IP: ' + esc(details.contact_ip) + '</span>';
+      }
+      if (phoneDiagnostics.error) {
+        line += ' <span class="text-danger ms-2">エラー: ' + esc(phoneDiagnostics.error) + '</span>';
+      }
+      return line;
+    }
+
+    if (/^\[SUCAL\]/.test(t)) {
+      const matched = t.match(/^\[SUCAL\]\s+([A-Z0-9_]+)\s*(.*)$/);
+      const action = matched?.[1] || '';
+      const detail = matched?.[2] || '';
+      const actionLabels = {
+        API_SYNC_OUTLOOK_6M: 'Outlook 6か月同期',
+        UPSERT: '予定更新',
+        SYNC_OUTLOOK_RANGE: 'Outlook範囲同期',
+        API_QUICK_ADD: 'API簡易追加',
+        SYNC_OUTLOOK: 'Outlook同期',
+        BULK: '一括更新',
+        QUICK_ADD: '簡易追加',
+        API_SYNC_6M: 'API 6か月同期',
+      };
+      let line = badge('カレンダー', 'bg-info text-dark');
+      line += ' ' + badge(actionLabels[action] || action || '処理', 'bg-primary');
+      if (detail) line += ' <span class="mono">' + esc(detail) + '</span>';
+      return line;
+    }
+
+    if (/^\[ALERT\]/.test(t)) {
+      const country = (t.match(/\bCC=([^\s]+)/)?.[1]) || '';
+      const count = (t.match(/\bcnt=(\d+)/)?.[1]) || '';
+      const path = (t.match(/\bpath=([^\s]+)/)?.[1]) || '';
+      let line = badge('セキュリティ警告', 'bg-danger');
+      if (/404 burst/i.test(t)) line += ' ' + badge('404バースト', 'bg-warning text-dark');
+      if (country) line += ' ' + badge('国 ' + country, 'bg-light text-dark border');
+      if (count) line += ' ' + badge(count + '回', 'bg-light text-dark border');
+      if (path) line += ' <span class="mono fw-semibold">' + esc(path) + '</span>';
+      return line;
+    }
+
+    if (/^\[UA\]/.test(t)) {
+      const matched = t.match(/^\[UA\]\s+(.+?)(?:\s+\|\s+Path:\s*(.*))?$/);
+      const ua = matched?.[1] || '';
+      const path = matched?.[2] || '';
+      let line = badge('UA記録', 'bg-secondary');
+      if (path) line += ' <span class="mono fw-semibold">' + esc(path) + '</span>';
+      if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return line;
+    }
+
+    if (/\[EVENT_ALBUM_PREVIEW_BLOCKED\]/.test(t)) {
+      const status = (t.match(/\b(GET|HEAD)\s+\S+\s+(\d{3})\b/)?.[2]) || '403';
+      const path = (t.match(/\b(?:GET|HEAD)\s+([^\s"]+)/)?.[1]) || '';
+      const ua = (t.match(/\bUA="([^"]+)"/i)?.[1]) || '';
+
+      let line = badge('プレビュー拒否', 'bg-danger');
+      line += ' ' + badge('アルバム未表示', 'bg-secondary');
+      line += ' ' + badge('HTTP ' + status, statusClass(status));
+      if (path) line += ' <span class="fw-semibold mono">' + esc(path) + '</span>';
+      if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return line;
+    }
+
+    if (/\[INAPP_WARNING\]/.test(t)) {
+      const status = (t.match(/\b(GET|POST|HEAD)\s+\S+\s+(\d{3})\b/)?.[2]) || '200';
+      const path = (t.match(/\b(?:GET|POST|HEAD)\s+([^\s"]+)/)?.[1]) || '';
+      const ua = (t.match(/\bUA="([^"]+)"/i)?.[1]) || '';
+      const albumNotShown = /アルバム未表示/.test(t);
+
+      let line = badge('アプリ内ブラウザ案内', 'bg-warning text-dark');
+      line += ' ' + badge(
+        albumNotShown ? 'アルバム未表示' : '本来の画面未表示',
+        'bg-secondary'
+      );
+      line += ' ' + badge('HTTP ' + status + '（案内画面）', 'bg-info text-dark');
+      if (path) line += ' <span class="fw-semibold mono">' + esc(path) + '</span>';
+      if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return line;
+    }
+
+    if (/\[ALBUM_VIEW_GRANTED\]/.test(t)) {
+      const albumId = (t.match(/\balbum_id=([^\s]+)/)?.[1]) || '';
+      const eventId = (t.match(/\bevent_id=([^\s]+)/)?.[1]) || '';
+      const auth = (t.match(/\bauth=([^\s]+)/)?.[1]) || '';
+      const user = (t.match(/\buser="([^"]*)"/i)?.[1]) || '';
+      const authLabels = {
+        admin: '管理者',
+        owner: 'アルバム所有者',
+        event_session: 'イベント認証',
+      };
+
+      let line = badge('アルバム閲覧許可', 'bg-success');
+      if (eventId) line += ' ' + badge('イベントID ' + eventId, 'bg-primary');
+      if (auth) line += ' ' + badge(authLabels[auth] || auth, 'bg-info text-dark');
+      if (user) line += ' ' + badge(user, 'bg-dark');
+      if (albumId) {
+        line += ' <span class="ms-1 text-muted">アルバム:</span> ' +
+                '<span class="mono">' + esc(albumId) + '</span>';
+      }
+      return line;
+    }
+
+    const mKind = t.match(/\[(LOGIN|LINE_LOGIN|SMTP)\]/);
+    const kind = mKind ? mKind[1] : '';
+
+    if (kind === 'LOGIN') {
+      const user = pickLoginUser(t) || '（不明）';
+      const ms   = (t.match(/\b(\d{1,6})ms\b/)?.[1]) ||
+                   (t.match(/\b(?:time|elapsed|dur|t)[=:]\s*([\d.]+)ms\b/i)?.[1]) || '';
+      const ua   = (t.match(/\bua[=:]"([^"]+)"/i)?.[1]) ||
+                   (t.match(/\bUser-Agent:"([^"]+)"/i)?.[1]) || '';
+
+      let line = badge('LOGIN', 'bg-primary') +
+                 '<span>ユーザー: ' + esc(user) + ' がログインしました</span>';
+      if (ms || ua) {
+        line += ' <span class="text-muted ms-2">' +
+                (ms ? esc(ms)+'ms ' : '') +
+                (ua ? esc(shortUA(ua)) : '') +
+                '</span>';
+      }
+      return line;
+    }
+
+    if (kind === 'LINE_LOGIN') {
+      const id  = pickLineNumericId(t);
+      const nm  = pickLineDisplayName(t) || '（不明）';
+      const ms  = (t.match(/\b(\d{1,6})ms\b/)?.[1]) ||
+                  (t.match(/\b(?:time|elapsed|dur|t)[=:]\s*([\d.]+)ms\b/i)?.[1]) || '';
+      const ua  = (t.match(/\bua[=:]"([^"]+)"/i)?.[1]) ||
+                  (t.match(/\bUser-Agent:"([^"]+)"/i)?.[1]) || '';
+
+      const ZS = '　'; // 全角スペース
+      const who = (id ? ('#' + id + ZS) : '') + nm;
+
+      let line = badge('LINE_LOGIN', 'bg-success') +
+                 '<span>ユーザー: ' + esc(who) + ZS + 'がログインしました</span>';
+      if (ms || ua) {
+        line += ' <span class="text-muted ms-2">' +
+                (ms ? esc(ms)+'ms ' : '') +
+                (ua ? esc(shortUA(ua)) : '') +
+                '</span>';
+      }
+      return line;
+    }
+
+    if (kind === 'SMTP') {
+      const isOk = /送信OK/.test(t);
+      const isNg = /送信NG/.test(t);
+      const to   = (t.match(/to="([^"]+)"/)?.[1]) || '';
+      const subj = (t.match(/subj="([^"]+)"/)?.[1]) || '';
+      const detail = (t.match(/detail=(.+)$/)?.[1] || '').trim();
+
+      let line = badge('SMTP', 'bg-warning text-dark');
+      line += ' ' + badge(
+        isOk ? '送信OK' : (isNg ? '送信NG' : '送信'),
+        isOk ? 'bg-success' : (isNg ? 'bg-danger' : 'bg-secondary')
+      );
+
+      if (to) {
+        line += ' <span class="mono">to=' + esc(to) + '</span>';
+      } else {
+        line += ' <span class="mono">to=（不明）</span>';
+      }
+
+      if (subj) {
+        line += ' <span class="ms-2">subj=</span><span class="text-muted">' + esc(subj) + '</span>';
+      }
+
+      if (detail) {
+        line += ' <span class="text-muted ms-2 small">detail: ' + esc(detail) + '</span>';
+      }
+
+      return line;
+    }
+
+    if (/\[FW_BAN\]/.test(t)) {
+      const mode = (t.match(/\[FW_BAN\]\[([^\]]+)\]/)?.[1]) || '';
+      const ip = (t.match(/\bip=([^\s]+)/)?.[1]) || '';
+      const target = (t.match(/\btarget=([^\s]+)/)?.[1]) || '';
+      const path = (t.match(/\bpath=([^\s]+)/)?.[1]) || '';
+      const count = (t.match(/\bcount=(\d+)/)?.[1]) || '';
+      const distinct = (t.match(/\bdistinct=(\d+)/)?.[1]) || '';
+      const duration = (t.match(/\bduration=(\d+)/)?.[1]) || '';
+      const samples = (t.match(/\bsamples=(.*)$/)?.[1]) || '';
+      const reason = (t.match(/\breason=([^\s]+)/)?.[1]) || '';
+      const status = (t.match(/\bstatus=([^\s]+)/)?.[1]) || '';
+
+      const observe = mode.toUpperCase() === 'OBSERVE';
+      let line = badge(observe ? 'BAN判定のみ' : '自動BAN', observe ? 'bg-warning text-dark' : 'bg-danger');
+      if (mode && !observe) line += ' ' + badge(mode, 'bg-warning text-dark');
+
+      if (status) {
+        const s = status.toLowerCase();
+        const stCls = s === 'added' ? 'bg-success' : (s === 'already' ? 'bg-secondary' : 'bg-danger');
+        line += ' ' + badge('status=' + status, stCls);
+      }
+      if (reason) {
+        const jaReason = reason === 'sensitive'
+          ? '秘密情報・攻撃パス'
+          : (reason === 'short'
+              ? '異なる404パスの短時間探索'
+              : ((reason === 'ip' || reason === 'cumulative') ? '異なる404パスの累積探索' : reason));
+        line += ' ' + badge('判定=' + jaReason, 'bg-info text-dark');
+      }
+
+      if (ip) line += ' <span class="mono">ip=' + esc(ip) + '</span>';
+      if (target) line += ' <span class="mono ms-2">target=' + esc(target) + '</span>';
+      if (path) line += ' <span class="mono ms-2">path=' + esc(path) + '</span>';
+      if (count) line += ' <span class="badge bg-light text-dark border ms-2">count=' + esc(count) + '</span>';
+      if (distinct) line += ' <span class="badge bg-light text-dark border ms-2">異なるパス=' + esc(distinct) + '</span>';
+      if (duration) line += ' <span class="badge bg-light text-dark border ms-2">BAN期間=' + esc(duration) + '秒</span>';
+      if (samples) line += ' <span class="text-muted ms-2 small">根拠: ' + esc(samples) + '</span>';
+
+      return line;
+    }
+
+    // 未知のタグ付きログも、見やすい表示で空欄にしない。
+    const genericBracketTag = t.match(/^\[([A-Z][A-Z0-9_]+)\](?:\[([^\]]+)\])?\s*(.*)$/);
+    if (genericBracketTag) {
+      let line = badge(genericBracketTag[1], 'bg-secondary');
+      if (genericBracketTag[2]) {
+        line += ' ' + badge(genericBracketTag[2], 'bg-light text-dark border');
+      }
+      if (genericBracketTag[3]) {
+        line += ' <span class="text-break">' + esc(genericBracketTag[3]) + '</span>';
+      }
+      return line;
+    }
+
+    const genericNamedTag = t.match(/^([A-Z][A-Z0-9_]+)\s+(.+)$/);
+    if (genericNamedTag && !/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|AUDIT)$/.test(genericNamedTag[1])) {
+      return badge(genericNamedTag[1], 'bg-secondary') +
+             ' <span class="text-break">' + esc(genericNamedTag[2]) + '</span>';
+    }
+
+    // ---- 通常Webログ ----
+    const mmp  = t.match(/\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b\s+([^\s"]+)/);
+    const path = (mmp ? mmp[2] : (t.match(/path[=:]"?([^\s"]+)"?/i)?.[1] || ''));
+    let status = (t.match(/\bstatus[=:]\s*(\d{3})\b/i)?.[1]) ||
+                 (t.match(/(?:^|\s)(\d{3})\s+(?:OK|Found|Moved|Not|Bad|Unauthorized|Forbidden|Error)/i)?.[1]) ||
+                 (t.match(/(?:^|\s)(\d{3})(?:\s|$)/)?.[1]) || '';
+    const endpoint = (t.match(/\bendpoint[=:]"?([^\s"]+)"?/i)?.[1]) ||
+                     (t.match(/\bep[=:]"?([^\s"]+)"?/i)?.[1]) || '';
+
+    // ★ user="LINE_28_いおりん" みたいな日本語付きも丸ごと拾う
+    let user = '';
+    {
+      // まず user="......" の中身をそのまま全部拾う（日本語OK）
+      const mQuoted = t.match(/\buser(?:name)?[=:]\s*"([^"]*)"/i);
+      if (mQuoted) {
+        user = mQuoted[1].trim();
+      } else {
+        // 保険: 昔の形式やクォート無しのとき用（英数のみ）
+        const mAscii = t.match(/\buser(?:name)?[=:]"?([\w.@:-]+)"?/i);
+        if (mAscii) {
+          user = mAscii[1].trim();
+        }
+      }
+    }
+
+    const ms = (t.match(/\b(\d{1,6})ms\b/)?.[1]) ||
+               (t.match(/\b(?:time|elapsed|dur|t)[=:]\s*([\d.]+)ms\b/i)?.[1]) || '';
+    const ua = (t.match(/\bua[=:]"([^"]+)"/i)?.[1]) ||
+               (t.match(/\bUser-Agent:"([^"]+)"/i)?.[1]) || '';
+
+    const out = [];
+    if (status)   out.push(badge(status, statusClass(status)));
+    if (endpoint) out.push(badge(endpoint, 'bg-info text-dark'));
+    if (user)     out.push('<span class="badge bg-dark me-2">'+esc(user)+'</span>');
+    if (path)     out.push('<span class="fw-semibold mono">'+esc(path)+'</span>');
+    if (ms)       out.push('<span class="badge bg-light text-dark border ms-2">'+esc(ms)+'ms</span>');
+    if (ua)       out.push('<span class="text-muted ms-2">'+esc(shortUA(ua))+'</span>');
+    return out.length ? out.join(' ') : null;
+  }
+
+  // ====== 原文→見やすい表示を構築 ======
+  function buildPrettyViews(){
+    const rows = tableBody.querySelectorAll('tr');
+    rows.forEach(row => {
+      const rawEl = row.querySelector('.log-raw');
+      const prettyEl = row.querySelector('.log-pretty');
+      if (!rawEl || !prettyEl) return;
+
+      const raw = rawEl.textContent || '';
+      const pretty = prettify(raw);
+      if (pretty) {
+        prettyEl.innerHTML = pretty;
+        prettyEl.classList.remove('d-none');
+      } else {
+        prettyEl.classList.add('d-none');
+      }
+    });
+  }
+
+  // ====== 表示切替 ======
+  function applyMode(mode){
+    const toggle = document.getElementById('togglePretty');
+    if (mode === 'raw') {
+      document.documentElement.classList.add('show-raw');
+      document.documentElement.classList.remove('show-pretty');
+      toggle.checked = false;
+      localStorage.setItem('logViewMode', 'raw');
+    } else {
+      document.documentElement.classList.add('show-pretty');
+      document.documentElement.classList.remove('show-raw');
+      toggle.checked = true;
+      localStorage.setItem('logViewMode', 'pretty');
+    }
+  }
+
+  // 初期化
+  buildPrettyViews();
+  const saved = localStorage.getItem('logViewMode');
+  applyMode(saved === 'raw' ? 'raw' : 'pretty');
+  document.getElementById('togglePretty').addEventListener('change', (e) => applyMode(e.target.checked ? 'pretty' : 'raw'));
+})();
+</script>
+
+<!-- 行の「BAN」ボタン用：/admin/fw/ban にPOSTして結果を行内表示 -->
+<script>
+(function(){
+  function setStatus(el, kind, text){
+    el.classList.remove('text-muted','text-success','text-danger','text-warning','text-secondary');
+    const map = { ok:'text-success', added:'text-success', already:'text-secondary', error:'text-danger', timeout:'text-warning' };
+    el.classList.add(map[kind] || 'text-muted');
+    el.textContent = text;
+  }
+
+  window.banFromBtn = async function(btn){
+    const ip = btn.dataset.ip || '';
+    const ipVersion = btn.dataset.ipVersion || '';
+    const targetId = btn.dataset.target || '';
+    const statusEl = targetId ? document.getElementById(targetId) : null;
+
+    if (!ip) {
+      if (statusEl) setStatus(statusEl, 'error', 'IPが空です');
+      return;
+    }
+    const policy = (ipVersion === '4')
+      ? 'IPv4は/24に丸めてBAN'
+      : (ipVersion === '6')
+        ? 'IPv6は/128のままBAN（CIDR指定時は入力prefix維持）'
+        : 'IP種別を自動判定してBAN';
+    if (!confirm(`このIPをBANしますか？\n${ip}\n（${policy} / 103.15へ反映）`)) return;
+
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+
+    try {
+      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const res = await fetch('/admin/fw/ban', {
+        method: 'POST',
+        headers: {
+          'Content-Type':'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
+        body: JSON.stringify({ ip })   // サーバ側でIPv4/IPv6を判定して正規化
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data && data.ok) {
+        const st = (data.status || 'ok');
+        const normalized = data.target || ip;
+        const executor = data.executor ? ` / 実行: ${data.executor}` : '';
+        const msg = (st === 'added') ? `追加: ${normalized}${executor}`
+                  : (st === 'already') ? `既に追加済: ${normalized}${executor}`
+                  : `OK: ${normalized}${executor}`;
+        if (statusEl) setStatus(statusEl, st, msg);
+      } else {
+        const st = (data && data.status) || 'error';
+        const detail = (data && (data.stderr || data.message)) || '失敗';
+        if (statusEl) setStatus(statusEl, st, `失敗: ${detail}`);
+      }
+    } catch (e){
+      if (statusEl) setStatus(statusEl, 'error', `通信失敗: ${String(e)}`);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHTML;
+    }
+  };
+})();
+</script>
+{% endblock %}

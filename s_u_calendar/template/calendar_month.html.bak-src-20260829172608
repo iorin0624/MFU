@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>予定カレンダー</title>
+  <style>
+    :root { --busy:#e35; --free:#1a9b3f; --gray:#999; }
+    /* 横スクロール抑止＆レイアウト安定化 */
+    html, body { max-width:100vw; overflow-x:hidden; }
+    *, *::before, *::after { box-sizing:border-box; }
+
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin:0; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; position:sticky; top:0; background:#fff; border-bottom:1px solid #eee; }
+    a.nav { text-decoration:none; padding:8px 12px; border:1px solid #ddd; border-radius:8px; color:#333; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    h1 { font-size:18px; margin:0; }
+
+    .month-notice {
+      margin:10px; padding:10px 12px; border:1px solid #e6d7a6; border-radius:8px;
+      background:#fff9e8; color:#5b4b17; font-size:14px;
+    }
+
+    .busy-list-wrap {
+      margin:8px 10px 16px; padding:16px; border:1px solid #e7eaf0;
+      border-radius:14px; background:#f8f9fc;
+    }
+    .busy-list-title { margin:0; font-size:18px; color:#222; }
+    .busy-list-summary { margin:4px 0 14px; color:#666; font-size:13px; }
+    .busy-list {
+      display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px;
+    }
+    .busy-list-item {
+      min-width:0; padding:13px 14px; border:1px solid #ead7dc;
+      border-left:4px solid var(--busy); border-radius:10px; background:#fff;
+    }
+    .busy-list-head { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+    .busy-list-date { font-size:16px; font-weight:700; color:#222; }
+    .busy-list-week { font-size:13px; color:#666; }
+    .busy-list-week.sun, .busy-list-week.holiday { color:#d00; }
+    .busy-list-week.sat { color:#06c; }
+    .busy-list-status {
+      margin-left:auto; padding:2px 8px; border-radius:999px;
+      background:#fff0f3; color:var(--busy); font-size:12px; font-weight:700;
+    }
+    .busy-list-holiday { margin-top:5px; color:#b00000; font-size:12px; font-weight:600; }
+    .busy-list-comment {
+      margin-top:8px; color:#222; font-size:14px; line-height:1.65;
+      white-space:pre-wrap; overflow-wrap:anywhere;
+    }
+    .busy-list-comment.empty { color:#888; }
+    .busy-list-empty {
+      margin:0; padding:18px; border:1px dashed #ccd1da; border-radius:10px;
+      background:#fff; color:#666; text-align:center;
+    }
+
+    /* 7列グリッド（はみ出し防止） */
+    .grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:6px; padding:10px; }
+    .w { font-size:12px; color:#666; text-align:center; }
+
+    .cell {
+      border:1px solid #eee; border-radius:10px; padding:6px; min-height:72px;
+      display:flex; flex-direction:column; min-width:0; cursor:pointer; /* ← クリック可能に */
+      transition: box-shadow .15s ease;
+    }
+    .cell:active { box-shadow:0 0 0 2px rgba(0,0,0,.05) inset; }
+    .cell.today { outline:2px solid #08f; outline-offset:-2px; } /* iOSではみ出し防止 */
+
+    /* 予定ありだけ赤枠（今日の青アウトラインと両立／insetでレイアウト不変） */
+    .cell.busy { box-shadow: 0 0 0 2px #d00 inset; }
+
+    .dnum { font-size:14px; font-weight:600; }
+    .badge { margin-top:auto; font-size:12px; font-weight:600; }
+    .busy .badge { color:var(--busy); }
+    .free .badge { color:var(--free); }
+    .label {
+      font-size:13.5px; font-weight:600; color:#111;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;
+    }
+    footer { padding:10px 16px; color:#666; font-size:12px; }
+    @media (min-width:768px){ .cell{min-height:92px} }
+    @media (max-width:767px){
+      .busy-list { grid-template-columns:1fr; }
+      .busy-list-wrap { padding:14px 12px; }
+    }
+
+    /* 土日/祝日色（数字を色付け）— 祝日が最優先で赤 */
+    .cell .dnum { color: inherit; }
+    .cell.sat .dnum { color:#06c; }   /* 土=青 */
+    .cell.sun .dnum { color:#d00; }   /* 日=赤 */
+    .cell.holiday .dnum { color:#d00; } /* 祝日=赤（優先） */
+
+    /* 曜日ヘッダも色付け（日=赤／土=青） */
+    .w.sun { color:#d00; font-weight:600; }
+    .w.sat { color:#06c; font-weight:600; }
+
+    /* 祝日バッジ（任意ラベルとは別表示） */
+    .hbadge {
+      margin-top: 2px; font-size: 11.5px; font-weight: 700; color: #b00000;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;
+    }
+
+    /* ===== モーダル（拡大表示） ===== */
+    .modal {
+      position:fixed; inset:0; display:none; align-items:flex-end; /* モバイルは下から */
+      background:rgba(0,0,0,.35); z-index:9999;
+    }
+    .modal.open { display:flex; }
+    .modal .sheet {
+      width:100%; background:#fff; border-radius:16px 16px 0 0; padding:16px; box-shadow:0 -8px 24px rgba(0,0,0,.18);
+      max-height:80vh; overflow:auto;
+      animation:slideUp .2s ease;
+    }
+    @keyframes slideUp { from { transform:translateY(16px); opacity:.5 } to { transform:none; opacity:1 } }
+    .sheet h2 { font-size:16px; margin:0 0 8px; display:flex; gap:8px; align-items:center; }
+    .pill { font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid #eee; }
+    .pill.free { color:var(--free); border-color:var(--free); }
+    .pill.busy { color:var(--busy); border-color:var(--busy); }
+    .detail { font-size:14px; line-height:1.7; color:#222; white-space:pre-wrap; word-break:break-word; }
+    .subtle { color:#666; font-size:12px; }
+    .actions { display:flex; justify-content:flex-end; margin-top:12px; }
+    .btn { padding:8px 12px; border:1px solid #ddd; border-radius:10px; background:#fff; }
+    .btn:active { background:#f5f5f5; }
+    @media (min-width:768px){
+      .modal { align-items:center; }
+      .modal .sheet { width:min(520px, 92vw); border-radius:16px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="nav" href="{{ prev_public_url }}">〈 前の月</a>
+    <h1>{{ year }}年{{ "%02d"|format(month) }}月</h1>
+    <a class="nav" href="{{ next_public_url }}">次の月 〉</a>
+  </header>
+
+  {% if show_closed_notice %}
+  <div class="month-notice">この月の撮影予定の追加は行っていません。</div>
+  {% endif %}
+
+  <div class="grid">
+    {# 曜日ヘッダ：日→土 #}
+    {% set wd = ["日","月","火","水","木","金","土"] %}
+    {% for i in range(7) %}
+      {% set cls = "sun" if i==0 else ("sat" if i==6 else "") %}
+      <div class="w {{ cls }}">{{ wd[i] }}</div>
+    {% endfor %}
+
+    {# 先頭の空白セル（Python側から first_w 渡し） #}
+    {% for _ in range(first_w) %}<div></div>{% endfor %}
+
+    {# 日セル（Python側から days 渡し） #}
+    {% for it in days %}
+      {% set d = it.date %}
+      {% set status = it.status %}
+      {% set w = d.weekday() %} {# 0=月..6=日 #}
+      <div
+        class="cell {{ 'today' if d == today }} {{ status }} {{ 'holiday' if it.is_holiday else ('sun' if w==6 else ('sat' if w==5 else '')) }}"
+        data-date="{{ d.strftime('%Y-%m-%d') }}"
+        data-week="{{ ['月','火','水','木','金','土','日'][w] }}"
+        data-status="{{ '予定あり' if status=='busy' else '空き' }}"
+        data-status-key="{{ status }}"
+        data-label="{{ (it.label or '') | e }}"
+        data-holiday="{{ (it.holiday_name or '') | e }}"
+        tabindex="0"
+        aria-label="{{ d.strftime('%Y-%m-%d') }} の状態を開く"
+      >
+        <div class="dnum">{{ d.day }}</div>
+
+        {# 祝日名（あれば表示） #}
+        {% if it.is_holiday and it.holiday_name %}
+          <div class="hbadge">祝：{{ it.holiday_name }}</div>
+        {% endif %}
+
+        {# 任意ラベル（あれば表示） #}
+        {% if it.label %}
+          <div class="label">{{ it.label }}</div>
+        {% endif %}
+
+        <div class="badge">{{ "予定あり" if status=="busy" else "空き" }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <section class="busy-list-wrap" id="busyScheduleList" aria-labelledby="busyScheduleTitle">
+    <h2 class="busy-list-title" id="busyScheduleTitle">予定のある日</h2>
+    <p class="busy-list-summary">{{ year }}年{{ month }}月の予定のみを日付順に表示しています。</p>
+
+    {% if busy_days %}
+      <div class="busy-list">
+        {% for it in busy_days %}
+          {% set d = it.date %}
+          {% set w = d.weekday() %}
+          {% set week_class = 'holiday' if it.is_holiday else ('sun' if w==6 else ('sat' if w==5 else '')) %}
+          <article class="busy-list-item">
+            <div class="busy-list-head">
+              <time class="busy-list-date" datetime="{{ it.key }}">{{ month }}月{{ d.day }}日</time>
+              <span class="busy-list-week {{ week_class }}">（{{ ['月','火','水','木','金','土','日'][w] }}）</span>
+              <span class="busy-list-status">予定あり</span>
+            </div>
+            {% if it.is_holiday and it.holiday_name %}
+              <div class="busy-list-holiday">祝日：{{ it.holiday_name }}</div>
+            {% endif %}
+            {% if it.label %}
+              <div class="busy-list-comment">{{ it.label }}</div>
+            {% else %}
+              <div class="busy-list-comment empty">コメントなし</div>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="busy-list-empty">この月の予定はありません。</p>
+    {% endif %}
+  </section>
+
+  <footer>
+    <!-- ★ 追加：公開ページの一番下に最終同期を表示 -->
+    <div class="subtle" style="margin-bottom:6px;">
+      最終同期：<strong>{{ last_sync_at or "未実行" }}</strong>
+      {% if last_sync_range %}（期間：{{ last_sync_range }}）{% endif %}
+    </div>
+  </footer>
+
+  <!-- モーダル（拡大表示） -->
+  <div class="modal" id="dayModal" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="sheet" role="document">
+      <h2 id="m-title">
+        <span id="m-date">0000-00-00</span>
+        <span class="pill" id="m-pill"></span>
+      </h2>
+      <div class="subtle" id="m-week"></div>
+      <div class="detail" id="m-holiday" style="margin-top:8px; display:none;"></div>
+      <div class="detail" id="m-label" style="margin-top:8px; display:none;"></div>
+      <div class="actions">
+        <button class="btn" id="m-close">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const modal = document.getElementById('dayModal');
+      const sheet = modal.querySelector('.sheet');
+      const closeBtn = document.getElementById('m-close');
+      const mDate = document.getElementById('m-date');
+      const mWeek = document.getElementById('m-week');
+      const mPill = document.getElementById('m-pill');
+      const mHoliday = document.getElementById('m-holiday');
+      const mLabel = document.getElementById('m-label');
+
+      function openModalFromCell(cell){
+        const date = cell.getAttribute('data-date') || '';
+        const week = cell.getAttribute('data-week') || '';
+        const status = cell.getAttribute('data-status') || '';
+        const statusKey = cell.getAttribute('data-status-key') || 'free';
+        const label = cell.getAttribute('data-label') || '';
+        const holiday = cell.getAttribute('data-holiday') || '';
+
+        mDate.textContent = date;
+        mWeek.textContent = week ? `（${week}）` : '';
+        mPill.textContent = status;
+        mPill.className = 'pill ' + (statusKey === 'busy' ? 'busy' : 'free');
+
+        if (holiday) {
+          mHoliday.style.display = '';
+          mHoliday.textContent = '祝日：' + holiday;
+        } else {
+          mHoliday.style.display = 'none';
+          mHoliday.textContent = '';
+        }
+
+        if (label) {
+          mLabel.style.display = '';
+          mLabel.textContent = 'ラベル：' + label;
+        } else {
+          mLabel.style.display = 'none';
+          mLabel.textContent = '';
+        }
+
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        // フォーカス制御
+        closeBtn.focus();
+      }
+
+      function closeModal(){
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+
+      // セルクリック/Enterでオープン
+      document.addEventListener('click', function(e){
+        const cell = e.target.closest('.cell');
+        if (cell) openModalFromCell(cell);
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key === 'Enter' || e.key === ' ') {
+          const cell = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('cell');
+          if (cell) { e.preventDefault(); openModalFromCell(document.activeElement); }
+        }
+        if (e.key === 'Escape') { closeModal(); }
+      });
+
+      // 背景タップで閉じる（シート内タップは閉じない）
+      modal.addEventListener('click', function(e){
+        if (e.target === modal) closeModal();
+      });
+      closeBtn.addEventListener('click', closeModal);
+    })();
+  </script>
+</body>
+</html>

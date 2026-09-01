@@ -32,7 +32,7 @@ from flask import (
     session,
     url_for,
 )
-from flask_socketio import disconnect, emit, join_room
+from flask_socketio import disconnect, emit, join_room, rooms as socket_rooms
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import SSLError as RequestsSSLError
 from requests.exceptions import Timeout as RequestsTimeout
@@ -44,6 +44,7 @@ from app.external_login_user.session_revocation import (
     unregister_external_user_socket,
 )
 from app.utils.db import get_db
+from app.utils.socket_connection_metrics import register_connection, unregister_connection
 
 try:
     from redis import Redis
@@ -145,7 +146,9 @@ _LINKIFY_RE = re.compile(
 _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
 CHAT_TYPING_STATE_LOCK = threading.Lock()
 CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
-CHAT_TYPING_TTL_SECONDS = 3
+# クライアントは最後の入力から5秒後に停止通知を送る。通信断時にも
+# 表示が残り続けないよう、サーバー側は少し余裕を持たせて8秒で失効する。
+CHAT_TYPING_TTL_SECONDS = 8
 SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
 SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
 
@@ -1136,6 +1139,7 @@ def _ensure_chat_delete_schema() -> bool:
                 "deleted_at": "ALTER TABLE chat_messages ADD COLUMN deleted_at DATETIME NULL AFTER deleted_flag",
                 "deleted_by_actor_type": "ALTER TABLE chat_messages ADD COLUMN deleted_by_actor_type VARCHAR(16) NULL AFTER deleted_at",
                 "deleted_by_actor_id": "ALTER TABLE chat_messages ADD COLUMN deleted_by_actor_id VARCHAR(64) NULL AFTER deleted_by_actor_type",
+                "delete_notice": "ALTER TABLE chat_messages ADD COLUMN delete_notice VARCHAR(320) NULL",
             }
             for column_name, ddl in definitions.items():
                 cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
@@ -2004,21 +2008,28 @@ def _list_accessible_rooms(event_id: int, actor: dict[str, Any]) -> list[dict[st
     try:
         cur.execute(
             """
-            SELECT room_id, room_name, is_main
-              FROM chat_rooms
-             WHERE event_id=%s
-               AND is_archived=0
+            SELECT r.room_id, r.room_name, r.is_main, mine.muted_until
+              FROM chat_rooms r
+              LEFT JOIN chat_room_members mine
+                ON mine.room_id=r.room_id
+               AND mine.actor_type=%s
+               AND mine.actor_id=%s
+             WHERE r.event_id=%s
+               AND r.is_archived=0
                AND (
-                    is_main=1
-                    OR room_id IN (
+                    r.is_main=1
+                    OR r.room_id IN (
                         SELECT room_id
                           FROM chat_room_members
                          WHERE actor_type=%s AND actor_id=%s
                     )
                )
-             ORDER BY is_main DESC, room_name ASC
+             ORDER BY r.is_main DESC, r.room_name ASC
             """,
-            (event_id, actor.get("actor_type"), str(actor.get("actor_id") or "")),
+            (
+                actor.get("actor_type"), str(actor.get("actor_id") or ""), event_id,
+                actor.get("actor_type"), str(actor.get("actor_id") or ""),
+            ),
         )
         rooms = cur.fetchall() or []
         if main_room and not any(str(r.get("room_id")) == main_room for r in rooms):
@@ -2378,6 +2389,18 @@ def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
     return dt_utc.isoformat(), date_label, time_label
 
 
+def _message_within_mutation_window(created_at: Any, now: datetime | None = None) -> bool:
+    if not isinstance(created_at, datetime):
+        return False
+    age = (now or datetime.utcnow()) - created_at
+    return timedelta(0) <= age <= timedelta(hours=1)
+
+
+def _message_delete_notice(actor: dict, admin_delete: bool) -> str:
+    name = str(actor.get("display_name") or actor.get("actor_id") or "ユーザー")[:250]
+    return f"管理者{name}により削除" if admin_delete else f"{name}さんが取り消しました。"
+
+
 def _present_message(
     msg: dict[str, Any],
     current_actor: dict[str, Any],
@@ -2404,7 +2427,7 @@ def _present_message(
     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
-    deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+    deleted_text = str(msg.get("delete_notice") or ("管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"))
 
     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
@@ -2445,7 +2468,7 @@ def _present_message(
         .replace("<br />", "\n")
         .strip()
     )
-    body_html = deleted_text if deleted_flag else _linkify_escaped_text(body_value).replace("\n", "<br>")
+    body_html = html.escape(deleted_text) if deleted_flag else _linkify_escaped_text(body_value).replace("\n", "<br>")
     reply_excerpt = msg.get("reply_to_body_plain_excerpt")
     if not reply_excerpt and msg.get("reply_to_message_id"):
         reply_excerpt = "元メッセージが見つかりません"
@@ -2455,12 +2478,10 @@ def _present_message(
     can_delete = False
     can_edit = False
     if not deleted_flag:
-        if actor_is_admin:
-            can_delete = True
-        elif is_me and isinstance(msg.get("created_at"), datetime):
-            can_delete = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
         if is_me and isinstance(msg.get("created_at"), datetime):
-            can_edit = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+            can_delete = _message_within_mutation_window(msg["created_at"])
+        if is_me and isinstance(msg.get("created_at"), datetime):
+            can_edit = _message_within_mutation_window(msg["created_at"])
 
     edited_flag = 1 if int(msg.get("edited_flag") or 0) == 1 else 0
 
@@ -2472,6 +2493,7 @@ def _present_message(
         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
         "body": body_value,
         "body_plain": deleted_text if deleted_flag else body_plain,
+        "editable_text": "" if deleted_flag else html.unescape(body_plain),
         "body_html": body_html,
         "edited_flag": edited_flag,
         "edited_at": msg.get("edited_at").isoformat() if msg.get("edited_at") else None,
@@ -2502,6 +2524,7 @@ def _present_message(
         "image_height": first_image.get("height") if first_image else None,
         "is_me": is_me,
         "can_delete": can_delete,
+        "can_admin_delete": bool(actor_is_admin and not deleted_flag),
         "can_edit": can_edit,
     }
 
@@ -2763,8 +2786,8 @@ def _build_notification_api_map(scope: str) -> dict[str, str]:
             "read": "/api/mfu-notifications/{id}/read",
             "read_all": "/api/mfu-notifications/read-all",
             "page": "/mfu-notifications",
-            "room_read": "",
-            "dm_room_read": "",
+            "room_read": "/api/mfu-notifications/read-by-room",
+            "dm_room_read": "/api/mfu-notifications/read-by-room",
         }
     return {
         "scope": "external",
@@ -3107,6 +3130,7 @@ def _ensure_chat_dm_delete_schema() -> bool:
                 "deleted_flag": "ALTER TABLE chat_dm_messages ADD COLUMN deleted_flag TINYINT NOT NULL DEFAULT 0 AFTER created_at",
                 "deleted_at": "ALTER TABLE chat_dm_messages ADD COLUMN deleted_at DATETIME NULL AFTER deleted_flag",
                 "deleted_by_actor_key": "ALTER TABLE chat_dm_messages ADD COLUMN deleted_by_actor_key VARCHAR(128) NULL AFTER deleted_at",
+                "delete_notice": "ALTER TABLE chat_dm_messages ADD COLUMN delete_notice VARCHAR(320) NULL",
             }
             for column_name, ddl in definitions.items():
                 cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
@@ -3539,14 +3563,14 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
     )
     delete_columns = (
-        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id, m.delete_notice"
         if has_delete_schema
         else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
     )
     reply_delete_columns = (
-        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
+        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type, p.delete_notice AS reply_to_delete_notice"
         if has_delete_schema
-        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
+        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type, NULL AS reply_to_delete_notice"
     )
     edit_columns = (
         "m.edited_flag, m.edited_at"
@@ -3598,9 +3622,9 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
                     if int(row.get("reply_to_deleted_flag") or 0) == 1:
                         row["reply_to_body_plain_excerpt"] = (
-                            "管理者により削除"
+                            row.get("reply_to_delete_notice") or ("管理者により削除"
                             if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
-                            else "削除されました"
+                            else "削除されました")
                         )
                     else:
                         row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
@@ -3616,7 +3640,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
             f"""
             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
                    {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
-                   {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'},
+                   {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id, delete_notice' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'},
                    {'edited_flag, edited_at' if has_edit_schema else '0 AS edited_flag, NULL AS edited_at'},
                    {'thread_root_id' if has_thread_schema else 'NULL AS thread_root_id'}
               FROM chat_messages
@@ -4145,7 +4169,7 @@ def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
             """
             SELECT sender_actor_type, sender_actor_id, sender_display_name, body,
                    COALESCE(deleted_flag, 0) AS deleted_flag,
-                   deleted_by_actor_type
+                   deleted_by_actor_type, delete_notice
               FROM chat_messages
              WHERE id=%s AND event_id=%s
              LIMIT 1
@@ -4163,7 +4187,7 @@ def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
         message["reply_to_sender_display_name"] = row["sender_display_name"]
         if int(row.get("deleted_flag") or 0) == 1:
             message["reply_to_body_plain_excerpt"] = (
-                "管理者により削除" if str(row.get("deleted_by_actor_type") or "") == "admin" else "削除されました"
+                str(row.get("delete_notice") or ("管理者により削除" if str(row.get("deleted_by_actor_type") or "") == "admin" else "削除されました"))
             )
         else:
             message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
@@ -5014,7 +5038,7 @@ def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", l
             SELECT id, sender_actor_key, body_type, body_text, created_at,
                    COALESCE(deleted_flag, 0) AS deleted_flag,
                    deleted_at,
-                   deleted_by_actor_key,
+                   deleted_by_actor_key, delete_notice,
                    COALESCE(edited_flag, 0) AS edited_flag,
                    edited_at,
                    edited_by_actor_key
@@ -5109,7 +5133,7 @@ def _load_single_dm_message_payload(conversation: dict[str, Any], message_id: in
             SELECT id, sender_actor_key, body_type, body_text, created_at,
                    COALESCE(deleted_flag, 0) AS deleted_flag,
                    deleted_at,
-                   deleted_by_actor_key,
+                   deleted_by_actor_key, delete_notice,
                    COALESCE(edited_flag, 0) AS edited_flag,
                    edited_at,
                    edited_by_actor_key
@@ -5208,7 +5232,7 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
     deleted_flag = int(message.get("deleted_flag") or 0) == 1
     deleted_by_actor_key = _canonical_read_actor_key(str(message.get("deleted_by_actor_key") or ""))
     deleted_by_actor_type, deleted_by_actor_id = _split_read_actor_key(deleted_by_actor_key)
-    deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+    deleted_text = str(message.get("delete_notice") or ("管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"))
     body_text = "" if deleted_flag else str(message.get("body_text") or "")
     raw_images = [] if deleted_flag else (message.get("images") or [])
     images: list[dict[str, Any]] = []
@@ -5232,12 +5256,10 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
     can_delete = False
     can_edit = False
     if not deleted_flag:
-        if current_key.startswith("admin:"):
-            can_delete = True
-        elif sender_is_me and isinstance(created_at, datetime):
-            can_delete = created_at + timedelta(hours=12) >= datetime.utcnow()
         if sender_is_me and isinstance(created_at, datetime):
-            can_edit = created_at + timedelta(hours=12) >= datetime.utcnow()
+            can_delete = _message_within_mutation_window(created_at)
+        if sender_is_me and isinstance(created_at, datetime):
+            can_edit = _message_within_mutation_window(created_at)
 
     return {
         "id": int(message.get("id") or 0),
@@ -5248,8 +5270,9 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
         "body": body_text,
         "body_text": body_text,
-        "body_html": deleted_text if deleted_flag else _plain_to_body_html(body_text),
+        "body_html": html.escape(deleted_text) if deleted_flag else _plain_to_body_html(body_text),
         "body_plain": deleted_text if deleted_flag else body_text,
+        "editable_text": "" if deleted_flag else html.unescape(body_text),
         "body_plain_excerpt": deleted_text if deleted_flag else _build_plain_excerpt(body_text),
         "created_at_iso": created_at_iso,
         "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
@@ -5280,6 +5303,7 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "image_width": images[0].get("width") if images else None,
         "image_height": images[0].get("height") if images else None,
         "can_delete": can_delete,
+        "can_admin_delete": bool(current_key.startswith("admin:") and not deleted_flag),
         "can_edit": can_edit,
     }
 
@@ -5889,22 +5913,22 @@ def dm_delete_message(message_id: int):
         if int(row.get("deleted_flag") or 0) == 1:
             return jsonify({"ok": True, "message_id": message_id})
 
-        can_delete = False
-        if _is_chat_admin_actor(actor):
-            can_delete = True
-        elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
-            can_delete = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+        admin_delete = payload.get("delete_mode") == "admin"
+        can_delete = admin_delete and _is_chat_admin_actor(actor)
+        if not admin_delete and str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
+            can_delete = _message_within_mutation_window(row["created_at"])
         if not can_delete:
             return jsonify({"ok": False, "error": "削除権限がありません"}), 403
 
+        delete_notice = _message_delete_notice(actor, admin_delete)
         now = datetime.utcnow()
         cur.execute(
             """
             UPDATE chat_dm_messages
-            SET deleted_flag=1, deleted_at=%s, deleted_by_actor_key=%s
+            SET deleted_flag=1, deleted_at=%s, deleted_by_actor_key=%s, delete_notice=%s
             WHERE id=%s AND conversation_id=%s
             """,
-            (now, actor_key, message_id, conversation["id"]),
+            (now, actor_key, delete_notice, message_id, conversation["id"]),
         )
         db.commit()
     finally:
@@ -5920,6 +5944,7 @@ def dm_delete_message(message_id: int):
             "message_id": message_id,
             "deleted_flag": 1,
             "deleted_by_actor_type": deleted_by_actor_type,
+            "deleted_text": delete_notice,
         },
         to=f"dm:{dm_uuid}",
     )
@@ -5971,10 +5996,8 @@ def dm_edit_message(message_id: int):
             return jsonify({"ok": False, "error": "削除済みメッセージは編集できません"}), 403
 
         can_edit = False
-        if _is_chat_admin_actor(actor):
-            can_edit = True
-        elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
-            can_edit = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+        if str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
+            can_edit = _message_within_mutation_window(row["created_at"])
         if not can_edit:
             return jsonify({"ok": False, "error": "このメッセージを編集する権限がありません"}), 403
 
@@ -6466,26 +6489,29 @@ def delete_message(event_id: int, message_id: int):
             str(row.get("sender_actor_id") or ""),
         )
 
-        if not is_admin_actor and actor_sender_id != message_sender_id:
+        admin_delete = payload.get("delete_mode") == "admin"
+        if (admin_delete and not is_admin_actor) or (not admin_delete and actor_sender_id != message_sender_id):
             return jsonify({"ok": False, "error": "このメッセージを削除する権限がありません"}), 403
 
-        if not is_admin_actor:
+        if not admin_delete:
             created_at = row.get("created_at")
             if not isinstance(created_at, datetime):
                 return jsonify({"ok": False, "error": "送信時刻の取得に失敗しました"}), 400
-            if created_at + timedelta(hours=12) < datetime.utcnow():
-                return jsonify({"ok": False, "error": "送信から12時間を過ぎたため、送信取消できません"}), 403
+            if not _message_within_mutation_window(created_at):
+                return jsonify({"ok": False, "error": "送信から1時間を過ぎたため、送信取消できません"}), 403
 
+        delete_notice = _message_delete_notice(actor, admin_delete)
         cur.execute(
             """
             UPDATE chat_messages
                SET deleted_flag=1,
                    deleted_at=NOW(),
                    deleted_by_actor_type=%s,
-                   deleted_by_actor_id=%s
+                   deleted_by_actor_id=%s,
+                   delete_notice=%s
              WHERE id=%s
             """,
-            (actor.get("actor_type"), str(actor.get("actor_id") or ""), message_id),
+            (actor.get("actor_type"), str(actor.get("actor_id") or ""), delete_notice, message_id),
         )
         cur.execute("SELECT deleted_at, deleted_by_actor_type FROM chat_messages WHERE id=%s LIMIT 1", (message_id,))
         latest = cur.fetchone() or {}
@@ -6503,8 +6529,10 @@ def delete_message(event_id: int, message_id: int):
             "event_id": event_id,
             "message_id": message_id,
             "deleted_flag": 1,
+            "room_id": effective_room_id,
             "deleted_at": deleted_at.isoformat() if deleted_at else None,
             "deleted_by_actor_type": deleted_by_actor_type,
+            "deleted_text": delete_notice,
         },
         room=f"event:{event_id}:room:{effective_room_id}",
     )
@@ -6571,8 +6599,8 @@ def edit_message(event_id: int, message_id: int):
         created_at = row.get("created_at")
         if not isinstance(created_at, datetime):
             return jsonify({"ok": False, "error": "送信時刻の取得に失敗しました"}), 400
-        if created_at + timedelta(hours=12) < datetime.utcnow():
-            return jsonify({"ok": False, "error": "送信から12時間を過ぎたため、編集できません"}), 403
+        if not _message_within_mutation_window(created_at):
+            return jsonify({"ok": False, "error": "送信から1時間を過ぎたため、編集できません"}), 403
 
         cur.execute(
             """
@@ -6655,7 +6683,7 @@ def get_thread_messages(event_id: int, root_message_id: int):
         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
     )
     delete_columns = (
-        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id, m.delete_notice"
         if has_delete_schema
         else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
     )
@@ -6677,7 +6705,7 @@ def get_thread_messages(event_id: int, root_message_id: int):
                    p.sender_actor_id AS reply_to_sender_actor_id,
                    p.sender_display_name AS reply_to_sender_display_name,
                    p.body AS reply_to_body,
-                   {'p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type' if has_delete_schema else '0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type'}
+                   {'p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type, p.delete_notice AS reply_to_delete_notice' if has_delete_schema else '0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type, NULL AS reply_to_delete_notice'}
               FROM chat_messages m
               LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.event_id = m.event_id
              WHERE m.id=%s AND m.event_id=%s AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
@@ -6691,7 +6719,7 @@ def get_thread_messages(event_id: int, root_message_id: int):
 
         if has_reply_schema and root_row.get("reply_to_message_id") and root_row.get("reply_to_sender_display_name"):
             if int(root_row.get("reply_to_deleted_flag") or 0) == 1:
-                root_row["reply_to_body_plain_excerpt"] = "管理者により削除" if str(root_row.get("reply_to_deleted_by_actor_type") or "") == "admin" else "削除されました"
+                root_row["reply_to_body_plain_excerpt"] = str(root_row.get("reply_to_delete_notice") or ("管理者により削除" if str(root_row.get("reply_to_deleted_by_actor_type") or "") == "admin" else "削除されました"))
             else:
                 root_row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(root_row.get("reply_to_body") or "")
         elif has_reply_schema and root_row.get("reply_to_message_id"):
@@ -6710,7 +6738,7 @@ def get_thread_messages(event_id: int, root_message_id: int):
                    p.sender_actor_id AS reply_to_sender_actor_id,
                    p.sender_display_name AS reply_to_sender_display_name,
                    p.body AS reply_to_body,
-                   {'p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type' if has_delete_schema else '0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type'}
+                   {'p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type, p.delete_notice AS reply_to_delete_notice' if has_delete_schema else '0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type, NULL AS reply_to_delete_notice'}
               FROM chat_messages m
               LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.event_id = m.event_id
              WHERE m.event_id=%s
@@ -6729,7 +6757,7 @@ def get_thread_messages(event_id: int, root_message_id: int):
     for row in replies:
         if has_reply_schema and row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
             if int(row.get("reply_to_deleted_flag") or 0) == 1:
-                row["reply_to_body_plain_excerpt"] = "管理者により削除" if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin" else "削除されました"
+                row["reply_to_body_plain_excerpt"] = str(row.get("reply_to_delete_notice") or ("管理者により削除" if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin" else "削除されました"))
             else:
                 row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
         elif has_reply_schema and row.get("reply_to_message_id"):
@@ -7212,7 +7240,7 @@ def api_older_messages(event_id: int):
         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
     )
     delete_columns = (
-        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id, m.delete_notice"
         if has_delete_schema
         else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
     )
@@ -7220,9 +7248,9 @@ def api_older_messages(event_id: int):
     thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
     thread_filter = "AND m.thread_root_id IS NULL" if has_thread_schema else ""
     reply_delete_columns = (
-        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
+        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type, p.delete_notice AS reply_to_delete_notice"
         if has_delete_schema
-        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
+        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type, NULL AS reply_to_delete_notice"
     )
 
     db = get_db()
@@ -7280,7 +7308,7 @@ def api_older_messages(event_id: int):
                        NULL AS reply_to_sender_display_name,
                        NULL AS reply_to_body,
                        0 AS reply_to_deleted_flag,
-                       NULL AS reply_to_deleted_by_actor_type
+                       NULL AS reply_to_deleted_by_actor_type, NULL AS reply_to_delete_notice
                   FROM chat_messages m
                  WHERE m.event_id=%s
                    AND m.room_id=%s
@@ -7308,9 +7336,9 @@ def api_older_messages(event_id: int):
         if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
             if int(row.get("reply_to_deleted_flag") or 0) == 1:
                 row["reply_to_body_plain_excerpt"] = (
-                    "管理者により削除"
+                    row.get("reply_to_delete_notice") or ("管理者により削除"
                     if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
-                    else "削除されました"
+                    else "削除されました")
                 )
             else:
                 row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
@@ -7775,11 +7803,13 @@ def chat_connect():
         alias_admin_joined,
         actor.get("actor_type"),
     )
+    register_connection(socketio, "/")
     return True
 
 
 @socketio.on("disconnect")
 def chat_disconnect():
+    unregister_connection(socketio, "/")
     sid = _socket_sid()
     actor = _forget_socket_actor()
     ext_user_id = _external_user_id_for_actor(actor)
@@ -7809,7 +7839,7 @@ def external_event_unread_counts(data=None):
 
 
 @socketio.on("chat_join")
-def on_join(data):
+def on_join(data, *_ignored_args):
     _ensure_chat_rooms_schema()
     _ensure_chat_room_members_schema()
     _ensure_chat_messages_room_schema()
@@ -7859,7 +7889,7 @@ def on_join(data):
 
 
 @socketio.on("chat_seen")
-def on_seen(data):
+def on_seen(data, *_ignored_args):
     actor = _get_cached_socket_actor()
     if not actor:
         disconnect()
@@ -7933,7 +7963,7 @@ def on_seen(data):
 
 
 @socketio.on("chat_typing")
-def on_typing(data):
+def on_typing(data, *_ignored_args):
     actor = _get_cached_socket_actor()
     if not actor:
         disconnect()
@@ -7951,7 +7981,12 @@ def on_typing(data):
         emit("chat_error", {"error": "dm_typing_unsupported"})
         return
 
-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    requested_room_key = f"event:{event_id}:room:{room_id}" if event_id > 0 and room_id else ""
+    if requested_room_key and requested_room_key in socket_rooms():
+        # chat_join時に権限確認済み。キー入力ごとのDB再照会を避け、入力中表示を即時配信する。
+        allowed, effective_room_id = True, room_id
+    else:
+        allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if event_id <= 0 or not allowed or not effective_room_id:
         disconnect()
         return
@@ -7980,7 +8015,7 @@ def on_typing(data):
 
 
 @socketio.on("chat_send")
-def on_send(data):
+def on_send(data, *_ignored_args):
     actor = _get_socket_actor()
     if _disconnect_if_external_user_revoked(actor):
         return
@@ -8122,7 +8157,7 @@ def on_send(data):
 
 
 @socketio.on("chat_react")
-def on_react(data):
+def on_react(data, *_ignored_args):
     actor = _get_socket_actor()
     if _disconnect_if_external_user_revoked(actor):
         return
@@ -8241,7 +8276,7 @@ def on_react(data):
 
 
 @socketio.on("dm_react")
-def on_dm_react(data):
+def on_dm_react(data, *_ignored_args):
     actor = _get_socket_actor()
     if _disconnect_if_external_user_revoked(actor):
         return

@@ -12,7 +12,7 @@ from flask import (
 
 from . import bp
 from .utils import (
-    _require_ext_login, _get_ext_user_by_social, _event_by_uuid_str,
+    _require_ext_login, _external_login_choice_url, _get_ext_user_by_social, _event_by_uuid_str,
     _membership_status, _member_payment_status, _get_member_require_payment,
     PAYMENT_ENTRY_BASE, _uuid_bytes_to_str, remember_session_map_value, set_compact_pay_ctx,
 )
@@ -304,7 +304,14 @@ def tip_start():
         tip_event_id=event_id,
     )
 
-    return_url = url_for("external_login_user.index", tip="done", event_id=event_id, _external=True)
+    portal_vue = (request.form.get("portal") or "").strip().lower() == "vue"
+    return_url = url_for(
+        "external_login_user.user_vue_portal" if portal_vue else "external_login_user.index",
+        vue_path=f"events/{event_uuid_str}" if portal_vue else None,
+        tip="done",
+        event_id=event_id,
+        _external=True,
+    )
     set_compact_pay_ctx(
         event_id=event_id,
         event_uuid=event_uuid_str,
@@ -692,6 +699,7 @@ def pay_start(event_uuid: str):
         abort(404, "イベントが見つかりません")
 
     methods = _enabled_methods(ev)
+    portal_vue = (request.args.get("portal") or "").strip().lower() == "vue"
     force = (request.args.get("force") == "1")  # ★ Square強制遷移フラグ
 
     # ─ 支払期間ガード ─（従来のまま）
@@ -831,6 +839,8 @@ def pay_start(event_uuid: str):
             "expected_amount_yen": int(fee) if fee else None,
             "event_id": ev["id"],
             "ext_user_id": me["id"],
+            # Squareから戻る際にクエリが欠けても、開始元の画面を復元できるよう保持する。
+            "portal": "vue" if portal_vue else "legacy",
         })
         session["pay_ctx"] = merged
 
@@ -871,6 +881,7 @@ def pay_start(event_uuid: str):
                 event_uuid=event_uuid,
                 payment_token=payment_token,
                 iv=iv or None,
+                portal="vue" if portal_vue else "legacy",
                 _external=True,
             )
             _ensure_redirect_pay_ctx(
@@ -938,6 +949,7 @@ def pay_start(event_uuid: str):
         event_uuid=event_uuid,
         payment_token=payment_token,
         iv=iv or None,
+        portal="vue" if portal_vue else "legacy",
         _external=True,
     )
     _ensure_redirect_pay_ctx(
@@ -968,6 +980,13 @@ def pay_return(event_uuid: str):
         abort(404, "イベントが見つかりません")
 
     lecture = _is_lecture_event(ev)
+    portal_arg = (request.args.get("portal") or "").strip().lower()
+    pay_ctx = session.get("pay_ctx") or {}
+    portal_vue = portal_arg == "vue" or (
+        not portal_arg
+        and isinstance(pay_ctx, dict)
+        and (pay_ctx.get("portal") or "").strip().lower() == "vue"
+    )
 
     # 承認済みのみ完了処理（← 非講座のみ厳格。講座は支払い先行OK）
     if not lecture:
@@ -1202,19 +1221,21 @@ def pay_return(event_uuid: str):
             flash("続いて、参加申請（必要項目の入力）をお願いします。", "info")
             iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
             if iv:
-                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
-            return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+                return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/join", iv=iv)) if portal_vue else redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
+            return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/join")) if portal_vue else redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
 
     elif is_success and already:
         flash("お支払いは反映済みです。", "info")
         if lecture:
             iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
             if iv:
-                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
-            return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+                return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/join", iv=iv)) if portal_vue else redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
+            return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/join")) if portal_vue else redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
     else:
         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
 
+    if portal_vue:
+        return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}", payment=request.args.get("status") or "returned"))
     return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
 # ============================================================
@@ -1605,8 +1626,7 @@ def lecture_start(event_uuid: str):
     # 未ログインなら、講座用支払ページを next にしてLINEログインへ
     if not session.get("ext_user_social_id"):
         next_url = url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, _external=False)
-        session["ext_after_login_next"] = next_url
-        return redirect(url_for("external_login_user.line_login", next=next_url))
+        return redirect(_external_login_choice_url(next_url))
 
     # 既にログイン済みならそのまま支払ステップへ
     return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid))
@@ -1820,6 +1840,7 @@ def lecture_return(event_uuid: str):
         return guard
 
     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+    portal_vue = request.args.get("portal") == "vue"
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -2005,5 +2026,9 @@ def lecture_return(event_uuid: str):
     # 支払後は必ず参加申請ページへ
     iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
     if iv:
+        if portal_vue:
+            return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/join", iv=iv))
         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
+    if portal_vue:
+        return redirect(url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/join"))
     return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))

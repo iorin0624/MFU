@@ -27,6 +27,7 @@ function activate(item: { id: string; url: string }) {
     return;
   }
   if (item.id === 'notifications') { router.push('/notifications'); return; }
+  if (item.id === 'chat') { router.push('/chat'); return; }
   if (item.id === 'account') { router.push('/profile'); return; }
   window.location.assign(item.url);
 }
@@ -49,7 +50,7 @@ function activate(item: { id: string; url: string }) {
           :key="item.id"
           type="button"
           :aria-label="navAriaLabel(item)"
-          :class="['nav-link', { active: (item.id === 'events' || item.id === 'home') && route.name === 'events' }]"
+          :class="['nav-link', { active: ((item.id === 'events' || item.id === 'home') && route.name === 'events') || (item.id === 'chat' && String(route.name || '').includes('chat')) || (item.id === 'notifications' && route.name === 'notifications') }]"
           @click="activate(item)"
         >
           {{ item.label }}

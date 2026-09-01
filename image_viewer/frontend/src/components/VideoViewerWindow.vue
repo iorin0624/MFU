@@ -109,7 +109,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', keydown));
         @timeupdate="sync"
         @play="sync"
         @pause="sync"
-        @ended="move(1)"
+        @ended="sync"
         @click="toggle"
       ></video>
     </div>

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS external_login_user (
   x_id             VARCHAR(15)     NULL,
   instagram_id     VARCHAR(30)     NULL,
   email            VARCHAR(191)    NULL,
+  is_test_account  TINYINT(1)      NOT NULL DEFAULT 0,
+  test_account_enabled TINYINT(1)  NOT NULL DEFAULT 1,
+  last_login_at    DATETIME        NULL,
   chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
   notification_unread_reminder_last_sent_at DATETIME NULL,
   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -264,6 +267,21 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_event_member", "canceled_at", "canceled_at DATETIME NULL AFTER is_canceled")
             _ensure_col("mfu_event_member", "canceled_by", "canceled_by VARCHAR(80) NULL AFTER canceled_at")
             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
+            _ensure_col(
+                "external_login_user",
+                "is_test_account",
+                "is_test_account TINYINT(1) NOT NULL DEFAULT 0 AFTER email_verified_at",
+            )
+            _ensure_col(
+                "external_login_user",
+                "test_account_enabled",
+                "test_account_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER is_test_account",
+            )
+            _ensure_col(
+                "external_login_user",
+                "last_login_at",
+                "last_login_at DATETIME NULL AFTER test_account_enabled",
+            )
             _ensure_col(
                 "external_login_user",
                 "notification_unread_reminder_last_sent_at",

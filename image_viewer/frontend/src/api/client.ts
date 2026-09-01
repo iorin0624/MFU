@@ -102,11 +102,6 @@ export const imageViewerApi = {
       method: 'POST', body: JSON.stringify({ path, name, type }),
     });
   },
-  renameFolder(path: string, name: string) {
-    return requestJson<{ok: true; path: string; folder?: string}>(runtimeConfig.renameUrl, {
-      method: 'POST', body: JSON.stringify({ path, name, type: 'folder' }),
-    });
-  },
   renameStem(path: string, stem: string) {
     return requestJson<Record<string, unknown>>(runtimeConfig.propertiesUrl, {
       method: 'POST', body: JSON.stringify({ path, stem }),
@@ -118,20 +113,10 @@ export const imageViewerApi = {
       body: JSON.stringify({ entries: paths.map((path) => ({ path, type: 'file' })) }),
     }, 'image_delete');
   },
-  deleteFolder(path: string) {
-    return requestJson<Record<string, unknown>>(runtimeConfig.deleteUrl, {
-      method: 'POST', body: JSON.stringify({ path, type: 'folder' }),
-    }, 'image_folder_delete');
-  },
   move(paths: string[], destination: string) {
     return requestJson<Record<string, unknown>>(runtimeConfig.moveUrl, {
       method: 'POST',
       body: JSON.stringify({ destination, entries: paths.map((path) => ({ path, type: 'file' })) }),
-    });
-  },
-  moveFolder(path: string, destination: string) {
-    return requestJson<{ok: true; path: string; folder?: string}>(runtimeConfig.moveUrl, {
-      method: 'POST', body: JSON.stringify({ path, destination, type: 'folder' }),
     });
   },
   copy(paths: string[], destination: string) {

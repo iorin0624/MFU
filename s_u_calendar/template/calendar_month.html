@@ -20,6 +20,39 @@
       background:#fff9e8; color:#5b4b17; font-size:14px;
     }
 
+    .busy-list-wrap {
+      margin:8px 10px 16px; padding:16px; border:1px solid #e7eaf0;
+      border-radius:14px; background:#f8f9fc;
+    }
+    .busy-list-title { margin:0; font-size:18px; color:#222; }
+    .busy-list-summary { margin:4px 0 14px; color:#666; font-size:13px; }
+    .busy-list {
+      display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px;
+    }
+    .busy-list-item {
+      min-width:0; padding:13px 14px; border:1px solid #ead7dc;
+      border-left:4px solid var(--busy); border-radius:10px; background:#fff;
+    }
+    .busy-list-head { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+    .busy-list-date { font-size:16px; font-weight:700; color:#222; }
+    .busy-list-week { font-size:13px; color:#666; }
+    .busy-list-week.sun, .busy-list-week.holiday { color:#d00; }
+    .busy-list-week.sat { color:#06c; }
+    .busy-list-status {
+      margin-left:auto; padding:2px 8px; border-radius:999px;
+      background:#fff0f3; color:var(--busy); font-size:12px; font-weight:700;
+    }
+    .busy-list-holiday { margin-top:5px; color:#b00000; font-size:12px; font-weight:600; }
+    .busy-list-comment {
+      margin-top:8px; color:#222; font-size:14px; line-height:1.65;
+      white-space:pre-wrap; overflow-wrap:anywhere;
+    }
+    .busy-list-comment.empty { color:#888; }
+    .busy-list-empty {
+      margin:0; padding:18px; border:1px dashed #ccd1da; border-radius:10px;
+      background:#fff; color:#666; text-align:center;
+    }
+
     /* 7列グリッド（はみ出し防止） */
     .grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:6px; padding:10px; }
     .w { font-size:12px; color:#666; text-align:center; }
@@ -45,6 +78,10 @@
     }
     footer { padding:10px 16px; color:#666; font-size:12px; }
     @media (min-width:768px){ .cell{min-height:92px} }
+    @media (max-width:767px){
+      .busy-list { grid-template-columns:1fr; }
+      .busy-list-wrap { padding:14px 12px; }
+    }
 
     /* 土日/祝日色（数字を色付け）— 祝日が最優先で赤 */
     .cell .dnum { color: inherit; }
@@ -91,9 +128,9 @@
 </head>
 <body>
   <header>
-    <a class="nav" href="{{ url_for('s_u_calendar.calendar_month', year=prev_year, month=prev_month) }}">〈 前の月</a>
+    <a class="nav" href="{{ prev_public_url }}">〈 前の月</a>
     <h1>{{ year }}年{{ "%02d"|format(month) }}月</h1>
-    <a class="nav" href="{{ url_for('s_u_calendar.calendar_month', year=next_year, month=next_month) }}">次の月 〉</a>
+    <a class="nav" href="{{ next_public_url }}">次の月 〉</a>
   </header>
 
   {% if show_closed_notice %}
@@ -144,14 +181,44 @@
     {% endfor %}
   </div>
 
+  <section class="busy-list-wrap" id="busyScheduleList" aria-labelledby="busyScheduleTitle">
+    <h2 class="busy-list-title" id="busyScheduleTitle">予定のある日</h2>
+    <p class="busy-list-summary">{{ year }}年{{ month }}月の予定のみを日付順に表示しています。</p>
+
+    {% if busy_days %}
+      <div class="busy-list">
+        {% for it in busy_days %}
+          {% set d = it.date %}
+          {% set w = d.weekday() %}
+          {% set week_class = 'holiday' if it.is_holiday else ('sun' if w==6 else ('sat' if w==5 else '')) %}
+          <article class="busy-list-item">
+            <div class="busy-list-head">
+              <time class="busy-list-date" datetime="{{ it.key }}">{{ month }}月{{ d.day }}日</time>
+              <span class="busy-list-week {{ week_class }}">（{{ ['月','火','水','木','金','土','日'][w] }}）</span>
+              <span class="busy-list-status">予定あり</span>
+            </div>
+            {% if it.is_holiday and it.holiday_name %}
+              <div class="busy-list-holiday">祝日：{{ it.holiday_name }}</div>
+            {% endif %}
+            {% if it.label %}
+              <div class="busy-list-comment">{{ it.label }}</div>
+            {% else %}
+              <div class="busy-list-comment empty">コメントなし</div>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="busy-list-empty">この月の予定はありません。</p>
+    {% endif %}
+  </section>
+
   <footer>
     <!-- ★ 追加：公開ページの一番下に最終同期を表示 -->
     <div class="subtle" style="margin-bottom:6px;">
       最終同期：<strong>{{ last_sync_at or "未実行" }}</strong>
       {% if last_sync_range %}（期間：{{ last_sync_range }}）{% endif %}
     </div>
-
-    <a href="{{ url_for('s_u_calendar.calendar_mini') }}">軽量表示（直近30日）</a>
   </footer>
 
   <!-- モーダル（拡大表示） -->
@@ -239,6 +306,14 @@
         if (e.target === modal) closeModal();
       });
       closeBtn.addEventListener('click', closeModal);
+    })();
+
+    (() => {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has('src')) return;
+      url.searchParams.delete('src');
+      const query = url.searchParams.toString();
+      history.replaceState(history.state, '', url.pathname + (query ? '?' + query : '') + url.hash);
     })();
   </script>
 </body>

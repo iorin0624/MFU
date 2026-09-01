@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}共通テストアカウント管理{% endblock %}
+
+{% block content %}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <a href="{{ url_for('external_login_user.admin_events_list') }}" class="small">← イベント一覧</a>
+    <h1 class="h4 mt-2 mb-1">共通メールテストアカウント</h1>
+    <div class="text-muted">一度発行したアカウントを複数イベントで利用できます。</div>
+  </div>
+</div>
+
+<div class="alert alert-info">
+  LINEを使わず、登録メールアドレスへ届く6桁PINでログインします。アカウント発行だけではイベントへ参加しません。通常の参加申込み、または下のイベント割り当てを使用してください。
+</div>
+
+<div class="card mb-4">
+  <div class="card-header fw-bold">新規発行</div>
+  <div class="card-body">
+    <form method="post" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+      <div class="col-md-5"><label class="form-label">表示名</label><input class="form-control" name="nickname" maxlength="50" required></div>
+      <div class="col-md-5"><label class="form-label">メールアドレス</label><input class="form-control" name="email" type="email" maxlength="191" required></div>
+      <div class="col-md-2 d-flex align-items-end">
+        <button class="btn btn-primary ms-auto" type="submit">発行する</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center"><strong>発行済み</strong><span class="badge bg-secondary">{{ accounts|length }}件</span></div>
+  <div class="card-body p-0">
+    {% if not accounts %}<div class="p-3 text-muted">テスト用アカウントはありません。</div>{% endif %}
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead><tr><th>利用者</th><th>参加イベント</th><th>イベント割り当て</th><th>最終ログイン</th><th>状態</th><th>操作</th></tr></thead>
+        <tbody>
+        {% for a in accounts %}
+          <tr>
+            <td><strong>{{ a.nickname }}</strong><div class="small text-muted">{{ a.email }}</div></td>
+            <td><span class="badge bg-secondary">{{ a.event_count }}件</span>{% if a.event_titles %}<div class="small text-muted mt-1" style="max-width:320px;white-space:normal">{{ a.event_titles }}</div>{% endif %}</td>
+            <td>
+              <form method="post" action="{{ url_for('external_login_user.admin_test_account_action', user_id=a.id) }}" class="d-flex gap-1">
+                <input type="hidden" name="csrf_token" value="{{ admin_csrf }}"><input type="hidden" name="action" value="assign">
+                <select name="event_id" class="form-select form-select-sm" required><option value="">イベントを選択</option>{% for e in events %}<option value="{{ e.id }}">{{ e.title }}</option>{% endfor %}</select>
+                <button class="btn btn-sm btn-outline-success text-nowrap">割り当て</button>
+              </form>
+            </td>
+            <td>{{ a.last_login_at or '未ログイン' }}</td>
+            <td>{% if a.test_account_enabled %}<span class="badge bg-success">有効</span>{% else %}<span class="badge bg-secondary">無効</span>{% endif %}</td>
+            <td><div class="d-flex flex-wrap gap-1">
+              <form method="post" action="{{ url_for('external_login_user.admin_test_account_action', user_id=a.id) }}"><input type="hidden" name="csrf_token" value="{{ admin_csrf }}"><input type="hidden" name="action" value="send_pin"><button class="btn btn-sm btn-outline-primary">PIN送信</button></form>
+              <form method="post" action="{{ url_for('external_login_user.admin_test_account_action', user_id=a.id) }}"><input type="hidden" name="csrf_token" value="{{ admin_csrf }}"><input type="hidden" name="action" value="toggle"><button class="btn btn-sm btn-outline-secondary">{{ '無効化' if a.test_account_enabled else '有効化' }}</button></form>
+              <button type="button" class="btn btn-sm btn-outline-dark" onclick="navigator.clipboard.writeText('{{ login_url|e }}')">ログインURL</button>
+              <form method="post" action="{{ url_for('external_login_user.admin_test_account_action', user_id=a.id) }}" onsubmit="return confirm('この共通テストアカウントを削除しますか？全イベントから参加解除されますが、実際の決済履歴は保持されます。');"><input type="hidden" name="csrf_token" value="{{ admin_csrf }}"><input type="hidden" name="action" value="delete"><button class="btn btn-sm btn-outline-danger">削除</button></form>
+            </div></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

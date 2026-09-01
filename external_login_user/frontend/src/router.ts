@@ -12,6 +12,9 @@ import LoginView from '@/views/LoginView.vue';
 import EmailVerifyView from '@/views/EmailVerifyView.vue';
 import JoinEventView from '@/views/JoinEventView.vue';
 import EventPaymentView from '@/views/EventPaymentView.vue';
+import ChatListView from '@/views/ChatListView.vue';
+import EventChatView from '@/views/EventChatView.vue';
+import ChatDmView from '@/views/ChatDmView.vue';
 
 export const router = createRouter({
   history: createWebHistory(runtimeConfig.basePath.replace(/\/$/, '')),
@@ -22,9 +25,12 @@ export const router = createRouter({
     { path: '/email-verify', name: 'email-verify', component: EmailVerifyView },
     { path: '/notifications', name: 'notifications', component: NotificationsView },
     { path: '/profile', name: 'profile', component: ProfileView },
+    { path: '/chat', name: 'chat', component: ChatListView },
+    { path: '/chat/dm/:dmUuid', name: 'chat-dm', component: ChatDmView },
     { path: '/events/:uuid/join', name: 'event-join', component: JoinEventView },
     { path: '/events/:uuid/payment', name: 'event-payment', component: EventPaymentView },
     { path: '/events/:uuid', name: 'event', component: EventDetailView },
+    { path: '/events/:uuid/chat', name: 'event-chat', component: EventChatView },
     { path: '/events/:uuid/pass', name: 'event-pass', component: EventPassView },
     { path: '/events/:uuid/members', name: 'event-members', component: EventMembersView },
     { path: '/events/:uuid/social', name: 'event-social', component: EventSocialView },

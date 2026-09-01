@@ -675,6 +675,32 @@ code { white-space: pre-wrap; word-break: break-word; }
 
   // ====== “見やすい表示” 生成 ======
   function prettify(t){
+    const trafficSourceMatch = t.match(/\[TRAFFIC_SOURCE\]\s+src=("(?:\\.|[^"\\])*")/);
+    let trafficSource = '';
+    if (trafficSourceMatch) {
+      try { trafficSource = JSON.parse(trafficSourceMatch[1]); } catch (_error) {}
+    }
+    const appendTrafficSource = (line) => {
+      if (!trafficSource) return line;
+      return line + ' ' + badge('流入元', 'bg-info text-dark') +
+        ' <span class="fw-semibold">' + esc(trafficSource) + '</span>';
+    };
+
+    if (/\[FARE_ESTIMATE_SEARCH\]/.test(t)) {
+      const result = (t.match(/結果：(成功|失敗)/)?.[1]) || '不明';
+      const destination = (
+        t.match(/到着地点：(.*?)\s+(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\/fare-estimate\b/)?.[1]
+      ) || '';
+
+      let line = badge('料金検索', 'bg-primary');
+      line += ' ' + badge(
+        result,
+        result === '成功' ? 'bg-success' : (result === '失敗' ? 'bg-danger' : 'bg-secondary')
+      );
+      line += ' <span>到着地点：' + esc(destination || '（未入力）') + '</span>';
+      return appendTrafficSource(line);
+    }
+
     if (/\[LINE_LOGIN_BLOCKED\]/.test(t)) {
       const originalUserId = (t.match(/\boriginal_user_id=(\d+)/)?.[1]) || '';
       let line = badge('LINEログイン拒否', 'bg-danger');
@@ -845,6 +871,16 @@ code { white-space: pre-wrap; word-break: break-word; }
       line += ' ' + badge('HTTP ' + status + '（案内画面）', 'bg-info text-dark');
       if (path) line += ' <span class="fw-semibold mono">' + esc(path) + '</span>';
       if (ua) line += ' <span class="text-muted ms-2">' + esc(shortUA(ua)) + '</span>';
+      return appendTrafficSource(line);
+    }
+
+    if (trafficSource) {
+      const status = (t.match(/\b(GET|POST|HEAD)\s+\S+\s+(\d{3})\b/)?.[2]) || '';
+      const path = (t.match(/\b(?:GET|POST|HEAD)\s+([^\s"]+)/)?.[1]) || '';
+      let line = badge('流入元', 'bg-info text-dark');
+      line += ' <span class="fw-semibold">' + esc(trafficSource) + '</span>';
+      if (status) line += ' ' + badge('HTTP ' + status, statusClass(status));
+      if (path) line += ' <span class="mono ms-1">' + esc(path) + '</span>';
       return line;
     }
 

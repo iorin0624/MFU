@@ -15,15 +15,12 @@ const explorer = useExplorerStore();
 const notice = useNotificationStore();
 const uploadInput = ref<HTMLInputElement>();
 const fileGrid = ref<InstanceType<typeof FileGrid>>();
-const contextMenu = ref<{visible: boolean; x: number; y: number; item?: MediaItem; folder?: string}>({ visible: false, x: 0, y: 0 });
+const contextMenu = ref<{visible: boolean; x: number; y: number; item?: MediaItem}>({ visible: false, x: 0, y: 0 });
 type ExplorerDialog =
   | { kind: 'new-folder'; title: string; value: string }
   | { kind: 'rename'; title: string; value: string; extension: string; item: MediaItem }
   | { kind: 'move' | 'copy'; title: string; destination: string; paths: string[] }
   | { kind: 'delete'; title: string; paths: string[] }
-  | { kind: 'rename-folder'; title: string; value: string; folder: string }
-  | { kind: 'move-folder'; title: string; destination: string; folder: string }
-  | { kind: 'delete-folder'; title: string; folder: string }
   | { kind: 'append-confirm'; title: string; sources: string[]; target: MediaItem }
   | { kind: 'properties'; title: string; item: MediaItem; data: Record<string, unknown> };
 const dialog = ref<ExplorerDialog | null>(null);
@@ -38,14 +35,8 @@ const selectedItems = computed(() => {
   const selected = new Set(model.value.selectedPaths);
   return items.value.filter((item) => selected.has(item.path));
 });
-const selectedClipboardImage = computed(() =>
-  selectedItems.value.length === 1 && selectedItems.value[0]?.mediaType === 'image'
-    ? selectedItems.value[0]
-    : undefined);
 const currentLabel = computed(() => `画像ライブラリ${model.value.folder ? `/${model.value.folder}` : ''}`);
 const parentFolder = computed(() => model.value.folder.split('/').slice(0, -1).join('/'));
-const folderParent = (folder: string) => folder.split('/').slice(0, -1).join('/');
-const folderName = (folder: string) => folder.split('/').at(-1) || folder;
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -198,92 +189,6 @@ async function movePaths(paths = model.value.selectedPaths, destination?: string
     await Promise.all([explorer.refreshFolder(model.value.folder), explorer.refreshFolder(target)]);
     notice.show(`${paths.length}件を移動しました。`);
   } catch (error) { notice.show(errorMessage(error, '移動に失敗しました。'), true); }
-}
-
-function remapFolderPath(value: string, source: string, replacement: string) {
-  if (value === source) return replacement;
-  if (value.startsWith(`${source}/`)) return `${replacement}${value.slice(source.length)}`;
-  return value;
-}
-
-async function syncOpenExplorerFolders(source: string, replacement: string) {
-  const loads = new Map<string, 'asc' | 'desc'>();
-  desktop.windows.forEach((win) => {
-    if (!win.explorer) return;
-    const next = remapFolderPath(win.explorer.folder, source, replacement);
-    if (next !== win.explorer.folder) {
-      win.explorer.folder = next;
-      win.explorer.sort = savedSort(next);
-      win.explorer.selectedPaths = [];
-      win.explorer.anchorPath = '';
-      win.explorer.appendSources = [];
-    }
-    loads.set(win.explorer.folder, win.explorer.sort);
-  });
-  await Promise.all(Array.from(loads, ([folder, sort]) => explorer.load(folder, sort, true)));
-}
-
-function openFolderInWindow(folder: string) {
-  contextMenu.value.visible = false;
-  desktop.openExplorer(folder);
-}
-
-function renameFolder(folder: string) {
-  if (!folder) return;
-  dialog.value = { kind: 'rename-folder', title: 'フォルダー名の変更', value: folderName(folder), folder };
-}
-
-async function commitRenameFolder(folder: string, name: string) {
-  const cleanName = name.trim();
-  if (!cleanName || cleanName === folderName(folder)) { dialog.value = null; return; }
-  try {
-    const result = await imageViewerApi.renameFolder(folder, cleanName);
-    dialog.value = null;
-    await syncOpenExplorerFolders(folder, result.path);
-    notice.show('フォルダー名を変更しました。');
-  } catch (error) { notice.show(errorMessage(error, 'フォルダー名を変更できませんでした。'), true); }
-}
-
-function folderMoveDestinations(source: string) {
-  return explorer.allFolders.filter((folder) => folder !== source && !folder.startsWith(`${source}/`));
-}
-
-async function moveFolder(source: string, destination?: string) {
-  if (!source) return;
-  if (destination === undefined) {
-    dialog.value = {
-      kind: 'move-folder', title: 'フォルダーの移動',
-      destination: folderParent(source), folder: source,
-    };
-    return;
-  }
-  if (destination === source || destination.startsWith(`${source}/`)) {
-    notice.show('フォルダーを自分自身の配下へ移動できません。', true);
-    return;
-  }
-  try {
-    const result = await imageViewerApi.moveFolder(source, destination);
-    dialog.value = null;
-    await syncOpenExplorerFolders(source, result.path);
-    notice.show(`「${folderName(source)}」を移動しました。`);
-  } catch (error) { notice.show(errorMessage(error, 'フォルダーを移動できませんでした。'), true); }
-}
-
-function deleteFolder(folder: string, confirmed = false) {
-  if (!folder) return;
-  if (!confirmed) {
-    dialog.value = { kind: 'delete-folder', title: 'フォルダー削除の確認', folder };
-    return;
-  }
-  void (async () => {
-    try {
-      await imageViewerApi.deleteFolder(folder);
-      const destination = folderParent(folder);
-      dialog.value = null;
-      await syncOpenExplorerFolders(folder, destination);
-      notice.show(`空フォルダー「${folderName(folder)}」を削除しました。`);
-    } catch (error) { notice.show(errorMessage(error, 'フォルダーを削除できませんでした。'), true); }
-  })();
 }
 
 async function copyPaths(paths = model.value.selectedPaths, destination?: string) {
@@ -450,34 +355,6 @@ function pasteHandler(event: ClipboardEvent) {
   uploadFiles(files, true);
 }
 
-function clipboardImageExtension(type: string) {
-  const subtype = type.split('/')[1]?.toLowerCase() || 'png';
-  if (subtype === 'jpeg') return 'jpg';
-  if (subtype === 'svg+xml') return 'svg';
-  return subtype.replace(/[^a-z0-9]/g, '') || 'png';
-}
-
-async function pasteFromClipboard() {
-  try {
-    if (!navigator.clipboard?.read) {
-      throw new Error('このブラウザーでは貼付ボタンからクリップボード画像を読み取れません。Ctrl+Vをお試しください。');
-    }
-    const clipboardItems = await navigator.clipboard.read();
-    const files: File[] = [];
-    for (const item of clipboardItems) {
-      const type = item.types.find((candidate) => candidate.startsWith('image/'));
-      if (!type) continue;
-      const blob = await item.getType(type);
-      const extension = clipboardImageExtension(type);
-      files.push(new File([blob], `clipboard-${Date.now()}-${files.length + 1}.${extension}`, { type }));
-    }
-    if (!files.length) throw new Error('クリップボードに貼り付け可能な画像がありません。');
-    await uploadFiles(files, true);
-  } catch (error) {
-    notice.show(errorMessage(error, 'クリップボード画像を貼り付けできませんでした。'), true);
-  }
-}
-
 function startAppend() {
   if (model.value.appendSources.length) {
     cancelAppendMode();
@@ -590,10 +467,6 @@ function showContext(event: MouseEvent, item: MediaItem) {
   contextMenu.value = { visible: true, x: event.clientX, y: event.clientY, item };
 }
 
-function showFolderContext(event: MouseEvent, folder: string) {
-  contextMenu.value = { visible: true, x: event.clientX, y: event.clientY, folder };
-}
-
 function closeContext() { contextMenu.value.visible = false; }
 
 async function copyImageToClipboard(item?: MediaItem) {
@@ -670,14 +543,7 @@ onBeforeUnmount(() => {
   <div class="explorer-layout" :class="{ busy: folderData.loading }">
     <aside class="explorer-sidebar">
       <div class="sidebar-title">フォルダー</div>
-      <FolderTree
-        :folders="explorer.allFolders"
-        :current="model.folder"
-        @select="changeFolder"
-        @move="movePaths"
-        @move-folder="moveFolder"
-        @context="showFolderContext"
-      />
+      <FolderTree :folders="explorer.allFolders" :current="model.folder" @select="changeFolder" @move="movePaths" />
     </aside>
     <section class="explorer-main">
       <div class="explorer-toolbar">
@@ -696,8 +562,6 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
         <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>
         <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
-        <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
-        <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
         <button type="button" :class="{pressed: model.appendSources.length}" :disabled="!selectedItems.length && !model.appendSources.length" @click="startAppend">{{ model.appendSources.length ? '後付け解除' : '後付け' }}</button>
         <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>
         <button type="button" @click="rebuildThumbnails">サムネイル再生成</button>
@@ -727,7 +591,7 @@ onBeforeUnmount(() => {
         <span>{{ selectedItems.length }}件選択</span>
       </footer>
     </section>
-    <div v-if="contextMenu.visible && contextMenu.item" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
+    <div v-if="contextMenu.visible" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
       <button type="button" @click="contextMenu.item && openItem(contextMenu.item); closeContext()">開く</button>
       <button type="button" @click="renameSelected(); closeContext()">名前変更</button>
       <button type="button" @click="movePaths(); closeContext()">移動</button>
@@ -736,14 +600,6 @@ onBeforeUnmount(() => {
       <button type="button" @click="showProperties(); closeContext()">プロパティ</button>
       <hr>
       <button type="button" class="danger" @click="deletePaths(); closeContext()">削除</button>
-    </div>
-    <div v-else-if="contextMenu.visible && contextMenu.folder !== undefined" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
-      <button type="button" @click="openFolderInWindow(contextMenu.folder)">新しいウィンドウで開く</button>
-      <hr>
-      <button type="button" :disabled="!contextMenu.folder" @click="renameFolder(contextMenu.folder); closeContext()">名前の変更</button>
-      <button type="button" :disabled="!contextMenu.folder" @click="moveFolder(contextMenu.folder); closeContext()">フォルダーの移動</button>
-      <hr>
-      <button type="button" class="danger" :disabled="!contextMenu.folder" @click="deleteFolder(contextMenu.folder); closeContext()">フォルダーの削除</button>
     </div>
 
     <XpDialog v-if="dialog?.kind === 'new-folder'" :title="dialog.title" @close="dialog = null">
@@ -757,30 +613,6 @@ onBeforeUnmount(() => {
         <label>新しい名前<span class="filename-editor"><input v-model="dialog.value" autofocus><span class="extension-box">{{ dialog.extension || '拡張子なし' }}</span></span></label>
         <p class="dialog-hint">拡張子は変更されません。</p>
         <div class="xp-dialog-actions"><button type="submit">変更</button><button type="button" @click="dialog = null">キャンセル</button></div>
-      </form>
-    </XpDialog>
-    <XpDialog v-else-if="dialog?.kind === 'rename-folder'" :title="dialog.title" @close="dialog = null">
-      <form class="xp-form" @submit.prevent="commitRenameFolder(dialog.folder, dialog.value)">
-        <label>新しいフォルダー名<input v-model="dialog.value" autofocus></label>
-        <div class="xp-dialog-actions"><button type="submit">変更</button><button type="button" @click="dialog = null">キャンセル</button></div>
-      </form>
-    </XpDialog>
-    <XpDialog v-else-if="dialog?.kind === 'move-folder'" :title="dialog.title" @close="dialog = null">
-      <form class="xp-form" @submit.prevent="moveFolder(dialog.folder, dialog.destination)">
-        <p>「{{ folderName(dialog.folder) }}」を別の階層へ移動します。</p>
-        <label>移動先フォルダー
-          <select v-model="dialog.destination" autofocus>
-            <option v-for="folder in folderMoveDestinations(dialog.folder)" :key="folder || '__root__'" :value="folder">{{ folder || '画像ライブラリ' }}</option>
-          </select>
-        </label>
-        <div class="xp-dialog-actions"><button type="submit">移動</button><button type="button" @click="dialog = null">キャンセル</button></div>
-      </form>
-    </XpDialog>
-    <XpDialog v-else-if="dialog?.kind === 'delete-folder'" :title="dialog.title" @close="dialog = null">
-      <form @submit.prevent="deleteFolder(dialog.folder, true)">
-        <div class="xp-confirm"><span class="xp-confirm-icon">⚠️</span><p>空フォルダー「{{ folderName(dialog.folder) }}」を削除しますか？<br>ファイルまたはサブフォルダーがある場合は削除できません。</p></div>
-        <p class="dialog-hint">実行時に管理者パスキー認証を行います。</p>
-        <div class="xp-dialog-actions"><button type="submit" class="danger" autofocus>削除</button><button type="button" @click="dialog = null">キャンセル</button></div>
       </form>
     </XpDialog>
     <XpDialog v-else-if="dialog?.kind === 'move' || dialog?.kind === 'copy'" :title="dialog.title" @close="dialog = null">

@@ -54,7 +54,7 @@ export const usePortalStore = defineStore('portal', {
       await portalApi.logout();
       this.session = null;
       this.events = [];
-      window.location.assign('/external-login/');
+      window.location.assign('/external-login/app/login');
     },
   },
 });

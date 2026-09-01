@@ -48,7 +48,7 @@ from app.utils.mail import send_mail
 from .identity_lock import get_deleted_identity_lock
 from .utils import (
     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
-    _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
+    _require_ext_login, _external_login_choice_url, _is_mfu_logged_in, _uuid_bytes_to_str,
     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
     _event_by_uuid_str, _membership_status,
     update_event_member_status,
@@ -462,6 +462,12 @@ def _resolve_ext_login_prerequisite_redirect(
         safe_next = url_for("external_login_user.index")
     if not safe_next:
         safe_next = url_for("external_login_user.index")
+    vue_flow = safe_next.startswith(
+        (
+            url_for("external_login_user.user_vue_portal").rstrip("/"),
+            url_for("external_login_user.user_vue_preview").rstrip("/"),
+        )
+    )
 
     if not skip_privacy:
         privacy_required = _needs_privacy_policy_agreement(
@@ -470,9 +476,13 @@ def _resolve_ext_login_prerequisite_redirect(
         )
         if privacy_required:
             session["ext_after_privacy_policy_next"] = safe_next
+            if vue_flow:
+                return redirect(safe_next)
             return redirect(url_for("external_login_user.index"))
 
     if _is_ext_profile_incomplete(user_row, force_profile=force_profile):
+        if vue_flow:
+            return redirect(url_for("external_login_user.user_vue_portal", vue_path="profile"))
         profile_next = _sanitize_ext_local_url(
             url_for("external_login_user.profile", next=safe_next),
             default=url_for("external_login_user.profile"),
@@ -483,6 +493,8 @@ def _resolve_ext_login_prerequisite_redirect(
     email_verified_at = (user_row or {}).get("email_verified_at")
     if email and not email_verified_at:
         session["ext_after_verify_next"] = safe_next
+        if vue_flow:
+            return redirect(url_for("external_login_user.user_vue_portal", vue_path="email-verify"))
         return redirect(url_for("external_login_user.unverified", next=safe_next))
 
     return None
@@ -1124,8 +1136,14 @@ def _maybe_flash_email_verify_banner_for_top():
 # =========================
 # TOP（=マイページ）
 # =========================
-@bp.route("/")
-def index():
+@bp.route("/legacy/")
+def legacy_index():
+    """Server-rendered portal retained as an immediate rollback target."""
+    # Only an explicit visit to /legacy/ persists the per-browser override.
+    # A temporary server-wide rollback must not pin every visitor to legacy
+    # after the global setting is switched back to Vue.
+    if request.endpoint == "external_login_user.legacy_index":
+        session["ext_portal_ui"] = "legacy"
     row = None
     # ---- 未ログイン時は当該バナーのフラッシュを除去してから描画 --------------------
     try:
@@ -1354,6 +1372,20 @@ def index():
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+
+def _vue_portal_is_default() -> bool:
+    value = str(os.getenv("EXTERNAL_LOGIN_PORTAL_UI", "vue") or "vue").strip().lower()
+    return value not in {"legacy", "old", "0", "false", "off"}
+
+
+@bp.route("/")
+def index():
+    """Public portal entry point with an environment-level rollback switch."""
+    if _vue_portal_is_default() and session.get("ext_portal_ui") != "legacy":
+        query = request.args.to_dict(flat=True)
+        return redirect(url_for("external_login_user.user_vue_portal", **query))
+    return legacy_index()
 
 
 @bp.post("/privacy-policy/agree")
@@ -1992,10 +2024,7 @@ def profile():
     # ===== ログイン必須 =====
     social_id = session.get("ext_user_social_id")
     if not social_id:
-        return redirect(url_for(
-            "external_login_user.line_login",
-            next=session.get("ext_after_login_next") or request.url
-        ))
+        return redirect(_external_login_choice_url(session.get("ext_after_login_next") or request.url))
 
     # ===== CSRF 準備 =====
     if "ext_csrf" not in session:
@@ -2029,12 +2058,7 @@ def profile():
     if not me:
         cur.close()
         db.close()
-        return redirect(
-            url_for(
-                "external_login_user.line_login",
-                next=session.get("ext_after_login_next") or request.url,
-            )
-        )
+        return redirect(_external_login_choice_url(session.get("ext_after_login_next") or request.url))
 
     # --- avatar_file → avatar_url 補完（テンプレは avatar_url を参照想定） ---
     try:
@@ -2516,9 +2540,7 @@ def join_event(event_uuid: str):
     # --- ログインチェック（next でこのページに戻す。iv も保持される） ---
     social_id = session.get("ext_user_social_id")
     if not social_id:
-        session["ext_after_login_next"] = request.url
-        login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
-        return redirect(login_url)
+        return redirect(_external_login_choice_url(request.url))
 
     # --- CSRF トークン ---
     if "ext_csrf" not in session:
@@ -2538,8 +2560,7 @@ def join_event(event_uuid: str):
     """, (social_id,))
     u = cur.fetchone()
     if not u:
-        login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
-        return redirect(login_url)
+        return redirect(_external_login_choice_url(request.url))
 
     ext_uid  = u["id"]
     to_email = u.get("email")
@@ -2548,7 +2569,7 @@ def join_event(event_uuid: str):
     igid     = u.get("instagram_id") or ""
 
     # --- join 前段導線ガード（privacy -> profile -> unverified） ---
-    vue_base = url_for("external_login_user.user_vue_preview").rstrip("/")
+    vue_base = url_for("external_login_user.user_vue_portal").rstrip("/")
     if bool(session.get("ext_user_onboarding")) or _is_ext_profile_incomplete(u):
         session["ext_after_login_next"] = request.url
         return redirect(f"{vue_base}/profile")
@@ -2568,7 +2589,7 @@ def join_event(event_uuid: str):
     # 既存の招待URLは、ログインと必須項目の確認後にVue画面へ引き継ぐ。
     if request.method == "GET" and request.args.get("legacy") != "1":
         iv_for_vue = (request.args.get("iv") or request.args.get("vi") or "").strip()
-        target = f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/events/{event_uuid}/join"
+        target = f"{url_for('external_login_user.user_vue_portal').rstrip('/')}/events/{event_uuid}/join"
         if iv_for_vue:
             from urllib.parse import quote
             target = f"{target}?iv={quote(iv_for_vue, safe='')}"
@@ -2852,7 +2873,7 @@ def join_event(event_uuid: str):
         else:
             flash("参加が承認されました。", "success")
         if request.form.get("vue") == "1":
-            return redirect(f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/events/{ev_uuid_str}")
+            return redirect(f"{url_for('external_login_user.user_vue_portal').rstrip('/')}/events/{ev_uuid_str}")
         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
 
     # =========================
@@ -4473,8 +4494,10 @@ def _resolve_user_by_email(email: str) -> dict | None:
     try:
         cur.execute("""
             SELECT id, social_id, nickname, updated_at
-              FROM external_login_user
+             FROM external_login_user
              WHERE email=%s
+               AND COALESCE(is_deleted, 0)=0
+               AND (COALESCE(is_test_account, 0)=0 OR COALESCE(test_account_enabled, 1)=1)
              ORDER BY COALESCE(updated_at, '1970-01-01 00:00:00') DESC, id ASC
              LIMIT 1
         """, (email,))
@@ -4610,6 +4633,14 @@ def pin_login():
     session["ext_user_id"] = target["id"]
     session["ext_user_nickname"] = target.get("nickname") or "（未設定）"
 
+    db3 = get_db(); cur3 = db3.cursor()
+    try:
+        cur3.execute("UPDATE external_login_user SET last_login_at=UTC_TIMESTAMP() WHERE id=%s LIMIT 1", (target["id"],))
+        db3.commit()
+    finally:
+        try: cur3.close(); db3.close()
+        except Exception: pass
+
     # ★ ここを追加：ログイン後にセッション中の pin_email を掃除
     try:
         session.pop("pin_email", None)
@@ -4634,8 +4665,7 @@ def event_album_direct(event_uuid: str):
     # --- 未ログインなら next を保持してログインへ ---
     sid = session.get("ext_user_social_id")
     if not sid:
-        session["ext_after_login_next"] = request.url
-        return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
+        return redirect(_external_login_choice_url(request.url))
 
     # --- イベント取得 ---
     ev = _event_by_uuid_str(event_uuid)
@@ -4646,8 +4676,7 @@ def event_album_direct(event_uuid: str):
     me = _get_ext_user_by_social(sid)  # type: ignore
     if not me:
         # 理論上ここには来にくいが、安全側
-        session["ext_after_login_next"] = request.url
-        return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
+        return redirect(_external_login_choice_url(request.url))
 
     # --- アクセス可否（管理者は素通し／一般は承認済みのみ） ---
     if not _is_mfu_logged_in():

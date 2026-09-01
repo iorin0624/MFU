@@ -29,6 +29,25 @@ class UploadSystemUsageSocketTests(unittest.TestCase):
         self.assertIn("function startUsageFallback()", self.template_source)
         self.assertIn("fetch('/api/storage_usage'", self.template_source)
 
+    def test_status_sections_are_independent_cards(self):
+        for title in (
+            "🌍 環境一覧",
+            "🔧 サーバー状態",
+            "💾 ストレージ使用状況",
+            "🧠 CPU使用率",
+            "🔌 リアルタイム接続",
+        ):
+            self.assertIn(title, self.template_source)
+        self.assertNotIn("Raspberry Pi 状態", self.template_source)
+        self.assertGreaterEqual(self.template_source.count("upload-system-card--"), 5)
+
+    def test_realtime_connection_metrics_are_in_socket_payload(self):
+        self.assertIn('payload["realtime"] = connection_snapshot(', self.app_source)
+        self.assertIn("renderRealtimeConnections(payload.realtime)", self.template_source)
+        self.assertIn('id="realtime-total"', self.template_source)
+        self.assertIn('id="realtime-websocket"', self.template_source)
+        self.assertIn('id="realtime-polling"', self.template_source)
+
     def test_storage_fallback_is_admin_only(self):
         marker = '@app.route("/api/storage_usage")\n@admin_required'
         self.assertIn(marker, self.app_source)

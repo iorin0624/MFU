@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import date
 from functools import wraps
 
-from flask import current_app, flash, redirect, render_template, request, session, url_for
+from flask import current_app, flash, g, redirect, render_template, request, session, url_for
 
 from . import fare_bp
+from .audit import build_fare_search_marker
 from .services import (
     FareEstimateError,
     build_yahoo_transit_url,
@@ -58,6 +59,7 @@ def fare_estimate():
     if request.method == "POST":
         form_data["destination"] = request.form.get("destination", "")
         form_data["target_date"] = request.form.get("target_date", today.isoformat())
+        search_succeeded = False
 
         try:
             destination = validate_destination(form_data["destination"])
@@ -73,6 +75,7 @@ def fare_estimate():
                 "target_date": target_date.isoformat(),
                 **fares,
             }
+            search_succeeded = True
         except FareEstimateError as exc:
             message = str(exc)
             if message in {
@@ -95,6 +98,14 @@ def fare_estimate():
                 form_data["target_date"],
             )
             error_message = DEFAULT_ERROR_MESSAGE
+        finally:
+            # The global after_request hook stores this marker in the same
+            # access-log row as the executed POST. GET requests never reach
+            # this branch.
+            g.mfu_access_log_marker = build_fare_search_marker(
+                form_data["destination"],
+                succeeded=search_succeeded,
+            )
 
     return render_template(
         "fare_estimate.html",
