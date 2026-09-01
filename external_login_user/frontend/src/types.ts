@@ -32,6 +32,7 @@ export interface PortalSession {
   csrfToken: string;
   navigation: NavigationItem[];
   prerequisites: {
+    profileCompletionRequired: boolean;
     emailVerificationRequired: boolean;
     privacyAgreementRequired: boolean;
   };
@@ -158,6 +159,7 @@ export interface AlbumPermissions {
   canRename: boolean;
   canDeleteAlbum: boolean;
   canManageChildren: boolean;
+  canChooseChildType?: boolean;
   canManageProcessing: boolean;
   deleteRequiresPasskey: boolean;
 }
@@ -275,6 +277,11 @@ export interface AlbumDownloadJob {
   progressUrl?: string;
   downloadUrl?: string | null;
   progress?: number;
+  percent?: number;
+  total_files?: number;
+  processed_files?: number;
+  total_bytes?: number;
+  processed_bytes?: number;
   error?: string;
 }
 
@@ -284,4 +291,103 @@ export interface ShortcutDownloadJob {
   count: number;
   shortcut_url: string;
   shortcut_status_url: string;
+}
+
+export interface ChatRoom {
+  room_id: string;
+  room_name: string;
+  is_main: number | boolean;
+  unread_count?: number;
+  muted_until?: string | null;
+}
+
+export interface ChatRoomMember {
+  actor_key: string;
+  display_name: string;
+}
+
+export interface ChatImage {
+  seq: number;
+  url: string;
+  thumb_url: string;
+  mime?: string | null;
+  size?: number | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface ChatReactionSummary {
+  emoji: string;
+  count: number;
+}
+
+export interface ChatMessage {
+  id: number;
+  event_id?: number;
+  dm_uuid?: string;
+  room_id?: string;
+  sender_id: string;
+  sender_display_name: string;
+  sender_avatar_url?: string;
+  body?: string;
+  body_text?: string;
+  body_plain: string;
+  editable_text?: string;
+  body_html?: string;
+  created_at_iso: string;
+  created_at_jst_date_label?: string;
+  created_at_jst_time_hm?: string;
+  is_me: boolean;
+  can_edit: boolean;
+  can_delete: boolean;
+  can_admin_delete?: boolean;
+  edited_flag: number;
+  deleted_flag: number;
+  reply_to_message_id?: number | null;
+  thread_root_id?: number | null;
+  thread_reply_count?: number;
+  reply_to_sender_display_name?: string | null;
+  reply_to_body_plain_excerpt?: string | null;
+  reactions_summary: ChatReactionSummary[];
+  my_reaction?: string | null;
+  images: ChatImage[];
+}
+
+export interface ChatEventSummary {
+  id: number;
+  title: string;
+  start_at?: string | null;
+  unread_count: number;
+}
+
+export interface ChatDmSummary {
+  dm_uuid: string;
+  peer_actor_key: string;
+  peer_display_name: string;
+  last_message: string;
+  last_message_at?: string | null;
+  unread_count: number;
+}
+
+export interface ChatBootstrap {
+  actor: { actor_type: string; actor_id: string; display_name: string; actor_key: string; is_chat_admin_alias: boolean };
+  csrf_token: string;
+  accessible_events: ChatEventSummary[];
+  dm_inbox: ChatDmSummary[];
+  default_avatar_url: string;
+  limits: { message_max_len: number; upload_max_files: number; upload_max_bytes: number };
+  reaction_emojis: string[];
+  notification_context?: {
+    notification_scope: 'external' | 'mfu';
+    notification_api_map?: Record<string, string>;
+  };
+  dm_settings?: { can_manage:boolean; enable_user_user:boolean; admin_actor_key:string };
+}
+
+export interface ChatReadState {
+  actor_key: string;
+  actor_type?: string;
+  actor_id?: string;
+  display_name: string;
+  last_read_message_id: number;
 }

@@ -1335,6 +1335,12 @@ def album_home(album_id):
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
 def create_child(album_id):
+    from .api import _album_context, _validate_child_template
+    ctx, failure = _album_context(album_id)
+    if failure:
+        return failure
+    if not ctx["can_create_child"]:
+        return "子アルバムの作成権限がありません", 403
     meta = load_meta(album_id)
     if not meta:
         return redirect(url_for('album.album_access', album_id=album_id))
@@ -1350,13 +1356,16 @@ def create_child(album_id):
     if not folder_name:
         flash('子アルバム名を入力してください', 'danger')
         return redirect(url_for('album.album_home', album_id=album_id))
+    if not _validate_child_template(ctx, folder_name, selected_mode):
+        flash('名前テンプレートと種類が一致しません。テンプレートを選択してください。', 'danger')
+        return redirect(url_for('album.album_home', album_id=album_id))
 
     for child in meta.get('children', []):
         if child.get('name') == folder_name:
             flash('既に存在します', 'danger')
             return redirect(url_for('album.album_home', album_id=album_id))
 
-    child_uuid = add_child_row(album_id, folder_name, selected_mode)
+    child_uuid = add_child_row(album_id, folder_name, selected_mode, created_by_ext_user_id=ctx.get("current_ext_user_id") if ctx.get("event_member") else None)
     os.makedirs(storage_child_dir(album_id, child_uuid, selected_mode), exist_ok=True)
 
     flash('子アルバムを作成しました', 'success')

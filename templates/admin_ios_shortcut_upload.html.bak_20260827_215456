@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}iPhoneアップロードAPI{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 980px;">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+    <div>
+      <h1 class="h3 mb-1">iPhoneショートカット・アップロード</h1>
+      <p class="text-muted mb-0">写真共有からMFUへアップロードする端末ごとのAPIキーを管理します。</p>
+    </div>
+  </div>
+
+  {% if notice %}<div class="alert alert-info">{{ notice }}</div>{% endif %}
+
+  {% if created_key %}
+  <div class="card border-danger mb-4">
+    <div class="card-header bg-danger text-white">今回だけ表示されるAPIキー</div>
+    <div class="card-body">
+      <p>このキーをiPhoneショートカットの「APIキー」へ設定してください。後から再表示はできません。</p>
+      <div class="input-group">
+        <input id="createdApiKey" class="form-control font-monospace" value="{{ created_key }}" readonly>
+        <button class="btn btn-outline-primary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('createdApiKey').value)">コピー</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card mb-4">
+    <div class="card-header">新しい端末キーを発行</div>
+    <div class="card-body">
+      <form method="post" class="row g-3 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+        <input type="hidden" name="action" value="create">
+        <div class="col-sm-8">
+          <label class="form-label" for="keyLabel">端末名</label>
+          <input class="form-control" id="keyLabel" name="label" maxlength="120" placeholder="例：いおりんのiPhone" required>
+        </div>
+        <div class="col-sm-4"><button class="btn btn-primary w-100" type="submit">APIキーを発行</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">発行済みAPIキー</div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-striped align-middle mb-0">
+          <thead><tr><th>端末名</th><th>発行日時</th><th>最終利用</th><th>有効期限</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+          {% for token in tokens %}
+            <tr>
+              <td>{{ token.label }}</td>
+              <td>{{ token.created_at_jst or '-' }}</td>
+              <td>{{ token.last_used_at_jst or '未使用' }}</td>
+              <td>{{ token.expires_at_jst or 'なし' }}</td>
+              <td>{% if token.revoked_at %}<span class="badge bg-secondary">無効</span>{% else %}<span class="badge bg-success">有効</span>{% endif %}</td>
+              <td class="text-end">
+                {% if not token.revoked_at %}
+                <form method="post" onsubmit="return confirm('この端末のAPIキーを無効化しますか？');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+                  <input type="hidden" name="action" value="revoke">
+                  <input type="hidden" name="token_id" value="{{ token.id }}">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">無効化</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-4">iPhone用APIキーはまだありません。</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

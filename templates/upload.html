@@ -4,35 +4,121 @@
 {% block content %}
 
 {% if session.user == 'admin' %}
-<div class="container mb-2">
-  <div class="alert alert-warning">
-    <div class="d-flex justify-content-between flex-wrap">
-      <div id="env-info">室内温度 取得中…</div>
-      <div id="vcgencmd-info">内部温度 取得中…</div>
-    </div>
-  </div>
-</div>
-{% endif %}
-
-
-{% if session.user == 'admin' and storage %}
+<style>
+  .upload-system-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    align-items: stretch;
+  }
+  .upload-system-card {
+    width: 100%;
+    border: 1px solid #dbe5ef;
+    border-radius: .85rem;
+    background: #fff;
+    box-shadow: 0 .2rem .75rem rgba(28, 48, 74, .07);
+    overflow: hidden;
+  }
+  .upload-system-card__body { padding: 1rem 1.15rem; }
+  .upload-system-card__title {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    margin: 0 0 .7rem;
+    color: #17324d;
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+  .upload-system-card--environment { border-left: .35rem solid #e9b949; }
+  .upload-system-card--server { border-left: .35rem solid #8c6dd7; }
+  .upload-system-card--storage { border-left: .35rem solid #2d9d78; }
+  .upload-system-card--cpu { border-left: .35rem solid #20a8cf; }
+  .upload-system-card--realtime { border-left: .35rem solid #2878d0; }
+  .upload-system-card--realtime { grid-column: 1 / -1; }
+  .cpu-core-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .45rem .8rem;
+  }
+  .cpu-core-grid .cpu-core-item { min-width: 0; margin: 0 !important; }
+  .realtime-count-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .65rem;
+    margin-top: .8rem;
+  }
+  .realtime-count-item {
+    padding: .7rem .55rem;
+    border-radius: .65rem;
+    background: #f3f7fb;
+    text-align: center;
+  }
+  .realtime-count-item strong { display: block; font-size: 1.35rem; color: #17324d; }
+  .realtime-count-item span { color: #657588; font-size: .78rem; }
+  @media (max-width: 767.98px) {
+    .upload-system-grid { grid-template-columns: minmax(0, 1fr); }
+    .upload-system-card--realtime { grid-column: auto; }
+  }
+  @media (max-width: 575.98px) {
+    .upload-system-card__body { padding: .9rem; }
+    .realtime-count-grid { gap: .4rem; }
+    .realtime-count-item { padding: .6rem .3rem; }
+    .realtime-count-item strong { font-size: 1.15rem; }
+  }
+</style>
 <div class="container mb-4">
-  <div class="alert alert-info">
-    <strong>💾 ストレージ使用状況：</strong><br>
-    <span id="storage-usage-text">合計 {{ storage.total_gb }} GB ／ 使用済み {{ storage.used_gb }} GB（{{ storage.percent }}%） ／ 空き {{ storage.free_gb }} GB</span>
-    <div class="progress mt-2">
-      <div id="storage-usage-bar" class="progress-bar bg-success" role="progressbar" style="width: {{ storage.percent }}%;" aria-valuenow="{{ storage.percent }}" aria-valuemin="0" aria-valuemax="100">
-        {{ storage.percent }}%
+  <div class="upload-system-grid">
+    <section class="upload-system-card upload-system-card--environment">
+      <div class="upload-system-card__body" id="env-info">
+        <h3 class="upload-system-card__title">🌍 環境一覧</h3>
+        <div class="text-muted">室内・屋外環境を取得中…</div>
       </div>
-    </div>
+    </section>
 
-    <div id="system-usage-connection" class="small text-muted mt-2" aria-live="polite">
-      ● リアルタイム接続準備中…
-    </div>
+    <section class="upload-system-card upload-system-card--server">
+      <div class="upload-system-card__body" id="vcgencmd-info">
+        <h3 class="upload-system-card__title">🔧 サーバー状態</h3>
+        <div class="text-muted">サーバー情報を取得中…</div>
+      </div>
+    </section>
 
-    <!-- ✅ CPU情報をここに追加 -->
-    <hr class="my-3">
-<div id="cpu-usage-info">🧠 CPU使用率 取得中…</div>
+    <section class="upload-system-card upload-system-card--storage">
+      <div class="upload-system-card__body">
+        <h3 class="upload-system-card__title">💾 ストレージ使用状況</h3>
+        <div id="storage-usage-text">
+          {% if storage %}合計 {{ storage.total_gb }} GB ／ 使用済み {{ storage.used_gb }} GB（{{ storage.percent }}%） ／ 空き {{ storage.free_gb }} GB{% else %}取得中…{% endif %}
+        </div>
+        <div class="progress mt-2">
+          <div id="storage-usage-bar" class="progress-bar bg-success" role="progressbar"
+               style="width: {{ storage.percent if storage else 0 }}%;"
+               aria-valuenow="{{ storage.percent if storage else 0 }}" aria-valuemin="0" aria-valuemax="100">
+            {{ (storage.percent ~ '%') if storage else '0%' }}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="upload-system-card upload-system-card--cpu">
+      <div class="upload-system-card__body" id="cpu-usage-info">
+        <h3 class="upload-system-card__title">🧠 CPU使用率</h3>
+        <div class="text-muted">CPU情報を取得中…</div>
+      </div>
+    </section>
+
+    <section class="upload-system-card upload-system-card--realtime">
+      <div class="upload-system-card__body">
+        <h3 class="upload-system-card__title">🔌 リアルタイム接続</h3>
+        <div id="system-usage-connection" class="small text-muted" aria-live="polite">
+          ● リアルタイム接続準備中…
+        </div>
+        <div class="realtime-count-grid" aria-label="Socket.IO接続数">
+          <div class="realtime-count-item"><strong id="realtime-total">--</strong><span>接続中</span></div>
+          <div class="realtime-count-item"><strong id="realtime-websocket">--</strong><span>WebSocket</span></div>
+          <div class="realtime-count-item"><strong id="realtime-polling">--</strong><span>Long-polling</span></div>
+        </div>
+        <div class="small text-muted mt-2">サーバー全体の匿名集計です。同じブラウザーでもタブごとに1接続として数えます。</div>
+      </div>
+    </section>
   </div>
 </div>
 {% endif %}
@@ -295,18 +381,18 @@ function renderCpuUsage(data) {
   if (!div || !values) return;
   const rows = values.map((value, index) => {
     const percent = Number(value).toFixed(1);
-    return `<div class="mb-1"><div><strong>コア${index}</strong>：${percent}%</div>` +
+    return `<div class="cpu-core-item"><div><strong>コア${index}</strong>：${percent}%</div>` +
       `<div class="progress"><div class="progress-bar bg-info" role="progressbar" style="width:${percent}%;" ` +
       `aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div></div></div>`;
   }).join('');
-  div.innerHTML = `<strong>🧠 CPU使用率：</strong><br>${rows}`;
+  div.innerHTML = `<h3 class="upload-system-card__title">🧠 CPU使用率</h3><div class="cpu-core-grid">${rows}</div>`;
 }
 
 function renderVcgencmd(data) {
   const div = document.getElementById('vcgencmd-info');
   if (!div || !data || data.error) return;
   const messages = Array.isArray(data.throttled_human) ? data.throttled_human : [];
-  div.innerHTML = `<strong>🔧 Raspberry Pi 状態：</strong><br>` +
+  div.innerHTML = `<h3 class="upload-system-card__title">🔧 サーバー状態</h3>` +
     `🌡️ 温度: ${data.temperature}<br>⚡ 電圧: ${data.voltage}<br>` +
     `🧯 スロットル: ${data.throttled_raw}<br>` +
     `${messages.map(message => '　- ' + message).join('<br>')}<br>` +
@@ -320,7 +406,7 @@ function renderEnvironment(data) {
     div.textContent = '🏠 室内温度: 取得エラー';
     return;
   }
-  div.innerHTML = `<strong>🌍 環境一覧：</strong><br>` +
+  div.innerHTML = `<h3 class="upload-system-card__title">🌍 環境一覧</h3>` +
     `🏠 室内｜🌡️ ${data.indoor.temperature} ℃｜💧 ${data.indoor.humidity} %<br>` +
     `🌳 屋外｜🌡️ ${data.outdoor.temperature} ℃｜💧 ${data.outdoor.humidity} %`;
 }
@@ -340,7 +426,7 @@ function updateEnvInfo() {
       const out = data.outdoor;
 
 env.innerHTML = `
-  <strong>🌍 環境一覧：</strong><br>
+  <h3 class="upload-system-card__title">🌍 環境一覧</h3>
   🏠 室内｜🌡️ ${in_.temperature} ℃｜💧 ${in_.humidity} %<br>
   🌳 屋外｜🌡️ ${out.temperature} ℃｜💧 ${out.humidity} %
 `;
@@ -356,7 +442,7 @@ function updateVcgencmd() {
     .then(data => {
       const div = document.getElementById("vcgencmd-info");
       div.innerHTML = `
-        <strong>🔧 Raspberry Pi 状態：</strong><br>
+        <h3 class="upload-system-card__title">🔧 サーバー状態</h3>
         🌡️ 温度: ${data.temperature}<br>
         ⚡ 電圧: ${data.voltage}<br>
         🧯 スロットル: ${data.throttled_raw}<br>
@@ -382,7 +468,7 @@ function updateCpuUsage() {
       const html = data.cpu.map((v, i) => {
         const percent = v.toFixed(1);
         return `
-          <div class="mb-1">
+          <div class="cpu-core-item">
             <div><strong>コア${i}</strong>：${percent}%</div>
             <div class="progress">
               <div class="progress-bar bg-info" role="progressbar" style="width: ${percent}%;" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
@@ -391,7 +477,7 @@ function updateCpuUsage() {
         `;
       }).join("");
 
-      div.innerHTML = `<strong>🧠 CPU使用率：</strong><br>${html}`;
+      div.innerHTML = `<h3 class="upload-system-card__title">🧠 CPU使用率</h3><div class="cpu-core-grid">${html}</div>`;
     })
     .catch(err => {
       document.getElementById("cpu-usage-info").innerHTML = "❌ CPU取得失敗";
@@ -403,6 +489,16 @@ function updateStorageUsage() {
     .then(response => response.json())
     .then(renderStorageUsage)
     .catch(() => {});
+}
+
+function renderRealtimeConnections(data) {
+  if (!data) return;
+  const total = document.getElementById('realtime-total');
+  const websocket = document.getElementById('realtime-websocket');
+  const polling = document.getElementById('realtime-polling');
+  if (total) total.textContent = String(Number(data.total) || 0);
+  if (websocket) websocket.textContent = String(Number(data.websocket) || 0);
+  if (polling) polling.textContent = String(Number(data.polling) || 0);
 }
 
 function stopUsageFallback() {
@@ -455,6 +551,7 @@ function connectSystemUsageSocket() {
     renderCpuUsage(payload.cpu);
     renderVcgencmd(payload.system);
     renderEnvironment(payload.environment);
+    renderRealtimeConnections(payload.realtime);
   });
   usageSocket.on('disconnect', () => {
     setUsageConnection('● リアルタイム接続が切れました', 'warn');

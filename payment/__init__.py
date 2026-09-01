@@ -296,6 +296,7 @@ def _is_allowed_return_url(url: str | None) -> bool:
         return False
     allowed_prefixes = (
         "/external-login/events/",
+        "/external-login/vue-preview/",
         "/external-login/pay/return/",
         "/external-login/lecture/return/",
     )

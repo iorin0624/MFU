@@ -4,7 +4,7 @@ import os, re, uuid, base64, secrets, hashlib
 from datetime import datetime, timedelta, date, timezone
 from typing import Optional, Any
 from urllib.parse import quote_plus
-from flask import current_app, request, session, redirect, url_for, abort, flash
+from flask import current_app, request, session, redirect, url_for, abort, flash, jsonify
 
 from . import bp, oauth  # oauth は None の可能性あり
 from app.utils.db import get_db
@@ -101,31 +101,35 @@ def _to_local_next(u: str) -> str:
     return "/external-login/"
 
 
-def _require_ext_login():
-    """未ログインなら安全化した next を保持して LINE ログインへ"""
-    if session.get("ext_user_id"):
-        return None
-
-    raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
-
-    # 絶対URLや外部ドメインを排除し、/external-login/ 配下の相対URLだけ許可
+def _external_login_choice_url(raw_next: str | None = None) -> str:
+    """Build the Vue login-choice URL while retaining a safe local return URL."""
     from urllib.parse import urlparse
+
     def _to_local_next(u: str) -> str:
         if not u:
             return "/external-login/"
-        if u.startswith("/") and not u.startswith("//"):
+        if u.startswith("/external-login/") and not u.startswith("//"):
             return u
         try:
             p = urlparse(u)
-            if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+            if (p.path or "").startswith("/external-login/"):
                 return p.path + (("?" + p.query) if p.query else "")
         except Exception:
             pass
         return "/external-login/"
 
-    local_next = _to_local_next(raw_next)[:512]
+    local_next = _to_local_next(str(raw_next or request.url))[:512]
     session["ext_after_login_next"] = local_next
-    return redirect(url_for("external_login_user.line_login", next=local_next))
+    return url_for("external_login_user.user_vue_portal", vue_path="login", next=local_next)
+
+
+def _require_ext_login():
+    """Require the external session, using the Vue login chooser for pages."""
+    if session.get("ext_user_id"):
+        return None
+    if request.path.startswith(("/external-login/api/", "/api/")) or request.is_json:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    return redirect(_external_login_choice_url(request.url))
 
 
 def _normalize_privacy_policy_date(value: Any) -> date | None:
@@ -324,6 +328,7 @@ def _is_disallowed_ext_redirect_path(path: str | None) -> bool:
         return False
     disallowed_prefixes = (
         "/external-login/api/",
+        "/external-login/updates/",
         "/chat/api/",
         "/api/",
     )
@@ -586,6 +591,7 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
             FROM external_login_user
             WHERE social_id=%s
               AND COALESCE(is_deleted, 0)=0
+              AND (COALESCE(is_test_account, 0)=0 OR COALESCE(test_account_enabled, 1)=1)
             LIMIT 1
         """, (social_id,))
     except Exception:

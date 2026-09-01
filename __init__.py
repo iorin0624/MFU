@@ -103,7 +103,17 @@ from app.utils.fw_auto_ban import enforcement_enabled
 from app.utils.admin_logs_html import bind_runtime_csrf_token
 from app.utils.message import generate_message
 from app.utils.storage_info import get_storage_info
+from app.utils.socket_connection_metrics import (
+    connection_snapshot,
+    register_connection,
+    unregister_connection,
+)
 from app.utils.thumbs import enqueue_thumb_job
+from app.utils.traffic_source import (
+    PUBLIC_TRAFFIC_SOURCE_SESSION_KEY,
+    normalize_public_traffic_source,
+    public_traffic_source_host,
+)
 from app.utils.totp_util import get_totp_status
 from app.utils.admin_auth import (
     ADMIN_USERNAME,
@@ -1047,6 +1057,9 @@ def _system_usage_collector():
                         environment_due = float("inf")
 
                     payload = dict(latest)
+                    payload["realtime"] = connection_snapshot(
+                        app.config.get("SOCKETIO_MESSAGE_QUEUE")
+                    )
                     payload["generated_at"] = datetime.now(JST).isoformat(timespec="seconds")
                     socketio.emit(
                         "system_usage_update",
@@ -1085,7 +1098,13 @@ def admin_system_connect(auth=None):
     if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
         app.logger.warning("admin system socket rejected ip=%s", request.remote_addr)
         return False
+    register_connection(socketio, "/admin-system")
     return True
+
+
+@socketio.on("disconnect", namespace="/admin-system")
+def admin_system_disconnect():
+    unregister_connection(socketio, "/admin-system")
 
 
 @socketio.on("system_usage_subscribe", namespace="/admin-system")
@@ -1131,7 +1150,13 @@ def admin_job_subscribe(data=None):
 
 @socketio.on("connect", namespace="/download-progress")
 def download_progress_connect(auth=None):
+    register_connection(socketio, "/download-progress")
     return True
+
+
+@socketio.on("disconnect", namespace="/download-progress")
+def download_progress_disconnect():
+    unregister_connection(socketio, "/download-progress")
 
 
 @socketio.on("zip_progress_subscribe", namespace="/download-progress")
@@ -5677,6 +5702,22 @@ def temp_sensor():
 @app.before_request
 def before_every_request():
     g._req_start = time.time()
+
+    # 公開サブドメインの任意 src を安全に保持し、以後の画面遷移にも引き継ぐ。
+    if public_traffic_source_host(request.host):
+        raw_source = request.args.get("src")
+        if raw_source is not None:
+            normalized_source = normalize_public_traffic_source(raw_source)
+            if normalized_source:
+                session[PUBLIC_TRAFFIC_SOURCE_SESSION_KEY] = normalized_source
+            else:
+                session.pop(PUBLIC_TRAFFIC_SOURCE_SESSION_KEY, None)
+        stored_source = normalize_public_traffic_source(
+            session.get(PUBLIC_TRAFFIC_SOURCE_SESSION_KEY)
+        )
+        if stored_source:
+            g.mfu_traffic_source = stored_source
+
     is_phone_action_link = request.path.startswith((
         "/phone-blacklist/register",
         "/phone-whitelist/register",

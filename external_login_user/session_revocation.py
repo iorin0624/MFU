@@ -109,6 +109,24 @@ def mark_external_user_deleted(user_id: int) -> None:
             )
 
 
+def mark_external_user_active(user_id: int) -> None:
+    """管理操作で無効化したテストアカウントを再有効化する。"""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return
+    _cache_status(uid, True)
+    redis_client = _get_redis_client()
+    if redis_client is not None:
+        try:
+            redis_client.delete(_deleted_key(uid))
+        except Exception:
+            current_app.logger.warning(
+                "external user active marker restore failed user_id=%s",
+                uid,
+                exc_info=True,
+            )
+
+
 def is_external_user_active(user_id: int, *, force_refresh: bool = False) -> bool:
     uid = int(user_id or 0)
     if uid <= 0:
@@ -137,7 +155,9 @@ def is_external_user_active(user_id: int, *, force_refresh: bool = False) -> boo
     try:
         cur.execute(
             """
-            SELECT id, COALESCE(is_deleted, 0) AS is_deleted
+            SELECT id, COALESCE(is_deleted, 0) AS is_deleted,
+                   COALESCE(is_test_account, 0) AS is_test_account,
+                   COALESCE(test_account_enabled, 1) AS test_account_enabled
               FROM external_login_user
              WHERE id=%s
              LIMIT 1
@@ -145,7 +165,14 @@ def is_external_user_active(user_id: int, *, force_refresh: bool = False) -> boo
             (uid,),
         )
         row = cur.fetchone() or {}
-        active = bool(row) and int(row.get("is_deleted") or 0) == 0
+        active = (
+            bool(row)
+            and int(row.get("is_deleted") or 0) == 0
+            and (
+                int(row.get("is_test_account") or 0) == 0
+                or int(row.get("test_account_enabled") if row.get("test_account_enabled") is not None else 1) == 1
+            )
+        )
     finally:
         cur.close()
         db.close()

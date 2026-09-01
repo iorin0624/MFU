@@ -265,11 +265,31 @@ _ALLOW_UNVERIFIED_ENDPOINTS = {
     "external_login_user.user_api_session",
     "external_login_user.user_api_bootstrap",
     "external_login_user.user_api_logout",
+    "external_login_user.legacy_index",
+    "external_login_user.user_vue_portal",
+    "external_login_user.user_vue_preview",
+    "external_login_user.user_api_profile",
+    "external_login_user.user_api_update_profile",
+    "external_login_user.user_api_send_email_verification",
+    "external_login_user.user_api_verify_email",
+    "external_login_user.user_api_privacy_policy_agree",
 }
 
 
 def _is_vue_user_api_request() -> bool:
     return request.path.startswith("/external-login/api/vue/")
+
+
+def _is_ext_background_request() -> bool:
+    """API/fetch destinations must never become a post-consent page redirect."""
+    accept = str(request.headers.get("Accept") or "").lower()
+    return bool(
+        _is_disallowed_ext_redirect_path(request.path)
+        or request.is_json
+        or str(request.headers.get("Sec-Fetch-Dest") or "").lower() == "empty"
+        or str(request.headers.get("X-Requested-With") or "").lower() == "xmlhttprequest"
+        or ("application/json" in accept and "text/html" not in accept)
+    )
 
 def _endpoint_allowed_when_unverified(ep: str | None) -> bool:
     if not ep:
@@ -381,6 +401,14 @@ _ALLOW_PRIVACY_POLICY_ENDPOINTS = {
     "external_login_user.user_api_session",
     "external_login_user.user_api_bootstrap",
     "external_login_user.user_api_logout",
+    "external_login_user.legacy_index",
+    "external_login_user.user_vue_portal",
+    "external_login_user.user_vue_preview",
+    "external_login_user.user_api_profile",
+    "external_login_user.user_api_update_profile",
+    "external_login_user.user_api_send_email_verification",
+    "external_login_user.user_api_verify_email",
+    "external_login_user.user_api_privacy_policy_agree",
 }
 
 
@@ -420,12 +448,14 @@ def _lock_privacy_policy_globally():
         if not _needs_privacy_policy_agreement(me, config):
             return None
 
+        # Background checks (including legacy /updates/check) are not pages.
+        # Respond without modifying the destination saved by a real navigation.
+        if _is_ext_background_request():
+            return jsonify({"ok": False, "error": "privacy_agreement_required"}), 403
         raw_next_url = _sanitize_ext_local_url(request.full_path or request.url, default="/external-login/")
-        if not _is_disallowed_ext_redirect_path(raw_next_url) and raw_next_url not in {"/external-login/", "/external-login"}:
+        if request.method == "GET" and not _is_disallowed_ext_redirect_path(raw_next_url) and raw_next_url not in {"/external-login/", "/external-login"}:
             next_url = raw_next_url
             session["ext_after_privacy_policy_next"] = next_url
-        if _is_vue_user_api_request():
-            return jsonify({"ok": False, "error": "privacy_agreement_required"}), 403
         return redirect(url_for("external_login_user.index"))
     except Exception:
         current_app.logger.exception("privacy policy global lock failed")

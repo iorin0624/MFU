@@ -188,3 +188,4 @@ def get_report(report_id):
     finally:
         cursor.close()
         db.close()
+

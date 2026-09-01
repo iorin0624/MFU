@@ -1,24 +1,15 @@
 type Scope = 'external' | 'mfu';
 type UnreadCounts = { total: number; notifications: number; chat: number };
-type SocketLike = {
-  on: (event: string, callback: (payload?: any) => void) => void;
-  disconnect: () => void;
-};
+import { onPortalConnection, onPortalEvent, onPortalResume, portalSocket } from '@/services/portalRealtime';
 
-declare global {
-  interface Window {
-    io?: (options?: Record<string, unknown>) => SocketLike;
-  }
-}
-
-let socket: SocketLike | null = null;
 let fallbackTimer: number | null = null;
+let cleanup: Array<() => void> = [];
 
 export function stopNotificationRealtime() {
   if (fallbackTimer !== null) window.clearInterval(fallbackTimer);
   fallbackTimer = null;
-  socket?.disconnect();
-  socket = null;
+  cleanup.forEach((dispose) => dispose());
+  cleanup = [];
 }
 
 export function startNotificationRealtime(
@@ -27,7 +18,8 @@ export function startNotificationRealtime(
   apply: (counts: UnreadCounts) => void,
 ) {
   stopNotificationRealtime();
-  const safeRefresh = () => { void refresh().catch(() => undefined); };
+  const safeRefresh = () => { if (!document.hidden) void refresh().catch(() => undefined); };
+  cleanup.push(onPortalResume(safeRefresh));
 
   const startFallback = () => {
     if (fallbackTimer !== null) return;
@@ -38,16 +30,16 @@ export function startNotificationRealtime(
     fallbackTimer = null;
   };
 
-  if (!window.io) {
+  if (!portalSocket()) {
     startFallback();
     return;
   }
 
-  socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-  socket.on('connect', () => { stopFallback(); safeRefresh(); });
-  socket.on('disconnect', startFallback);
-  socket.on('connect_error', startFallback);
-  socket.on('notif_unread', (payload: any = {}) => {
+  cleanup.push(onPortalConnection((connected) => {
+    if (connected) { stopFallback(); safeRefresh(); }
+    else startFallback();
+  }));
+  cleanup.push(onPortalEvent('notif_unread', (payload: any = {}) => {
     const payloadScope = payload.scope || 'external';
     if (scope !== payloadScope) return;
     const notifications = Math.max(0, Number(payload.notifications || 0));
@@ -57,8 +49,5 @@ export function startNotificationRealtime(
       chat,
       total: Math.max(0, Number(payload.total ?? payload.count ?? (notifications + chat))),
     });
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) safeRefresh();
-  });
+  }));
 }

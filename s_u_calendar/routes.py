@@ -14,6 +14,12 @@ from flask import (
     redirect, url_for, abort, session, g, make_response, flash
 )
 
+from .month_update import (
+    MonthUpdateValidationError,
+    existing_comparable_values,
+    parse_month_updates,
+)
+
 # 既存のDBユーティリティを使用（プロジェクトの実装に合わせて）
 # 例: app/utils/db.py に get_db() がある前提
 try:
@@ -454,6 +460,17 @@ def calendar_month():
     # 前後月
     py, pm = _adjacent_month(year, month, -1)
     ny, nm = _adjacent_month(year, month, +1)
+    public_on_suc_subdomain = request.host.partition(":")[0].lower() == "suc.iori0624.jp"
+    prev_public_url = (
+        f"/?year={py}&month={pm}"
+        if public_on_suc_subdomain
+        else url_for("s_u_calendar.calendar_month", year=py, month=pm)
+    )
+    next_public_url = (
+        f"/?year={ny}&month={nm}"
+        if public_on_suc_subdomain
+        else url_for("s_u_calendar.calendar_month", year=ny, month=nm)
+    )
 
     # 1日ずつの配列を作ってテンプレに渡す
     days = []
@@ -473,6 +490,8 @@ def calendar_month():
         })
         d += timedelta(days=1)
 
+    busy_days = [item for item in days if item["status"] == "busy"]
+
     return render_template(
         "calendar_month.html",
         year=year,
@@ -481,42 +500,27 @@ def calendar_month():
         end_d=end_d,
         first_w=(start_d.weekday() + 1) % 7,     # 日曜はじまり用の先頭空白数（Sun=0）
         days=days,                                # ← テンプレ側はこれを回す
+        busy_days=busy_days,
         prev_year=py, prev_month=pm,
         next_year=ny, next_month=nm,
+        prev_public_url=prev_public_url,
+        next_public_url=next_public_url,
         today=date.today(),
         show_closed_notice=show_closed_notice,
     )
 
 @s_u_calendar_bp.route("/mini", methods=["GET"])
 def calendar_mini():
-    """公開・軽量一覧（今日から+30日）"""
+    """Retired lightweight view: keep old bookmarks working."""
     today_d = date.today()
-    end_d = today_d + timedelta(days=30)
-
-    db = get_db()
-    rows = _fetch_days(db, today_d, end_d, public_only=True)
-
-    # 表示整形用リスト
-    items = []
-    d = today_d
-    while d <= end_d:
-        key = d.strftime("%Y-%m-%d")
-        info = rows.get(key)
-        status = (info["status"] if info else "free")
-        label  = (info.get("label") if info else None)
-        is_hol, hol_name = _holiday_info(d)
-        items.append({
-            "date": key,
-            "weekday": "月火水木金土日"[d.weekday()],
-            "w": d.weekday(),               # 0=月..6=日（テンプレで土日色付けに使える）
-            "status": status,
-            "label": label,
-            "is_holiday": is_hol,
-            "holiday_name": hol_name,
-        })
-        d += timedelta(days=1)
-
-    return render_template("calendar_mini.html", items=items, today=today_d)
+    return redirect(
+        url_for(
+            "s_u_calendar.calendar_month",
+            year=today_d.year,
+            month=today_d.month,
+        ),
+        code=302,
+    )
 
 @s_u_calendar_bp.route("/api/v1/days", methods=["GET"])
 def api_days():
@@ -703,6 +707,130 @@ def admin_upsert_day():
     # 画面遷移（元ページへ）
     ref = request.headers.get("Referer") or url_for("s_u_calendar.admin_index", year=day_d.year, month=day_d.month)
     return redirect(ref)
+
+
+@s_u_calendar_bp.route("/admin/month_days", methods=["POST"])
+@admin_required
+def admin_upsert_month_days():
+    """Atomically save the changed day settings for the displayed month."""
+    wants_json = (
+        request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or request.accept_mimetypes.best == "application/json"
+    )
+
+    try:
+        year = int(request.form.get("year", 0))
+        month = int(request.form.get("month", 0))
+        updates = parse_month_updates(request.form, year=year, month=month)
+    except (TypeError, ValueError, MonthUpdateValidationError) as exc:
+        message = str(exc) or "入力内容を確認してください。"
+        date_value = getattr(exc, "date_value", "")
+        if wants_json:
+            return jsonify(
+                ok=False,
+                error="validation_error",
+                message=message,
+                date=date_value,
+            ), 400
+        flash((f"{date_value}: " if date_value else "") + message, "danger")
+        return redirect(request.referrer or url_for("s_u_calendar.admin_index"))
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    changed_count = 0
+    changed_dates: list[str] = []
+    try:
+        cur.execute(
+            """
+            SELECT day_date, status, label, is_public
+              FROM su_calendar_days
+             WHERE day_date BETWEEN %s AND %s
+             FOR UPDATE
+            """,
+            (updates[0].day_date, updates[-1].day_date),
+        )
+        existing_rows = {}
+        for row in cur.fetchall():
+            row_date = row.get("day_date")
+            key = row_date.isoformat() if hasattr(row_date, "isoformat") else str(row_date)
+            existing_rows[key] = row
+
+        for update in updates:
+            current_row = existing_rows.get(update.date_key)
+            if existing_comparable_values(current_row) == update.comparable_values:
+                continue
+
+            if current_row:
+                cur.execute(
+                    """
+                    UPDATE su_calendar_days
+                       SET status=%s,
+                           label=%s,
+                           is_public=%s,
+                           synced_busy=0
+                     WHERE day_date=%s
+                    """,
+                    (
+                        update.status,
+                        update.label or None,
+                        update.is_public,
+                        update.day_date,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO su_calendar_days
+                        (day_date, status, label, is_public, synced_busy)
+                    VALUES (%s, %s, %s, %s, 0)
+                    """,
+                    (
+                        update.day_date,
+                        update.status,
+                        update.label or None,
+                        update.is_public,
+                    ),
+                )
+            changed_count += 1
+            changed_dates.append(update.date_key)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        current_app.logger.exception(
+            "[SUCAL] month save failed year=%s month=%s", year, month
+        )
+        if wants_json:
+            return jsonify(
+                ok=False,
+                error="db_error",
+                message="保存に失敗しました。時間をおいて再度お試しください。",
+            ), 500
+        flash("保存に失敗しました。時間をおいて再度お試しください。", "danger")
+        return redirect(url_for("s_u_calendar.admin_index", year=year, month=month))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+    _log_admin(
+        db,
+        request.remote_addr or "-",
+        f"MONTH_SAVE {year:04d}-{month:02d} changed={changed_count}",
+    )
+    message = f"{changed_count}日分を保存しました。" if changed_count else "変更はありませんでした。"
+    redirect_url = url_for("s_u_calendar.admin_index", year=year, month=month)
+    if wants_json:
+        return jsonify(
+            ok=True,
+            changed_count=changed_count,
+            changed_dates=changed_dates,
+            message=message,
+            redirect_url=redirect_url,
+        )
+    flash(message, "success")
+    return redirect(redirect_url)
 
 
 # === 2) 範囲一括設定（フォームPOST） ======================================
@@ -1310,4 +1438,3 @@ def admin_api_sync_outlook_6m():
         "last_sync_at": last_sync_at_str,
         "last_sync_range": f"{start_d.strftime(fmt)}..{end_d.strftime(fmt)}"
     }), 200
-

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import AvatarCropDialog from '@/components/AvatarCropDialog.vue';
 import { useRouter } from 'vue-router';
 import { portalApi } from '@/api/client';
 import { usePortalStore } from '@/stores/portal';
@@ -7,8 +8,12 @@ import { usePortalStore } from '@/stores/portal';
 const router = useRouter(); const store = usePortalStore();
 const form = reactive({ nickname: '', xId: '', instagramId: '', email: '', paymentMode: 'manual', notifyAlbumUpload: true, notifyAlbumProcess: true, hasCard: false, cardSummary: '' });
 const avatar = ref(''); const avatarFile = ref<File | null>(null); const busy = ref(false); const message = ref(''); const error = ref('');
+const cropFile = ref<File|null>(null);
+let avatarPreviewUrl = '';
+function applyCrop(file:File) { if(avatarPreviewUrl)URL.revokeObjectURL(avatarPreviewUrl);avatarFile.value=file;avatarPreviewUrl=URL.createObjectURL(file);avatar.value=avatarPreviewUrl;cropFile.value=null; }
+onBeforeUnmount(()=>{if(avatarPreviewUrl)URL.revokeObjectURL(avatarPreviewUrl);});
 onMounted(async () => { try { const r = await portalApi.profile(); const p = r.profile as any; Object.assign(form, p); avatar.value = p.avatarUrl || ''; } catch (e) { error.value = e instanceof Error ? e.message : 'プロフィールを取得できません。'; } });
-function choose(files: FileList | null) { const file = files?.[0]; if (!file) return; avatarFile.value = file; avatar.value = URL.createObjectURL(file); }
+function choose(files: FileList | null) { const file = files?.[0]; if (!file) return; error.value='';if(file.size>25*1024*1024){error.value='画像は25MB以下で選択してください。';return;}cropFile.value=file; }
 async function save() { busy.value = true; error.value = ''; message.value = ''; try { const data = new FormData(); Object.entries(form).forEach(([key, value]) => data.append(key, typeof value === 'boolean' ? (value ? '1' : '0') : String(value ?? ''))); if (avatarFile.value) data.append('avatar', avatarFile.value); const r = await portalApi.saveProfile(data); message.value = r.emailVerificationRequired ? '保存しました。新しいメールアドレスへ確認コードを送信しました。' : '保存しました。'; await store.bootstrap(true); } catch (e) { error.value = e instanceof Error ? e.message : '保存できません。'; } finally { busy.value = false; } }
 </script>
 <template>
@@ -21,4 +26,5 @@ async function save() { busy.value = true; error.value = ''; message.value = '';
     <section class="panel"><h2>通知設定</h2><label class="toggle-line"><input v-model="form.notifyAlbumUpload" type="checkbox">アルバムのアップロード通知</label><label class="toggle-line"><input v-model="form.notifyAlbumProcess" type="checkbox">加工依頼・加工完了の通知</label></section>
     <div v-if="error" class="alert error">{{ error }}</div><div v-if="message" class="alert success">{{ message }}</div><div class="form-actions"><button type="button" class="button secondary" @click="router.push('/')">キャンセル</button><button class="button primary" :disabled="busy">{{ busy ? '保存中…' : '保存' }}</button></div>
   </form>
+  <AvatarCropDialog v-if="cropFile" :file="cropFile" @close="cropFile=null" @apply="applyCrop" />
 </template>

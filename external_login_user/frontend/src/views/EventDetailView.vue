@@ -80,6 +80,11 @@ function openAlbum() {
   void router.push({ name: 'album', params: { albumId: event.value.albumId } });
 }
 
+function openChat() {
+  if (!event.value?.permissions.canOpenChat || event.value.lineOpenchatUrl) return;
+  void router.push({ name: 'event-chat', params: { uuid: event.value.uuid } });
+}
+
 async function saveParticipantDetails() {
   if (!event.value) return;
   participantSaving.value = true; participantMessage.value = '';
@@ -179,9 +184,9 @@ onMounted(async () => {
         <button v-if="event.permissions.canOpenAlbum && event.albumId" class="feature-link album" type="button" @click="openAlbum">
           <span class="feature-icon">📷</span><span><strong>アルバム</strong><small>写真・動画を見る</small></span><b>›</b>
         </button>
-        <a v-if="event.permissions.canOpenChat && !event.lineOpenchatUrl && event.urls.chat" class="feature-link chat" :href="event.urls.chat">
+        <button v-if="event.permissions.canOpenChat && !event.lineOpenchatUrl" type="button" class="feature-link chat" @click="openChat">
           <span class="feature-icon">💬</span><span><strong>チャット</strong><small>参加者とやり取りする</small></span><b>›</b>
-        </a>
+        </button>
         <button v-if="event.permissions.canViewMembers" class="feature-link members" type="button" @click="router.push({ name: 'event-members', params: { uuid: event.uuid } })">
           <span class="feature-icon">👥</span><span><strong>参加者</strong><small>参加メンバーを見る</small></span><b>›</b>
         </button>
@@ -273,6 +278,7 @@ onMounted(async () => {
   <div v-if="showTipDialog && event" class="modal-backdrop" @click.self="showTipDialog = false">
     <form class="modal-card" method="post" :action="event.urls.tip">
       <h2>投げ銭</h2><div class="alert warning compact-alert">投げ銭は返金できません。</div>
+      <input type="hidden" name="portal" value="vue">
       <input type="hidden" name="event_id" :value="event.id">
       <label>金額（円）<input v-model.number="tipAmount" type="number" name="amount_yen" min="100" max="100000" step="1" required></label>
       <div class="tip-presets"><button v-for="amount in [500,1000,3000,5000]" :key="amount" type="button" @click="tipAmount = amount">¥{{ amount.toLocaleString() }}</button></div>

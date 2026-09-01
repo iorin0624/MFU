@@ -5,8 +5,6 @@ const props = defineProps<{ folders: string[]; current: string }>();
 const emit = defineEmits<{
   select: [folder: string];
   move: [paths: string[], folder: string];
-  moveFolder: [source: string, destination: string];
-  context: [event: MouseEvent, folder: string];
 }>();
 
 function label(folder: string) {
@@ -56,24 +54,9 @@ watch(() => props.current, expandAncestors, { immediate: true });
 function onDrop(event: DragEvent, folder: string) {
   event.preventDefault();
   try {
-    const sourceFolder = event.dataTransfer?.getData('application/x-mfu-folder') || '';
-    if (sourceFolder) {
-      emit('moveFolder', sourceFolder, folder);
-      return;
-    }
     const parsed = JSON.parse(event.dataTransfer?.getData('application/x-mfu-paths') || '[]');
     if (Array.isArray(parsed) && parsed.length) emit('move', parsed.map(String), folder);
   } catch { /* Ignore drags from other applications. */ }
-}
-
-function onDragStart(event: DragEvent, folder: string) {
-  if (!folder || !event.dataTransfer) {
-    event.preventDefault();
-    return;
-  }
-  event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('application/x-mfu-folder', folder);
-  event.dataTransfer.setData('text/plain', folder);
 }
 </script>
 
@@ -88,9 +71,6 @@ function onDragStart(event: DragEvent, folder: string) {
       :style="{ paddingInlineStart: `${6 + depth(folder) * 18}px` }"
       @click="emit('select', folder)"
       @dblclick="toggle(folder)"
-      @contextmenu.prevent="emit('context', $event, folder)"
-      :draggable="Boolean(folder)"
-      @dragstart="onDragStart($event, folder)"
       @dragover.prevent
       @drop="onDrop($event, folder)"
     >

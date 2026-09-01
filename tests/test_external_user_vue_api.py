@@ -5,7 +5,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 API_PATH = ROOT / "external_login_user" / "user_api.py"
+USERS_PATH = ROOT / "external_login_user" / "users.py"
 UTILS_PATH = ROOT / "external_login_user" / "utils.py"
+PAYMENTS_PATH = ROOT / "external_login_user" / "payments.py"
 VUE_TEMPLATE_PATH = ROOT / "external_login_user" / "template" / "external_login_vue.html"
 VUE_FRONTEND_PATH = ROOT / "external_login_user" / "frontend" / "src"
 EXT_INIT_PATH = ROOT / "external_login_user" / "__init__.py"
@@ -26,6 +28,39 @@ def function_source(path: Path, name: str) -> str:
 
 
 class ExternalUserVueApiSourceTests(unittest.TestCase):
+    def test_vue_is_the_standard_entry_with_an_immediate_legacy_rollback(self):
+        api_source = API_PATH.read_text(encoding="utf-8-sig")
+        users_source = USERS_PATH.read_text(encoding="utf-8-sig")
+        self.assertIn('"/app"', api_source)
+        self.assertIn('"/app/<path:vue_path>"', api_source)
+        self.assertIn('"/legacy/"', users_source)
+        self.assertIn('EXTERNAL_LOGIN_PORTAL_UI', users_source)
+        index_source = function_source(USERS_PATH, "index")
+        self.assertIn("user_vue_portal", index_source)
+        self.assertIn("legacy_index", index_source)
+
+    def test_login_choice_preserves_the_original_vue_destination(self):
+        login = (VUE_FRONTEND_PATH / "views" / "LoginView.vue").read_text(encoding="utf-8-sig")
+        app = (VUE_FRONTEND_PATH / "App.vue").read_text(encoding="utf-8-sig")
+        store = (VUE_FRONTEND_PATH / "stores" / "portal.ts").read_text(encoding="utf-8-sig")
+        guard = function_source(UTILS_PATH, "_require_ext_login")
+        chooser = function_source(UTILS_PATH, "_external_login_choice_url")
+        self.assertIn("route.query.next", login)
+        self.assertIn("lineLoginUrl", login)
+        self.assertIn("window.location.assign(returnUrl.value)", login)
+        self.assertNotIn("/external-login/vue-preview/", login)
+        self.assertIn("query: { next: route.fullPath }", app)
+        self.assertIn("/external-login/app/login", store)
+        self.assertIn("user_vue_portal", chooser)
+        self.assertIn('"unauthorized"', guard)
+
+    def test_profile_and_update_checkboxes_override_generic_form_layout(self):
+        styles = (VUE_FRONTEND_PATH / "styles.css").read_text(encoding="utf-8-sig")
+        self.assertIn(".profile-form label.toggle-line", styles)
+        self.assertIn('.profile-form label.toggle-line input[type="checkbox"]', styles)
+        self.assertIn(".modal-card label.update-seen", styles)
+        self.assertIn('.modal-card label.update-seen input[type="checkbox"]', styles)
+
     def test_preview_shell_is_registered_without_replacing_legacy_routes(self):
         source = API_PATH.read_text(encoding="utf-8-sig")
         self.assertIn('"/vue-preview"', source)
@@ -160,9 +195,39 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
 
     def test_payment_view_hands_sensitive_input_to_existing_square_route(self):
         component = (VUE_FRONTEND_PATH / "views" / "EventPaymentView.vue").read_text(encoding="utf-8-sig")
-        self.assertIn("event.urls.payment", component)
+        self.assertIn("options.value.squareUrl", component)
         self.assertIn("event.urls.receipt", component)
-        self.assertIn("Square決済画面", component)
+        self.assertIn("Squareの安全な決済画面", component)
+        self.assertIn("payment-paypay", (VUE_FRONTEND_PATH / "api" / "client.ts").read_text(encoding="utf-8-sig"))
+
+    def test_square_payment_returns_to_the_vue_event_detail(self):
+        payload = function_source(API_PATH, "_event_payload")
+        start = function_source(PAYMENTS_PATH, "pay_start")
+        complete = function_source(PAYMENTS_PATH, "pay_return")
+        event_list = (VUE_FRONTEND_PATH / "views" / "EventListView.vue").read_text(encoding="utf-8-sig")
+        self.assertIn('event_uuid=event_uuid, portal="vue"', payload)
+        self.assertIn("name: 'event-payment'", event_list)
+        self.assertNotIn(':href="item.urls.payment"', event_list)
+        self.assertIn('"portal": "vue" if portal_vue else "legacy"', start)
+        self.assertIn('portal="vue" if portal_vue else "legacy"', start)
+        self.assertIn('pay_ctx.get("portal")', complete)
+        self.assertIn('vue_path=f"events/{event_uuid}"', complete)
+
+    def test_vue_payment_and_consent_endpoints_are_registered(self):
+        source = API_PATH.read_text(encoding="utf-8-sig")
+        for route in (
+            '"/api/vue/privacy-policy/agree"',
+            '"/api/vue/events/<event_uuid>/payment-options"',
+            '"/api/vue/events/<event_uuid>/payment-paypay"',
+            '"/api/vue/events/<event_uuid>/payment-bank"',
+        ):
+            self.assertIn(route, source)
+        app = (VUE_FRONTEND_PATH / "App.vue").read_text(encoding="utf-8-sig")
+        self.assertIn("agreePrivacyPolicy", app)
+        self.assertNotIn('href="/external-login/">確認画面へ', app)
+        guard = EXT_INIT_PATH.read_text(encoding="utf-8-sig")
+        self.assertIn('"external_login_user.user_api_privacy_policy_agree"', guard)
+        self.assertIn('"external_login_user.user_vue_preview"', guard)
 
     def test_vue_session_exposes_document_links(self):
         source = function_source(API_PATH, "_session_payload")

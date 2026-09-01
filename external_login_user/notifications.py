@@ -1044,6 +1044,10 @@ def _create_notification_core(
     normalized_chat_room_id = str(chat_room_id).strip()[:64] if chat_room_id else None
     normalized_room_type = (room_type or "").strip()[:32] or None
     normalized_room_id = (room_id or "").strip()[:64] or normalized_chat_room_id or None
+    # MFU/admin-alias callers historically supplied room_id only. Keep both
+    # columns aligned for chat notifications, including DM, on new writes.
+    if normalized_kind in _CHAT_NOTIFICATION_KINDS and not normalized_chat_room_id:
+        normalized_chat_room_id = normalized_room_id
     normalized_sender_label = (sender_label or "").strip()[:255]
     dedup = (dedup_key or "").strip()[:191]
     if not dedup:
@@ -1493,6 +1497,60 @@ def api_mfu_notifications_mark_all_read():
         db.commit()
         _emit_notif_unread_mfu(username, reason="read_all")
         return jsonify({"ok": True, "updated": updated})
+    finally:
+        cur.close()
+        db.close()
+
+
+@mfu_notifications_bp.post("/api/mfu-notifications/read-by-room")
+def api_mfu_notifications_mark_read_by_room():
+    """LINE側でadmin aliasとして利用中の場合も、開いたチャットルームだけ既読化する。"""
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    payload = request.get_json(silent=True) or {}
+    room_id = str(payload.get("room_id") or "").strip()
+    if not room_id:
+        return jsonify({"ok": False, "reason": "room_id_required"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            UPDATE mfu_notifications
+               SET read_at=%s
+             WHERE user_kind='mfu'
+               AND recipient_key=%s
+               AND COALESCE(kind,'') IN ('chat_message', 'event_chat', 'dm')
+               AND COALESCE(NULLIF(chat_room_id,''), room_id)=%s
+               AND read_at IS NULL
+            """,
+            (datetime.utcnow(), username, room_id),
+        )
+        updated_count = int(cur.rowcount or 0)
+        db.commit()
+        counts = _compute_unread_counts_mfu(username)
+        cur.execute(
+            "SELECT MAX(id) AS latest_id FROM mfu_notifications WHERE user_kind='mfu' AND recipient_key=%s",
+            (username,),
+        )
+        latest_id = int((cur.fetchone() or {}).get("latest_id") or 0)
+        _emit_notif_unread_mfu(username, reason="room_read", latest_id=latest_id)
+        current_app.logger.info(
+            "mfu notifications read-by-room user=%s room_id=%s updated_count=%s unread_count=%s",
+            username,
+            room_id,
+            updated_count,
+            counts["total"],
+        )
+        return jsonify({
+            "ok": True,
+            "updated_count": updated_count,
+            "unread_count": counts["total"],
+            "latest_id": latest_id,
+        })
     finally:
         cur.close()
         db.close()

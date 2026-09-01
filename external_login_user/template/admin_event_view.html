@@ -207,6 +207,7 @@
                     <img src="{{ _src or 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' }}"
                          alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover">
                     <strong class="me-2">{{ m.nickname }}</strong>
+                    {% if m.is_test_account %}<span class="badge bg-info text-dark me-1">メールテスト</span>{% endif %}
                     <span class="badge bg-info text-dark me-1" {% if not cm %}style="opacity:.35"{% endif %}>個別連絡</span>
                     <span class="badge bg-secondary" {% if not an %}style="opacity:.35"{% endif %}>管理備考</span>
                   </span>
@@ -309,6 +310,7 @@
            class="link-underline link-underline-opacity-0 link-dark">
           {{ m.nickname }}
         </a>
+        {% if m.is_test_account %}<span class="badge bg-info text-dark ms-1">メールテスト</span>{% endif %}
       </div>
 
       {% if m.x_id or m.instagram_id %}

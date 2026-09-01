@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+{% block title %}Chrony時刻同期監視{% endblock %}
+
+{% block content %}
+<style>
+  .chrony-page { max-width: 1500px; }
+  .chrony-summary { border: 0; box-shadow: 0 .3rem 1.2rem rgba(15, 23, 42, .08); }
+  .chrony-kpi { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: .8rem; padding: .85rem; height: 100%; }
+  .chrony-kpi-label { color: #64748b; font-size: .8rem; }
+  .chrony-kpi-value { color: #0f172a; font-size: 1.15rem; font-weight: 700; overflow-wrap: anywhere; }
+  .chrony-status-dot { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; }
+  .clock-board { border: 0; overflow: hidden; box-shadow: 0 .5rem 1.5rem rgba(15, 23, 42, .1); }
+  .clock-board-header { background: linear-gradient(105deg, #0b4f8a, #1976c9 60%, #0b3157); color: #fff; }
+  .clock-row { border: 1px solid #dbe5ef; border-radius: .9rem; padding: 1rem 1.1rem; height: 100%; background: #fff; }
+  .clock-row-primary { border-color: #9bc7ed; background: #f3f9ff; }
+  .clock-label { color: #475569; font-weight: 700; margin-bottom: .35rem; }
+  .clock-value { color: #0f172a; font-size: clamp(1.35rem, 3vw, 2.2rem); font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: .02em; white-space: nowrap; }
+  .clock-difference { min-height: 1.4rem; margin-top: .35rem; font-size: .9rem; font-weight: 700; }
+  .chrony-raw { max-height: 22rem; overflow: auto; white-space: pre; font-size: .78rem; background: #0f172a; color: #e2e8f0; border-radius: .6rem; padding: 1rem; }
+  .client-label-form { min-width: 13rem; }
+  .table > :not(caption) > * > * { vertical-align: middle; }
+  @media (max-width: 767.98px) {
+    .chrony-page h1 { font-size: 1.4rem; }
+    .client-label-form { min-width: 11rem; }
+    .clock-value { white-space: normal; }
+  }
+</style>
+
+<div class="container-fluid chrony-page py-3">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div>
+      <h1 class="h3 mb-1">Chrony時刻同期監視</h1>
+      <div class="text-muted small">Raspberry Piの同期先・応答クライアント・サーバー統計</div>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <a href="{{ url_for('admin_nodes') }}" class="btn btn-outline-secondary">ノード監視へ戻る</a>
+      <button id="refreshNow" type="button" class="btn btn-primary">今すぐ更新</button>
+      <div class="form-check form-switch ms-1">
+        <input class="form-check-input" type="checkbox" id="autoRefresh" checked>
+        <label class="form-check-label" for="autoRefresh">30秒自動更新</label>
+      </div>
+    </div>
+  </div>
+
+  <div id="staleNotice" class="alert alert-warning d-none" role="alert">
+    最新取得に失敗したため、直前の正常な結果を表示しています。
+  </div>
+
+  <section class="card clock-board mb-3">
+    <div class="clock-board-header p-3 p-md-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+          <div class="small opacity-75">Raspberry Pi / Chrony</div>
+          <h2 class="h4 mb-1">現在時刻の比較</h2>
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            <span id="clockHealthBadge" class="badge text-bg-secondary">取得中</span>
+            <span id="clockHealthText" class="small">時刻情報を取得しています。</span>
+          </div>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="showMilliseconds">
+            <label class="form-check-label" for="showMilliseconds">ミリ秒を表示</label>
+          </div>
+          <button id="resyncClocks" type="button" class="btn btn-light btn-sm">時計を再同期</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body p-3 p-md-4">
+      <div id="clockStaleNotice" class="alert alert-warning py-2 d-none">時刻の再取得に失敗したため、最後の取得値を表示しています。</div>
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="clock-row clock-row-primary">
+            <div class="clock-label">現在の同期NTPサーバーから供給された時刻</div>
+            <div id="ntpClock" class="clock-value">----/--/-- --:--:--</div>
+            <div class="small text-muted">同期先: <span id="clockReference">-</span> / Stratum <span id="clockStratum">-</span></div>
+          </div>
+        </div>
+        <div class="col-12 col-lg-6">
+          <div class="clock-row">
+            <div class="clock-label">ラズパイサーバーから供給された時刻</div>
+            <div id="piClock" class="clock-value">----/--/-- --:--:--</div>
+            <div id="piDifference" class="clock-difference text-muted">NTP基準との差: -</div>
+          </div>
+        </div>
+        <div class="col-12 col-lg-6">
+          <div class="clock-row">
+            <div class="clock-label">あなたのコンピュータの内蔵時計</div>
+            <div id="clientClock" class="clock-value">----/--/-- --:--:--</div>
+            <div id="clientDifference" class="clock-difference text-muted">NTP基準との差: -</div>
+            <div class="small text-muted">端末のタイムゾーン: <span id="clientTimezone">-</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="d-flex flex-wrap justify-content-between gap-2 mt-3 small text-muted">
+        <span>通信往復時間: <strong id="clockRtt">-</strong> / <span id="clockSampleCount">-</span>回測定の最短結果を採用</span>
+        <span>最終時計同期: <span id="clockSyncedAt">-</span></span>
+      </div>
+      <div class="small text-muted mt-2">NTP時刻は、Chronyが保持する現在の時刻差から算出した同期先基準の推定時刻です。</div>
+    </div>
+  </section>
+
+  <section class="card chrony-summary mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <div class="d-flex align-items-center gap-2">
+          <span id="overallDot" class="chrony-status-dot bg-secondary"></span>
+          <strong id="overallText">読み込み中</strong>
+          <span id="overallBadge" class="badge text-bg-secondary">確認中</span>
+        </div>
+        <div class="small text-muted">取得時刻: <span id="collectedAt">-</span></div>
+      </div>
+      <div id="statusMessage" class="small text-muted mb-3">Chrony情報を取得しています。</div>
+      <div class="row g-2">
+        <div class="col-6 col-md-3"><div class="chrony-kpi"><div class="chrony-kpi-label">参照先</div><div id="referenceId" class="chrony-kpi-value">-</div></div></div>
+        <div class="col-6 col-md-3"><div class="chrony-kpi"><div class="chrony-kpi-label">Stratum</div><div id="stratum" class="chrony-kpi-value">-</div></div></div>
+        <div class="col-6 col-md-3"><div class="chrony-kpi"><div class="chrony-kpi-label">システム時刻差</div><div id="systemOffset" class="chrony-kpi-value">-</div></div></div>
+        <div class="col-6 col-md-3"><div class="chrony-kpi"><div class="chrony-kpi-label">更新間隔</div><div id="updateInterval" class="chrony-kpi-value">-</div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-xl-7">
+      <section class="card h-100 shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <strong>クライアント応答状況</strong>
+          <small class="text-muted">表示名はIPごとに保存</small>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover mb-0">
+            <thead><tr><th>状態</th><th>表示名 / IP</th><th>NTP要求</th><th>最終応答</th><th>破棄</th><th>表示名設定</th></tr></thead>
+            <tbody id="clientsBody"><tr><td colspan="6" class="text-muted">読み込み中...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+    <div class="col-12 col-xl-5">
+      <section class="card h-100 shadow-sm">
+        <div class="card-header"><strong>Chronyサーバー統計</strong></div>
+        <div class="table-responsive">
+          <table class="table table-sm mb-0"><tbody id="serverStatsBody"><tr><td class="text-muted">読み込み中...</td></tr></tbody></table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <section class="card shadow-sm mb-3">
+    <div class="card-header"><strong>同期先ソース</strong></div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead><tr><th>状態</th><th>サーバー</th><th>Stratum</th><th>Poll</th><th>Reach</th><th>最終受信</th><th>サンプル</th></tr></thead>
+        <tbody id="sourcesBody"><tr><td colspan="7" class="text-muted">読み込み中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card shadow-sm mb-3">
+    <div class="card-header"><strong>選択判定詳細</strong></div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead><tr><th>判定</th><th>サーバー</th><th>認証</th><th>設定</th><th>有効</th><th>Last</th><th>Score</th><th>オフセット範囲</th><th>Leap</th></tr></thead>
+        <tbody id="selectBody"><tr><td colspan="9" class="text-muted">読み込み中...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card shadow-sm mb-4">
+    <div class="card-header"><strong>生データ</strong> <small class="text-muted ms-2">調査用</small></div>
+    <div class="card-body" id="rawOutputs"><div class="text-muted">読み込み中...</div></div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const DATA_URL = {{ url_for('admin_nodes_chrony_data')|tojson }};
+  const TIME_URL = {{ url_for('admin_nodes_chrony_time')|tojson }};
+  const LABEL_URL = {{ url_for('admin_nodes_chrony_client_label')|tojson }};
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  let timer = null;
+  let lastGood = null;
+  let loading = false;
+  let clockSyncing = false;
+  let clockSample = null;
+
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtSeconds = value => value == null ? '-' : `${Number(value).toLocaleString()} 秒前`;
+  const fmtOffset = value => value == null ? '-' : `${(Number(value) * 1000).toFixed(3)} ms`;
+  const fmtDate = value => {
+    if (!value) return '-';
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? value : d.toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'});
+  };
+
+  function formatClock(epochMs, useClientTimezone=false) {
+    if (!Number.isFinite(epochMs)) return '----/--/-- --:--:--';
+    const date = new Date(epochMs);
+    const options = {
+      year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit',
+      hour12:false
+    };
+    if (!useClientTimezone) options.timeZone = 'Asia/Tokyo';
+    let value = new Intl.DateTimeFormat('ja-JP', options).format(date);
+    if ($('showMilliseconds').checked) value += `.${String(Math.floor(((epochMs % 1000) + 1000) % 1000)).padStart(3, '0')}`;
+    return value;
+  }
+
+  function differenceMeta(diffMs, server=false) {
+    const absolute = Math.abs(diffMs);
+    const normalLimit = server ? 10 : 100;
+    const warningLimit = server ? 100 : 1000;
+    if (absolute <= normalLimit) return ['success', '合っています'];
+    if (absolute <= warningLimit) return ['warning', '少しずれています'];
+    return ['danger', '時計がずれています'];
+  }
+
+  function formatDifference(diffMs) {
+    const sign = diffMs >= 0 ? '+' : '';
+    return `${sign}${diffMs.toFixed(3)} ms`;
+  }
+
+  function renderClocks() {
+    if (!clockSample) return;
+    const elapsed = performance.now() - clockSample.perfAnchor;
+    const ntpNow = clockSample.ntpAnchorMs + elapsed;
+    const piNow = clockSample.piAnchorMs + elapsed;
+    const clientNow = Date.now();
+    const piDiff = piNow - ntpNow;
+    const clientDiff = clientNow - ntpNow;
+    $('ntpClock').textContent = formatClock(ntpNow);
+    $('piClock').textContent = formatClock(piNow);
+    $('clientClock').textContent = formatClock(clientNow, true);
+    const piMeta = differenceMeta(piDiff, true);
+    const clientMeta = differenceMeta(clientDiff, false);
+    $('piDifference').className = `clock-difference text-${piMeta[0]}`;
+    $('piDifference').textContent = `NTP基準との差: ${formatDifference(piDiff)} / ${piMeta[1]}`;
+    $('clientDifference').className = `clock-difference text-${clientMeta[0]}`;
+    $('clientDifference').textContent = `NTP基準との差: ${formatDifference(clientDiff)} / ${clientMeta[1]}`;
+  }
+
+  async function takeClockSample() {
+    const wallStart = Date.now();
+    const perfStart = performance.now();
+    const response = await fetch(`${TIME_URL}?_=${Date.now()}`, {cache:'no-store'});
+    const perfEnd = performance.now();
+    const elapsed = perfEnd - perfStart;
+    const midpoint = wallStart + (elapsed / 2);
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || '時刻を取得できませんでした。');
+    return {
+      rttMs: elapsed,
+      piOffsetMs: Number(data.sample_time_unix_ms) - midpoint,
+      ntpOffsetMs: Number(data.ntp_time_unix_ms) - midpoint,
+      referenceId: data.reference_id,
+      stratum: data.stratum,
+      leapStatus: data.leap_status
+    };
+  }
+
+  async function synchronizeClocks(sampleCount=5) {
+    if (clockSyncing) return;
+    clockSyncing = true;
+    $('resyncClocks').disabled = true;
+    $('clockHealthBadge').className = 'badge text-bg-secondary';
+    $('clockHealthBadge').textContent = '取得中';
+    try {
+      const samples = [];
+      for (let index = 0; index < sampleCount; index += 1) {
+        try { samples.push(await takeClockSample()); } catch (error) {
+          if (index === sampleCount - 1 && !samples.length) throw error;
+        }
+      }
+      if (!samples.length) throw new Error('時刻を取得できませんでした。');
+      samples.sort((a, b) => a.rttMs - b.rttMs);
+      const best = samples[0];
+      const clientNow = Date.now();
+      clockSample = {
+        perfAnchor: performance.now(),
+        piAnchorMs: clientNow + best.piOffsetMs,
+        ntpAnchorMs: clientNow + best.ntpOffsetMs
+      };
+      $('clockReference').textContent = best.referenceId || '-';
+      $('clockStratum').textContent = best.stratum ?? '-';
+      $('clockRtt').textContent = `${best.rttMs.toFixed(1)} ms`;
+      $('clockSampleCount').textContent = samples.length;
+      $('clockSyncedAt').textContent = new Date().toLocaleString('ja-JP');
+      $('clockStaleNotice').classList.add('d-none');
+      $('clockHealthBadge').className = 'badge text-bg-success';
+      $('clockHealthBadge').textContent = '良好';
+      $('clockHealthText').textContent = '同期NTPサーバーの基準時刻を取得できています。';
+      renderClocks();
+    } catch (error) {
+      $('clockHealthBadge').className = 'badge text-bg-danger';
+      $('clockHealthBadge').textContent = '取得失敗';
+      $('clockHealthText').textContent = error.message;
+      if (clockSample) $('clockStaleNotice').classList.remove('d-none');
+    } finally {
+      clockSyncing = false;
+      $('resyncClocks').disabled = false;
+    }
+  }
+
+  function statusMeta(status) {
+    return ({
+      active: ['正常', 'success'], warning: ['注意', 'warning'], stale: ['応答停止', 'danger'], unknown: ['未判定', 'secondary']
+    })[status] || ['未判定', 'secondary'];
+  }
+
+  function render(data) {
+    const tracking = data.tracking || {};
+    const levelMeta = ({normal:['正常','success'], warning:['注意','warning'], error:['異常','danger']})[data.level] || ['不明','secondary'];
+    $('overallDot').className = `chrony-status-dot bg-${levelMeta[1]}`;
+    $('overallBadge').className = `badge text-bg-${levelMeta[1]}`;
+    $('overallBadge').textContent = levelMeta[0];
+    $('overallText').textContent = data.host ? `${data.host} / Chrony` : 'Chrony';
+    $('collectedAt').textContent = fmtDate(data.collected_at);
+    $('statusMessage').textContent = (data.messages || []).join(' ') || '-';
+    $('referenceId').textContent = tracking.reference_id || '-';
+    $('stratum').textContent = tracking.stratum ?? '-';
+    $('systemOffset').textContent = fmtOffset(tracking.system_time_seconds);
+    $('updateInterval').textContent = tracking.update_interval_seconds == null ? '-' : `${tracking.update_interval_seconds} 秒`;
+
+    const clients = data.clients || [];
+    $('clientsBody').innerHTML = clients.length ? clients.map(client => {
+      const meta = statusMeta(client.status);
+      const title = client.display_name || client.hostname || client.address;
+      const subtitle = [client.address, client.hostname !== client.address ? client.hostname : ''].filter(Boolean).join(' / ');
+      return `<tr data-address="${esc(client.address)}">
+        <td><span class="badge text-bg-${meta[1]}">${meta[0]}</span></td>
+        <td><strong>${esc(title)}</strong><div class="small text-muted">${esc(subtitle)}</div></td>
+        <td>${Number(client.ntp_hits || 0).toLocaleString()}回</td>
+        <td>${esc(fmtSeconds(client.ntp_last_seconds))}</td>
+        <td>${Number(client.ntp_drops || 0).toLocaleString()}回</td>
+        <td><form class="d-flex gap-1 client-label-form" data-address="${esc(client.address)}">
+          <input class="form-control form-control-sm" name="display_name" maxlength="100" value="${esc(client.display_name || '')}" placeholder="例: メインPC">
+          <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+        </form></td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="6" class="text-muted">クライアント記録はありません。</td></tr>';
+
+    document.querySelectorAll('.client-label-form').forEach(form => form.addEventListener('submit', saveLabel));
+
+    const stats = data.serverstats || {};
+    $('serverStatsBody').innerHTML = Object.keys(stats).length ? Object.entries(stats).map(([key, value]) =>
+      `<tr><th>${esc(key)}</th><td class="text-end">${value == null ? '-' : Number(value).toLocaleString()}</td></tr>`
+    ).join('') : '<tr><td class="text-muted">統計情報はありません。</td></tr>';
+
+    const sourceStates = {'*':['同期中','success'], '+':['併用','primary'], '-':['候補外','secondary'], '?':['利用不可','warning'], 'x':['異常','danger'], '~':['不安定','warning']};
+    $('sourcesBody').innerHTML = (data.sources || []).map(row => {
+      const sm = sourceStates[row.state] || [row.state, 'secondary'];
+      return `<tr><td><span class="badge text-bg-${sm[1]}">${esc(sm[0])}</span></td><td>${esc(row.name)}</td><td>${row.stratum}</td><td>${row.poll}</td><td>${esc(row.reach)}</td><td>${esc(row.last_rx)}</td><td><code>${esc(row.sample)}</code></td></tr>`;
+    }).join('') || '<tr><td colspan="7" class="text-muted">同期先情報はありません。</td></tr>';
+
+    $('selectBody').innerHTML = (data.selectdata || []).map(row =>
+      `<tr><td><code>${esc(row.state)}</code></td><td>${esc(row.name)}</td><td>${esc(row.auth)}</td><td>${esc(row.configured)}</td><td>${esc(row.effective)}</td><td>${esc(row.last)}</td><td>${esc(row.score)}</td><td><code>${esc(row.interval)}</code></td><td>${esc(row.leap)}</td></tr>`
+    ).join('') || '<tr><td colspan="9" class="text-muted">選択判定情報はありません。</td></tr>';
+
+    const labels = {tracking:'chronyc tracking', sources:'chronyc sources -v', selectdata:'chronyc selectdata -v', clients:'chronyc clients', serverstats:'chronyc serverstats'};
+    $('rawOutputs').innerHTML = Object.entries(labels).map(([key, label]) =>
+      `<details class="mb-2"><summary class="fw-semibold">${label}</summary><pre class="chrony-raw mt-2"></pre></details>`
+    ).join('');
+    Object.keys(labels).forEach((key, index) => {
+      $('rawOutputs').querySelectorAll('pre')[index].textContent = (data.raw || {})[key] || '出力なし';
+    });
+  }
+
+  async function saveLabel(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      const response = await fetch(LABEL_URL, {
+        method: 'POST', headers: {'Content-Type':'application/json', 'X-CSRF-Token':csrfToken},
+        body: JSON.stringify({address: form.dataset.address, display_name: form.elements.display_name.value})
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || '保存できませんでした。');
+      await refresh();
+    } catch (error) {
+      alert(error.message);
+    } finally { button.disabled = false; }
+  }
+
+  async function refresh() {
+    if (loading) return;
+    loading = true;
+    $('refreshNow').disabled = true;
+    try {
+      const response = await fetch(DATA_URL, {cache:'no-store'});
+      const data = await response.json();
+      if (!response.ok || data.level === 'error') throw new Error(data.error || (data.messages || []).join(' '));
+      lastGood = data;
+      $('staleNotice').classList.add('d-none');
+      render(data);
+    } catch (error) {
+      if (lastGood) {
+        $('staleNotice').classList.remove('d-none');
+        $('staleNotice').textContent = `最新取得に失敗したため、直前の正常な結果を表示しています。 (${error.message})`;
+      } else {
+        render({level:'error', messages:[error.message || 'Chrony情報を取得できませんでした。']});
+      }
+    } finally {
+      loading = false;
+      $('refreshNow').disabled = false;
+    }
+  }
+
+  function resetTimer() {
+    if (timer) clearInterval(timer);
+    timer = $('autoRefresh').checked ? setInterval(() => { refresh(); synchronizeClocks(3); }, 30000) : null;
+  }
+  $('refreshNow').addEventListener('click', refresh);
+  $('resyncClocks').addEventListener('click', () => synchronizeClocks(5));
+  $('showMilliseconds').addEventListener('change', renderClocks);
+  $('autoRefresh').addEventListener('change', resetTimer);
+  $('clientTimezone').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || '不明';
+  setInterval(renderClocks, 100);
+  resetTimer();
+  synchronizeClocks(5);
+  refresh();
+})();
+</script>
+{% endblock %}

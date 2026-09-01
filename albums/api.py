@@ -203,6 +203,7 @@ def _permissions(ctx: dict) -> dict:
         "canView": ctx["can_view"],
         "canUpload": ctx["can_create_child"],
         "canCreateChild": ctx["can_create_child"],
+        "canChooseChildType": _can_choose_child_type(ctx),
         "canRename": ctx["can_manage"],
         "canDeleteMedia": ctx["can_manage"],
         "canManageChildren": ctx["can_manage"],
@@ -210,6 +211,27 @@ def _permissions(ctx: dict) -> dict:
         "canManageProcessing": ctx["can_manage_processing"],
         "deleteRequiresPasskey": ctx["is_admin"],
     }
+
+
+def _can_choose_child_type(ctx: dict) -> bool:
+    if ctx.get("is_admin") or ctx.get("is_owner") or ctx.get("event_acl_role") == "manager":
+        return True
+    event_id = ctx.get("gate", {}).get("event_id")
+    user_id = ctx.get("current_ext_user_id")
+    if not (ctx.get("event_member") and event_id and user_id):
+        return False
+    row = db_get_one(
+        "SELECT is_host, is_subhost FROM mfu_event_member WHERE event_id=%s AND user_id=%s AND status='approved' AND COALESCE(is_canceled,0)=0 LIMIT 1",
+        (event_id, user_id),
+    ) or {}
+    return bool(row.get("is_host") or row.get("is_subhost"))
+
+
+def _validate_child_template(ctx: dict, name: str, mode: str) -> bool:
+    if _can_choose_child_type(ctx):
+        return True
+    templates = {"【構図】": "normal", "【オフショ】": "normal", "【動画】": "movie", "【加工回し】": "process"}
+    return any(name.startswith(prefix) and bool(name[len(prefix):].strip()) and mode == expected for prefix, expected in templates.items())
 
 
 def _child_permissions(ctx: dict, child: dict) -> dict:
@@ -706,6 +728,8 @@ def api_album_child_create(album_id: str):
         return _error("name_required", 400)
     if mode not in {"normal", "process", "movie"}:
         return _error("invalid_mode", 400)
+    if not _validate_child_template(ctx, name, mode):
+        return _error("invalid_child_template", 400, "名前テンプレートを選択してください。種類はテンプレートにより固定されます。")
     if any(str(item.get("name")) == name for item in ctx["meta"].get("children", [])):
         return _error("child_name_exists", 409)
     creator_id = ctx.get("current_ext_user_id") if ctx.get("event_member") else None

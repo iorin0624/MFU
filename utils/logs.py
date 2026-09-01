@@ -608,6 +608,16 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
     except Exception:
         username = ""
 
+    markers = []
+    existing_marker = str(getattr(g, "mfu_access_log_marker", "") or "").strip()
+    if existing_marker:
+        markers.append(existing_marker)
+    traffic_source = str(getattr(g, "mfu_traffic_source", "") or "").strip()
+    if traffic_source:
+        markers.append(
+            "[TRAFFIC_SOURCE] src=" + json.dumps(traffic_source, ensure_ascii=False)
+        )
+
     return dict(
         ip=_client_ip(),
         method=flask_request.method,
@@ -618,7 +628,7 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
         endpoint=endpoint or "",
         username=username,
         latency_ms=_latency_ms(),
-        marker=getattr(g, "mfu_access_log_marker", ""),
+        marker=" ".join(markers),
     )
 
 

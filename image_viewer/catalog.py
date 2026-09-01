@@ -32,7 +32,7 @@ ROOT_FOLDER_ID = 1
 # and naturally sorting several thousand rows for every window made a small pause
 # visible at each boundary.  The revision is checked on every request, so catalogue
 # changes still invalidate the cached order immediately.
-_ORDERED_ROWS_CACHE: dict[tuple[int, str], dict] = {}
+_ORDERED_ROWS_CACHE: dict[tuple[int, str, str, str], dict] = {}
 _ORDERED_ROWS_CACHE_LOCK = threading.RLock()
 _ORDERED_ROWS_CACHE_TTL = 120.0
 _ORDERED_ROWS_CACHE_MAX_ENTRIES = 24
@@ -136,6 +136,9 @@ def _record(row: dict, folder_path: str) -> dict:
         "mediaType": row["media_type"],
         "size": int(row["file_size"]),
         "mtime": int(row["mtime_epoch"]),
+        "contentUpdatedAt": int(row["mtime_epoch"]),
+        "registeredAt": int(row.get("registered_epoch") or 0),
+        "capturedAt": int(row.get("captured_epoch") or 0) or None,
         "url": f"/image_viewer/files/{row['file_uuid']}",
         "thumbUrl": (
             f"/image_viewer/thumbs/{row['file_uuid']}"
@@ -168,8 +171,62 @@ def _catalog_revision(cursor, folder_id: int) -> str:
     return hashlib.sha256(raw.encode("ascii")).hexdigest()[:20]
 
 
-def _ordered_file_rows(cursor, folder_id: int, direction: str, revision: str) -> list[dict]:
-    cache_key = (int(folder_id), str(direction))
+def _date_group(row: dict, group_by: str, group_unit: str) -> tuple[str, str, int | None]:
+    epoch_field = {
+        "captured": "captured_epoch",
+        "registered": "registered_epoch",
+        "updated": "mtime_epoch",
+    }.get(group_by)
+    epoch = int(row.get(epoch_field) or 0) if epoch_field else 0
+    if not epoch:
+        return "unknown", "日時不明", None
+    value = datetime.fromtimestamp(epoch)
+    if group_unit == "year":
+        return value.strftime("%Y"), f"{value.year}年", epoch
+    if group_unit == "month":
+        return value.strftime("%Y-%m"), f"{value.year}年{value.month}月", epoch
+    return value.strftime("%Y-%m-%d"), f"{value.year}年{value.month}月{value.day}日", epoch
+
+
+def _group_rows(rows: list[dict], direction: str, group_by: str, group_unit: str) -> tuple[list[dict], list[dict]]:
+    name_reverse = direction == "DESC"
+    if group_by == "none":
+        rows.sort(
+            key=lambda row: (_natural_sort_key(row.get("display_name") or ""), int(row.get("id") or 0)),
+            reverse=name_reverse,
+        )
+        return rows, []
+
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        key, label, epoch = _date_group(row, group_by, group_unit)
+        bucket = grouped.setdefault(key, {"key": key, "label": label, "epoch": epoch, "rows": []})
+        bucket["rows"].append(row)
+    buckets = sorted(
+        grouped.values(),
+        key=lambda item: (item["epoch"] is None, -(int(item["epoch"] or 0))),
+    )
+    ordered: list[dict] = []
+    summaries: list[dict] = []
+    for bucket in buckets:
+        bucket["rows"].sort(
+            key=lambda row: (_natural_sort_key(row.get("display_name") or ""), int(row.get("id") or 0)),
+            reverse=name_reverse,
+        )
+        start = len(ordered)
+        ordered.extend(bucket["rows"])
+        summaries.append({
+            "key": bucket["key"], "label": bucket["label"],
+            "start": start, "count": len(bucket["rows"]),
+        })
+    return ordered, summaries
+
+
+def _ordered_file_rows(
+    cursor, folder_id: int, direction: str, revision: str,
+    group_by: str = "none", group_unit: str = "day",
+) -> tuple[list[dict], list[dict]]:
+    cache_key = (int(folder_id), str(direction), group_by, group_unit)
     now = time.monotonic()
     with _ORDERED_ROWS_CACHE_LOCK:
         cached = _ORDERED_ROWS_CACHE.get(cache_key)
@@ -178,27 +235,24 @@ def _ordered_file_rows(cursor, folder_id: int, direction: str, revision: str) ->
             and cached.get("revision") == revision
             and now - float(cached.get("stored_at") or 0) < _ORDERED_ROWS_CACHE_TTL
         ):
-            return cached["rows"]
+            return cached["rows"], cached["groups"]
 
     cursor.execute(
-        "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch "
+        "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch, "
+        "UNIX_TIMESTAMP(f.created_at) AS registered_epoch, "
+        "UNIX_TIMESTAMP(f.captured_at) AS captured_epoch "
         "FROM image_viewer_files f "
         "WHERE f.status='active' AND f.folder_id=%s",
         (folder_id,),
     )
     ordered_rows = _rows(cursor)
-    ordered_rows.sort(
-        key=lambda row: (
-            _natural_sort_key(row.get("display_name") or ""),
-            int(row.get("id") or 0),
-        ),
-        reverse=direction == "DESC",
-    )
+    ordered_rows, groups = _group_rows(ordered_rows, direction, group_by, group_unit)
     with _ORDERED_ROWS_CACHE_LOCK:
         _ORDERED_ROWS_CACHE[cache_key] = {
             "revision": revision,
             "stored_at": now,
             "rows": ordered_rows,
+            "groups": groups,
         }
         if len(_ORDERED_ROWS_CACHE) > _ORDERED_ROWS_CACHE_MAX_ENTRIES:
             oldest = min(
@@ -206,7 +260,7 @@ def _ordered_file_rows(cursor, folder_id: int, direction: str, revision: str) ->
                 key=lambda key: float(_ORDERED_ROWS_CACHE[key].get("stored_at") or 0),
             )
             _ORDERED_ROWS_CACHE.pop(oldest, None)
-    return ordered_rows
+    return ordered_rows, groups
 
 
 def catalog_version(folder: str = "") -> dict:
@@ -226,10 +280,17 @@ def catalog_version(folder: str = "") -> dict:
 def list_payload(
     folder: str = "", *, page: int = 1, per_page: int = 401,
     sort: str = "asc", center: int | None = None,
+    group_by: str = "none", group_unit: str = "day",
 ) -> dict:
     page = max(1, int(page or 1))
     per_page = max(25, min(1000, int(per_page or 401)))
     direction = "DESC" if str(sort).lower() == "desc" else "ASC"
+    group_by = str(group_by or "none").lower()
+    group_unit = str(group_unit or "day").lower()
+    if group_by not in {"none", "captured", "registered", "updated"}:
+        raise CatalogError("Invalid group type")
+    if group_unit not in {"day", "month", "year"}:
+        raise CatalogError("Invalid group unit")
     conn = get_db()
     try:
         cursor = conn.cursor(dictionary=True)
@@ -238,7 +299,9 @@ def list_payload(
         normalised_folder = _normalise_virtual_path(folder)
         folder_id = _folder_id(cursor, normalised_folder)
         revision = _catalog_revision(cursor, folder_id)
-        ordered_rows = _ordered_file_rows(cursor, folder_id, direction, revision)
+        ordered_rows, groups = _ordered_file_rows(
+            cursor, folder_id, direction, revision, group_by, group_unit,
+        )
         total = len(ordered_rows)
         pages = max(1, (total + per_page - 1) // per_page)
         if center is not None:
@@ -269,6 +332,7 @@ def list_payload(
             "images": images,
             "folder": normalised_folder,
             "version": revision,
+            "groups": groups,
             "pagination": {
                 "page": page, "perPage": per_page, "total": total,
                 "pages": pages, "hasMore": offset + per_page < total,
@@ -381,6 +445,55 @@ def _next_display_name(cursor, folder_id: int, suffix: str) -> str:
     return f"{highest + 1}{suffix}"
 
 
+def _parse_capture_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip().replace("\x00", "")
+    if not text:
+        return None
+    for pattern in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], pattern)
+        except ValueError:
+            pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        return None
+
+
+def capture_datetime(path: Path, media_type: str) -> datetime | None:
+    """Read the media capture time without changing the stored file metadata."""
+    if media_type == "image":
+        try:
+            with Image.open(path) as image:
+                exif = image.getexif()
+                for tag in (36867, 36868, 306):
+                    parsed = _parse_capture_datetime(exif.get(tag))
+                    if parsed:
+                        return parsed
+        except Exception:
+            return None
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries",
+                "format_tags=creation_time:stream_tags=creation_time",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+            ],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        for line in result.stdout.splitlines():
+            parsed = _parse_capture_datetime(line)
+            if parsed:
+                return parsed
+    except Exception:
+        pass
+    return None
+
+
 def _unique_display_name(cursor, folder_id: int, display_name: str) -> str:
     cursor.execute(
         "SELECT display_name FROM image_viewer_files "
@@ -419,6 +532,8 @@ def store_file(
     if source_url and len(source_url) > 2048:
         raise CatalogError("Source URL is too long")
     suffix = source.suffix.lower()
+    media_type = "video" if suffix in {".mp4", ".webm", ".mov", ".m4v"} else "image"
+    captured_at = capture_datetime(source, media_type)
     file_uuid = str(uuid.uuid4())
     storage_relpath = f"{file_uuid[:2]}/{file_uuid}{suffix}"
     destination = ORIGINAL_ROOT / storage_relpath
@@ -490,18 +605,19 @@ def store_file(
         cursor.execute(
             "INSERT INTO image_viewer_files "
             "(file_uuid, folder_id, display_name, storage_relpath, extension, "
-            "media_type, mime_type, file_size, file_mtime, checksum_sha256, source_url, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FROM_UNIXTIME(%s), %s, %s, 'processing')",
+            "media_type, mime_type, file_size, file_mtime, captured_at, checksum_sha256, source_url, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FROM_UNIXTIME(%s), %s, %s, %s, 'processing')",
             (
                 file_uuid,
                 folder_id,
                 display_name,
                 storage_relpath,
                 suffix,
-                "video" if suffix in {".mp4", ".webm", ".mov", ".m4v"} else "image",
+                media_type,
                 mimetypes.guess_type(display_name)[0],
                 source.stat().st_size,
                 source.stat().st_mtime,
+                captured_at,
                 checksum,
                 source_url,
             ),

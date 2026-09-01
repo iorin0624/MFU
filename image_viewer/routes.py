@@ -4474,6 +4474,8 @@ def image_list():
                 folder, page=page, per_page=per_page,
                 sort=request.args.get("sort") or "asc",
                 center=center,
+                group_by=request.args.get("groupBy") or "none",
+                group_unit=request.args.get("groupUnit") or "day",
             )
         except catalog.CatalogNotFound as exc:
             return jsonify({"ok": False, "error": str(exc)}), 404

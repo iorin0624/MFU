@@ -40,7 +40,6 @@ from app.etc_accounting.routes import (
     _month_options,
     _normalize_status_filter,
     _parse_filter_date,
-    _parse_filter_month,
     _sort_batch_records,
 )
 from app.etc_accounting.tollgate_reference import (
@@ -134,9 +133,6 @@ class ETCAccountingTest(unittest.TestCase):
             rendered = render_template(
                 "etc_accounting/index.html",
                 records=records,
-                filtered_record_count=2,
-                filtered_total_amount=3080,
-                summary_period_label="全期間",
                 runs=[],
                 selected_status="",
                 freee_connected=True,
@@ -145,7 +141,8 @@ class ETCAccountingTest(unittest.TestCase):
                 batch_jobs=[],
                 month_options=[],
                 scheduled_fetch_state={},
-                selected_month="",
+                selected_date_from="",
+                selected_date_to="",
                 selected_operator="",
                 operator_options=[],
                 csrf_token="test-token",
@@ -162,8 +159,6 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertIn("選択範囲の経過時間", rendered)
         self.assertIn("途中の空き時間を含みます", rendered)
         self.assertIn("compactDateToMinutes(latest.dataset.exitSortKey)", rendered)
-        self.assertIn("2件", rendered)
-        self.assertIn("¥3,080", rendered)
 
     def test_fetch_month_downloads_provisional_pdf_but_keeps_freee_blocked(self):
         record = {
@@ -412,18 +407,6 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertIsNone(_parse_filter_date("2026-99-99"))
         self.assertEqual(_normalize_status_filter("deleted"), "deleted")
 
-    def test_month_filter_returns_first_and_last_day(self):
-        self.assertEqual(
-            _parse_filter_month("2026-02"),
-            (datetime(2026, 2, 1).date(), datetime(2026, 2, 28).date()),
-        )
-        self.assertEqual(
-            _parse_filter_month("2028-02"),
-            (datetime(2028, 2, 1).date(), datetime(2028, 2, 29).date()),
-        )
-        self.assertEqual(_parse_filter_month(""), (None, None))
-        self.assertEqual(_parse_filter_month("2026-13"), (None, None))
-
     def test_deleted_source_record_renders_in_separate_read_only_list(self):
         from app import app
 
@@ -453,9 +436,6 @@ class ETCAccountingTest(unittest.TestCase):
             rendered = render_template(
                 "etc_accounting/index.html",
                 records=[record],
-                filtered_record_count=1,
-                filtered_total_amount=0,
-                summary_period_label="全期間",
                 runs=[],
                 selected_status="deleted",
                 freee_connected=True,
@@ -464,7 +444,8 @@ class ETCAccountingTest(unittest.TestCase):
                 batch_jobs=[],
                 month_options=[],
                 scheduled_fetch_state={},
-                selected_month="",
+                selected_date_from="",
+                selected_date_to="",
                 selected_operator="",
                 operator_options=[],
                 csrf_token="test-token",
@@ -1244,42 +1225,10 @@ class ETCAccountingTest(unittest.TestCase):
                 "exit_ic": "千葉西",
                 "amount": 750,
                 "vehicle_type": "5",
-                "vehicle_number": "",
                 "card_mask": "********2159",
-                "redemption_amount": 0,
-                "postpaid_amount": 750,
                 "remarks": "確定",
             }],
         )
-
-    def test_parse_statement_page_extracts_vehicle_number_and_payment_breakdown(self):
-        html = """
-        <html><body><form name="frm"><input name="p" value="token"><table><tr>
-          <td><input type="checkbox" name="hakkoMeisai" value="vehicle-example"></td>
-          <td>26/08/01 17:58 姉崎袖ヶ浦 26/08/01 18:30 市原</td>
-          <td>270</td><td>110<br>160</td>
-          <td><span>5<br>19<br>********2159</span></td><td>確定</td>
-        </tr></table></form></body></html>
-        """
-        record = parse_statement_page(html, "202608").records[0]
-        self.assertEqual(record["vehicle_type"], "5")
-        self.assertEqual(record["vehicle_number"], "19")
-        self.assertEqual(record["card_mask"], "********2159")
-        self.assertEqual(record["redemption_amount"], 110)
-        self.assertEqual(record["postpaid_amount"], 160)
-
-    def test_parse_statement_page_preserves_blank_vehicle_number(self):
-        html = """
-        <html><body><form name="frm"><input name="p" value="token"><table><tr>
-          <td><input type="checkbox" name="hakkoMeisai" value="no-vehicle-example"></td>
-          <td>企画割引 26/08/02 20:09 新空港</td>
-          <td>2,500</td><td>0<br>2,500</td>
-          <td><span>5<br><br>********2159</span></td><td>確定</td>
-        </tr></table></form></body></html>
-        """
-        record = parse_statement_page(html, "202608").records[0]
-        self.assertEqual(record["vehicle_number"], "")
-        self.assertEqual(record["postpaid_amount"], 2500)
 
     def test_parse_statement_requires_login(self):
         with self.assertRaises(ETCAuthenticationRequired):

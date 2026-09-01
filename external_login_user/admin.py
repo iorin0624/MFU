@@ -623,6 +623,219 @@ def admin_events_list():
     return render_template("admin_events_list.html", events=events)
 
 
+def _ensure_test_account_columns() -> None:
+    db = get_db(); cur = db.cursor()
+    try:
+        for column_name, definition in (
+            ("is_test_account", "is_test_account TINYINT(1) NOT NULL DEFAULT 0 AFTER email_verified_at"),
+            ("test_account_enabled", "test_account_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER is_test_account"),
+            ("last_login_at", "last_login_at DATETIME NULL AFTER test_account_enabled"),
+        ):
+            cur.execute(
+                """SELECT COUNT(*) FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='external_login_user' AND COLUMN_NAME=%s""",
+                (column_name,),
+            )
+            if int(cur.fetchone()[0] or 0) == 0:
+                cur.execute(f"ALTER TABLE external_login_user ADD COLUMN {definition}")
+        db.commit()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+
+@bp.route("/admin/test-accounts", methods=["GET", "POST"])
+def admin_test_accounts():
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+    if (session.get("user") or "").strip() != "admin":
+        abort(403, "テストアカウントはadminのみ管理できます。")
+
+    _ensure_test_account_columns()
+    if request.method == "POST":
+        if request.form.get("csrf_token") != session.get("admin_csrf"):
+            abort(400, "CSRF token mismatch")
+        nickname = (request.form.get("nickname") or "").strip()
+        email = (request.form.get("email") or "").strip().lower()
+        if not nickname or len(nickname) > 50:
+            flash("表示名は1～50文字で入力してください。", "warning")
+        elif not email or "@" not in email or len(email) > 191:
+            flash("メールアドレスを正しく入力してください。", "warning")
+        else:
+            db = get_db(); cur = db.cursor(dictionary=True)
+            user_id = 0
+            try:
+                cur.execute("SELECT id FROM external_login_user WHERE LOWER(email)=LOWER(%s) LIMIT 1", (email,))
+                if cur.fetchone():
+                    flash("このメールアドレスは既に別のアカウントで使用されています。", "warning")
+                else:
+                    social_id = "email_test:" + os.urandom(16).hex()
+                    cur.execute(
+                        """INSERT INTO external_login_user
+                             (mfu_uuid, social_id, nickname, email, email_verified_at,
+                              is_test_account, test_account_enabled)
+                           VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, UTC_TIMESTAMP(), 1, 1)""",
+                        (social_id, nickname, email),
+                    )
+                    user_id = int(cur.lastrowid)
+                    db.commit()
+                    flash(f"テスト用アカウント「{nickname}」を発行しました。", "success")
+            except Exception:
+                db.rollback()
+                current_app.logger.exception("global test account creation failed email=%s", email)
+                flash("テスト用アカウントの発行に失敗しました。", "danger")
+            finally:
+                cur.close(); db.close()
+            if user_id:
+                return redirect(url_for("external_login_user.admin_test_accounts"))
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """SELECT u.id, u.nickname, u.email, u.test_account_enabled, u.last_login_at,
+                      u.created_at,
+                      (SELECT COUNT(*) FROM mfu_event_member m
+                        WHERE m.user_id=u.id AND COALESCE(m.is_canceled,0)=0) AS event_count,
+                      (SELECT GROUP_CONCAT(e.title ORDER BY e.starts_at SEPARATOR ' / ')
+                         FROM mfu_event_member m
+                         JOIN mfu_event e ON e.id=m.event_id
+                        WHERE m.user_id=u.id AND COALESCE(m.is_canceled,0)=0
+                          AND e.deleted_at IS NULL) AS event_titles
+                 FROM external_login_user u
+                WHERE COALESCE(u.is_test_account,0)=1 AND COALESCE(u.is_deleted,0)=0
+                ORDER BY u.created_at DESC, u.id DESC""",
+        )
+        accounts = cur.fetchall() or []
+        cur.execute(
+            """SELECT id, title, starts_at FROM mfu_event
+                WHERE deleted_at IS NULL
+                ORDER BY (starts_at IS NULL), starts_at DESC, id DESC LIMIT 200"""
+        )
+        events = cur.fetchall() or []
+    finally:
+        cur.close(); db.close()
+    return render_template(
+        "admin_event_test_accounts.html",
+        accounts=accounts,
+        events=events,
+        admin_csrf=_admin_csrf_token(),
+        login_url=url_for("external_login_user.user_vue_portal", _external=True),
+    )
+
+
+@bp.get("/admin/events/<int:event_id>/test-accounts")
+def admin_event_test_accounts(event_id: int):
+    """旧イベント単位URLは共通管理画面へ転送する。"""
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+    return redirect(url_for("external_login_user.admin_test_accounts"))
+
+
+@bp.post("/admin/test-accounts/<int:user_id>/action")
+def admin_test_account_action(user_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+    if (session.get("user") or "").strip() != "admin":
+        abort(403)
+    if request.form.get("csrf_token") != session.get("admin_csrf"):
+        abort(400, "CSRF token mismatch")
+    _ensure_test_account_columns()
+    action = (request.form.get("action") or "").strip()
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """SELECT u.id, u.email, u.nickname, u.test_account_enabled
+                 FROM external_login_user u
+                WHERE u.id=%s AND COALESCE(u.is_test_account,0)=1
+                  AND COALESCE(u.is_deleted,0)=0 LIMIT 1""",
+            (user_id,),
+        )
+        account = cur.fetchone()
+    finally:
+        cur.close(); db.close()
+    if not account:
+        abort(404)
+
+    if action == "toggle":
+        enabled = 0 if int(account.get("test_account_enabled") or 0) else 1
+        db = get_db(); cur = db.cursor()
+        try:
+            cur.execute("UPDATE external_login_user SET test_account_enabled=%s WHERE id=%s LIMIT 1", (enabled, user_id))
+            db.commit()
+        finally:
+            cur.close(); db.close()
+        if enabled:
+            from .session_revocation import mark_external_user_active
+            mark_external_user_active(user_id)
+        else:
+            from .session_revocation import revoke_external_user_sessions
+            revoke_external_user_sessions(
+                user_id,
+                message="このテスト用アカウントは管理者により無効化されました。",
+            )
+        flash("アカウントを有効化しました。" if enabled else "アカウントを無効化しました。", "success")
+    elif action == "send_pin":
+        from .users import _issue_pin
+        ok, message = _issue_pin(account.get("email") or "")
+        flash(message, "success" if ok else "warning")
+    elif action == "assign":
+        try:
+            event_id = int(request.form.get("event_id") or 0)
+        except Exception:
+            event_id = 0
+        db = get_db(); cur = db.cursor(dictionary=True)
+        try:
+            cur.execute("SELECT id FROM mfu_event WHERE id=%s AND deleted_at IS NULL LIMIT 1", (event_id,))
+            if not cur.fetchone():
+                flash("割り当て先イベントが見つかりません。", "warning")
+            else:
+                cur.execute(
+                    """INSERT INTO mfu_event_member
+                         (event_id,user_id,role,status,payment_status,require_payment,joined_at)
+                       VALUES (%s,%s,'viewer','approved','unpaid',1,UTC_TIMESTAMP())
+                       ON DUPLICATE KEY UPDATE status='approved', is_canceled=0,
+                         canceled_at=NULL, canceled_by=NULL""",
+                    (event_id, user_id),
+                )
+                db.commit()
+                flash("テストアカウントをイベントへ承認済み参加者として割り当てました。", "success")
+        finally:
+            cur.close(); db.close()
+    elif action == "delete":
+        db = get_db(); cur = db.cursor()
+        try:
+            actor = (session.get("user") or "admin")[:80]
+            cur.execute(
+                """UPDATE mfu_event_member
+                      SET is_canceled=1, canceled_at=UTC_TIMESTAMP(), canceled_by=%s
+                    WHERE user_id=%s AND COALESCE(is_canceled,0)=0""",
+                (actor, user_id),
+            )
+            cur.execute(
+                """UPDATE external_login_user
+                      SET is_deleted=1, deleted_at=UTC_TIMESTAMP(), deleted_by=%s,
+                          deletion_reason='test account deleted', test_account_enabled=0
+                    WHERE id=%s LIMIT 1""",
+                (actor, user_id),
+            )
+            db.commit()
+        finally:
+            cur.close(); db.close()
+        from .session_revocation import revoke_external_user_sessions
+        revoke_external_user_sessions(
+            user_id,
+            message="このテスト用アカウントは管理者により削除されました。",
+        )
+        flash("テスト用アカウントを削除しました。", "success")
+    else:
+        abort(400, "invalid action")
+    return redirect(url_for("external_login_user.admin_test_accounts"))
+
+
 @bp.get("/admin/events/deleted")
 def admin_events_deleted_list():
     guard = _require_mfu_login_redirect()
@@ -822,7 +1035,7 @@ def admin_event_view(event_id: int):
     cur.execute("""
       SELECT
         m.user_id,
-        u.nickname, u.x_id, u.instagram_id, u.email,
+        u.nickname, u.x_id, u.instagram_id, u.email, COALESCE(u.is_test_account,0) AS is_test_account,
         u.avatar_file, u.avatar_url, u.updated_at,
         m.status, m.payment_status, m.paid_at, m.receipt_url, m.joined_at,
         m.checkin_at,
@@ -874,7 +1087,7 @@ def admin_event_view(event_id: int):
     paid_count = 0
     for r in rows:
         if isinstance(r, tuple):
-            (user_id, nickname, x_id, instagram_id, email,
+            (user_id, nickname, x_id, instagram_id, email, is_test_account,
              avatar_file, avatar_url, updated_at,
              status, payment_status, paid_at, receipt_url, joined_at, checkin_at,
              require_payment, process, is_host, is_subhost, participant_role, costume_label,
@@ -886,6 +1099,7 @@ def admin_event_view(event_id: int):
             x_id             = r["x_id"]
             instagram_id     = r["instagram_id"]
             email            = r["email"]
+            is_test_account  = int(r.get("is_test_account") or 0)
             avatar_file      = r["avatar_file"]
             avatar_url       = r["avatar_url"]
             updated_at       = r["updated_at"]
@@ -944,6 +1158,7 @@ def admin_event_view(event_id: int):
             "x_id": x_id,
             "instagram_id": instagram_id,
             "email": email,
+            "is_test_account": int(is_test_account or 0),
             "avatar_file": avatar_file,
             "avatar_url": avatar_url,
             "updated_at": updated_at,

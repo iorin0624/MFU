@@ -7,6 +7,7 @@ membership/ACL on every request.
 
 from __future__ import annotations
 
+import hmac
 import re
 import secrets
 from datetime import date, datetime
@@ -19,10 +20,12 @@ from app.utils.db import get_db
 from . import bp
 from .utils import (
     _event_acl_role,
+    _agree_current_privacy_policy,
     _event_by_uuid_str,
     _get_current_commerce_law_config,
     _get_current_participant_terms_config,
     _get_current_privacy_policy_config,
+    _is_privacy_policy_effective,
     _get_ext_user_by_social,
     _needs_privacy_policy_agreement,
     _uuid_bytes_to_str,
@@ -34,21 +37,41 @@ from .utils import (
 API_PAGE_SIZE_MAX = 200
 
 
-@bp.get("/vue-preview", defaults={"vue_path": ""})
-@bp.get("/vue-preview/", defaults={"vue_path": ""})
-@bp.get("/vue-preview/<path:vue_path>")
-def user_vue_preview(vue_path: str):
-    """Serve the participant Vue client without replacing legacy pages."""
+def _profile_incomplete(user: dict[str, Any] | None, *, force: bool = False) -> bool:
+    if force:
+        return True
+    nickname = str((user or {}).get("nickname") or "").strip()
+    return not nickname or nickname == "（未設定）"
+
+
+def _render_user_vue_portal(*, base_endpoint: str):
     return render_template(
         "external_login_vue.html",
         event_vue_config={
-            "basePath": url_for("external_login_user.user_vue_preview"),
+            "basePath": url_for(base_endpoint),
             "bootstrapUrl": url_for("external_login_user.user_api_bootstrap"),
             "eventsUrl": url_for("external_login_user.user_api_events"),
             "albumApiBase": "/album/api",
             "loginUrl": url_for("external_login_user.index"),
         },
     )
+
+
+@bp.get("/app", defaults={"vue_path": ""})
+@bp.get("/app/", defaults={"vue_path": ""})
+@bp.get("/app/<path:vue_path>")
+def user_vue_portal(vue_path: str):
+    """Serve the production participant Vue portal."""
+    session["ext_portal_ui"] = "vue"
+    return _render_user_vue_portal(base_endpoint="external_login_user.user_vue_portal")
+
+
+@bp.get("/vue-preview", defaults={"vue_path": ""})
+@bp.get("/vue-preview/", defaults={"vue_path": ""})
+@bp.get("/vue-preview/<path:vue_path>")
+def user_vue_preview(vue_path: str):
+    """Backward-compatible preview URL kept for existing bookmarks."""
+    return _render_user_vue_portal(base_endpoint="external_login_user.user_vue_preview")
 
 
 def _value(value: Any):
@@ -124,17 +147,18 @@ def _profile(user: dict[str, Any]) -> dict[str, Any]:
 
 
 def _navigation() -> list[dict[str, Any]]:
+    vue_base = url_for("external_login_user.user_vue_portal").rstrip("/")
     return [
-        {"id": "home", "label": "ホーム", "url": url_for("external_login_user.index")},
-        {"id": "events", "label": "イベント", "url": url_for("external_login_user.index")},
-        {"id": "chat", "label": "チャット", "url": "/chat/", "badge": "chat"},
+        {"id": "home", "label": "ホーム", "url": f"{vue_base}/"},
+        {"id": "events", "label": "イベント", "url": f"{vue_base}/"},
+        {"id": "chat", "label": "チャット", "url": f"{vue_base}/chat", "badge": "chat"},
         {
             "id": "notifications",
             "label": "通知",
-            "url": f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/notifications",
+            "url": f"{vue_base}/notifications",
             "badge": "notifications",
         },
-        {"id": "account", "label": "アカウント", "url": f"{url_for('external_login_user.user_vue_preview').rstrip('/')}/profile"},
+        {"id": "account", "label": "アカウント", "url": f"{vue_base}/profile"},
     ]
 
 
@@ -192,6 +216,9 @@ def _session_payload() -> dict[str, Any]:
         "csrfToken": _csrf_token(),
         "navigation": _navigation(),
         "prerequisites": {
+            "profileCompletionRequired": bool(
+                external and _profile_incomplete(external, force=bool(session.get("ext_user_onboarding")))
+            ),
             "emailVerificationRequired": bool(
                 external and external.get("email") and not external.get("email_verified_at")
             ),
@@ -206,6 +233,80 @@ def _session_payload() -> dict[str, Any]:
             "participantTermsUrl": str(participant_terms_config.get("participant_terms_url") or ""),
         },
     }
+
+
+@bp.post("/api/vue/privacy-policy/agree")
+def user_api_privacy_policy_agree():
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    supplied = str(request.headers.get("X-CSRF-Token") or "")
+    expected = _csrf_token()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return _error("csrf_failed", 403, "画面の有効期限が切れました。再読み込みしてください。")
+    config = _get_current_privacy_policy_config()
+    if _is_privacy_policy_effective(config) and not _agree_current_privacy_policy(
+        int(actor["external"]["id"]), source="vue"
+    ):
+        return _error("save_failed", 500, "同意内容を保存できませんでした。")
+    session.pop("ext_after_privacy_policy_next", None)
+    return _ok(agreed=True)
+
+
+@bp.get("/api/vue/events/<event_uuid>/payment-options")
+def user_api_payment_options(event_uuid: str):
+    actor = _actor()
+    if not actor or actor.get("kind") != "external":
+        return _error("unauthorized", 401)
+    event = _event_by_uuid_str(event_uuid)
+    if not event:
+        return _error("event_not_found", 404)
+    allowed, membership, role = _event_access(event, actor)
+    if not allowed or not membership:
+        return _error("forbidden", 403)
+    from .payments import _enabled_methods, _fetch_event_banks_active, _paypay_p2p_url, _resolve_member_fee
+    methods = _enabled_methods(event)
+    bank_rows = _fetch_event_banks_active(int(event["id"])) if methods.get("bank") else []
+    banks = [
+        {
+            "id": row[0], "label": row[1], "bankName": row[2], "branchName": row[3],
+            "accountKind": row[4], "accountNumber": row[5], "accountHolder": row[6], "memo": row[7],
+        }
+        for row in bank_rows
+    ]
+    return _ok(payment={
+        "methods": methods,
+        "feeYen": _resolve_member_fee(int(event["id"]), int(actor["external"]["id"]), int(event.get("fee_yen") or 0)),
+        "paypayUrl": _paypay_p2p_url(event) if methods.get("paypay") else None,
+        "paypayDisplay": str(event.get("paypay_display") or ""),
+        "banks": banks,
+        "squareUrl": url_for("external_login_user.pay_start", event_uuid=event_uuid, force="1", portal="vue"),
+    })
+
+
+@bp.post("/api/vue/events/<event_uuid>/payment-paypay")
+def user_api_payment_paypay(event_uuid: str):
+    from .payments import pay_paypay
+    if not str(request.form.get("remitter_name") or "").strip():
+        return _error("validation_error", 400, "送金名を入力してください。")
+    response = pay_paypay(event_uuid)
+    status = getattr(response, "status_code", 200)
+    if 300 <= status < 400:
+        return _ok(submitted=True)
+    return _error("submit_failed", status if status >= 400 else 400, "送金申告を保存できませんでした。")
+
+
+@bp.post("/api/vue/events/<event_uuid>/payment-bank")
+def user_api_payment_bank(event_uuid: str):
+    from .payments import pay_bank
+    for field, message in (("bank_id", "振込先を選択してください。"), ("remitter_name", "振込元名を入力してください。"), ("deposit_date", "着金日を入力してください。")):
+        if not str(request.form.get(field) or "").strip():
+            return _error("validation_error", 400, message)
+    response = pay_bank(event_uuid)
+    status = getattr(response, "status_code", 200)
+    if 300 <= status < 400:
+        return _ok(submitted=True)
+    return _error("submit_failed", status if status >= 400 else 400, "振込申告を保存できませんでした。")
 
 
 def _latest_membership(event_id: int, user_id: int) -> dict[str, Any] | None:
@@ -337,7 +438,7 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
             "chat": (
                 None
                 if active_features and str(event.get("line_openchat_url") or "").strip()
-                else f"/chat/events/{int(event.get('id') or 0)}"
+                else url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/chat")
             ),
             "album": (
                 url_for("external_login_user.event_album_direct", event_uuid=event_uuid)
@@ -345,13 +446,14 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
                 else None
             ),
             "members": url_for("external_login_user.member_list", event_uuid=event_uuid),
-            "social": url_for("external_login_user.user_vue_preview", vue_path=f"events/{event_uuid}/social"),
-            "payment": url_for("external_login_user.pay_start", event_uuid=event_uuid),
+            "social": url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/social"),
+            # Vueのイベント一覧から直接支払う場合も、Square完了後はVue詳細へ戻す。
+            "payment": url_for("external_login_user.pay_start", event_uuid=event_uuid, portal="vue"),
             "receipt": receipt_pdf_url,
             "tip": url_for("external_login_user.tip_start"),
             "participantsEmail": url_for("external_login_user.user_api_participants_email", event_uuid=event_uuid),
             "pass": (
-                url_for("external_login_user.user_vue_preview", vue_path=f"events/{event_uuid}/pass")
+                url_for("external_login_user.user_vue_portal", vue_path=f"events/{event_uuid}/pass")
                 if permissions.get("canOpenPass")
                 else None
             ),
@@ -888,6 +990,7 @@ def user_api_update_profile():
         cur.close()
         db.close()
     session["ext_user_nickname"] = nickname
+    session.pop("ext_user_onboarding", None)
     verification_sent = False
     if email_changed and email:
         try:

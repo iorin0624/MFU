@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block title %}ファイルアップロード{% endblock %}
+
+{% block content %}
+
+{% if session.user == 'admin' %}
+<div class="container mb-2">
+  <div class="alert alert-warning">
+    <div class="d-flex justify-content-between flex-wrap">
+      <div id="env-info">室内温度 取得中…</div>
+      <div id="vcgencmd-info">内部温度 取得中…</div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+
+{% if session.user == 'admin' and storage %}
+<div class="container mb-4">
+  <div class="alert alert-info">
+    <strong>💾 ストレージ使用状況：</strong><br>
+    合計 {{ storage.total_gb }} GB ／ 使用済み {{ storage.used_gb }} GB（{{ storage.percent }}%） ／ 空き {{ storage.free_gb }} GB
+    <div class="progress mt-2">
+      <div class="progress-bar bg-success" role="progressbar" style="width: {{ storage.percent }}%;" aria-valuenow="{{ storage.percent }}" aria-valuemin="0" aria-valuemax="100">
+        {{ storage.percent }}%
+      </div>
+    </div>
+
+    <!-- ✅ CPU情報をここに追加 -->
+    <hr class="my-3">
+<div id="cpu-usage-info">🧠 CPU使用率 取得中…</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="container d-flex justify-content-center">
+  <form id="upload-form" class="card p-4 shadow-sm w-100 mb-5" style="max-width: 500px;" enctype="multipart/form-data">
+
+    <h2 class="text-center mb-4">ファイルアップロード</h2>
+
+    <div class="mb-3">
+      <label for="title" class="form-label">撮影タイトル</label>
+      <input type="text" class="form-control" name="title" id="title" required>
+    </div>
+
+    <div class="mb-3">
+      <label for="date" class="form-label">撮影日</label>
+      <input type="date" class="form-control" name="date" id="date" required>
+    </div>
+
+    <div class="mb-3">
+      <label for="mode" class="form-label">モード</label>
+      <select class="form-select" name="mode" id="mode">
+        {% for mode in modes %}
+          <option value="{{ mode.mode }}" {% if mode.mode == default_mode %}selected{% endif %}>
+            {{ mode.label }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">ファイル選択（ドラッグ＆ドロップも可）</label>
+      <div id="drop-area" class="border border-secondary rounded p-3 text-center text-muted" style="cursor: pointer;">
+        ここにファイルをドロップ、またはクリックして選択
+      </div>
+      <input type="file" id="fileElem" name="photos" multiple
+             accept=".jpg,.jpeg,.png,.gif,.pdf,.heic,.heif,.cr2,.cr3,.nef,.nrw,.arw,.dng,.zip,image/*,application/pdf,application/zip"
+             hidden>
+      <div class="form-text">
+        JPG / PNG / HEIC / HEIF / CR2 / CR3 / NEF / NRW / ARW / DNG / ZIP
+        （従来のGIF・PDFも利用可）
+      </div>
+      <div id="preview" class="mt-2"></div>
+    </div>
+
+    <button type="button" id="upload-button" class="btn btn-primary w-100" onclick="uploadFiles()">アップロード</button>
+
+    <div id="progress-box" class="mt-3" style="display:none;">
+      <div class="progress">
+        <div id="upload-progress" class="progress-bar" role="progressbar" style="width: 0%;">0%</div>
+      </div>
+      <p id="upload-status" class="text-center mt-2 text-muted">アップロード中…</p>
+    </div>
+  </form>
+</div>
+
+<script>
+  const dropArea = document.getElementById("drop-area");
+  const fileInput = document.getElementById("fileElem");
+  const preview = document.getElementById("preview");
+
+  dropArea.addEventListener("click", () => fileInput.click());
+  dropArea.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dropArea.classList.add("bg-light");
+  });
+  dropArea.addEventListener("dragleave", () => dropArea.classList.remove("bg-light"));
+  dropArea.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropArea.classList.remove("bg-light");
+    const files = e.dataTransfer.files;
+    fileInput.files = files;
+    previewImages(files);
+  });
+  fileInput.addEventListener("change", () => previewImages(fileInput.files));
+
+  function previewImages(files) {
+    preview.innerHTML = "";
+    const list = document.createElement("ul");
+    list.className = "list-unstyled";
+    for (const file of files) {
+      const item = document.createElement("li");
+      item.textContent = file.name;
+      list.appendChild(item);
+    }
+    preview.appendChild(list);
+  }
+
+  function csrfToken() {
+    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+  }
+
+  function setProgress(percent, text) {
+    document.getElementById('progress-box').style.display = "block";
+    const bar = document.getElementById('upload-progress');
+    bar.style.width = percent + "%";
+    bar.textContent = percent + "%";
+    document.getElementById('upload-status').textContent = text;
+  }
+
+  function requestJson(url, formData) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url, true);
+      xhr.setRequestHeader("X-CSRF-Token", csrfToken());
+      xhr.onload = function () {
+        let data = null;
+        try {
+          data = JSON.parse(xhr.responseText || "{}");
+        } catch (_) {
+          reject(new Error(`JSONではない応答です (${xhr.status}) ${xhr.responseText.slice(0, 160)}`));
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300 && data.ok !== false) {
+          resolve(data);
+        } else {
+          reject(new Error(data.error || data.message || `HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("通信エラーが発生しました"));
+      xhr.send(formData);
+    });
+  }
+
+  function uploadOneFile(uuid, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append("uuid", uuid);
+      formData.append("photo", file, file.name);
+      xhr.open("POST", "/submit_upload/file", true);
+      xhr.setRequestHeader("X-CSRF-Token", csrfToken());
+      xhr.upload.addEventListener("progress", function (e) {
+        if (e.lengthComputable) onProgress(e.loaded);
+      });
+      xhr.onload = function () {
+        let data = null;
+        try {
+          data = JSON.parse(xhr.responseText || "{}");
+        } catch (_) {
+          reject(new Error(`JSONではない応答です (${xhr.status}) ${xhr.responseText.slice(0, 160)}`));
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300 && data.ok !== false) {
+          onProgress(file.size || 0);
+          resolve(data);
+        } else {
+          reject(new Error(data.error || data.message || `HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("通信エラーが発生しました"));
+      xhr.send(formData);
+    });
+  }
+
+  async function uploadFiles() {
+    const form = document.getElementById('upload-form');
+    if (!form.reportValidity()) return;
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) {
+      alert("ファイルが選択されていません");
+      return;
+    }
+
+    const button = document.getElementById("upload-button");
+    button.disabled = true;
+    const totalBytes = files.reduce((sum, file) => sum + (file.size || 0), 0);
+    let doneBytes = 0;
+
+    try {
+      setProgress(0, `アップロード準備中… 0/${files.length}`);
+      const startData = new FormData();
+      startData.append("title", form.elements.title.value);
+      startData.append("date", form.elements.date.value);
+      startData.append("mode", form.elements.mode.value);
+      const started = await requestJson("/submit_upload/start", startData);
+      const uuid = started.uuid;
+
+      for (let i = 0; i < files.length; i += 1) {
+        const file = files[i];
+        await uploadOneFile(uuid, file, (loaded) => {
+          const currentBytes = doneBytes + loaded;
+          const percent = totalBytes ? Math.min(99, Math.round((currentBytes / totalBytes) * 100)) : Math.round(((i + 1) / files.length) * 99);
+          setProgress(percent, `アップロード中… ${i + 1}/${files.length} ${file.name}`);
+        });
+        doneBytes += file.size || 0;
+        const percent = totalBytes ? Math.min(99, Math.round((doneBytes / totalBytes) * 100)) : Math.round(((i + 1) / files.length) * 99);
+        setProgress(percent, `保存完了… ${i + 1}/${files.length}`);
+      }
+
+      setProgress(99, "完了処理中…");
+      const finishData = new FormData();
+      finishData.append("uuid", uuid);
+      const finishRes = await fetch("/submit_upload/finish", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken() },
+        body: finishData
+      });
+      const html = await finishRes.text();
+      if (!finishRes.ok) {
+        try {
+          const data = JSON.parse(html);
+          throw new Error(data.error || data.message || `HTTP ${finishRes.status}`);
+        } catch (err) {
+          if (err instanceof SyntaxError) throw new Error(`完了処理に失敗しました (${finishRes.status}) ${html.slice(0, 160)}`);
+          throw err;
+        }
+      }
+      setProgress(100, "アップロード完了");
+      document.open();
+      document.write(html);
+      document.close();
+    } catch (err) {
+      alert("アップロードに失敗しました: " + (err.message || err));
+      setProgress(0, "アップロードに失敗しました");
+      button.disabled = false;
+    }
+  }
+
+  window.addEventListener("DOMContentLoaded", () => {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    document.getElementById("date").value = `${yyyy}-${mm}-${dd}`;
+  });
+</script>
+
+{% if session.user == 'admin' %}
+<script>
+function updateEnvInfo() {
+  fetch('/api/temp_sensor')
+    .then(res => res.json())
+    .then(data => {
+      const env = document.getElementById("env-info");
+
+      if (data.error) {
+        env.innerHTML = "🏠 室内温度: 取得エラー";
+        return;
+      }
+
+      const in_ = data.indoor;
+      const out = data.outdoor;
+
+env.innerHTML = `
+  <strong>🌍 環境一覧：</strong><br>
+  🏠 室内｜🌡️ ${in_.temperature} ℃｜💧 ${in_.humidity} %<br>
+  🌳 屋外｜🌡️ ${out.temperature} ℃｜💧 ${out.humidity} %
+`;
+    })
+    .catch(err => {
+      document.getElementById("env-info").innerHTML = "🏠 室内温度: 取得エラー";
+    });
+}
+
+function updateVcgencmd() {
+  fetch('/api/vcgencmd')
+    .then(res => res.json())
+    .then(data => {
+      const div = document.getElementById("vcgencmd-info");
+      div.innerHTML = `
+        <strong>🔧 Raspberry Pi 状態：</strong><br>
+        🌡️ 温度: ${data.temperature}<br>
+        ⚡ 電圧: ${data.voltage}<br>
+        🧯 スロットル: ${data.throttled_raw}<br>
+        ${data.throttled_human.map(m => "　- " + m).join("<br>")}<br>
+        🚀 CPUクロック: ${data.clock_human}（${data.clock_raw}）
+      `;
+    })
+    .catch(err => {
+      document.getElementById("vcgencmd-info").innerHTML = "取得エラー: " + err;
+    });
+}
+
+function updateCpuUsage() {
+  fetch('/api/cpu_usage')
+    .then(res => res.json())
+    .then(data => {
+      const div = document.getElementById("cpu-usage-info");
+      if (data.error) {
+        div.innerHTML = "❌ CPU使用率取得エラー";
+        return;
+      }
+
+      const html = data.cpu.map((v, i) => {
+        const percent = v.toFixed(1);
+        return `
+          <div class="mb-1">
+            <div><strong>コア${i}</strong>：${percent}%</div>
+            <div class="progress">
+              <div class="progress-bar bg-info" role="progressbar" style="width: ${percent}%;" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      div.innerHTML = `<strong>🧠 CPU使用率：</strong><br>${html}`;
+    })
+    .catch(err => {
+      document.getElementById("cpu-usage-info").innerHTML = "❌ CPU取得失敗";
+    });
+}
+
+updateCpuUsage();
+setInterval(updateCpuUsage, 1000);
+
+// ✅ これを追加！
+updateEnvInfo();
+setInterval(updateEnvInfo, 60000);
+
+updateVcgencmd();
+setInterval(updateVcgencmd, 5000);
+</script>
+{% endif %}
+
+{% endblock %}
