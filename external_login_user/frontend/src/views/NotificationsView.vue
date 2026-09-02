@@ -57,6 +57,22 @@ async function open(item: Item) {
     await router.push({ name: 'chat-dm', params: { dmUuid: dmMatch[1] } });
     return;
   }
+  const eventAlbumMatch = parsed.pathname.match(/^\/external-login\/events\/([^/]+)\/album\/?$/);
+  if (eventAlbumMatch) {
+    const event = store.events.find((entry) => entry.uuid === eventAlbumMatch[1]);
+    if (event?.albumId) {
+      const childId = parsed.searchParams.get('child_id');
+      await router.push(childId
+        ? { name: 'album-child', params: { albumId: event.albumId, childId } }
+        : { name: 'album', params: { albumId: event.albumId } });
+      return;
+    }
+  }
+  const legacyAlbumMatch = parsed.pathname.match(/^\/album\/([^/]+)\/view\/([^/]+)\/?$/);
+  if (legacyAlbumMatch) {
+    await router.push({ name: 'album-child', params: { albumId: legacyAlbumMatch[1], childId: legacyAlbumMatch[2] } });
+    return;
+  }
   window.location.assign(target);
 }
 async function readAll() {

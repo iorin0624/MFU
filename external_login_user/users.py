@@ -4703,9 +4703,8 @@ def event_album_direct(event_uuid: str):
             exc_info=True,
         )
 
-    if child_id:
-        return redirect(url_for("album.view_child", album_id=album_id, child_id=child_id))
-    return redirect(url_for("album.album_home", album_id=album_id))
+    vue_path = f"albums/{album_id}/children/{child_id}" if child_id else f"albums/{album_id}"
+    return redirect(url_for("external_login_user.user_vue_portal", vue_path=vue_path))
 
 
 # ===== アップデート情報（テキスト→SHA1で既読管理） =========================

@@ -166,6 +166,17 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertIn("name: 'chat-dm'", notifications_view)
         self.assertIn("route.query.room_id", event_chat)
 
+    def test_album_notifications_open_the_vue_child_album(self):
+        notifications_view = (VUE_FRONTEND_PATH / "views" / "NotificationsView.vue").read_text(encoding="utf-8-sig")
+        album_routes = (ROOT / "albums" / "routes.py").read_text(encoding="utf-8-sig")
+        users = (ROOT / "external_login_user" / "users.py").read_text(encoding="utf-8-sig")
+        self.assertIn("external_login_user.user_vue_portal", album_routes)
+        self.assertIn('vue_path = f"albums/{album_id}/children/{child_id}"', album_routes)
+        self.assertIn('vue_path = f"albums/{album_id}/children/{child_id}"', users)
+        self.assertIn("name: 'album-child'", notifications_view)
+        self.assertIn("eventAlbumMatch", notifications_view)
+        self.assertIn("legacyAlbumMatch", notifications_view)
+
     def test_vue_notification_counts_are_split_and_realtime(self):
         backend = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
         header = (VUE_FRONTEND_PATH / "components" / "AppHeader.vue").read_text(encoding="utf-8-sig")
