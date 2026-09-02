@@ -155,6 +155,17 @@ class ExternalUserVueApiSourceTests(unittest.TestCase):
         self.assertNotIn("deleteAllNotifications", notifications)
         self.assertNotIn('@bp.post("/api/notifications/delete-all")', backend)
 
+    def test_chat_notifications_open_the_vue_chat_and_keep_the_room(self):
+        notifications_view = (VUE_FRONTEND_PATH / "views" / "NotificationsView.vue").read_text(encoding="utf-8-sig")
+        event_chat = (VUE_FRONTEND_PATH / "views" / "EventChatView.vue").read_text(encoding="utf-8-sig")
+        backend = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
+        self.assertIn("_vue_chat_target_url", backend)
+        self.assertIn('f"/external-login/app/events/{event_uuid}/chat{suffix}"', backend)
+        self.assertIn('f"/external-login/app/chat/dm/{dm_uuid}"', backend)
+        self.assertIn("name: 'event-chat'", notifications_view)
+        self.assertIn("name: 'chat-dm'", notifications_view)
+        self.assertIn("route.query.room_id", event_chat)
+
     def test_vue_notification_counts_are_split_and_realtime(self):
         backend = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8-sig")
         header = (VUE_FRONTEND_PATH / "components" / "AppHeader.vue").read_text(encoding="utf-8-sig")

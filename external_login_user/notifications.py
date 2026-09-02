@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import uuid
 from datetime import datetime, time, timedelta, timezone
 from time import perf_counter
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
 
@@ -275,6 +276,61 @@ def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | Non
         return event_id, room_id
     except Exception:
         return event_id, None
+
+
+def _uuid_text(value: Any) -> str:
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    try:
+        if isinstance(value, (bytes, bytearray)):
+            raw = bytes(value)
+            return str(uuid.UUID(bytes=raw)) if len(raw) == 16 else str(uuid.UUID(raw.decode("ascii")))
+        return str(uuid.UUID(str(value)))
+    except Exception:
+        return ""
+
+
+def _vue_chat_target_url(
+    cur,
+    row: dict[str, Any],
+    event_uuid_cache: dict[int, str] | None = None,
+) -> str:
+    """旧チャット通知URLを利用者VueのURLへ読み替える。既存通知にも適用する。"""
+    target_url = str(row.get("target_url") or "").strip()
+    if not target_url or target_url.startswith("/external-login/app/"):
+        return target_url or "/external-login/app/notifications"
+
+    try:
+        parsed = urlparse(target_url)
+    except Exception:
+        return target_url
+
+    dm_prefix = "/chat/dm/room/"
+    if parsed.path.startswith(dm_prefix):
+        dm_uuid = parsed.path[len(dm_prefix):].strip("/")
+        return f"/external-login/app/chat/dm/{dm_uuid}" if dm_uuid else target_url
+
+    if not parsed.path.startswith("/chat/events/"):
+        return target_url
+
+    event_id, room_id = _parse_chat_room_context(row)
+    if not event_id:
+        try:
+            event_id = int(parsed.path[len("/chat/events/"):].split("/", 1)[0])
+        except Exception:
+            return target_url
+
+    cache = event_uuid_cache if event_uuid_cache is not None else {}
+    event_uuid = cache.get(int(event_id), "")
+    if int(event_id) not in cache:
+        cur.execute("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (int(event_id),))
+        event_uuid = _uuid_text((cur.fetchone() or {}).get("event_uuid"))
+        cache[int(event_id)] = event_uuid
+    if not event_uuid:
+        return target_url
+
+    suffix = f"?{urlencode({'room_id': room_id})}" if room_id else ""
+    return f"/external-login/app/events/{event_uuid}/chat{suffix}"
 
 
 def _is_notification_visible_for_external(cur, uid: int, row: dict[str, Any], room_cache: dict[str, tuple[int, str]]) -> tuple[bool, str | None]:
@@ -1376,7 +1432,7 @@ def _fetch_mfu_notifications(
         cur.execute(
             f"""
             SELECT id, kind, title, body, target_url, sender_label, room_type, room_id,
-                   chat_room_id, created_at, read_at
+                   event_id, chat_event_id, chat_room_id, created_at, read_at
               FROM mfu_notifications
              WHERE {where_sql}
              {order_sql}
@@ -1385,6 +1441,10 @@ def _fetch_mfu_notifications(
             tuple(params + [int(limit), max(int(offset), 0)]),
         )
         rows = cur.fetchall() or []
+        event_uuid_cache: dict[int, str] = {}
+        for row in rows:
+            if str(row.get("kind") or "") in _CHAT_NOTIFICATION_KINDS:
+                row["target_url"] = _vue_chat_target_url(cur, row, event_uuid_cache)
         items = [_serialize_mfu_notification_item(r) for r in rows]
         if since_id <= 0:
             items = sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)
@@ -1617,6 +1677,7 @@ def api_notifications_list():
         rows = cur.fetchall() or []
 
         visible_items = []
+        event_uuid_cache: dict[int, str] = {}
         for row in rows:
             visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
             if not visible:
@@ -1627,7 +1688,11 @@ def api_notifications_list():
                     "kind": row.get("kind"),
                     "title": row.get("title"),
                     "body": row.get("body") or "",
-                    "target_url": row.get("target_url") or "/external-login/",
+                    "target_url": (
+                        _vue_chat_target_url(cur, row, event_uuid_cache)
+                        if str(row.get("kind") or "") in _CHAT_NOTIFICATION_KINDS
+                        else row.get("target_url") or "/external-login/app/"
+                    ),
                     "event_id": row.get("event_id"),
                     "room_name": room_name,
                     "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
@@ -1724,6 +1789,7 @@ def api_notifications_updates():
         db.commit()
 
         items = []
+        event_uuid_cache: dict[int, str] = {}
         latest_id = since_id
         for row in rows:
             visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
@@ -1737,7 +1803,11 @@ def api_notifications_updates():
                     "kind": row.get("kind"),
                     "title": row.get("title"),
                     "body": row.get("body") or "",
-                    "target_url": row.get("target_url") or "/external-login/",
+                    "target_url": (
+                        _vue_chat_target_url(cur, row, event_uuid_cache)
+                        if str(row.get("kind") or "") in _CHAT_NOTIFICATION_KINDS
+                        else row.get("target_url") or "/external-login/app/"
+                    ),
                     "room_name": room_name,
                     "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
                     "read_at": row.get("read_at").replace(tzinfo=timezone.utc).isoformat() if row.get("read_at") else None,
