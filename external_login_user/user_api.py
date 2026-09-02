@@ -932,7 +932,7 @@ def user_api_update_profile():
     nickname = str(payload.get("nickname") or "").strip()
     x_id = str(payload.get("xId") or payload.get("x_id") or "").strip().lstrip("@") or None
     instagram_id = str(payload.get("instagramId") or payload.get("instagram_id") or "").strip().lstrip("@") or None
-    email = str(payload.get("email") or "").strip() or None
+    email = str(payload.get("email") or "").strip().lower() or None
     payment_mode = str(payload.get("paymentMode") or payload.get("payment_mode") or "manual").strip().lower()
     notify_upload = str(payload.get("notifyAlbumUpload") or payload.get("notify_album_upload") or "0").lower() in {"1", "true", "on", "yes"}
     notify_process = str(payload.get("notifyAlbumProcess") or payload.get("notify_album_process") or "0").lower() in {"1", "true", "on", "yes"}
@@ -959,6 +959,14 @@ def user_api_update_profile():
         has_card = bool(cur.fetchone())
         if payment_mode == "auto" and not has_card:
             errors["paymentMode"] = "自動決済にはカード登録が必要です。"
+        if email:
+            cur.execute(
+                """SELECT id FROM external_login_user
+                     WHERE LOWER(TRIM(email))=%s AND id<>%s LIMIT 1""",
+                (email, int(user["id"])),
+            )
+            if cur.fetchone():
+                errors["email"] = "このメールアドレスは既に登録されています。"
         if errors:
             return _error("validation_error", 400, "入力内容を確認してください。", errors=errors)
         email_changed = str(before.get("email") or "").lower() != str(email or "").lower()

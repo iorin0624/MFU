@@ -17,7 +17,7 @@ from webauthn.helpers.structs import (
 )
 
 from app.utils.db import get_db
-from app.utils.logs import write_login_log
+from app.utils.logs import write_auth_audit_log, write_login_log
 from app.utils.admin_auth import (
     ADMIN_USERNAME,
     audit,
@@ -345,6 +345,7 @@ def register_verify():
 
     db = get_db()
     cur = db.cursor()
+    passkey_id = None
     try:
         cur.execute(
             """
@@ -363,6 +364,7 @@ def register_verify():
                 uv,
             ),
         )
+        passkey_id = cur.lastrowid
         db.commit()
     except Exception:
         db.rollback()
@@ -370,6 +372,14 @@ def register_verify():
     finally:
         db.close()
 
+    write_auth_audit_log(
+        "PASSKEY_ADDED",
+        username,
+        request.remote_addr or "-",
+        details={"passkey_id": passkey_id or "unknown"},
+    )
+    if username == ADMIN_USERNAME:
+        audit("CREDENTIAL_CHANGED", details={"credential": "passkey_added", "passkey_id": passkey_id})
     return jsonify(ok=True)
 
 
@@ -526,6 +536,12 @@ def auth_verify():
     )
     passkey = cur.fetchone()
     if not passkey:
+        write_auth_audit_log(
+            "PASSKEY_LOGIN_FAILED",
+            username,
+            request.remote_addr or "-",
+            details={"reason": "credential_not_registered"},
+        )
         db.close()
         return jsonify(error="このパスキーは登録されていません"), 404
 
@@ -552,6 +568,12 @@ def auth_verify():
         )
     except Exception:
         logger.exception("webauthn_auth_verify_failed")
+        write_auth_audit_log(
+            "PASSKEY_LOGIN_FAILED",
+            username,
+            request.remote_addr or "-",
+            details={"reason": "verification_failed"},
+        )
         db.close()
         return jsonify(error="パスキー認証に失敗しました", reason="exception"), 400
     finally:
@@ -594,5 +616,7 @@ def auth_verify():
         session["nickname"] = user.get("nickname")
         session.permanent = True
         write_login_log(username, request.remote_addr, tag="LOGIN_PASSKEY")
+
+    write_auth_audit_log("PASSKEY_LOGIN_SUCCEEDED", username, request.remote_addr or "-")
 
     return jsonify(ok=True, redirect=session.get("post_login_next") or "/upload")

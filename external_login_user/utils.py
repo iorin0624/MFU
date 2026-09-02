@@ -631,20 +631,37 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
 
 def _upsert_ext_user(*, social_id: str, nickname: str,
                      email: Optional[str], x_id: Optional[str], instagram_id: Optional[str]) -> None:
-    sql = """
-    INSERT INTO external_login_user
-      (mfu_uuid, social_id, nickname, x_id, instagram_id, email)
-    VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, %s, %s)
-    ON DUPLICATE KEY UPDATE
-      nickname=VALUES(nickname), x_id=VALUES(x_id), instagram_id=VALUES(instagram_id),
-      email=VALUES(email), updated_at=CURRENT_TIMESTAMP
-    """
+    email = (email or "").strip().lower() or None
     db = get_db(); cur = db.cursor()
-    cur.execute(sql, (social_id, nickname, x_id, instagram_id, email))
-    db.commit(); cur.close(); db.close()
+    try:
+        cur.execute("SELECT id FROM external_login_user WHERE social_id=%s LIMIT 1", (social_id,))
+        row = cur.fetchone()
+        if row:
+            user_id = row[0] if isinstance(row, tuple) else row["id"]
+            cur.execute(
+                """UPDATE external_login_user
+                      SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
+                          updated_at=CURRENT_TIMESTAMP
+                    WHERE id=%s""",
+                (nickname, x_id, instagram_id, email, user_id),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO external_login_user
+                     (mfu_uuid, social_id, nickname, x_id, instagram_id, email)
+                   VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, %s, %s)""",
+                (social_id, nickname, x_id, instagram_id, email),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close(); db.close()
 
 def _update_profile(user_id: int, nickname: str,
                     x_id: Optional[str], instagram_id: Optional[str], email: Optional[str]) -> None:
+    email = (email or "").strip().lower() or None
     db = get_db(); cur = db.cursor()
     cur.execute("UPDATE external_login_user SET nickname=%s, x_id=%s, instagram_id=%s, email=%s WHERE id=%s",
                 (nickname, x_id, instagram_id, email, user_id))

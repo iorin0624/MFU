@@ -397,7 +397,7 @@ def admin_ext_users_update(user_id: int):
     nickname   = (data.get("nickname") or "").strip()
     x_id_raw   = (data.get("x_id") or "").strip().lstrip("@")
     ig_raw     = (data.get("instagram_id") or "").strip().lstrip("@")
-    email      = (data.get("email") or "").strip() or None
+    email      = (data.get("email") or "").strip().lower() or None
     admin_note = (data.get("admin_note") or "").strip() or None  # ★追加: 内部メモ
     chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
 
@@ -434,6 +434,21 @@ def admin_ext_users_update(user_id: int):
             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
         email_changed = (email or None) != (email_before or None)
+
+        if email:
+            cur.execute(
+                """SELECT id FROM external_login_user
+                     WHERE LOWER(TRIM(email))=%s AND id<>%s LIMIT 1""",
+                (email, user_id),
+            )
+            if cur.fetchone():
+                if request.is_json:
+                    return jsonify({"ok": False, "errors": {"email": "このメールアドレスは既に登録されています。"}}), 409
+                return redirect(url_for(
+                    "external_login_user.admin_ext_users_edit_page",
+                    user_id=user_id,
+                    error="email_duplicate",
+                ))
 
         if email_changed and has_verified:
             cur.execute("""

@@ -12,6 +12,7 @@ import time
 import threading
 import secrets
 import hashlib
+import hmac
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from mimetypes import guess_extension
@@ -4386,9 +4387,12 @@ def verify_email_pin():
 
 # ==== PINコードログイン（LINEが使えない人向け：メール→PIN→ログイン） ====
 # 画面テンプレートは増やしません。トップ/プロフィールへリダイレクト＋flashで案内します。
-import hashlib, secrets
 from datetime import datetime, timedelta
 from flask import request, flash
+
+EMAIL_PIN_MAX_FAILURES = 5
+EMAIL_PIN_FAILURE_WINDOW = timedelta(minutes=15)
+EMAIL_PIN_LOCK_DURATION = timedelta(minutes=15)
 
 def _ensure_email_pin_schema() -> None:
     """PIN保管テーブルを作る（なければ作成・何度呼んでもOK）"""
@@ -4398,7 +4402,7 @@ def _ensure_email_pin_schema() -> None:
             CREATE TABLE IF NOT EXISTS mfu_email_login_pin (
               id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
               email       VARCHAR(255)    NOT NULL,
-              pin_hash    CHAR(64)        NOT NULL,        -- sha256(pin)
+              pin_hash    CHAR(64)        NOT NULL,
               issued_at   DATETIME        NOT NULL,
               expires_at  DATETIME        NOT NULL,
               used_at     DATETIME        NULL,
@@ -4407,14 +4411,157 @@ def _ensure_email_pin_schema() -> None:
               KEY idx_expires (expires_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS mfu_email_login_limit (
+              scope_kind     VARCHAR(16) NOT NULL,
+              scope_hash     CHAR(64)    NOT NULL,
+              failure_count  INT UNSIGNED NOT NULL DEFAULT 0,
+              first_failed_at DATETIME   NULL,
+              last_failed_at DATETIME    NULL,
+              locked_until   DATETIME    NULL,
+              PRIMARY KEY (scope_kind, scope_hash),
+              KEY idx_email_pin_locked_until (locked_until)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
         db.commit()
     finally:
         try: cur.close(); db.close()
         except Exception: pass
 
 
-def _hash_pin(pin: str) -> str:
+def _normalize_login_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _request_ip() -> str:
+    return (
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or request.remote_addr
+        or "-"
+    )[:64]
+
+
+def _email_pin_hmac_key() -> bytes:
+    configured = (
+        current_app.config.get("MFU_EMAIL_PIN_HMAC_KEY")
+        or os.environ.get("MFU_EMAIL_PIN_HMAC_KEY")
+        or current_app.config.get("SECRET_KEY")
+    )
+    if not configured:
+        raise RuntimeError("MFU_EMAIL_PIN_HMAC_KEY or SECRET_KEY is required")
+    return str(configured).encode("utf-8")
+
+
+def _hash_pin(pin: str, email: str) -> str:
+    message = f"mfu-email-pin:v1:{_normalize_login_email(email)}:{pin}".encode("utf-8")
+    return hmac.new(_email_pin_hmac_key(), message, hashlib.sha256).hexdigest()
+
+
+def _legacy_hash_pin(pin: str) -> str:
+    """移行前に発行済みで、まだ有効なPINだけを受け付けるための互換照合。"""
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
+
+
+def _pin_hash_matches(pin: str, email: str, stored_hash: str) -> bool:
+    stored = str(stored_hash or "")
+    return hmac.compare_digest(_hash_pin(pin, email), stored) or hmac.compare_digest(
+        _legacy_hash_pin(pin), stored
+    )
+
+
+def _login_scope_hash(scope_kind: str, value: str) -> str:
+    message = f"mfu-email-pin-limit:v1:{scope_kind}:{value}".encode("utf-8")
+    return hmac.new(_email_pin_hmac_key(), message, hashlib.sha256).hexdigest()
+
+
+def _pin_login_scopes(email: str, ip: str) -> tuple[tuple[str, str], ...]:
+    return (
+        ("email", _login_scope_hash("email", _normalize_login_email(email))),
+        ("ip", _login_scope_hash("ip", ip or "-")),
+    )
+
+
+def _pin_login_locked_until(email: str, ip: str) -> datetime | None:
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        latest = None
+        for kind, scope_hash in _pin_login_scopes(email, ip):
+            cur.execute(
+                """SELECT locked_until FROM mfu_email_login_limit
+                     WHERE scope_kind=%s AND scope_hash=%s""",
+                (kind, scope_hash),
+            )
+            row = cur.fetchone() or {}
+            value = row.get("locked_until")
+            if value and (latest is None or value > latest):
+                latest = value
+        return latest if latest and latest > datetime.utcnow() else None
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+
+def _record_pin_login_failure(email: str, ip: str) -> datetime | None:
+    now = datetime.utcnow()
+    db = get_db(); cur = db.cursor(dictionary=True)
+    locked_until = None
+    try:
+        for kind, scope_hash in _pin_login_scopes(email, ip):
+            # 行を先に確保してからロックすることで、初回失敗が同時に来ても
+            # failure_count の加算を取りこぼさない。
+            cur.execute(
+                """INSERT IGNORE INTO mfu_email_login_limit
+                     (scope_kind, scope_hash, failure_count)
+                   VALUES (%s,%s,0)""",
+                (kind, scope_hash),
+            )
+            cur.execute(
+                """SELECT failure_count, first_failed_at, last_failed_at, locked_until
+                     FROM mfu_email_login_limit
+                     WHERE scope_kind=%s AND scope_hash=%s FOR UPDATE""",
+                (kind, scope_hash),
+            )
+            row = cur.fetchone() or {}
+            existing_lock = row.get("locked_until")
+            if existing_lock and existing_lock > now:
+                candidate = existing_lock
+            else:
+                last_failed = row.get("last_failed_at")
+                within_window = bool(last_failed and now - last_failed <= EMAIL_PIN_FAILURE_WINDOW)
+                count = (int(row.get("failure_count") or 0) + 1) if within_window else 1
+                first_failed = row.get("first_failed_at") if within_window else now
+                candidate = now + EMAIL_PIN_LOCK_DURATION if count >= EMAIL_PIN_MAX_FAILURES else None
+                cur.execute(
+                    """UPDATE mfu_email_login_limit
+                          SET failure_count=%s, first_failed_at=%s,
+                              last_failed_at=%s, locked_until=%s
+                        WHERE scope_kind=%s AND scope_hash=%s""",
+                    (count, first_failed, now, candidate, kind, scope_hash),
+                )
+            if candidate and (locked_until is None or candidate > locked_until):
+                locked_until = candidate
+        db.commit()
+        return locked_until
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+
+def _clear_pin_login_failures(email: str, ip: str) -> None:
+    db = get_db(); cur = db.cursor()
+    try:
+        for kind, scope_hash in _pin_login_scopes(email, ip):
+            cur.execute(
+                "DELETE FROM mfu_email_login_limit WHERE scope_kind=%s AND scope_hash=%s",
+                (kind, scope_hash),
+            )
+        db.commit()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
 
 
 def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tuple[bool, str]:
@@ -4422,7 +4569,7 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
     PINを発行してメール送信。クールダウン（同一メールへ短時間の連投を抑制）
     戻り: (ok, message)
     """
-    email = (email or "").strip()
+    email = _normalize_login_email(email)
     if not email or "@" not in email or len(email) > 255:
         return False, "メールアドレスを正しく入力してください。"
 
@@ -4433,7 +4580,7 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
         # クールダウン：直近 cooldown_sec 以内に発行済みなら弾く
         cur.execute("""
             SELECT issued_at FROM mfu_email_login_pin
-             WHERE email=%s
+             WHERE LOWER(TRIM(email))=%s
              ORDER BY id DESC LIMIT 1
         """, (email,))
         row = cur.fetchone()
@@ -4448,7 +4595,7 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
 
         # 6桁 PIN 生成（先頭ゼロを許容）
         pin = f"{secrets.randbelow(1_000_000):06d}"
-        pin_hash = _hash_pin(pin)
+        pin_hash = _hash_pin(pin, email)
         now = datetime.utcnow()
         exp = now + timedelta(minutes=ttl_min)
         cur.execute("""
@@ -4487,22 +4634,22 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
 
 def _resolve_user_by_email(email: str) -> dict | None:
     """
-    external_login_user を email で1件返す。
-    同一メールが複数ある場合は updated_at の新しいもの優先 → 次に id 若いもの。
+    external_login_user を正規化済みemailで1件返す。
+    DB移行前などで万一複数行が見つかった場合は、誤ログインを防ぐため失敗扱いにする。
     """
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
         cur.execute("""
             SELECT id, social_id, nickname, updated_at
              FROM external_login_user
-             WHERE email=%s
+             WHERE LOWER(TRIM(email))=%s
                AND COALESCE(is_deleted, 0)=0
                AND (COALESCE(is_test_account, 0)=0 OR COALESCE(test_account_enabled, 1)=1)
-             ORDER BY COALESCE(updated_at, '1970-01-01 00:00:00') DESC, id ASC
-             LIMIT 1
-        """, (email,))
-        row = cur.fetchone()
-        return row or None
+             ORDER BY id ASC
+             LIMIT 2
+        """, (_normalize_login_email(email),))
+        rows = cur.fetchall() or []
+        return rows[0] if len(rows) == 1 else None
     finally:
         try: cur.close(); db.close()
         except Exception: pass
@@ -4525,13 +4672,33 @@ def _write_login_log(user_id: int, nickname: str, tag: str = "PIN_LOGIN") -> Non
         except Exception: pass
 
 
+def _write_pin_login_failure_log(email: str, reason: str) -> None:
+    """メールアドレスやPINそのものを残さず、認証失敗を監査ログへ記録する。"""
+    target = _resolve_user_by_email(email)
+    user_label = f"#{int(target['id'])}" if target and target.get("id") else "unknown"
+    safe_reason = re.sub(r"[^a-z0-9_\-]", "", (reason or "failed").lower())[:48] or "failed"
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+            (_request_ip(), f"[PIN_LOGIN_FAILED] user={user_label} reason={safe_reason}"),
+        )
+        db.commit()
+    except Exception:
+        try: db.rollback()
+        except Exception: pass
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+
 @bp.post("/pin/request")
 def pin_request():
     """
     入力: form/json { email }
     既存テンプレは変更せず、flashで案内 → トップへ戻す。
     """
-    email = (request.form.get("email") or (request.json or {}).get("email") or "").strip()
+    email = _normalize_login_email(request.form.get("email") or (request.json or {}).get("email") or "")
     ok, msg = _issue_pin(email)
 
     # ★ ここを追加：成功時はセッションに保存して次画面で省力化
@@ -4555,23 +4722,40 @@ def pin_login():
     検証OKなら external_login_user を email から特定し、
     既存の ext セッションキーをセットしてログイン完了。
     """
-    email = (request.form.get("email") or (request.json or {}).get("email") or "").strip()
+    email = _normalize_login_email(request.form.get("email") or (request.json or {}).get("email") or "")
     pin   = (request.form.get("pin")   or (request.json or {}).get("pin")   or "").strip()
 
     # ★ ここを追加：メール未入力ならセッションの保存値を使う
     if not email:
         try:
-            email = (session.get("pin_email") or "").strip()
+            email = _normalize_login_email(session.get("pin_email") or "")
         except Exception:
             email = ""
 
+    _ensure_email_pin_schema()
+    request_ip = _request_ip()
+    locked_until = _pin_login_locked_until(email, request_ip)
+    if locked_until:
+        _write_pin_login_failure_log(email, "locked")
+        message = "試行回数の上限に達しました。15分後にもう一度お試しください。"
+        if request.is_json:
+            return jsonify({"ok": False, "error": "temporarily_locked", "message": message}), 429
+        flash(message, "danger")
+        return redirect(url_for("external_login_user.index"))
+
     if not email or "@" not in email or not pin or not pin.isdigit() or len(pin) != 6:
+        newly_locked = _record_pin_login_failure(email, request_ip)
+        _write_pin_login_failure_log(email, "invalid_input")
+        if newly_locked:
+            message = "試行回数の上限に達しました。15分後にもう一度お試しください。"
+            if request.is_json:
+                return jsonify({"ok": False, "error": "temporarily_locked", "message": message}), 429
+            flash(message, "danger")
+            return redirect(url_for("external_login_user.index"))
         if request.is_json:
             return jsonify({"ok": False, "error": "invalid_input", "message": "メールアドレスと6桁のPINコードを入力してください。"}), 400
         flash("メールアドレスと6桁のPINコードを入力してください。", "warning")
         return redirect(url_for("external_login_user.index"))
-
-    _ensure_email_pin_schema()
 
     # 最新の未使用レコードと照合（期限内のみ）
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -4579,7 +4763,7 @@ def pin_login():
         cur.execute("""
             SELECT id, pin_hash, expires_at, used_at
               FROM mfu_email_login_pin
-             WHERE email=%s
+             WHERE LOWER(TRIM(email))=%s
              ORDER BY id DESC
              LIMIT 5
         """, (email,))
@@ -4601,12 +4785,20 @@ def pin_login():
             continue
         if now > exp:
             continue
-        if _hash_pin(pin) == (r.get("pin_hash") or ""):
+        if _pin_hash_matches(pin, email, r.get("pin_hash") or ""):
             pin_ok = True
             chosen_id = r.get("id")
             break
 
     if not pin_ok:
+        newly_locked = _record_pin_login_failure(email, request_ip)
+        _write_pin_login_failure_log(email, "invalid_pin")
+        if newly_locked:
+            message = "試行回数の上限に達しました。15分後にもう一度お試しください。"
+            if request.is_json:
+                return jsonify({"ok": False, "error": "temporarily_locked", "message": message}), 429
+            flash(message, "danger")
+            return redirect(url_for("external_login_user.index"))
         if request.is_json:
             return jsonify({"ok": False, "error": "invalid_pin", "message": "PINコードが一致しないか、有効期限が切れています。"}), 400
         flash("PINコードが一致しないか、有効期限が切れています。", "danger")
@@ -4624,6 +4816,7 @@ def pin_login():
     # ユーザーを email から特定 → ext セッションに反映
     target = _resolve_user_by_email(email)
     if not target or not target.get("social_id"):
+        _write_pin_login_failure_log(email, "user_not_found_or_ambiguous")
         if request.is_json:
             return jsonify({"ok": False, "error": "user_not_found", "message": "このメールアドレスに対応するユーザーが見つかりません。"}), 404
         flash("このメールアドレスに対応するユーザーが見つかりません。プロフィールから登録してください。", "warning")
@@ -4632,6 +4825,8 @@ def pin_login():
     session["ext_user_social_id"] = target["social_id"]
     session["ext_user_id"] = target["id"]
     session["ext_user_nickname"] = target.get("nickname") or "（未設定）"
+
+    _clear_pin_login_failures(email, request_ip)
 
     db3 = get_db(); cur3 = db3.cursor()
     try:

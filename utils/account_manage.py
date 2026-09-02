@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, session, redirect, url_for, reques
 import bcrypt
 from app.utils.db import get_db
 from app.utils.admin_auth import ADMIN_USERNAME, audit, invalidate_all_admin_sessions, recent_admin_mfa
+from app.utils.logs import write_auth_audit_log
 from app.utils.admin_passkey_stepup import require_admin_passkey
 
 account_bp = Blueprint("account", __name__)
@@ -150,6 +151,12 @@ def delete_passkey(passkey_id: int):
 
     db.commit()
     db.close()
+    write_auth_audit_log(
+        "PASSKEY_DELETED",
+        username,
+        request.remote_addr or "-",
+        details={"passkey_id": passkey_id},
+    )
     if username == ADMIN_USERNAME:
         audit("CREDENTIAL_CHANGED", details={"credential": "passkey_deleted", "passkey_id": passkey_id})
     flash("パスキーを削除しました。", "success")
