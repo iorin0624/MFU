@@ -16,7 +16,11 @@ async function load(roomId = '') {
 }
 async function toggleMute() { if (!chat.activeRoom) return; await portalApi.chatMuteRoom(eventId.value,chat.activeRoom.room_id,muted.value?undefined:24); muted.value=!muted.value; }
 function visibilityChanged() { if (chat.currentEventId && chat.activeRoom) void portalApi.chatPresence('ping',chat.currentEventId,chat.activeRoom.room_id,chat.presenceClientId,!document.hidden).catch(()=>undefined); }
-onMounted(() => { document.addEventListener('visibilitychange',visibilityChanged); void load(); });
+onMounted(() => {
+  document.addEventListener('visibilitychange',visibilityChanged);
+  const roomId = Array.isArray(route.query.room_id) ? route.query.room_id[0] : route.query.room_id;
+  void load(String(roomId || ''));
+});
 onBeforeUnmount(()=>{ document.removeEventListener('visibilitychange',visibilityChanged); chat.resetRoom(); chat.unbindRealtime(); });
 </script>
 <template>

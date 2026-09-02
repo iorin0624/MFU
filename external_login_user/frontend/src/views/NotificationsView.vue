@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { portalApi } from '@/api/client';
 import { formatDateTime } from '@/utils/format';
 import { usePortalStore } from '@/stores/portal';
+import { useRouter } from 'vue-router';
 
 type Item = { id: number; kind?: string; title?: string; body: string; target_url: string; room_name?: string; created_at?: string; read_at?: string };
 const items = ref<Item[]>([]);
@@ -14,6 +15,7 @@ const error = ref('');
 const loadSentinel = ref<HTMLElement | null>(null);
 let observer: IntersectionObserver | null = null;
 const store = usePortalStore();
+const router = useRouter();
 const unreadOnly = computed(() => filter.value === 'unread');
 const category = computed<'all' | 'notice' | 'chat'>(() => (
   filter.value === 'notice' || filter.value === 'chat' ? filter.value : 'all'
@@ -40,7 +42,22 @@ async function open(item: Item) {
     item.read_at = new Date().toISOString();
     await store.refreshUnread();
   }
-  window.location.assign(item.target_url || '/external-login/vue-preview/');
+  const target = item.target_url || '/external-login/app/';
+  const parsed = new URL(target, window.location.origin);
+  const eventMatch = parsed.pathname.match(/^\/chat\/events\/(\d+)/);
+  if (eventMatch) {
+    const event = store.events.find((entry) => entry.id === Number(eventMatch[1]));
+    if (event) {
+      await router.push({ name: 'event-chat', params: { uuid: event.uuid }, query: { room_id: parsed.searchParams.get('room_id') || undefined } });
+      return;
+    }
+  }
+  const dmMatch = parsed.pathname.match(/^\/chat\/dm\/room\/([^/]+)/);
+  if (dmMatch) {
+    await router.push({ name: 'chat-dm', params: { dmUuid: dmMatch[1] } });
+    return;
+  }
+  window.location.assign(target);
 }
 async function readAll() {
   if (!window.confirm('通常通知をすべて既読にします。\n但し、未読チャットは既読にはなりません。')) return;
