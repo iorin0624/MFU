@@ -382,17 +382,16 @@ def _build_event_album_target_urls(event_id: int, album_id: str, child_id: str) 
 
     if ev_uuid_str:
         try:
+            vue_path = f"albums/{album_id}/children/{child_id}" if child_id else f"albums/{album_id}"
             return {
                 "absolute_url": url_for(
-                    'external_login_user.event_album_direct',
-                    event_uuid=ev_uuid_str,
-                    child_id=child_id,
+                    'external_login_user.user_vue_portal',
+                    vue_path=vue_path,
                     _external=True,
                 ),
                 "relative_url": url_for(
-                    'external_login_user.event_album_direct',
-                    event_uuid=ev_uuid_str,
-                    child_id=child_id,
+                    'external_login_user.user_vue_portal',
+                    vue_path=vue_path,
                     _external=False,
                 ),
             }
