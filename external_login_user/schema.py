@@ -32,7 +32,20 @@ CREATE TABLE IF NOT EXISTS external_login_user (
   UNIQUE KEY uniq_social_id  (social_id),
   KEY        idx_x_id        (x_id),
   KEY        idx_instagram   (instagram_id),
-  KEY        idx_email       (email)
+  UNIQUE KEY uq_external_login_user_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+DDL_EMAIL_LOGIN_LIMIT = """
+CREATE TABLE IF NOT EXISTS mfu_email_login_limit (
+  scope_kind      VARCHAR(16)  NOT NULL,
+  scope_hash      CHAR(64)     NOT NULL,
+  failure_count   INT UNSIGNED NOT NULL DEFAULT 0,
+  first_failed_at DATETIME     NULL,
+  last_failed_at  DATETIME     NULL,
+  locked_until    DATETIME     NULL,
+  PRIMARY KEY (scope_kind, scope_hash),
+  KEY idx_email_pin_locked_until (locked_until)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
@@ -232,6 +245,7 @@ def _on_bp_registered(state) -> None:
             db = get_db(); cur = db.cursor()
             # ベースDDL
             cur.execute(DDL_EXTERNAL)
+            cur.execute(DDL_EMAIL_LOGIN_LIMIT)
             cur.execute(DDL_EXTERNAL_LOGIN_DELETED_IDENTITY)
             cur.execute(DDL_EVENT)
             cur.execute(DDL_EVENT_MEMBER)
@@ -434,6 +448,51 @@ def _on_bp_registered(state) -> None:
                     ON external_login_resume_token(pwa_client_id_hash, consumed_at, expires_at)
                 """,
             )
+
+            # メールPINログインが別の利用者へ誤って結び付かないよう、保存値を
+            # 正規化した上でDB制約を主たる防御として一意化する。
+            cur.execute("UPDATE external_login_user SET email=NULL WHERE email IS NOT NULL AND TRIM(email)=''")
+            cur.execute(
+                "UPDATE external_login_user SET email=LOWER(TRIM(email)) "
+                "WHERE email IS NOT NULL AND email<>LOWER(TRIM(email))"
+            )
+            cur.execute(
+                """SELECT COUNT(*) FROM (
+                       SELECT LOWER(TRIM(email))
+                         FROM external_login_user
+                        WHERE email IS NOT NULL
+                        GROUP BY LOWER(TRIM(email))
+                       HAVING COUNT(*) > 1
+                     ) duplicate_emails"""
+            )
+            duplicate_email_groups = int(cur.fetchone()[0] or 0)
+            if duplicate_email_groups:
+                raise RuntimeError(
+                    "external_login_user contains duplicate normalized email addresses; "
+                    "unique index was not applied"
+                )
+            _ensure_index(
+                cur,
+                """
+                SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA=DATABASE()
+                   AND TABLE_NAME='external_login_user'
+                   AND INDEX_NAME='uq_external_login_user_email'
+                """,
+                """
+                CREATE UNIQUE INDEX uq_external_login_user_email
+                    ON external_login_user(email)
+                """,
+            )
+            cur.execute(
+                """SELECT COUNT(*) FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA=DATABASE()
+                      AND TABLE_NAME='external_login_user'
+                      AND INDEX_NAME='uq_external_login_user_email'
+                      AND NON_UNIQUE=0"""
+            )
+            if int(cur.fetchone()[0] or 0) == 0:
+                raise RuntimeError("failed to create unique external-login email index")
 
             try:
                 cur.execute("""

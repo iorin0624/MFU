@@ -1290,6 +1290,46 @@ def write_login_log(username: str, ip: str, tag: str = "LOGIN") -> None:
             pass
 
 
+def write_auth_audit_log(
+    event: str,
+    actor: str,
+    ip: str,
+    *,
+    details: dict | None = None,
+) -> None:
+    """認証・認証器変更を、秘密情報を含めず管理ログへ記録する。"""
+    safe_event = "".join(ch for ch in str(event or "AUTH_EVENT").upper() if ch.isalnum() or ch == "_")[:48]
+    safe_actor = str(actor or "unknown")[:191]
+    safe_details = {
+        str(key)[:48]: str(value)[:191]
+        for key, value in (details or {}).items()
+        if key not in {"pin", "password", "token", "credential", "public_key", "signature"}
+    }
+    suffix = f" details={json.dumps(safe_details, ensure_ascii=False, sort_keys=True)}" if safe_details else ""
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+            ((ip or "-")[:64], f"[{safe_event}] actor={safe_actor}{suffix}"[:1024]),
+        )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            current_app.logger.exception("authentication audit log write failed")
+        except Exception:
+            pass
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 def write_line_login_log(nickname: str, ip: str, user_id: int | None = None) -> None:
     """LINEログイン簡易ログ（従来互換）。"""
     nick = (nickname or "未設定").strip()
