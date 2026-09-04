@@ -71,22 +71,38 @@
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
       <div>
-        <h2 class="h5 mb-1">本日途中集計</h2>
-        <div class="text-muted small">確定前の金額です。最終取得：{{ today_activity_summary.last_imported_at or '未取得' }}</div>
+        <h2 class="h5 mb-1">{{ activity_summary_title }}</h2>
+        <div class="text-muted small">
+          対象：{{ activity_summary_from }}{% if activity_summary_from != activity_summary_to %}～{{ activity_summary_to }}{% endif %}
+          ／ 確定前の金額です。最終取得：{{ selected_activity_summary.last_imported_at or '未取得' }}
+        </div>
       </div>
       <span class="badge bg-warning text-dark align-self-start">途中集計</span>
     </div>
+    <div class="d-flex flex-wrap gap-2 mb-3">
+      <a class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'today' else 'btn-outline-primary' }}" href="{{ url_for('records.uber_list', summary_mode='today', activity_from=activity_history_from, activity_to=activity_history_to) }}">本日</a>
+      <a class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'yesterday' else 'btn-outline-primary' }}" href="{{ url_for('records.uber_list', summary_mode='yesterday', activity_from=activity_history_from, activity_to=activity_history_to) }}">昨日</a>
+      <form class="d-flex flex-wrap gap-2 align-items-center" method="get">
+        <input type="hidden" name="summary_mode" value="range">
+        <input type="hidden" name="activity_from" value="{{ activity_history_from }}">
+        <input type="hidden" name="activity_to" value="{{ activity_history_to }}">
+        <input class="form-control form-control-sm" style="width:auto" type="date" name="summary_from" value="{{ activity_summary_from }}" aria-label="集計開始日">
+        <span>～</span>
+        <input class="form-control form-control-sm" style="width:auto" type="date" name="summary_to" value="{{ activity_summary_to }}" aria-label="集計終了日">
+        <button class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'range' else 'btn-outline-primary' }}" type="submit">期間指定</button>
+      </form>
+    </div>
     <div class="uber-summary-grid">
-      <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ today_activity_summary.deliveries|fmt_yen }}件</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ today_activity_summary.total_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">配達売上</span><strong>¥{{ today_activity_summary.net_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ today_activity_summary.promo_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong>¥{{ today_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong>{{ '%.1f'|format(today_activity_summary.duration_hours) }}時間</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong>{{ '%.1f'|format(today_activity_summary.distance_km|float) }}km</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong>{{ ('¥' ~ (today_activity_summary.yen_per_delivery|fmt_yen)) if today_activity_summary.yen_per_delivery is not none else '-' }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong>{{ ('¥' ~ (today_activity_summary.yen_per_hour|fmt_yen)) if today_activity_summary.yen_per_hour is not none else '-' }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong>{{ ('¥' ~ (today_activity_summary.yen_per_km|fmt_yen)) if today_activity_summary.yen_per_km is not none else '-' }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">配達売上</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong>¥{{ selected_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong>{{ '%.1f'|format(selected_activity_summary.duration_hours) }}時間</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong>{{ '%.1f'|format(selected_activity_summary.distance_km|float) }}km</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong>{{ ('¥' ~ (selected_activity_summary.yen_per_delivery|fmt_yen)) if selected_activity_summary.yen_per_delivery is not none else '-' }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong>{{ ('¥' ~ (selected_activity_summary.yen_per_hour|fmt_yen)) if selected_activity_summary.yen_per_hour is not none else '-' }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong>{{ ('¥' ~ (selected_activity_summary.yen_per_km|fmt_yen)) if selected_activity_summary.yen_per_km is not none else '-' }}</strong></div>
     </div>
   </div>
 </div>

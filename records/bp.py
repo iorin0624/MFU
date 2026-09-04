@@ -37,8 +37,8 @@ from .models import (
 )
 from .uber_browser import UberAuthenticationRequired, UberPage, open_uber_login_tab, uber_browser_lock
 from .uber_repository import (
+    activity_range_summary,
     create_import_job,
-    daily_activity_summary,
     get_active_import_job,
     get_import_job,
     list_activity_daily_summaries,
@@ -1248,6 +1248,32 @@ def uber_list():
         history_from, history_to = today - timedelta(days=30), today
     if history_from > history_to:
         history_from, history_to = history_to, history_from
+
+    summary_mode = str(request.args.get("summary_mode") or "today")
+    if summary_mode == "yesterday":
+        activity_summary_from = today - timedelta(days=1)
+        activity_summary_to = activity_summary_from
+        activity_summary_title = "昨日の集計"
+    elif summary_mode == "range":
+        try:
+            activity_summary_from = datetime.strptime(
+                request.args.get("summary_from") or today.isoformat(), "%Y-%m-%d"
+            ).date()
+            activity_summary_to = datetime.strptime(
+                request.args.get("summary_to") or today.isoformat(), "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            activity_summary_from = today
+            activity_summary_to = today
+        if activity_summary_from > activity_summary_to:
+            activity_summary_from, activity_summary_to = activity_summary_to, activity_summary_from
+        activity_summary_title = "期間指定の集計"
+    else:
+        summary_mode = "today"
+        activity_summary_from = today
+        activity_summary_to = today
+        activity_summary_title = "本日途中集計"
+
     activity_daily_rows = [
         _present_uber_activity_summary(row)
         for row in list_activity_daily_summaries(history_from, history_to)
@@ -1269,7 +1295,13 @@ def uber_list():
         freee_settings_error=freee_settings_error,
         default_work_date=today,
         uber_browser_csrf=_uber_csrf_token(),
-        today_activity_summary=_present_uber_activity_summary(daily_activity_summary(today)),
+        selected_activity_summary=_present_uber_activity_summary(
+            activity_range_summary(activity_summary_from, activity_summary_to)
+        ),
+        activity_summary_mode=summary_mode,
+        activity_summary_from=activity_summary_from,
+        activity_summary_to=activity_summary_to,
+        activity_summary_title=activity_summary_title,
         activity_daily_rows=activity_daily_rows,
         uber_activity_rows=list_activities(history_from, history_to),
         activity_history_from=history_from,
