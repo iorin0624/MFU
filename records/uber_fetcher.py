@@ -9,11 +9,12 @@ from .uber_repository import sync_activity_day, update_import_job, upsert_activi
 
 
 def _week_chunks(date_from: date, date_to: date):
-    cursor = date_from
-    while cursor <= date_to:
-        end = min(cursor + timedelta(days=6), date_to)
-        yield cursor, end
-        cursor = end + timedelta(days=1)
+    week_start = date_from - timedelta(days=date_from.weekday())
+    while week_start <= date_to:
+        week_last_day = week_start + timedelta(days=6)
+        # Uber selects the Monday-based week containing the clicked date.
+        yield week_start, week_start + timedelta(days=7), max(date_from, week_start), min(date_to, week_last_day)
+        week_start += timedelta(days=7)
 
 
 def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
@@ -24,9 +25,10 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
     try:
         with uber_browser_lock(blocking=False), UberPage() as page:
             page.ensure_logged_in()
-            for chunk_from, chunk_to in _week_chunks(date_from, date_to):
-                update_import_job(job_id, current_work_date=chunk_from)
-                page.select_range(chunk_from, chunk_to)
+            processed = 0
+            for query_from, query_to, wanted_from, wanted_to in _week_chunks(date_from, date_to):
+                update_import_job(job_id, current_work_date=wanted_from)
+                page.select_range(query_from, query_to)
                 page.load_all()
                 normalized_rows = []
                 for raw_row in page.list_rows():
@@ -35,7 +37,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     except Exception:
                         counters["error_count"] += 1
                         continue
-                    if date_from <= row["occurred_at"].date() <= date_to:
+                    if wanted_from <= row["occurred_at"].date() <= wanted_to:
                         normalized_rows.append(row)
                 counters["found_count"] += len(normalized_rows)
                 for row in normalized_rows:
@@ -55,8 +57,8 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     except Exception:
                         counters["error_count"] += 1
                     update_import_job(job_id, **counters)
-                processed = min((chunk_to - date_from).days + 1, (date_to - date_from).days + 1)
-                update_import_job(job_id, processed_days=processed, current_work_date=chunk_to, **counters)
+                processed += (wanted_to - wanted_from).days + 1
+                update_import_job(job_id, processed_days=processed, current_work_date=wanted_to, **counters)
 
         for work_date in sorted(touched_days):
             result = sync_activity_day(work_date)
