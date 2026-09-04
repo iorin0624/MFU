@@ -37,7 +37,7 @@
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
       <div>
         <h2 class="h5 mb-1">Uber明細取得</h2>
-        <div class="text-muted small">取得処理はサーバーのUber専用Chromeで実行します。日付は4:00～翌日3:59を1日として扱います。</div>
+        <div class="text-muted small">取得処理はサーバーのUber専用Chromeで実行します。日付は4:00～翌日3:59を1日として扱います。アクセス制限対策のため明細ごとに待機します。</div>
       </div>
       <button type="button" class="btn btn-outline-secondary" id="uberOpenLogin">Uberログイン画面</button>
     </div>
@@ -1082,7 +1082,7 @@
         progress.style.width = `${percent}%`;
         progress.textContent = `${percent}%`;
         showMessage(`取得中：${job.processed_days || 0}/${job.total_days || 0}日・${job.found_count || 0}明細`, 'info');
-        if (['success', 'partial', 'error', 'auth_required'].includes(job.status)) {
+        if (['success', 'partial', 'error', 'auth_required', 'blocked'].includes(job.status)) {
           clearInterval(pollTimer);
           pollTimer = null;
           setBusy(false);
@@ -1094,6 +1094,8 @@
             setTimeout(function () { location.reload(); }, 1800);
           } else if (job.status === 'auth_required') {
             showMessage('Uberへの再ログインが必要です。「Uberログイン画面」を開いてください。', 'warning');
+          } else if (job.status === 'blocked') {
+            showMessage(job.error || 'Uber側のアクセス制限を検知したため取得を停止しました。時間を空けて再実行してください。', 'warning');
           } else {
             showMessage(job.error || 'Uber明細の取得に失敗しました。', 'danger');
           }

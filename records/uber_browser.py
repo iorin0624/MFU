@@ -36,6 +36,29 @@ class UberAuthenticationRequired(RuntimeError):
     pass
 
 
+class UberAccessRestricted(RuntimeError):
+    pass
+
+
+def _access_restriction_reason(url: str, response_status: int, body_text: str) -> str | None:
+    lowered_url = str(url or "").lower()
+    lowered_text = str(body_text or "").lower()
+    if int(response_status or 0) == 429 or any(
+        marker in lowered_text
+        for marker in ("too many requests", "rate limit", "アクセスが多すぎ")
+    ):
+        return "Uber側のアクセス制限（HTTP 429）を検知したため取得を停止しました。時間を空けて再実行してください。"
+    if any(marker in lowered_url for marker in ("captcha", "challenge")) or any(
+        marker in lowered_text
+        for marker in (
+            "captcha", "recaptcha", "ロボットではない", "ロボットではありません",
+            "verify you are human", "人間であること", "unusual activity", "不審なアクティビティ",
+        )
+    ):
+        return "Uber側の本人確認・ロボット確認画面を検知したため取得を停止しました。Uberログイン画面で確認後、再実行してください。"
+    return None
+
+
 def _pid_path(name: str) -> Path:
     return STATE_DIR / f"{name}.pid"
 
@@ -288,8 +311,19 @@ class UberPage:
         self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **params})
         return True
 
+    def raise_if_access_restricted(self) -> None:
+        current = str(self.evaluate("location.href") or "")
+        text = str(self.evaluate("document.body ? document.body.innerText : ''") or "").strip()
+        response_status = int(self.evaluate(
+            "Number((performance.getEntriesByType('navigation')[0]||{}).responseStatus||0)"
+        ) or 0)
+        restriction = _access_restriction_reason(current, response_status, text)
+        if restriction:
+            raise UberAccessRestricted(restriction)
+
     def ensure_logged_in(self) -> None:
         self.navigate(UBER_ACTIVITIES_URL)
+        self.raise_if_access_restricted()
         current = str(self.evaluate("location.href") or "")
         available = bool(self.evaluate("!!document.querySelector('input[aria-label=\"Select a date range.\"]')"))
         if not available or "login" in current.lower() or "auth" in current.lower():
@@ -337,6 +371,7 @@ class UberPage:
 
     def select_range(self, date_from: date, date_to: date) -> None:
         self.navigate(UBER_ACTIVITIES_URL)
+        self.raise_if_access_restricted()
         opened = self.trusted_click("document.querySelector('input[aria-label=\"Select a date range.\"]')")
         if not opened:
             raise UberAuthenticationRequired("Uberへの再ログインが必要です。")
@@ -421,6 +456,12 @@ def read_detail(detail_url: str) -> str:
                 if "login" in current.lower() or "auth" in current.lower():
                     raise UberAuthenticationRequired("Uberへの再ログインが必要です。")
                 text = str(page.evaluate("document.body ? document.body.innerText : ''") or "").strip()
+                response_status = int(page.evaluate(
+                    "Number((performance.getEntriesByType('navigation')[0]||{}).responseStatus||0)"
+                ) or 0)
+                restriction = _access_restriction_reason(current, response_status, text)
+                if restriction:
+                    raise UberAccessRestricted(restriction)
                 if current not in {"", "about:blank"} and len(text) >= 40:
                     if text == previous_text:
                         stable_reads += 1

@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import json
+import os
+import random
+import time
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
-from .uber_browser import UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
-from .uber_parser import normalize_list_row, parse_detail_text
-from .uber_repository import remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
+from .uber_browser import UberAccessRestricted, UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
+from .uber_parser import activity_key, normalize_list_row, parse_detail_text
+from .uber_repository import get_cached_activities, remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
+
+
+DETAIL_DELAY_MIN_SECONDS = float(os.getenv("UBER_DETAIL_DELAY_MIN_SECONDS", "3"))
+DETAIL_DELAY_MAX_SECONDS = float(os.getenv("UBER_DETAIL_DELAY_MAX_SECONDS", "7"))
+DETAIL_BATCH_SIZE = max(1, int(os.getenv("UBER_DETAIL_BATCH_SIZE", "20")))
+DETAIL_BATCH_PAUSE_MIN_SECONDS = float(os.getenv("UBER_DETAIL_BATCH_PAUSE_MIN_SECONDS", "30"))
+DETAIL_BATCH_PAUSE_MAX_SECONDS = float(os.getenv("UBER_DETAIL_BATCH_PAUSE_MAX_SECONDS", "90"))
+RECENT_REFRESH_HOURS = float(os.getenv("UBER_RECENT_REFRESH_HOURS", "48"))
+
+
+def _random_pause(minimum: float, maximum: float) -> None:
+    low, high = sorted((max(0.0, minimum), max(0.0, maximum)))
+    time.sleep(random.uniform(low, high))
 
 
 def _week_chunks(date_from: date, date_to: date):
@@ -58,6 +74,8 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
         with uber_browser_lock(blocking=False), UberPage() as page:
             page.ensure_logged_in()
             processed = 0
+            network_detail_count = 0
+            recent_cutoff = datetime.now() - timedelta(hours=RECENT_REFRESH_HOURS)
             for query_from, query_to, wanted_from, wanted_to in _week_chunks(date_from, date_to):
                 update_import_job(job_id, current_work_date=wanted_from)
                 page.select_range(query_from, query_to)
@@ -66,6 +84,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                 for raw_row in page.list_rows():
                     try:
                         row = normalize_list_row(raw_row)
+                        row["activity_key"] = activity_key(row["detail_url"])[0]
                     except Exception:
                         counters["error_count"] += 1
                         continue
@@ -75,14 +94,35 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     if wanted_from <= row["occurred_at"].date() <= wanted_to + timedelta(days=1):
                         normalized_rows.append(row)
                 normalized_rows = _without_mirrored_quest_rows(normalized_rows)
+                row_keys = [row["activity_key"] for row in normalized_rows]
+                cached_activities = get_cached_activities(row_keys)
                 for row in normalized_rows:
                     try:
-                        text = read_detail(row["detail_url"])
+                        key = row["activity_key"]
+                        cached = cached_activities.get(key)
+                        use_cache = bool(
+                            cached
+                            and cached.get("raw_text")
+                            and row["occurred_at"] < recent_cutoff
+                        )
+                        if use_cache:
+                            text = str(cached["raw_text"])
+                            occurred_at = cached.get("occurred_at") or row["occurred_at"]
+                            list_amount_yen = int(cached.get("earnings_yen") or row["list_amount_yen"] or 0)
+                        else:
+                            if network_detail_count:
+                                if network_detail_count % DETAIL_BATCH_SIZE == 0:
+                                    _random_pause(DETAIL_BATCH_PAUSE_MIN_SECONDS, DETAIL_BATCH_PAUSE_MAX_SECONDS)
+                                _random_pause(DETAIL_DELAY_MIN_SECONDS, DETAIL_DELAY_MAX_SECONDS)
+                            text = read_detail(row["detail_url"])
+                            network_detail_count += 1
+                            occurred_at = row["occurred_at"]
+                            list_amount_yen = row["list_amount_yen"]
                         activity = parse_detail_text(
                             detail_url=row["detail_url"],
                             detail_text=text,
-                            occurred_at=row["occurred_at"],
-                            list_amount_yen=row["list_amount_yen"],
+                            occurred_at=occurred_at,
+                            list_amount_yen=list_amount_yen,
                         )
                         if not (wanted_from <= activity["work_date"] <= wanted_to):
                             continue
@@ -118,6 +158,9 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
     except UberAuthenticationRequired as exc:
         update_import_job(job_id, status="auth_required", error=str(exc), finished_at=datetime.now(), **counters)
         return {"status": "auth_required", "error": str(exc), **counters}
+    except UberAccessRestricted as exc:
+        update_import_job(job_id, status="blocked", error=str(exc), finished_at=datetime.now(), **counters)
+        return {"status": "blocked", "error": str(exc), **counters}
     except Exception as exc:
         update_import_job(job_id, status="error", error=str(exc), finished_at=datetime.now(), **counters)
         return {"status": "error", "error": str(exc), **counters}

@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from app.records.uber_browser import _access_restriction_reason
 from app.records.uber_fetcher import _without_mirrored_quest_rows
 
 
@@ -27,3 +28,11 @@ def test_mirrored_misc_quest_is_removed_one_to_one():
 def test_distinct_misc_quest_is_preserved():
     rows = [_row("MISC", "misc-a", 1), _row("QUEST", "quest-a", 10)]
     assert _without_mirrored_quest_rows(rows) == rows
+
+
+def test_uber_access_restriction_detection():
+    assert "HTTP 429" in _access_restriction_reason("https://drivers.uber.com", 429, "")
+    assert "ロボット確認" in _access_restriction_reason(
+        "https://drivers.uber.com/challenge", 200, "Verify you are human"
+    )
+    assert _access_restriction_reason("https://drivers.uber.com", 200, "通常の明細") is None
