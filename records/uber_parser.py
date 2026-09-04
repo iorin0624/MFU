@@ -91,13 +91,20 @@ def _distance_km(text: str) -> Decimal | None:
     return None
 
 
-def _points(text: str) -> int:
+def _points(text: str) -> int | None:
     match = re.search(r"(\d+)\s*(?:ポイント|points?)\b", text, re.I)
-    return int(match.group(1)) if match else 0
+    return int(match.group(1)) if match else None
 
 
 def _money_after_labels(lines: list[str], labels: tuple[str, ...]) -> int:
     return parse_yen(_label_value(lines, labels))
+
+
+def _first_money(lines: list[str]) -> int:
+    for line in lines:
+        if _MONEY_RE.search(line):
+            return parse_yen(line)
+    return 0
 
 
 def _money_around_labels(lines: list[str], labels: tuple[str, ...]) -> int:
@@ -145,13 +152,17 @@ def parse_detail_text(
     key, kind = activity_key(detail_url)
     lines = [re.sub(r"\s+", " ", line).strip() for line in detail_text.splitlines() if line.strip()]
     full_text = "\n".join(lines)
+    event_type = (parse_qs(urlparse(detail_url).query).get("eventType") or [""])[0].upper()
+    if event_type == "MISC":
+        kind = "quest" if re.search(r"(?:クエスト|\bquest\b)", full_text, re.I) else "other"
     points = _points(full_text)
-    if kind == "delivery" and points <= 0:
+    if kind == "delivery" and points is None:
         points = 1
+    points = int(points or 0)
     displayed_earnings = _money_after_labels(
         lines,
         ("売り上げ", "売上", "あなたの売り上げ", "your earnings", "earnings"),
-    ) or int(list_amount_yen or 0)
+    ) or int(list_amount_yen or 0) or _first_money(lines)
     sales = _money_after_labels(lines, ("売上", "配送料", "fare", "sales")) or displayed_earnings
     cash = _money_around_labels(
         lines,
@@ -161,7 +172,7 @@ def parse_detail_text(
         lines,
         ("支払い", "支払", "Uberへの支払い", "payment", "paid to uber", "payouts"),
     )
-    tip = _money_after_labels(lines, ("チップ", "tip"))
+    tip = _money_around_labels(lines, ("チップ", "tip"))
     merchant = _label_value(lines, ("店舗", "加盟店", "集荷先", "merchant", "pickup"))
     pickup_address = _label_value(lines, ("集荷先住所", "pickup address"))
     delivery_address = _label_value(lines, ("配達先住所", "お届け先", "dropoff", "delivery address"))

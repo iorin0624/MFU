@@ -355,7 +355,15 @@ class UberPage:
         if self.evaluate("!!document.querySelector('[aria-label=\"Calendar.\"]')"):
             self.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Escape", "code": "Escape"})
             self.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Escape", "code": "Escape"})
-        time.sleep(1.5)
+        # Older weeks take several seconds to replace the initially rendered
+        # rows. Do not let load_all/list_rows inspect that transitional state.
+        time.sleep(3)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            links = int(self.evaluate("document.querySelectorAll('table tbody tr a[href*=\"/earnings/\"]').length") or 0)
+            if links:
+                return
+            time.sleep(0.25)
 
     def load_all(self) -> None:
         button_expression = "[...document.querySelectorAll('button')].find(x => !x.disabled && ((x.innerText||'').includes('さらに読み込む') || /load more/i.test(x.innerText||'')))"
