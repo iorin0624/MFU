@@ -174,6 +174,49 @@ def upsert_activity(activity: dict) -> str:
         db.close()
 
 
+def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
+    """Remove legacy MISC rows that mirror a QUEST row from the Uber feed."""
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT activity_key, occurred_at, earnings_yen
+            FROM uber_activities
+            WHERE work_date BETWEEN %s AND %s
+              AND activity_type = 'quest'
+            ORDER BY occurred_at, activity_key
+            """,
+            (date_from, date_to),
+        )
+        rows = cur.fetchall()
+        quest_rows = [row for row in rows if str(row["activity_key"]).startswith("ACTIVITY:QUEST:")]
+        used_quest_keys: set[str] = set()
+        delete_keys: list[str] = []
+        for row in rows:
+            if not str(row["activity_key"]).startswith("ACTIVITY:MISC:"):
+                continue
+            candidates = [
+                (abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()), quest)
+                for quest in quest_rows
+                if quest["activity_key"] not in used_quest_keys
+                and int(quest["earnings_yen"] or 0) == int(row["earnings_yen"] or 0)
+                and quest["occurred_at"].date() == row["occurred_at"].date()
+                and abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()) <= 120
+            ]
+            if candidates:
+                _, quest = min(candidates, key=lambda item: item[0])
+                used_quest_keys.add(quest["activity_key"])
+                delete_keys.append(row["activity_key"])
+        if delete_keys:
+            placeholders = ", ".join(["%s"] * len(delete_keys))
+            cur.execute(f"DELETE FROM uber_activities WHERE activity_key IN ({placeholders})", delete_keys)
+        db.commit()
+        return len(delete_keys)
+    finally:
+        db.close()
+
+
 def daily_activity_summary(work_date: date) -> dict:
     db = get_db()
     try:

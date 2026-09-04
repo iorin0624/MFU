@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 
 from .uber_browser import UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
 from .uber_parser import normalize_list_row, parse_detail_text
-from .uber_repository import sync_activity_day, update_import_job, upsert_activity
+from .uber_repository import remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
 
 
 def _week_chunks(date_from: date, date_to: date):
@@ -15,6 +16,36 @@ def _week_chunks(date_from: date, date_to: date):
         # Uber selects the Monday-based week containing the clicked date.
         yield week_start, week_start + timedelta(days=7), max(date_from, week_start), min(date_to, week_last_day)
         week_start += timedelta(days=7)
+
+
+def _event_type(detail_url: str) -> str:
+    values = parse_qs(urlparse(detail_url).query).get("eventType") or []
+    return str(values[0] if values else "").upper()
+
+
+def _without_mirrored_quest_rows(rows: list[dict]) -> list[dict]:
+    """Drop Uber's MISC mirror when the same quest is also exposed as QUEST."""
+    quest_rows = [row for row in rows if _event_type(row["detail_url"]) == "QUEST"]
+    used_quest_indexes: set[int] = set()
+    result: list[dict] = []
+    for row in rows:
+        if _event_type(row["detail_url"]) != "MISC":
+            result.append(row)
+            continue
+        candidates = [
+            (abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()), index)
+            for index, quest in enumerate(quest_rows)
+            if index not in used_quest_indexes
+            and quest["list_amount_yen"] == row["list_amount_yen"]
+            and quest["occurred_at"].date() == row["occurred_at"].date()
+            and abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()) <= 120
+        ]
+        if candidates:
+            _, index = min(candidates)
+            used_quest_indexes.add(index)
+            continue
+        result.append(row)
+    return result
 
 
 def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
@@ -39,6 +70,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                         continue
                     if wanted_from <= row["occurred_at"].date() <= wanted_to:
                         normalized_rows.append(row)
+                normalized_rows = _without_mirrored_quest_rows(normalized_rows)
                 counters["found_count"] += len(normalized_rows)
                 for row in normalized_rows:
                     try:
@@ -60,6 +92,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                 processed += (wanted_to - wanted_from).days + 1
                 update_import_job(job_id, processed_days=processed, current_work_date=wanted_to, **counters)
 
+        remove_mirrored_quest_duplicates(date_from, date_to)
         for work_date in sorted(touched_days):
             result = sync_activity_day(work_date)
             if result["status"] == "conflict":

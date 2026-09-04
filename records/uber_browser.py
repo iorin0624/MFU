@@ -358,11 +358,28 @@ class UberPage:
         time.sleep(1.5)
 
     def load_all(self) -> None:
+        button_expression = "[...document.querySelectorAll('button')].find(x => !x.disabled && ((x.innerText||'').includes('さらに読み込む') || /load more/i.test(x.innerText||'')))"
         for _ in range(200):
-            clicked = self.trusted_click("[...document.querySelectorAll('button')].find(x => !x.disabled && ((x.innerText||'').includes('さらに読み込む') || /load more/i.test(x.innerText||'')))")
-            if not clicked:
+            before = int(self.evaluate("document.querySelectorAll('table tbody tr').length") or 0)
+            scrolled = self.evaluate(
+                f"(() => {{ const button=({button_expression}); if (!button) return false; button.scrollIntoView({{block:'center'}}); return true; }})()"
+            )
+            if not scrolled:
                 return
-            time.sleep(0.6)
+            time.sleep(0.15)
+            if not self.trusted_click(button_expression):
+                raise RuntimeError("Uberの「Load More」を押せませんでした。")
+
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                after = int(self.evaluate("document.querySelectorAll('table tbody tr').length") or 0)
+                has_more = bool(self.evaluate(f"!!({button_expression})"))
+                if after > before or not has_more:
+                    break
+                time.sleep(0.2)
+            else:
+                raise RuntimeError("Uberの「Load More」を押しても明細が増えませんでした。")
+        raise RuntimeError("Uber明細の追加読み込み回数が上限を超えました。")
 
     def list_rows(self) -> list[dict]:
         return self.evaluate("""
