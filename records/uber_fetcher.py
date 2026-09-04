@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from .uber_browser import UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
-from .uber_parser import normalize_list_row, parse_detail_text
+from .uber_parser import normalize_list_row, parse_detail_text, uber_work_date
 from .uber_repository import remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
 
 
@@ -13,7 +13,8 @@ def _week_chunks(date_from: date, date_to: date):
     week_start = date_from - timedelta(days=date_from.weekday())
     while week_start <= date_to:
         week_last_day = week_start + timedelta(days=6)
-        # Uber selects the Monday-based week containing the clicked date.
+        # Uber selects the business week from Monday 04:00 through the next
+        # Monday 03:59. The UI represents that interval by its Monday date.
         yield week_start, week_start + timedelta(days=7), max(date_from, week_start), min(date_to, week_last_day)
         week_start += timedelta(days=7)
 
@@ -68,7 +69,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     except Exception:
                         counters["error_count"] += 1
                         continue
-                    if wanted_from <= row["occurred_at"].date() <= wanted_to:
+                    if wanted_from <= uber_work_date(row["occurred_at"]) <= wanted_to:
                         normalized_rows.append(row)
                 normalized_rows = _without_mirrored_quest_rows(normalized_rows)
                 counters["found_count"] += len(normalized_rows)

@@ -36,6 +36,7 @@ from .models import (
     update_maintenance_item,
 )
 from .uber_browser import UberAuthenticationRequired, UberPage, open_uber_login_tab, uber_browser_lock
+from .uber_parser import uber_work_date
 from .uber_repository import (
     activity_range_summary,
     create_import_job,
@@ -1055,7 +1056,7 @@ def uber_list():
     queue_row = cur.fetchone() or {}
     ocr_queue_pending_count = int(queue_row.get("pending_count") or 0)
 
-    today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+    today = uber_work_date(datetime.now(ZoneInfo("Asia/Tokyo")))
     month_start = date(today.year, today.month, 1)
     if today.month == 12:
         month_end = date(today.year + 1, 1, 1)
@@ -1358,7 +1359,7 @@ def uber_import_job_create():
         date_to = datetime.strptime(str(payload.get("date_to") or ""), "%Y-%m-%d").date()
     except ValueError:
         return jsonify({"ok": False, "message": "取得日を正しく指定してください。"}), 400
-    today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+    today = uber_work_date(datetime.now(ZoneInfo("Asia/Tokyo")))
     if date_from > date_to:
         return jsonify({"ok": False, "message": "開始日は終了日以前にしてください。"}), 400
     if date_to > today:

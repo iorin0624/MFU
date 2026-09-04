@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
 
 
 _MONEY_RE = re.compile(r"[-−]?\s*[￥¥]\s*[\d,]+(?:\.\d+)?")
+UBER_BUSINESS_DAY_START_HOUR = 4
+
+
+def uber_work_date(occurred_at: datetime) -> date:
+    """Return Uber's business date (04:00 through next-day 03:59)."""
+    return (occurred_at - timedelta(hours=UBER_BUSINESS_DAY_START_HOUR)).date()
 
 
 def parse_yen(value: str | None) -> int:
@@ -185,7 +191,7 @@ def parse_detail_text(
         "activity_key": key,
         "activity_type": kind,
         "occurred_at": occurred_at,
-        "work_date": occurred_at.date(),
+        "work_date": uber_work_date(occurred_at),
         "duration_seconds": _duration_seconds(_label_value(lines, ("時間", "所要時間", "duration"))),
         "distance_km": _distance_km(_label_value(lines, ("距離", "distance"))),
         "points": points,
