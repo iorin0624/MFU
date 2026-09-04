@@ -261,8 +261,7 @@ def sync_activity_day(work_date: date) -> dict:
         cur = db.cursor(dictionary=True)
         cur.execute("SELECT id, source FROM uber_daily WHERE work_date = %s", (work_date,))
         current = cur.fetchone()
-        if current and str(current.get("source") or "manual") != "uber_browser":
-            return {"status": "conflict", "summary": summary}
+        replaced_existing = bool(current and str(current.get("source") or "manual") != "uber_browser")
         now = datetime.now()
         params = (
             int(summary.get("deliveries") or 0), int(summary.get("net_yen") or 0),
@@ -270,6 +269,8 @@ def sync_activity_day(work_date: date) -> dict:
             int(summary.get("tip_yen") or 0), now, work_date,
         )
         if current:
+            # Only replace the sales fields. The existing row ID and freee
+            # linkage/status columns intentionally remain untouched.
             cur.execute(
                 """
                 UPDATE uber_daily SET deliveries=%s, net_yen=%s, promo_yen=%s, other_yen=%s,
@@ -287,7 +288,7 @@ def sync_activity_day(work_date: date) -> dict:
                 (work_date, *params[:5], now, now),
             )
         db.commit()
-        return {"status": "synced", "summary": summary}
+        return {"status": "replaced" if replaced_existing else "synced", "summary": summary}
     finally:
         db.close()
 
