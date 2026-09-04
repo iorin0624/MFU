@@ -56,6 +56,71 @@ def ensure_uber_schema(db=None) -> None:
         cur.execute(
             "ALTER TABLE uber_daily ADD COLUMN freee_api_error TEXT NULL AFTER freee_api_status"
         )
+    if "source" not in columns:
+        cur.execute(
+            "ALTER TABLE uber_daily ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'manual' AFTER tip_yen"
+        )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uber_activities (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            activity_key VARCHAR(191) NOT NULL,
+            activity_type VARCHAR(32) NOT NULL,
+            occurred_at DATETIME NOT NULL,
+            work_date DATE NOT NULL,
+            duration_seconds INT NULL,
+            distance_km DECIMAL(10, 3) NULL,
+            points INT NOT NULL DEFAULT 0,
+            deliveries INT NOT NULL DEFAULT 0,
+            earnings_yen INT NOT NULL DEFAULT 0,
+            sales_yen INT NOT NULL DEFAULT 0,
+            promo_yen INT NOT NULL DEFAULT 0,
+            other_yen INT NOT NULL DEFAULT 0,
+            tip_yen INT NOT NULL DEFAULT 0,
+            cash_collected_yen INT NOT NULL DEFAULT 0,
+            uber_payment_yen INT NOT NULL DEFAULT 0,
+            merchant_name VARCHAR(255) NULL,
+            pickup_address VARCHAR(500) NULL,
+            delivery_address VARCHAR(500) NULL,
+            detail_url VARCHAR(1000) NOT NULL,
+            raw_text LONGTEXT NULL,
+            first_imported_at DATETIME NOT NULL,
+            last_imported_at DATETIME NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE KEY uniq_uber_activity_key (activity_key),
+            INDEX idx_uber_activity_work_date (work_date),
+            INDEX idx_uber_activity_occurred_at (occurred_at),
+            INDEX idx_uber_activity_type (activity_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uber_import_jobs (
+            id CHAR(32) PRIMARY KEY,
+            date_from DATE NOT NULL,
+            date_to DATE NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            total_days INT NOT NULL DEFAULT 0,
+            processed_days INT NOT NULL DEFAULT 0,
+            found_count INT NOT NULL DEFAULT 0,
+            inserted_count INT NOT NULL DEFAULT 0,
+            updated_count INT NOT NULL DEFAULT 0,
+            unchanged_count INT NOT NULL DEFAULT 0,
+            error_count INT NOT NULL DEFAULT 0,
+            current_work_date DATE NULL,
+            conflict_days_json TEXT NULL,
+            error TEXT NULL,
+            created_at DATETIME NOT NULL,
+            started_at DATETIME NULL,
+            finished_at DATETIME NULL,
+            updated_at DATETIME NOT NULL,
+            INDEX idx_uber_import_job_status (status),
+            INDEX idx_uber_import_job_created_at (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
     db.commit()
     if close_db:
         db.close()
