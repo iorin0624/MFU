@@ -269,6 +269,25 @@ class UberPage:
         self.wait_ready()
         time.sleep(1)
 
+    def trusted_click(self, element_expression: str) -> bool:
+        point = self.evaluate(
+            f"""
+            (() => {{
+              const element = ({element_expression});
+              if (!element) return null;
+              const rect = element.getBoundingClientRect();
+              if (!rect.width || !rect.height) return null;
+              return {{x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}};
+            }})()
+            """
+        )
+        if not point:
+            return False
+        params = {"x": float(point["x"]), "y": float(point["y"]), "button": "left", "clickCount": 1}
+        self.call("Input.dispatchMouseEvent", {"type": "mousePressed", **params})
+        self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **params})
+        return True
+
     def ensure_logged_in(self) -> None:
         self.navigate(UBER_ACTIVITIES_URL)
         current = str(self.evaluate("location.href") or "")
@@ -302,7 +321,7 @@ class UberPage:
             if delta == 0:
                 return
             label = "Next month." if delta > 0 else "Previous month."
-            clicked = self.evaluate(f"(() => {{ const b=document.querySelector('[aria-label={json.dumps(label)}]'); if(!b)return false; b.click(); return true; }})()")
+            clicked = self.trusted_click(f"document.querySelector('[aria-label={json.dumps(label)}]')")
             if not clicked:
                 raise RuntimeError("Uberのカレンダーを移動できません。")
             time.sleep(0.1)
@@ -310,26 +329,37 @@ class UberPage:
 
     def _click_date(self, target: date) -> None:
         label_part = f"{self._month_label(target)} {self._ordinal(target.day)} {target.year}"
-        clicked = self.evaluate(f"(() => {{ const c=[...document.querySelectorAll('[aria-label]')].find(e => e.getAttribute('aria-label').includes({json.dumps(label_part)}) && !e.getAttribute('aria-label').includes('unavailable')); if(!c)return false; c.click(); return true; }})()")
+        clicked = self.trusted_click(
+            f"[...document.querySelectorAll('[aria-label]')].find(e => e.getAttribute('aria-label').includes({json.dumps(label_part)}) && !e.getAttribute('aria-label').includes('unavailable'))"
+        )
         if not clicked:
             raise RuntimeError(f"Uberで{target:%Y-%m-%d}を選択できません。")
 
     def select_range(self, date_from: date, date_to: date) -> None:
         self.navigate(UBER_ACTIVITIES_URL)
-        opened = self.evaluate("(() => { const i=document.querySelector('input[aria-label=\"Select a date range.\"]'); if(!i)return false; i.click(); return true; })()")
+        opened = self.trusted_click("document.querySelector('input[aria-label=\"Select a date range.\"]')")
         if not opened:
             raise UberAuthenticationRequired("Uberへの再ログインが必要です。")
-        time.sleep(0.2)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if self.evaluate("!!document.querySelector('[aria-label=\"Calendar.\"]')"):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("Uberの期間選択カレンダーを開けません。")
         self._move_calendar(date_from)
         self._click_date(date_from)
-        time.sleep(0.2)
-        self._move_calendar(date_to)
-        self._click_date(date_to)
+        # Uber automatically selects the end of the search window one week
+        # after the clicked date, so clicking date_to would advance another week.
+        _ = date_to
+        if self.evaluate("!!document.querySelector('[aria-label=\"Calendar.\"]')"):
+            self.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Escape", "code": "Escape"})
+            self.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Escape", "code": "Escape"})
         time.sleep(1.5)
 
     def load_all(self) -> None:
         for _ in range(200):
-            clicked = self.evaluate("(() => { const b=[...document.querySelectorAll('button')].find(x => (x.innerText||'').includes('さらに読み込む') || /load more/i.test(x.innerText||'')); if(!b || b.disabled)return false; b.click(); return true; })()")
+            clicked = self.trusted_click("[...document.querySelectorAll('button')].find(x => !x.disabled && ((x.innerText||'').includes('さらに読み込む') || /load more/i.test(x.innerText||'')))")
             if not clicked:
                 return
             time.sleep(0.6)
@@ -339,7 +369,7 @@ class UberPage:
         (() => [...document.querySelectorAll('table tbody tr')].map(row => {
           const cells=[...row.querySelectorAll('td')]; const link=row.querySelector('a[href*="/earnings/"]');
           if (!link || cells.length < 3) return null;
-          const dateParts=(cells[1].innerText||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
+          const dateParts=(cells[1].innerText||'').split(/\\n+/).map(x=>x.trim()).filter(Boolean);
           return {typeText:(cells[0].innerText||'').trim(), dateText:dateParts[0]||'', timeText:dateParts[1]||'', amountText:(cells[2].innerText||'').trim(), url:link.href};
         }).filter(Boolean))()
         """) or []
