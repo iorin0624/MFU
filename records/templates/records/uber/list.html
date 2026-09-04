@@ -4,42 +4,62 @@
 
 {% block records_actions %}
   <div class="uber-actions-wrap">
-    <a class="btn btn-outline-success" href="{{ url_for('records.uber_csv') }}">CSV一括DL</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('records.index') }}">← 戻る</a>
-    <button type="button" id="selectAllFreeeDays" class="btn btn-outline-primary">全選択</button>
-    <button type="button" id="clearAllFreeeDays" class="btn btn-outline-secondary">全解除</button>
-    <button type="button" id="downloadSelectedFreeeCsv" class="btn btn-success">選択分をfreee CSVでDL</button>
-    {% if is_admin_user %}
-    <button type="button" id="syncSelectedFreeeApi" class="btn btn-primary">選択分をfreee API登録</button>
-    <a class="btn btn-outline-primary" href="{{ url_for('freee_api.index') }}">freee設定</a>
-    {% endif %}
-    <a
-      class="btn {{ 'btn-danger' if ocr_queue_pending_count > 0 else 'btn-outline-secondary' }}"
-      href="{{ url_for('records.uber_ocr_queue_list') }}"
-    >
-      OCRキュー{% if ocr_queue_pending_count > 0 %}（{{ ocr_queue_pending_count }}）{% endif %}
-    </a>
   </div>
 {% endblock %}
 
 {% block records_content %}
-{% if is_admin_user %}
 <style>
   .uber-fetch-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.75rem; }
   .uber-summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:.65rem; }
   .uber-summary-tile { border:1px solid #d8e0ea; border-radius:.75rem; padding:.75rem; background:#f8fafc; }
   .uber-summary-tile strong { display:block; font-size:1.15rem; margin-top:.2rem; }
   .uber-job-progress { min-height:1.5rem; }
-  @media (max-width:575.98px) { .uber-fetch-grid { grid-template-columns:1fr; } }
+  .uber-tab-panel { display:none; }
+  .uber-tab-panel.is-active { display:block; }
+  .uber-tab-panel.row.is-active { display:flex; }
+  .uber-section-tabs { overflow-x:auto; flex-wrap:nowrap; scrollbar-width:thin; }
+  .uber-section-tabs .nav-link { white-space:nowrap; }
+  .uber-mobile-card { border:1px solid #d8e0ea; border-radius:.8rem; padding:.85rem; background:#fff; }
+  @media (max-width:767.98px) {
+    .uber-responsive-cards, .uber-responsive-cards tbody { display:block; width:100%; }
+    .uber-responsive-cards thead { display:none; }
+    .uber-responsive-cards tbody { display:grid; gap:.75rem; }
+    .uber-responsive-cards tr { display:block; border:1px solid #d8e0ea; border-radius:.8rem; padding:.65rem .8rem; background:#fff; }
+    .uber-responsive-cards td { display:flex; justify-content:space-between; gap:1rem; padding:.35rem 0; border:0; text-align:right !important; }
+    .uber-responsive-cards td::before { content:attr(data-label); color:#64748b; font-size:.875rem; text-align:left; }
+    .uber-responsive-cards td[data-label=""]::before { display:none; }
+  }
+  @media (max-width:575.98px) {
+    .uber-fetch-grid { grid-template-columns:1fr; }
+    .uber-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .uber-summary-tile { min-width:0; }
+  }
 </style>
-<div class="card shadow-sm mb-4" id="uberBrowserImportCard" data-csrf="{{ uber_browser_csrf }}" data-active-job="{{ active_uber_import_job.id if active_uber_import_job else '' }}">
+<nav class="nav nav-pills uber-section-tabs gap-2 mb-4" id="uberSectionTabs" aria-label="Uber売上画面">
+  <button class="nav-link active" type="button" data-uber-tab="overview">概要</button>
+  <button class="nav-link" type="button" data-uber-tab="sales">売上一覧</button>
+  {% if is_admin_user %}
+  <button class="nav-link" type="button" data-uber-tab="details">配達明細</button>
+  {% endif %}
+  <button class="nav-link" type="button" data-uber-tab="import">取得・登録</button>
+  <button class="nav-link" type="button" data-uber-tab="freee">freee連携</button>
+</nav>
+
+{% if is_admin_user %}
+<div class="card shadow-sm mb-4 uber-tab-panel" data-uber-panel="import" id="uberBrowserImportCard" data-csrf="{{ uber_browser_csrf }}" data-active-job="{{ active_uber_import_job.id if active_uber_import_job else '' }}">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
       <div>
         <h2 class="h5 mb-1">Uber明細取得</h2>
         <div class="text-muted small">取得処理はサーバーのUber専用Chromeで実行します。日付は4:00～翌日3:59を1日として扱います。アクセス制限対策のため明細ごとに待機します。</div>
       </div>
-      <button type="button" class="btn btn-outline-secondary" id="uberOpenLogin">Uberログイン画面</button>
+      <div class="d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-outline-secondary" id="uberOpenLogin">Uberログイン画面</button>
+        <a class="btn {{ 'btn-danger' if ocr_queue_pending_count > 0 else 'btn-outline-secondary' }}" href="{{ url_for('records.uber_ocr_queue_list') }}">
+          OCRキュー{% if ocr_queue_pending_count > 0 %}（{{ ocr_queue_pending_count }}）{% endif %}
+        </a>
+      </div>
     </div>
     <div class="uber-fetch-grid">
       <div class="border rounded p-3">
@@ -70,10 +90,15 @@
     <div class="progress mt-3 d-none" id="uberImportProgressWrap" role="progressbar" aria-label="Uber明細取得進捗">
       <div class="progress-bar" id="uberImportProgress" style="width:0%">0%</div>
     </div>
+    <details class="mt-3"><summary>直近の取得履歴</summary>
+      <div class="table-responsive mt-2"><table class="table table-sm"><thead><tr><th>期間</th><th>状態</th><th>進捗</th><th>新規</th><th>更新</th><th>失敗</th></tr></thead><tbody>
+      {% for job in uber_import_jobs %}<tr><td>{{ job.date_from }}～{{ job.date_to }}</td><td>{{ job.status }}</td><td>{{ job.processed_days }}/{{ job.total_days }}日</td><td>{{ job.inserted_count }}</td><td>{{ job.updated_count }}</td><td>{{ job.error_count }}</td></tr>{% else %}<tr><td colspan="6" class="text-muted">履歴がありません。</td></tr>{% endfor %}
+      </tbody></table></div>
+    </details>
   </div>
 </div>
 
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-4 uber-tab-panel is-active" data-uber-panel="overview">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
       <div>
@@ -86,9 +111,10 @@
       <span class="badge bg-warning text-dark align-self-start">途中集計</span>
     </div>
     <div class="d-flex flex-wrap gap-2 mb-3">
-      <a class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'today' else 'btn-outline-primary' }}" href="{{ url_for('records.uber_list', summary_mode='today', activity_from=activity_history_from, activity_to=activity_history_to) }}">本日</a>
-      <a class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'yesterday' else 'btn-outline-primary' }}" href="{{ url_for('records.uber_list', summary_mode='yesterday', activity_from=activity_history_from, activity_to=activity_history_to) }}">昨日</a>
+      <a class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'today' else 'btn-outline-primary' }}" href="{{ url_for('records.uber_list', tab='overview', summary_mode='today', activity_from=activity_history_from, activity_to=activity_history_to) }}">本日</a>
+      <a class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'yesterday' else 'btn-outline-primary' }}" href="{{ url_for('records.uber_list', tab='overview', summary_mode='yesterday', activity_from=activity_history_from, activity_to=activity_history_to) }}">昨日</a>
       <form class="d-flex flex-wrap gap-2 align-items-center" method="get">
+        <input type="hidden" name="tab" value="overview">
         <input type="hidden" name="summary_mode" value="range">
         <input type="hidden" name="activity_from" value="{{ activity_history_from }}">
         <input type="hidden" name="activity_to" value="{{ activity_history_to }}">
@@ -103,6 +129,8 @@
       <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
       <div class="uber-summary-tile"><span class="text-muted small">配達売上</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
       <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong>¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
+      <div class="uber-summary-tile"><span class="text-muted small">チップ</span><strong>¥{{ selected_activity_summary.tip_yen|fmt_yen }}</strong></div>
       <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong>¥{{ selected_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
       <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong>{{ '%.1f'|format(selected_activity_summary.duration_hours) }}時間</strong></div>
       <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong>{{ '%.1f'|format(selected_activity_summary.distance_km|float) }}km</strong></div>
@@ -113,10 +141,11 @@
   </div>
 </div>
 
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-4 uber-tab-panel" data-uber-panel="details" id="uber-activity-details">
   <div class="card-body">
-    <h2 class="h5 mb-3">サーバー取得の日別履歴</h2>
+    <h2 class="h5 mb-3">Web取得明細</h2>
     <form class="row g-2 align-items-end mb-3" method="get">
+      <input type="hidden" name="tab" value="details">
       <div class="col-sm-4"><label class="form-label" for="activityFrom">開始日</label><input id="activityFrom" class="form-control" type="date" name="activity_from" value="{{ activity_history_from }}"></div>
       <div class="col-sm-4"><label class="form-label" for="activityTo">終了日</label><input id="activityTo" class="form-control" type="date" name="activity_to" value="{{ activity_history_to }}"></div>
       <div class="col-sm-4"><button class="btn btn-outline-primary w-100" type="submit">表示</button></div>
@@ -131,30 +160,25 @@
         </tbody>
       </table>
     </div>
-    <details class="mt-3"><summary>直近の取得履歴</summary>
-      <div class="table-responsive mt-2"><table class="table table-sm"><thead><tr><th>期間</th><th>状態</th><th>進捗</th><th>新規</th><th>更新</th><th>失敗</th></tr></thead><tbody>
-      {% for job in uber_import_jobs %}<tr><td>{{ job.date_from }}～{{ job.date_to }}</td><td>{{ job.status }}</td><td>{{ job.processed_days }}/{{ job.total_days }}日</td><td>{{ job.inserted_count }}</td><td>{{ job.updated_count }}</td><td>{{ job.error_count }}</td></tr>{% else %}<tr><td colspan="6" class="text-muted">履歴がありません。</td></tr>{% endfor %}
-      </tbody></table></div>
-    </details>
-    <details class="mt-3" id="uber-activity-details" {% if activity_history_from == activity_history_to %}open{% endif %}>
+    <details class="mt-3" {% if activity_history_from == activity_history_to %}open{% endif %}>
       <summary>
         配達・報酬明細（{{ activity_history_from }}{% if activity_history_from != activity_history_to %}～{{ activity_history_to }}{% endif %}／最大5,000件）
       </summary>
       <div class="table-responsive mt-2">
-        <table class="table table-sm align-middle">
+        <table class="table table-sm align-middle uber-responsive-cards">
           <thead class="table-light"><tr><th>日時</th><th>種別</th><th class="text-end">件数</th><th class="text-end">時間</th><th class="text-end">距離</th><th class="text-end">売上</th><th class="text-end">現金</th><th>店舗</th><th>配達先</th></tr></thead>
           <tbody>
           {% for item in uber_activity_rows %}
             <tr>
-              <td class="text-nowrap">{{ item.occurred_at }}</td>
-              <td>{{ '配達' if item.activity_type == 'delivery' else ('クエスト' if item.activity_type == 'quest' else 'その他') }}</td>
-              <td class="text-end">{{ item.deliveries }}</td>
-              <td class="text-end">{{ ((item.duration_seconds or 0) / 60)|round(1) }}分</td>
-              <td class="text-end">{{ (item.distance_km or 0)|round(1) }}km</td>
-              <td class="text-end">¥{{ item.earnings_yen|fmt_yen }}</td>
-              <td class="text-end">¥{{ item.cash_collected_yen|fmt_yen }}</td>
-              <td>{{ item.merchant_name or '-' }}</td>
-              <td>{{ item.delivery_address or '-' }}</td>
+              <td class="text-nowrap" data-label="日時">{{ item.occurred_at }}</td>
+              <td data-label="種別">{{ '配達' if item.activity_type == 'delivery' else ('クエスト' if item.activity_type == 'quest' else 'その他') }}</td>
+              <td class="text-end" data-label="件数">{{ item.deliveries }}</td>
+              <td class="text-end" data-label="時間">{{ ((item.duration_seconds or 0) / 60)|round(1) }}分</td>
+              <td class="text-end" data-label="距離">{{ (item.distance_km or 0)|round(1) }}km</td>
+              <td class="text-end" data-label="売上">¥{{ item.earnings_yen|fmt_yen }}</td>
+              <td class="text-end" data-label="現金">¥{{ item.cash_collected_yen|fmt_yen }}</td>
+              <td data-label="店舗">{{ item.merchant_name or '-' }}</td>
+              <td data-label="配達先">{{ item.delivery_address or '-' }}</td>
             </tr>
           {% else %}<tr><td colspan="9" class="text-center text-muted">明細がありません。</td></tr>{% endfor %}
           </tbody>
@@ -165,7 +189,7 @@
 </div>
 {% endif %}
 {% if false %}
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-4 uber-tab-panel" data-uber-panel="import">
   <div class="card-body">
     <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
       <h2 class="h5 mb-0">freee会計API連携</h2>
@@ -254,7 +278,8 @@
 
 <div class="card shadow-sm mb-4">
   <div class="card-body">
-    <h2 class="h5 mb-3">スクショ解析（OpenAI API）</h2>
+    <details>
+      <summary class="h5 mb-3">スクショ解析（OpenAI API）</summary>
     <div class="row g-3 align-items-end">
       <div class="col-md-6">
         <label class="form-label" for="uberOcrImage">スクリーンショット画像</label>
@@ -273,21 +298,25 @@
       <div class="fw-semibold mb-2">画像プレビュー</div>
       <img id="uberOcrPreview" class="img-fluid rounded border" alt="Uber OCR preview">
     </div>
+    </details>
   </div>
 </div>
 
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-4 uber-tab-panel" data-uber-panel="import">
   <div class="card-body">
-    <form method="post" action="{{ url_for('records.uber_create_or_update') }}">
-      {% include "records/uber/_form_fields.html" %}
-      <div class="mt-3">
-        <button class="btn btn-primary" type="submit">保存</button>
-      </div>
-    </form>
+    <details>
+      <summary class="h5 mb-3">手動登録</summary>
+      <form method="post" action="{{ url_for('records.uber_create_or_update') }}">
+        {% include "records/uber/_form_fields.html" %}
+        <div class="mt-3">
+          <button class="btn btn-primary" type="submit">保存</button>
+        </div>
+      </form>
+    </details>
   </div>
 </div>
 
-<div class="row g-3 mb-4">
+<div class="row g-3 mb-4 uber-tab-panel is-active" data-uber-panel="overview">
   <div class="col-md-4">
     <div class="card h-100">
       <div class="card-body">
@@ -315,7 +344,7 @@
   </div>
 </div>
 
-<div class="table-responsive mb-4">
+<div class="table-responsive mb-4 uber-tab-panel is-active" data-uber-panel="overview">
   <table class="table table-bordered table-sm">
     <thead class="table-light">
       <tr>
@@ -352,7 +381,7 @@
   </table>
 </div>
 
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-4 uber-tab-panel is-active" data-uber-panel="overview">
   <div class="card-body">
     <h2 class="h5 mb-3">ざっくり売上試算</h2>
     <div class="mb-3">
@@ -391,8 +420,21 @@
   </div>
 </div>
 
+<div class="uber-tab-panel" data-uber-panel="sales">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <h2 class="h5 mb-0">売上一覧</h2>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-sm btn-outline-success" href="{{ url_for('records.uber_csv') }}">CSV一括DL</a>
+      <button type="button" id="selectAllFreeeDays" class="btn btn-sm btn-outline-primary">全選択</button>
+      <button type="button" id="clearAllFreeeDays" class="btn btn-sm btn-outline-secondary">全解除</button>
+      <button type="button" id="downloadSelectedFreeeCsv" class="btn btn-sm btn-success">選択分をfreee CSVでDL</button>
+      {% if is_admin_user %}
+      <button type="button" id="syncSelectedFreeeApi" class="btn btn-sm btn-primary">選択分をfreee API登録</button>
+      {% endif %}
+    </div>
+  </div>
 <div class="table-responsive">
-  <table class="table table-striped align-middle">
+  <table class="table table-striped align-middle uber-responsive-cards">
     <thead class="table-light">
       <tr>
         <th class="text-center">選択</th>
@@ -411,16 +453,16 @@
     <tbody>
       {% for row in rows %}
       <tr>
-        <td class="text-center">
+        <td class="text-center" data-label="選択">
           <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" {% if not row.freee_exported_at %}checked{% endif %}>
         </td>
-        <td>
+        <td data-label="日付">
           {{ row.work_date }}
           {% if row.source == 'uber_browser' %}
           {% if is_admin_user %}
           <a
             class="badge rounded-pill bg-info text-dark text-decoration-none ms-1"
-            href="{{ url_for('records.uber_list', activity_from=row.work_date.strftime('%Y-%m-%d'), activity_to=row.work_date.strftime('%Y-%m-%d')) }}#uber-activity-details"
+            href="{{ url_for('records.uber_list', tab='details', activity_from=row.work_date.strftime('%Y-%m-%d'), activity_to=row.work_date.strftime('%Y-%m-%d')) }}#uber-activity-details"
             title="この日のWeb取得明細を表示"
           >Web取得</a>
           {% else %}
@@ -428,15 +470,15 @@
           {% endif %}
           {% endif %}
         </td>
-        <td class="text-end">{{ row.deliveries|fmt_yen }}</td>
-        <td class="text-end">¥{{ row.net_yen|fmt_yen }}</td>
-        <td class="text-end">¥{{ row.promo_yen|fmt_yen }}</td>
-        <td class="text-end">¥{{ row.other_yen|fmt_yen }}</td>
-        <td class="text-end">¥{{ row.tip_yen|fmt_yen }}</td>
-        <td class="text-end">¥{{ row.total_yen|fmt_yen }}</td>
-        <td class="text-end">{{ row.net_avg_yen|fmt_yen }}</td>
-        <td class="text-end">{{ row.total_avg_yen|fmt_yen }}</td>
-        <td class="text-end">
+        <td class="text-end" data-label="件数">{{ row.deliveries|fmt_yen }}</td>
+        <td class="text-end" data-label="正味">¥{{ row.net_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="プロモ">¥{{ row.promo_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="その他">¥{{ row.other_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="チップ">¥{{ row.tip_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="合計">¥{{ row.total_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="正味平均">{{ row.net_avg_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="合計平均">{{ row.total_avg_yen|fmt_yen }}</td>
+        <td class="text-end" data-label="操作">
           <a class="btn btn-sm btn-outline-primary" href="{{ url_for('records.uber_edit', record_id=row.id) }}">編集</a>
           <form method="post" action="{{ url_for('records.uber_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
             <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
@@ -451,12 +493,26 @@
     </tbody>
   </table>
 </div>
+</div>
 
-<div class="card shadow-sm mt-4">
+<div class="card shadow-sm mt-4 uber-tab-panel" data-uber-panel="freee">
   <div class="card-body">
-    <h2 class="h5 mb-3">freee出力・API登録状態</h2>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div>
+        <h2 class="h5 mb-1">freee出力・API登録状態</h2>
+        <div class="d-flex flex-wrap gap-2">
+          <span class="badge {{ 'bg-success' if freee_connected else 'bg-secondary' }}">{{ 'freee接続済み' if freee_connected else 'freee未接続' }}</span>
+          <span class="badge {{ 'bg-success' if freee_settings_complete else 'bg-warning text-dark' }}">{{ 'freee設定済み' if freee_settings_complete else 'freee設定未完了' }}</span>
+        </div>
+      </div>
+      <div class="d-flex flex-wrap gap-2">
+        {% if is_admin_user %}
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('freee_api.index') }}">freee設定</a>
+        {% endif %}
+      </div>
+    </div>
     <div class="table-responsive">
-      <table class="table table-sm align-middle mb-0">
+      <table class="table table-sm align-middle mb-0 uber-responsive-cards">
         <thead class="table-light">
           <tr>
             <th>日付</th>
@@ -471,10 +527,10 @@
         <tbody>
           {% for row in rows %}
           <tr>
-            <td>{{ row.work_date }}</td>
-            <td class="small text-muted">{{ row.created_at or '-' }}</td>
-            <td class="small text-muted">{{ row.updated_at or '-' }}</td>
-            <td>
+            <td data-label="日付">{{ row.work_date }}</td>
+            <td class="small text-muted" data-label="登録日時">{{ row.created_at or '-' }}</td>
+            <td class="small text-muted" data-label="編集日時">{{ row.updated_at or '-' }}</td>
+            <td data-label="CSV出力">
               {% if row.freee_exported_at %}
                 <span class="badge bg-success">CSV出力済み</span>
                 <div class="small text-muted">{{ row.freee_exported_at }}</div>
@@ -482,7 +538,7 @@
                 <span class="badge bg-secondary">未出力</span>
               {% endif %}
             </td>
-            <td>
+            <td data-label="API状態">
               {% if row.freee_needs_resync %}
                 <span class="badge bg-warning text-dark">編集後未反映</span>
                 <div class="small text-muted">API: {{ row.freee_api_synced_at }}</div>
@@ -495,8 +551,8 @@
                 <span class="badge bg-secondary">未送信</span>
               {% endif %}
             </td>
-            <td>{{ row.freee_deal_id or '-' }}</td>
-            <td>
+            <td data-label="freee deal ID">{{ row.freee_deal_id or '-' }}</td>
+            <td data-label="エラー">
               {% if row.freee_api_error %}
                 <span class="text-danger small" title="{{ row.freee_api_error }}">{{ row.freee_api_error[:100] }}{% if row.freee_api_error|length > 100 %}...{% endif %}</span>
               {% else %}
@@ -520,6 +576,40 @@
   {{ super() }}
   <script>
     document.addEventListener('DOMContentLoaded', function () {
+      const tabButtons = [...document.querySelectorAll('[data-uber-tab]')];
+      const tabPanels = [...document.querySelectorAll('[data-uber-panel]')];
+      const availableTabs = new Set(tabButtons.map(function (button) { return button.dataset.uberTab; }));
+      const activateUberTab = function (requestedTab, updateHistory) {
+        const tab = availableTabs.has(requestedTab) ? requestedTab : 'overview';
+        tabButtons.forEach(function (button) {
+          const active = button.dataset.uberTab === tab;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        tabPanels.forEach(function (panel) {
+          panel.classList.toggle('is-active', panel.dataset.uberPanel === tab);
+        });
+        if (updateHistory) {
+          const url = new URL(window.location.href);
+          url.searchParams.set('tab', tab);
+          history.pushState({uberTab: tab}, '', url);
+        }
+        if (tab === 'details' && window.location.hash === '#uber-activity-details') {
+          requestAnimationFrame(function () {
+            document.getElementById('uber-activity-details')?.scrollIntoView({block:'start'});
+          });
+        }
+      };
+      tabButtons.forEach(function (button) {
+        button.addEventListener('click', function () { activateUberTab(button.dataset.uberTab, true); });
+      });
+      window.addEventListener('popstate', function () {
+        activateUberTab(new URL(window.location.href).searchParams.get('tab') || 'overview', false);
+      });
+      const initialTab = new URL(window.location.href).searchParams.get('tab')
+        || (window.location.hash === '#uber-activity-details' ? 'details' : 'overview');
+      activateUberTab(initialTab, false);
+
       const fileInput = document.getElementById('uberOcrImage');
       const analyzeBtn = document.getElementById('uberOcrAnalyzeBtn');
       const warningWrap = document.getElementById('uberOcrWarningsWrap');
