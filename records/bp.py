@@ -8,6 +8,8 @@ import mimetypes
 import os
 import re
 import secrets
+import subprocess
+import sys
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -15,10 +17,11 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from threading import Lock
 from urllib.parse import urlencode
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.utils.db import get_db
 from app.freee_api import services as freee_services
@@ -31,6 +34,16 @@ from .models import (
     now_ts,
     set_current_odometer_km,
     update_maintenance_item,
+)
+from .uber_browser import UberAuthenticationRequired, UberPage, open_uber_login_tab, uber_browser_lock
+from .uber_repository import (
+    create_import_job,
+    daily_activity_summary,
+    get_active_import_job,
+    get_import_job,
+    list_activity_daily_summaries,
+    list_activities,
+    list_import_jobs,
 )
 
 records_bp = Blueprint(
@@ -91,6 +104,31 @@ def login_required(view):
         return view(*args, **kwargs)
 
     return wrapper
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not _is_admin_user():
+            return jsonify({"ok": False, "message": "管理者のみ操作できます。"}), 403
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def _uber_csrf_token() -> str:
+    value = session.get("uber_browser_csrf")
+    if not value:
+        value = secrets.token_urlsafe(32)
+        session["uber_browser_csrf"] = value
+    return value
+
+
+def _require_uber_csrf() -> None:
+    supplied = request.headers.get("X-CSRF-Token", "") or request.form.get("csrf_token", "")
+    expected = session.get("uber_browser_csrf", "")
+    if not supplied or not expected or not secrets.compare_digest(supplied, expected):
+        abort(400, "CSRFトークンが一致しません。")
 
 
 def api_token_required(view):
@@ -167,6 +205,23 @@ def _round_decimal(value: Decimal | None, places: int) -> Decimal | None:
 
 def _is_admin_user() -> bool:
     return session.get("user") == "admin"
+
+
+def _present_uber_activity_summary(row: dict) -> dict:
+    value = dict(row or {})
+    deliveries = int(value.get("deliveries") or 0)
+    total_yen = sum(int(value.get(key) or 0) for key in ("net_yen", "promo_yen", "other_yen", "tip_yen"))
+    duration_seconds = int(value.get("duration_seconds") or 0)
+    distance_km = float(value.get("distance_km") or 0)
+    value.update({
+        "deliveries": deliveries,
+        "total_yen": total_yen,
+        "duration_hours": duration_seconds / 3600 if duration_seconds else 0,
+        "yen_per_delivery": round(total_yen / deliveries) if deliveries else None,
+        "yen_per_hour": round(total_yen * 3600 / duration_seconds) if duration_seconds else None,
+        "yen_per_km": round(total_yen / distance_km) if distance_km else None,
+    })
+    return value
 
 
 def _cleanup_old_uber_ocr_files() -> None:
@@ -1182,6 +1237,21 @@ def uber_list():
     deliveries_sum = summary.get("deliveries_sum") or 0
     total_sum = summary.get("total_sum") or 0
     summary_avg = round(total_sum / deliveries_sum) if deliveries_sum else None
+    history_from = today - timedelta(days=30)
+    history_to = today
+    try:
+        if request.args.get("activity_from"):
+            history_from = datetime.strptime(request.args["activity_from"], "%Y-%m-%d").date()
+        if request.args.get("activity_to"):
+            history_to = datetime.strptime(request.args["activity_to"], "%Y-%m-%d").date()
+    except ValueError:
+        history_from, history_to = today - timedelta(days=30), today
+    if history_from > history_to:
+        history_from, history_to = history_to, history_from
+    activity_daily_rows = [
+        _present_uber_activity_summary(row)
+        for row in list_activity_daily_summaries(history_from, history_to)
+    ]
 
     return render_template(
         "records/uber/list.html",
@@ -1198,6 +1268,14 @@ def uber_list():
         freee_settings_complete=bool(freee_settings and not freee_settings_error),
         freee_settings_error=freee_settings_error,
         default_work_date=today,
+        uber_browser_csrf=_uber_csrf_token(),
+        today_activity_summary=_present_uber_activity_summary(daily_activity_summary(today)),
+        activity_daily_rows=activity_daily_rows,
+        uber_activity_rows=list_activities(history_from, history_to),
+        activity_history_from=history_from,
+        activity_history_to=history_to,
+        uber_import_jobs=list_import_jobs(10),
+        active_uber_import_job=get_active_import_job(),
         summary={
             "deliveries_sum": deliveries_sum,
             "net_sum": summary.get("net_sum") or 0,
@@ -1206,6 +1284,97 @@ def uber_list():
             "month_start": month_start,
         },
     )
+
+
+@records_bp.post("/uber/browser/start")
+@login_required
+@admin_required
+def uber_browser_start():
+    _require_uber_csrf()
+    try:
+        with uber_browser_lock():
+            result = open_uber_login_tab()
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
+
+
+@records_bp.get("/uber/browser/status")
+@login_required
+@admin_required
+def uber_browser_status():
+    try:
+        with uber_browser_lock(blocking=False), UberPage() as page:
+            page.ensure_logged_in()
+        return jsonify({"ok": True, "loggedIn": True})
+    except UberAuthenticationRequired as exc:
+        return jsonify({"ok": True, "loggedIn": False, "message": str(exc)})
+    except RuntimeError as exc:
+        return jsonify({"ok": True, "loggedIn": False, "message": str(exc)})
+    except Exception as exc:
+        return jsonify({"ok": False, "loggedIn": False, "message": str(exc)}), 500
+
+
+@records_bp.post("/uber/import-jobs")
+@login_required
+@admin_required
+def uber_import_job_create():
+    _require_uber_csrf()
+    payload = request.get_json(silent=True) or request.form
+    try:
+        date_from = datetime.strptime(str(payload.get("date_from") or ""), "%Y-%m-%d").date()
+        date_to = datetime.strptime(str(payload.get("date_to") or ""), "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"ok": False, "message": "取得日を正しく指定してください。"}), 400
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+    if date_from > date_to:
+        return jsonify({"ok": False, "message": "開始日は終了日以前にしてください。"}), 400
+    if date_to > today:
+        return jsonify({"ok": False, "message": "未来の日付は取得できません。"}), 400
+    if date_from < date(2015, 1, 1) or (date_to - date_from).days > 3650:
+        return jsonify({"ok": False, "message": "一度に指定できる期間は2015年以降の10年間までです。"}), 400
+    active = get_active_import_job()
+    if active:
+        return jsonify({"ok": False, "message": "別のUber取得処理が実行中です。", "jobId": active["id"]}), 409
+    try:
+        job_id = create_import_job(date_from, date_to)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 409
+    root = str(Path(current_app.root_path).parent)
+    try:
+        subprocess.Popen(
+            [
+                sys.executable, "-m", "app.records.uber_fetch_cli", "--job-id", job_id,
+                "--date-from", date_from.isoformat(), "--date-to", date_to.isoformat(),
+            ],
+            cwd=root,
+            env=os.environ.copy(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as exc:
+        from .uber_repository import update_import_job
+
+        update_import_job(job_id, status="error", error=str(exc), finished_at=datetime.now())
+        return jsonify({"ok": False, "message": str(exc)}), 500
+    return jsonify({"ok": True, "jobId": job_id, "status": "pending"}), 202
+
+
+@records_bp.get("/uber/import-jobs/<job_id>")
+@login_required
+@admin_required
+def uber_import_job_status(job_id: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        abort(404)
+    job = get_import_job(job_id)
+    if not job:
+        abort(404)
+    total = int(job.get("total_days") or 0)
+    processed = int(job.get("processed_days") or 0)
+    job["progress"] = round(processed * 100 / total) if total else 0
+    return jsonify({"ok": True, "job": job})
 
 
 def _fetch_uber_daily_rows(
