@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from app.records.uber_parser import activity_key, normalize_list_row, parse_detail_text, parse_yen
+from app.records.uber_parser import activity_key, normalize_list_row, parse_detail_text, parse_yen, uber_work_date
 
 
 def test_parse_yen_handles_full_width_currency_and_negative_value():
@@ -32,6 +32,20 @@ def test_normalize_list_row_parses_english_activity_date():
     )
     assert row["occurred_at"] == datetime(2026, 9, 4, 20, 44)
     assert row["list_amount_yen"] == 1150
+
+
+def test_uber_work_date_changes_at_four_am():
+    assert uber_work_date(datetime(2026, 6, 15, 3, 59)) == datetime(2026, 6, 14).date()
+    assert uber_work_date(datetime(2026, 6, 15, 4, 0)) == datetime(2026, 6, 15).date()
+
+
+def test_detail_uses_uber_four_am_business_day_boundary():
+    result = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/trips/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        occurred_at=datetime(2026, 6, 22, 3, 59),
+        detail_text="Delivery\n0 point earned\n¥0",
+    )
+    assert result["work_date"] == datetime(2026, 6, 21).date()
 
 
 def test_delivery_detail_extracts_operational_fields():
