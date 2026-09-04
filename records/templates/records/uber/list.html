@@ -151,11 +151,19 @@
       <div class="col-sm-4"><button class="btn btn-outline-primary w-100" type="submit">表示</button></div>
     </form>
     <div class="table-responsive">
-      <table class="table table-sm align-middle">
+      <table class="table table-sm align-middle uber-responsive-cards">
         <thead class="table-light"><tr><th>日付</th><th class="text-end">件数</th><th class="text-end">売上</th><th class="text-end">現金</th><th class="text-end">時間</th><th class="text-end">距離</th><th>最終取得</th></tr></thead>
         <tbody>
           {% for row in activity_daily_rows %}
-          <tr><td>{{ row.work_date }}</td><td class="text-end">{{ row.deliveries|fmt_yen }}</td><td class="text-end">¥{{ row.total_yen|fmt_yen }}</td><td class="text-end">¥{{ row.cash_collected_yen|fmt_yen }}</td><td class="text-end">{{ '%.1f'|format(row.duration_hours) }}h</td><td class="text-end">{{ '%.1f'|format(row.distance_km|float) }}km</td><td class="small text-muted">{{ row.last_imported_at }}</td></tr>
+          <tr>
+            <td data-label="日付">{{ row.work_date }}</td>
+            <td class="text-end" data-label="件数">{{ row.deliveries|fmt_yen }}</td>
+            <td class="text-end" data-label="売上">¥{{ row.total_yen|fmt_yen }}</td>
+            <td class="text-end" data-label="現金">¥{{ row.cash_collected_yen|fmt_yen }}</td>
+            <td class="text-end" data-label="時間">{{ '%.1f'|format(row.duration_hours) }}h</td>
+            <td class="text-end" data-label="距離">{{ '%.1f'|format(row.distance_km|float) }}km</td>
+            <td class="small text-muted" data-label="最終取得">{{ row.last_imported_at }}</td>
+          </tr>
           {% else %}<tr><td colspan="7" class="text-center text-muted">サーバー取得した明細はありません。</td></tr>{% endfor %}
         </tbody>
       </table>
@@ -599,6 +607,7 @@
         if (updateHistory) {
           const url = new URL(window.location.href);
           url.searchParams.set('tab', tab);
+          url.hash = '';
           history.pushState({uberTab: tab}, '', url);
         }
         if (tab === 'details' && window.location.hash === '#uber-activity-details') {
