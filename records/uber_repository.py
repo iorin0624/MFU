@@ -8,7 +8,7 @@ from decimal import Decimal
 from app.utils.db import get_db
 
 
-TERMINAL_JOB_STATUSES = {"success", "partial", "error", "auth_required"}
+TERMINAL_JOB_STATUSES = {"success", "partial", "error", "auth_required", "blocked"}
 
 
 def create_import_job(date_from: date, date_to: date) -> str:
@@ -170,6 +170,27 @@ def upsert_activity(activity: dict) -> str:
         )
         db.commit()
         return "updated" if previous else "inserted"
+    finally:
+        db.close()
+
+
+def get_cached_activities(activity_keys: list[str]) -> dict[str, dict]:
+    keys = list(dict.fromkeys(str(key) for key in activity_keys if key))
+    if not keys:
+        return {}
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        placeholders = ", ".join(["%s"] * len(keys))
+        cur.execute(
+            f"""
+            SELECT activity_key, occurred_at, earnings_yen, raw_text, last_imported_at
+            FROM uber_activities
+            WHERE activity_key IN ({placeholders})
+            """,
+            keys,
+        )
+        return {str(row["activity_key"]): row for row in cur.fetchall()}
     finally:
         db.close()
 

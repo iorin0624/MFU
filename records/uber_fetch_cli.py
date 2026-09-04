@@ -19,7 +19,7 @@ def main() -> int:
     ensure_records_schema()
     result = fetch_uber_activities(args.job_id, date_from, date_to)
     print(json.dumps(result, ensure_ascii=False, default=str))
-    return 0 if result.get("status") in {"success", "partial", "auth_required"} else 1
+    return 0 if result.get("status") in {"success", "partial", "auth_required", "blocked"} else 1
 
 
 if __name__ == "__main__":
