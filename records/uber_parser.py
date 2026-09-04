@@ -54,6 +54,40 @@ def parse_activity_datetime(date_text: str, time_text: str = "") -> datetime:
     raise ValueError(f"Uber明細の日付を解釈できません: {value}")
 
 
+def parse_detail_occurred_at(detail_text: str, fallback: datetime) -> datetime:
+    """Read the delivery timestamp shown in the detail header."""
+    japanese = re.search(
+        r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日.*?"
+        r"(午前|午後)\s*(\d{1,2})時\s*(\d{1,2})分",
+        detail_text,
+        re.S,
+    )
+    if japanese:
+        year, month, day = map(int, japanese.group(1, 2, 3))
+        hour = int(japanese.group(5)) % 12
+        if japanese.group(4) == "午後":
+            hour += 12
+        return datetime(year, month, day, hour, int(japanese.group(6)))
+
+    english = re.search(
+        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+        r"\s+(\d{1,2})(?:st|nd|rd|th)?,\s*(\d{4}).*?"
+        r"(\d{1,2}):(\d{2})\s*([AP]M)\b",
+        detail_text,
+        re.I | re.S,
+    )
+    if english:
+        month = datetime.strptime(english.group(1)[:3].title(), "%b").month
+        hour = int(english.group(4)) % 12
+        if english.group(6).upper() == "PM":
+            hour += 12
+        return datetime(
+            int(english.group(3)), month, int(english.group(2)), hour, int(english.group(5))
+        )
+    return fallback
+
+
 def _label_value(lines: list[str], labels: tuple[str, ...]) -> str:
     lowered = tuple(label.lower() for label in labels)
     for index, line in enumerate(lines):
@@ -158,6 +192,7 @@ def parse_detail_text(
     key, kind = activity_key(detail_url)
     lines = [re.sub(r"\s+", " ", line).strip() for line in detail_text.splitlines() if line.strip()]
     full_text = "\n".join(lines)
+    occurred_at = parse_detail_occurred_at(full_text, occurred_at)
     event_type = (parse_qs(urlparse(detail_url).query).get("eventType") or [""])[0].upper()
     if event_type == "MISC":
         kind = "quest" if re.search(r"(?:クエスト|\bquest\b)", full_text, re.I) else "other"
