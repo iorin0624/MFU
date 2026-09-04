@@ -136,7 +136,10 @@
       {% for job in uber_import_jobs %}<tr><td>{{ job.date_from }}～{{ job.date_to }}</td><td>{{ job.status }}</td><td>{{ job.processed_days }}/{{ job.total_days }}日</td><td>{{ job.inserted_count }}</td><td>{{ job.updated_count }}</td><td>{{ job.error_count }}</td></tr>{% else %}<tr><td colspan="6" class="text-muted">履歴がありません。</td></tr>{% endfor %}
       </tbody></table></div>
     </details>
-    <details class="mt-3"><summary>配達・報酬明細（最大5,000件）</summary>
+    <details class="mt-3" id="uber-activity-details" {% if activity_history_from == activity_history_to %}open{% endif %}>
+      <summary>
+        配達・報酬明細（{{ activity_history_from }}{% if activity_history_from != activity_history_to %}～{{ activity_history_to }}{% endif %}／最大5,000件）
+      </summary>
       <div class="table-responsive mt-2">
         <table class="table table-sm align-middle">
           <thead class="table-light"><tr><th>日時</th><th>種別</th><th class="text-end">件数</th><th class="text-end">時間</th><th class="text-end">距離</th><th class="text-end">売上</th><th class="text-end">現金</th><th>店舗</th><th>配達先</th></tr></thead>
@@ -411,7 +414,20 @@
         <td class="text-center">
           <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" {% if not row.freee_exported_at %}checked{% endif %}>
         </td>
-        <td>{{ row.work_date }}</td>
+        <td>
+          {{ row.work_date }}
+          {% if row.source == 'uber_browser' %}
+          {% if is_admin_user %}
+          <a
+            class="badge rounded-pill bg-info text-dark text-decoration-none ms-1"
+            href="{{ url_for('records.uber_list', activity_from=row.work_date.strftime('%Y-%m-%d'), activity_to=row.work_date.strftime('%Y-%m-%d')) }}#uber-activity-details"
+            title="この日のWeb取得明細を表示"
+          >Web取得</a>
+          {% else %}
+          <span class="badge rounded-pill bg-info text-dark ms-1">Web取得</span>
+          {% endif %}
+          {% endif %}
+        </td>
         <td class="text-end">{{ row.deliveries|fmt_yen }}</td>
         <td class="text-end">¥{{ row.net_yen|fmt_yen }}</td>
         <td class="text-end">¥{{ row.promo_yen|fmt_yen }}</td>
