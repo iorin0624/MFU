@@ -52,6 +52,12 @@
         <button type="button" class="btn btn-outline-primary w-100" id="uberFetchSingle">指定日を取得</button>
       </div>
       <div class="border rounded p-3">
+        <label class="form-label fw-semibold" for="uberWeekMonday">1週間指定（月曜日）</label>
+        <input class="form-control mb-2" type="date" id="uberWeekMonday" value="{{ default_uber_week_start }}" max="{{ default_work_date }}">
+        <button type="button" class="btn btn-outline-primary w-100" id="uberFetchWeek">1週間を取得</button>
+        <div class="text-muted small mt-2">月曜4:00～翌週月曜3:59</div>
+      </div>
+      <div class="border rounded p-3">
         <div class="fw-semibold mb-2">期間指定</div>
         <div class="d-flex gap-2 mb-2">
           <input class="form-control" type="date" id="uberRangeFrom" value="{{ default_work_date }}" max="{{ default_work_date }}" aria-label="開始日">
@@ -1116,6 +1122,21 @@
       document.getElementById('uberFetchSingle').addEventListener('click', function () {
         const value = document.getElementById('uberSingleDate').value;
         if (value) startImport(value, value);
+      });
+      document.getElementById('uberFetchWeek').addEventListener('click', function () {
+        const value = document.getElementById('uberWeekMonday').value;
+        if (!value) return;
+        const monday = new Date(`${value}T00:00:00Z`);
+        if (monday.getUTCDay() !== 1) {
+          showMessage('1週間取得では月曜日を選択してください。', 'warning');
+          return;
+        }
+        const sunday = new Date(monday);
+        sunday.setUTCDate(sunday.getUTCDate() + 6);
+        const latestBusinessDate = new Date('{{ default_work_date }}T00:00:00Z');
+        if (sunday > latestBusinessDate) sunday.setTime(latestBusinessDate.getTime());
+        const dateTo = sunday.toISOString().slice(0, 10);
+        startImport(value, dateTo);
       });
       document.getElementById('uberFetchRange').addEventListener('click', function () {
         const from = document.getElementById('uberRangeFrom').value;
