@@ -1295,6 +1295,7 @@ def uber_list():
         freee_settings_complete=bool(freee_settings and not freee_settings_error),
         freee_settings_error=freee_settings_error,
         default_work_date=today,
+        default_uber_week_start=today - timedelta(days=today.weekday()),
         uber_browser_csrf=_uber_csrf_token(),
         selected_activity_summary=_present_uber_activity_summary(
             activity_range_summary(activity_summary_from, activity_summary_to)
