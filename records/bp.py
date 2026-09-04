@@ -1451,6 +1451,7 @@ def _fetch_uber_daily_rows(
             freee_api_synced_at,
             freee_api_status,
             freee_api_error,
+            source,
             (net_yen + promo_yen + other_yen + tip_yen) AS total_yen
         FROM uber_daily
         {where_sql}
