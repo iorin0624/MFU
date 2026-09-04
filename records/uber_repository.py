@@ -184,7 +184,9 @@ def get_cached_activities(activity_keys: list[str]) -> dict[str, dict]:
         placeholders = ", ".join(["%s"] * len(keys))
         cur.execute(
             f"""
-            SELECT activity_key, occurred_at, earnings_yen, raw_text, last_imported_at
+            SELECT activity_key, activity_type, occurred_at, duration_seconds,
+                   distance_km, points, deliveries, earnings_yen, merchant_name,
+                   delivery_address, raw_text, last_imported_at
             FROM uber_activities
             WHERE activity_key IN ({placeholders})
             """,

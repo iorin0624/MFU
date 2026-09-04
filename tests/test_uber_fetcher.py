@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from app.records.uber_browser import _access_restriction_reason
-from app.records.uber_fetcher import _without_mirrored_quest_rows
+from app.records.uber_fetcher import _cached_activity_is_complete, _without_mirrored_quest_rows
 
 
 def _row(event_type: str, feed_id: str, minute: int, amount: int = 150) -> dict:
@@ -36,3 +36,46 @@ def test_uber_access_restriction_detection():
         "https://drivers.uber.com/challenge", 200, "Verify you are human"
     )
     assert _access_restriction_reason("https://drivers.uber.com", 200, "通常の明細") is None
+
+
+def test_incomplete_delivery_cache_is_refetched():
+    assert not _cached_activity_is_complete(
+        {
+            "activity_type": "delivery",
+            "raw_text": "Delivery · 2026-06-05 · ¥500",
+            "earnings_yen": 500,
+            "duration_seconds": None,
+            "distance_km": None,
+            "merchant_name": None,
+            "delivery_address": None,
+        }
+    )
+
+
+def test_complete_delivery_cache_is_reused():
+    assert _cached_activity_is_complete(
+        {
+            "activity_type": "delivery",
+            "raw_text": "complete detail",
+            "earnings_yen": 500,
+            "duration_seconds": 900,
+            "distance_km": 3.2,
+            "merchant_name": "merchant",
+            "delivery_address": "destination",
+        }
+    )
+
+
+def test_zero_delivery_cache_requires_duration_but_not_route():
+    cached = {
+        "activity_type": "delivery",
+        "raw_text": "cancelled detail",
+        "earnings_yen": 0,
+        "points": 0,
+        "deliveries": 0,
+        "duration_seconds": 0,
+        "distance_km": None,
+        "merchant_name": None,
+        "delivery_address": None,
+    }
+    assert _cached_activity_is_complete(cached)
