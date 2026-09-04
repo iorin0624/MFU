@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from .uber_browser import UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
-from .uber_parser import normalize_list_row, parse_detail_text, uber_work_date
+from .uber_parser import normalize_list_row, parse_detail_text
 from .uber_repository import remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
 
 
@@ -69,10 +69,12 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     except Exception:
                         counters["error_count"] += 1
                         continue
-                    if wanted_from <= uber_work_date(row["occurred_at"]) <= wanted_to:
+                    # The detail header is authoritative. Keep the following
+                    # calendar day as a candidate because 00:00-03:59 belongs
+                    # to the preceding Uber business date.
+                    if wanted_from <= row["occurred_at"].date() <= wanted_to + timedelta(days=1):
                         normalized_rows.append(row)
                 normalized_rows = _without_mirrored_quest_rows(normalized_rows)
-                counters["found_count"] += len(normalized_rows)
                 for row in normalized_rows:
                     try:
                         text = read_detail(row["detail_url"])
@@ -82,6 +84,9 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                             occurred_at=row["occurred_at"],
                             list_amount_yen=row["list_amount_yen"],
                         )
+                        if not (wanted_from <= activity["work_date"] <= wanted_to):
+                            continue
+                        counters["found_count"] += 1
                         outcome = upsert_activity(activity)
                         counters[f"{outcome}_count"] += 1
                         touched_days.add(activity["work_date"])

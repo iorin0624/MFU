@@ -1,7 +1,14 @@
 from datetime import datetime
 from decimal import Decimal
 
-from app.records.uber_parser import activity_key, normalize_list_row, parse_detail_text, parse_yen, uber_work_date
+from app.records.uber_parser import (
+    activity_key,
+    normalize_list_row,
+    parse_detail_occurred_at,
+    parse_detail_text,
+    parse_yen,
+    uber_work_date,
+)
 
 
 def test_parse_yen_handles_full_width_currency_and_negative_value():
@@ -46,6 +53,27 @@ def test_detail_uses_uber_four_am_business_day_boundary():
         detail_text="Delivery\n0 point earned\n¥0",
     )
     assert result["work_date"] == datetime(2026, 6, 21).date()
+
+
+def test_detail_header_time_is_authoritative_for_business_date():
+    fallback = datetime(2026, 3, 6, 12, 0)
+    result = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/trips/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        occurred_at=fallback,
+        detail_text="Delivery • 2026年3月6日 • 午前1時00分\n￥320\n1 point earned",
+    )
+    assert result["occurred_at"] == datetime(2026, 3, 6, 1, 0)
+    assert result["work_date"] == datetime(2026, 3, 5).date()
+
+
+def test_detail_header_four_am_boundary():
+    fallback = datetime(2026, 3, 6, 12, 0)
+    assert parse_detail_occurred_at(
+        "Delivery • 2026年3月6日 • 午前3時59分", fallback
+    ) == datetime(2026, 3, 6, 3, 59)
+    assert parse_detail_occurred_at(
+        "Delivery • Mar 6, 2026 • 4:00 AM", fallback
+    ) == datetime(2026, 3, 6, 4, 0)
 
 
 def test_delivery_detail_extracts_operational_fields():
