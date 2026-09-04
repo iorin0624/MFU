@@ -405,12 +405,24 @@ def read_detail(detail_url: str) -> str:
         raise RuntimeError("Uber明細タブを開けませんでした。")
     try:
         with UberPage(target) as page:
-            page.wait_ready()
-            time.sleep(0.7)
-            current = str(page.evaluate("location.href") or "")
-            if "login" in current.lower() or "auth" in current.lower():
-                raise UberAuthenticationRequired("Uberへの再ログインが必要です。")
-            return str(page.evaluate("document.body ? document.body.innerText : ''") or "")
+            deadline = time.time() + 20
+            previous_text = ""
+            stable_reads = 0
+            while time.time() < deadline:
+                current = str(page.evaluate("location.href") or "")
+                if "login" in current.lower() or "auth" in current.lower():
+                    raise UberAuthenticationRequired("Uberへの再ログインが必要です。")
+                text = str(page.evaluate("document.body ? document.body.innerText : ''") or "").strip()
+                if current not in {"", "about:blank"} and len(text) >= 40:
+                    if text == previous_text:
+                        stable_reads += 1
+                        if stable_reads >= 2:
+                            return text
+                    else:
+                        previous_text = text
+                        stable_reads = 0
+                time.sleep(0.25)
+            raise RuntimeError("Uber明細の本文を読み込めませんでした。")
     finally:
         try:
             _browser_call("Target.closeTarget", {"targetId": target_id})
