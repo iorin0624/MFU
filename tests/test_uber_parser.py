@@ -106,3 +106,32 @@ B市C町1丁目
     assert result["merchant_name"] == "A店"
     assert result["delivery_address"] == "B市C町1丁目"
     assert result["points"] == 1
+
+
+def test_current_uber_layout_extracts_inline_cash_and_payout():
+    result = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/trips/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        occurred_at=datetime(2026, 9, 4, 19, 38),
+        list_amount_yen=1150,
+        detail_text="""Delivery • Sep 4, 2026 • 7:38 PM
+¥1,150
+Duration
+30 min 28 sec
+Distance
+9.62 km
+A店
+B市C町1丁目
+2 points earned
+¥4,906 cash collected
+Your earnings
+Fare
+¥1,150
+Payouts
+-¥4,906
+Trip balance
+-¥3,756""",
+    )
+    assert result["points"] == 2
+    assert result["deliveries"] == 2
+    assert result["cash_collected_yen"] == 4906
+    assert result["uber_payment_yen"] == -4906

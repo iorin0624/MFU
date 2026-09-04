@@ -100,6 +100,23 @@ def _money_after_labels(lines: list[str], labels: tuple[str, ...]) -> int:
     return parse_yen(_label_value(lines, labels))
 
 
+def _money_around_labels(lines: list[str], labels: tuple[str, ...]) -> int:
+    lowered = tuple(label.lower().rstrip(":：") for label in labels)
+    for index, line in enumerate(lines):
+        low = line.lower().rstrip(":：")
+        if not any(label in low for label in lowered):
+            continue
+        inline = parse_yen(line)
+        if inline:
+            return inline
+        for neighbor in (index + 1, index - 1):
+            if 0 <= neighbor < len(lines):
+                amount = parse_yen(lines[neighbor])
+                if amount:
+                    return amount
+    return 0
+
+
 def _route_values_after_distance(lines: list[str]) -> tuple[str, str]:
     """Uber currently renders merchant/address as unlabeled lines after distance."""
     for index, line in enumerate(lines):
@@ -136,13 +153,13 @@ def parse_detail_text(
         ("売り上げ", "売上", "あなたの売り上げ", "your earnings", "earnings"),
     ) or int(list_amount_yen or 0)
     sales = _money_after_labels(lines, ("売上", "配送料", "fare", "sales")) or displayed_earnings
-    cash = _money_after_labels(
+    cash = _money_around_labels(
         lines,
         ("現金で受け取った金額", "現金徴収額", "cash collected", "cash received"),
     )
-    uber_payment = _money_after_labels(
+    uber_payment = _money_around_labels(
         lines,
-        ("支払い", "支払", "Uberへの支払い", "payment", "paid to uber"),
+        ("支払い", "支払", "Uberへの支払い", "payment", "paid to uber", "payouts"),
     )
     tip = _money_after_labels(lines, ("チップ", "tip"))
     merchant = _label_value(lines, ("店舗", "加盟店", "集荷先", "merchant", "pickup"))
