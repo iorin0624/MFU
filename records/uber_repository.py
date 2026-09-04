@@ -218,6 +218,10 @@ def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
 
 
 def daily_activity_summary(work_date: date) -> dict:
+    return activity_range_summary(work_date, work_date)
+
+
+def activity_range_summary(date_from: date, date_to: date) -> dict:
     db = get_db()
     try:
         cur = db.cursor(dictionary=True)
@@ -236,12 +240,13 @@ def daily_activity_summary(work_date: date) -> dict:
                 COALESCE(SUM(duration_seconds), 0) AS duration_seconds,
                 COALESCE(SUM(distance_km), 0) AS distance_km,
                 MAX(last_imported_at) AS last_imported_at
-            FROM uber_activities WHERE work_date = %s
+            FROM uber_activities WHERE work_date BETWEEN %s AND %s
             """,
-            (work_date,),
+            (date_from, date_to),
         )
         row = cur.fetchone() or {}
-        row["work_date"] = work_date
+        row["date_from"] = date_from
+        row["date_to"] = date_to
         return row
     finally:
         db.close()
