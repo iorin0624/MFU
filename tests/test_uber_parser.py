@@ -135,3 +135,66 @@ Trip balance
     assert result["deliveries"] == 2
     assert result["cash_collected_yen"] == 4906
     assert result["uber_payment_yen"] == -4906
+
+
+def test_zero_yen_incomplete_delivery_is_kept_as_zero_deliveries():
+    result = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/trips/7b2228ef-e241-4c3b-94a9-ebee7f7e35f9",
+        occurred_at=datetime(2026, 6, 15, 15, 32),
+        detail_text="""Delivery • Jun 15, 2026 • 3:32 PM
+¥0
+Duration
+0 sec
+Distance
+---
+A店
+B市C町
+0 point earned""",
+    )
+    assert result["activity_type"] == "delivery"
+    assert result["earnings_yen"] == 0
+    assert result["points"] == 0
+    assert result["deliveries"] == 0
+
+
+def test_misc_adjustment_is_recorded_as_other_income():
+    result = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/activities/detail?eventType=MISC&activityFeedUUID=559165b2-a95d-43d1-a861-aef39e67e714",
+        occurred_at=datetime(2026, 6, 15, 15, 59),
+        detail_text="""¥200
+Adjustment
+Jun. 15, 3:59 PM
+DESCRIPTION
+Support Adjustment""",
+    )
+    assert result["activity_type"] == "other"
+    assert result["earnings_yen"] == 200
+    assert result["promo_yen"] == 0
+    assert result["other_yen"] == 200
+
+
+def test_tip_is_separate_from_delivery_fare():
+    result = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/trips/bd33cc7c-0f1b-4ec4-bb9e-c88b43ef5ba8",
+        occurred_at=datetime(2026, 9, 3, 20, 3),
+        detail_text="""Delivery • Sep 3, 2026 • 8:03 PM
+¥1,181
+Duration
+35 min 11 sec
+Distance
+8.90 km
+A店
+B市C町
+3 points earned
+¥281 tip included
+Your earnings
+Fare
+¥900
+Tip
+¥281
+Your earnings
+¥1,181""",
+    )
+    assert result["earnings_yen"] == 1181
+    assert result["sales_yen"] == 900
+    assert result["tip_yen"] == 281

@@ -230,7 +230,7 @@ def activity_range_summary(date_from: date, date_to: date) -> dict:
             SELECT
                 COUNT(*) AS activity_count,
                 COALESCE(SUM(deliveries), 0) AS deliveries,
-                COALESCE(SUM(CASE WHEN activity_type = 'delivery' THEN earnings_yen ELSE 0 END), 0) AS net_yen,
+                COALESCE(SUM(CASE WHEN activity_type = 'delivery' THEN sales_yen ELSE 0 END), 0) AS net_yen,
                 COALESCE(SUM(promo_yen), 0) AS promo_yen,
                 COALESCE(SUM(other_yen), 0) AS other_yen,
                 COALESCE(SUM(tip_yen), 0) AS tip_yen,
@@ -300,7 +300,7 @@ def list_activity_daily_summaries(date_from: date, date_to: date) -> list[dict]:
         cur.execute(
             """
             SELECT work_date, COUNT(*) activity_count, COALESCE(SUM(deliveries), 0) deliveries,
-                COALESCE(SUM(CASE WHEN activity_type='delivery' THEN earnings_yen ELSE 0 END), 0) net_yen,
+                COALESCE(SUM(CASE WHEN activity_type='delivery' THEN sales_yen ELSE 0 END), 0) net_yen,
                 COALESCE(SUM(promo_yen), 0) promo_yen, COALESCE(SUM(other_yen), 0) other_yen,
                 COALESCE(SUM(tip_yen), 0) tip_yen, COALESCE(SUM(sales_yen), 0) sales_yen,
                 COALESCE(SUM(cash_collected_yen), 0) cash_collected_yen,
