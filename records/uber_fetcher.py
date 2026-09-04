@@ -65,6 +65,31 @@ def _without_mirrored_quest_rows(rows: list[dict]) -> list[dict]:
     return result
 
 
+def _cached_activity_is_complete(cached: dict | None) -> bool:
+    """Return whether a cached detail can safely replace opening Uber again."""
+    if not cached or not str(cached.get("raw_text") or "").strip():
+        return False
+    if cached.get("activity_type") != "delivery":
+        return True
+
+    # A cancelled/zero-point delivery is intentionally retained as a 0-delivery
+    # record. Its page may not expose distance or route information.
+    zero_delivery = (
+        int(cached.get("earnings_yen") or 0) == 0
+        and int(cached.get("points") or 0) == 0
+        and int(cached.get("deliveries") or 0) == 0
+    )
+    if zero_delivery:
+        return cached.get("duration_seconds") is not None
+
+    return bool(
+        cached.get("duration_seconds") is not None
+        and cached.get("distance_km") is not None
+        and str(cached.get("merchant_name") or "").strip()
+        and str(cached.get("delivery_address") or "").strip()
+    )
+
+
 def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
     counters = {"found_count": 0, "inserted_count": 0, "updated_count": 0, "unchanged_count": 0, "error_count": 0}
     touched_days: set[date] = set()
@@ -101,8 +126,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                         key = row["activity_key"]
                         cached = cached_activities.get(key)
                         use_cache = bool(
-                            cached
-                            and cached.get("raw_text")
+                            _cached_activity_is_complete(cached)
                             and row["occurred_at"] < recent_cutoff
                         )
                         if use_cache:
