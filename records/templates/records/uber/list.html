@@ -276,7 +276,7 @@
 </div>
 {% endif %}
 
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-4 uber-tab-panel" data-uber-panel="import">
   <div class="card-body">
     <details>
       <summary class="h5 mb-3">スクショ解析（OpenAI API）</summary>
@@ -344,7 +344,11 @@
   </div>
 </div>
 
-<div class="table-responsive mb-4 uber-tab-panel is-active" data-uber-panel="overview">
+<div class="card shadow-sm mb-4 uber-tab-panel is-active" data-uber-panel="overview">
+  <div class="card-body">
+    <details>
+      <summary class="h5 mb-0">月別集計</summary>
+      <div class="table-responsive mt-3">
   <table class="table table-bordered table-sm">
     <thead class="table-light">
       <tr>
@@ -379,6 +383,9 @@
       {% endfor %}
     </tbody>
   </table>
+      </div>
+    </details>
+  </div>
 </div>
 
 <div class="card shadow-sm mb-4 uber-tab-panel is-active" data-uber-panel="overview">
