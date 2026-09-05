@@ -6,6 +6,7 @@ from app.records.bp import (
     _find_uber_freee_deals_by_ref_number,
     _recover_missing_uber_freee_deal,
     _update_uber_row_to_freee,
+    _verify_existing_uber_freee_deal,
 )
 
 
@@ -95,3 +96,28 @@ class UberFreeeRecoveryTest(TestCase):
         self.assertEqual(result["recovery"], "recreated")
         mock_recover.assert_called_once()
         mock_mark.assert_not_called()
+
+    @patch("app.records.bp._mark_uber_freee_error")
+    @patch("app.records.bp._recover_missing_uber_freee_deal")
+    @patch("app.records.bp.freee_services.freee_api_request")
+    def test_verify_existing_deal_recovers_when_freee_deleted_it(self, mock_request, mock_recover, mock_mark):
+        mock_request.side_effect = RuntimeError("HTTP 400 指定された取引は存在しません。")
+        mock_recover.return_value = {"date": "2026-06-05", "status": "synced", "recovery": "recreated"}
+
+        result = _verify_existing_uber_freee_deal(_row(), _settings())
+
+        self.assertEqual(result["recovery"], "recreated")
+        mock_recover.assert_called_once()
+        mock_mark.assert_not_called()
+
+    @patch("app.records.bp._recover_missing_uber_freee_deal")
+    @patch("app.records.bp.freee_services.freee_api_request")
+    def test_verify_existing_deal_skips_only_exact_freee_match(self, mock_request, mock_recover):
+        mock_request.return_value = {
+            "deal": {"id": 999, "ref_number": "uber-20260605"}
+        }
+
+        result = _verify_existing_uber_freee_deal(_row(), _settings())
+
+        self.assertEqual(result["status"], "skipped_already_synced")
+        mock_recover.assert_not_called()

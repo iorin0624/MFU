@@ -1043,6 +1043,41 @@ def _recover_missing_uber_freee_deal(row: dict, settings: dict, payload: dict) -
     }
 
 
+def _verify_existing_uber_freee_deal(row: dict, settings: dict) -> dict:
+    work_date = row["work_date"]
+    date_label = work_date.isoformat()
+    deal_id = int(row["freee_deal_id"])
+    payload = _build_freee_deal_payload(row, settings)
+    expected_ref_number = f"uber-{work_date.strftime('%Y%m%d')}"
+    try:
+        data = freee_services.freee_api_request(
+            "GET",
+            f"/api/1/deals/{deal_id}",
+            params={"company_id": int(settings["company_id"])},
+        )
+        deal = data.get("deal") if isinstance(data, dict) else None
+        if (
+            not isinstance(deal, dict)
+            or int(deal.get("id") or 0) != deal_id
+            or deal.get("ref_number") != expected_ref_number
+        ):
+            return _recover_missing_uber_freee_deal(row, settings, payload)
+        return {
+            "date": date_label,
+            "status": "skipped_already_synced",
+            "freee_deal_id": deal_id,
+        }
+    except Exception as exc:
+        if _is_freee_missing_deal_error(exc):
+            try:
+                return _recover_missing_uber_freee_deal(row, settings, payload)
+            except Exception as recovery_exc:
+                exc = recovery_exc
+        message = freee_services.sanitize_freee_error(str(exc))
+        _mark_uber_freee_error(row["id"], message)
+        return {"date": date_label, "status": "error", "message": message}
+
+
 def _update_uber_row_to_freee(row: dict, settings: dict) -> dict:
     work_date = row["work_date"]
     date_label = work_date.isoformat()
@@ -1106,7 +1141,7 @@ def _sync_uber_row_to_freee(row: dict, settings: dict) -> dict:
     if row.get("freee_deal_id"):
         if _uber_row_needs_freee_resync(row):
             return _update_uber_row_to_freee(row, settings)
-        return {"date": date_label, "status": "skipped_already_synced", "freee_deal_id": row.get("freee_deal_id")}
+        return _verify_existing_uber_freee_deal(row, settings)
     if int(row.get("total_yen") or 0) <= 0:
         return {"date": date_label, "status": "skipped_zero_amount"}
     try:
