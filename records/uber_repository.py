@@ -236,7 +236,7 @@ def get_cached_activities(activity_keys: list[str]) -> dict[str, dict]:
 
 
 def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
-    """Remove legacy MISC rows that mirror a QUEST row from the Uber feed."""
+    """Prefer posted MISC rewards over duplicate placeholder QUEST cards."""
     db = get_db()
     try:
         cur = db.cursor(dictionary=True)
@@ -251,21 +251,21 @@ def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
             (date_from, date_to),
         )
         rows = cur.fetchall()
-        quest_rows = [row for row in rows if str(row["activity_key"]).startswith("ACTIVITY:QUEST:")]
-        used_quest_keys: set[str] = set()
+        misc_rows = [row for row in rows if str(row["activity_key"]).startswith("ACTIVITY:MISC:")]
+        used_misc_keys: set[str] = set()
         delete_keys: list[str] = []
         for row in rows:
-            if not str(row["activity_key"]).startswith("ACTIVITY:MISC:"):
+            if not str(row["activity_key"]).startswith("ACTIVITY:QUEST:"):
                 continue
             candidates = [
-                (abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()), quest)
-                for quest in quest_rows
-                if quest["activity_key"] not in used_quest_keys
-                and _is_mirrored_quest(row, quest)
+                (abs((row["occurred_at"] - misc["occurred_at"]).total_seconds()), misc)
+                for misc in misc_rows
+                if misc["activity_key"] not in used_misc_keys
+                and _is_mirrored_quest(misc, row)
             ]
             if candidates:
-                _, quest = min(candidates, key=lambda item: item[0])
-                used_quest_keys.add(quest["activity_key"])
+                _, misc = min(candidates, key=lambda item: item[0])
+                used_misc_keys.add(misc["activity_key"])
                 delete_keys.append(row["activity_key"])
         if delete_keys:
             placeholders = ", ".join(["%s"] * len(delete_keys))
