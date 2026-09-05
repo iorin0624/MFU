@@ -101,7 +101,7 @@ class UberFreeeRecoveryTest(TestCase):
     @patch("app.records.bp._recover_missing_uber_freee_deal")
     @patch("app.records.bp.freee_services.freee_api_request")
     def test_verify_existing_deal_recovers_when_freee_deleted_it(self, mock_request, mock_recover, mock_mark):
-        mock_request.side_effect = RuntimeError("HTTP 400 指定された取引は存在しません。")
+        mock_request.side_effect = RuntimeError("HTTP 404 存在しないか既に削除された取引です。")
         mock_recover.return_value = {"date": "2026-06-05", "status": "synced", "recovery": "recreated"}
 
         result = _verify_existing_uber_freee_deal(_row(), _settings())

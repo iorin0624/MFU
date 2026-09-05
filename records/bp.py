@@ -921,7 +921,11 @@ def _uber_row_needs_freee_resync(row: dict) -> bool:
 
 
 def _is_freee_missing_deal_error(exc: Exception) -> bool:
-    return "指定された取引は存在しません" in str(exc)
+    message = str(exc)
+    return (
+        "指定された取引は存在しません" in message
+        or "存在しないか既に削除された取引です" in message
+    )
 
 
 def _find_uber_freee_deals_by_ref_number(work_date: date, company_id: int) -> list[dict]:
