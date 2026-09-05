@@ -148,10 +148,20 @@ def test_explicit_misc_payment_mirrors_completed_quest_with_different_stage_coun
     assert _is_mirrored_quest(misc, quest)
 
 
-def test_activity_summary_median_uses_each_work_days_rate():
+def test_activity_summary_median_uses_each_delivery_rate():
     rows = [
-        {"net_yen": 1000, "promo_yen": 0, "deliveries": 10},
-        {"net_yen": 2000, "promo_yen": 0, "deliveries": 10},
-        {"net_yen": 3000, "promo_yen": 0, "deliveries": 3},
+        {"sales_yen": 100, "tip_yen": 0, "deliveries": 1},
+        {"sales_yen": 600, "tip_yen": 0, "deliveries": 3},
+        {"sales_yen": 900, "tip_yen": 0, "deliveries": 3},
     ]
-    assert _median_rate(rows, ("net_yen", "promo_yen"), "deliveries") == 200
+    assert _median_rate(rows, ("sales_yen", "tip_yen"), "deliveries") == 200
+
+
+def test_activity_summary_median_uses_each_delivery_duration_and_ignores_zero():
+    rows = [
+        {"sales_yen": 600, "duration_seconds": 1800},
+        {"sales_yen": 900, "duration_seconds": 1800},
+        {"sales_yen": 999, "duration_seconds": 0},
+    ]
+
+    assert _median_rate(rows, ("sales_yen",), "duration_seconds", 3600) == 1500

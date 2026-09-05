@@ -14,7 +14,7 @@
   .uber-summary-section + .uber-summary-section { margin-top:1rem; }
   .uber-summary-section-title { font-size:.82rem; font-weight:700; color:#475569; margin:0 0 .45rem; }
   .uber-summary-grid { display:grid; gap:.65rem; }
-  .uber-summary-grid.uber-summary-grid-six { grid-template-columns:repeat(6,minmax(0,1fr)); }
+  .uber-summary-grid.uber-summary-grid-seven { grid-template-columns:repeat(7,minmax(0,1fr)); }
   .uber-summary-grid.uber-summary-grid-three { grid-template-columns:repeat(3,minmax(0,1fr)); }
   .uber-summary-tile { border:1px solid #d8e0ea; border-radius:.75rem; padding:.75rem; background:#f8fafc; }
   .uber-summary-tile strong { display:block; font-size:1.15rem; margin-top:.2rem; }
@@ -28,7 +28,7 @@
   .uber-section-tabs .nav-link { white-space:nowrap; }
   .uber-mobile-card { border:1px solid #d8e0ea; border-radius:.8rem; padding:.85rem; background:#fff; }
   @media (max-width:767.98px) {
-    .uber-summary-grid.uber-summary-grid-six, .uber-summary-grid.uber-summary-grid-three { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .uber-summary-grid.uber-summary-grid-seven, .uber-summary-grid.uber-summary-grid-three { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .uber-responsive-cards, .uber-responsive-cards tbody { display:block; width:100%; }
     .uber-responsive-cards thead { display:none; }
     .uber-responsive-cards tbody { display:grid; gap:.75rem; }
@@ -131,13 +131,14 @@
       </form>
     </div>
     <div class="uber-summary-section">
-      <div class="uber-summary-grid uber-summary-grid-six">
+      <div class="uber-summary-grid uber-summary-grid-seven">
         <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">配達のみ</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong>¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">チップ</span><strong>¥{{ selected_activity_summary.tip_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong>¥{{ selected_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
       </div>
     </div>
     <div class="uber-summary-section">

@@ -318,31 +318,24 @@ def activity_range_summary(date_from: date, date_to: date) -> dict:
         row = cur.fetchone() or {}
         cur.execute(
             """
-            SELECT work_date,
-                COALESCE(SUM(deliveries), 0) AS deliveries,
-                COALESCE(SUM(CASE WHEN activity_type = 'delivery' THEN sales_yen ELSE 0 END), 0) AS net_yen,
-                COALESCE(SUM(promo_yen), 0) AS promo_yen,
-                COALESCE(SUM(other_yen), 0) AS other_yen,
-                COALESCE(SUM(tip_yen), 0) AS tip_yen,
-                COALESCE(SUM(duration_seconds), 0) AS duration_seconds,
-                COALESCE(SUM(distance_km), 0) AS distance_km
+            SELECT sales_yen, tip_yen, deliveries, duration_seconds, distance_km
             FROM uber_activities
-            WHERE work_date BETWEEN %s AND %s
-            GROUP BY work_date
+            WHERE activity_type = 'delivery'
+              AND work_date BETWEEN %s AND %s
             """,
             (date_from, date_to),
         )
-        daily_rows = cur.fetchall()
-        total_keys = ("net_yen", "promo_yen", "other_yen", "tip_yen")
-        net_keys = ("net_yen",)
+        delivery_rows = cur.fetchall()
+        total_keys = ("sales_yen", "tip_yen")
+        net_keys = ("sales_yen",)
         row.update(
             {
-                "total_per_delivery_median": _median_rate(daily_rows, total_keys, "deliveries"),
-                "total_per_hour_median": _median_rate(daily_rows, total_keys, "duration_seconds", 3600),
-                "total_per_km_median": _median_rate(daily_rows, total_keys, "distance_km"),
-                "net_per_delivery_median": _median_rate(daily_rows, net_keys, "deliveries"),
-                "net_per_hour_median": _median_rate(daily_rows, net_keys, "duration_seconds", 3600),
-                "net_per_km_median": _median_rate(daily_rows, net_keys, "distance_km"),
+                "total_per_delivery_median": _median_rate(delivery_rows, total_keys, "deliveries"),
+                "total_per_hour_median": _median_rate(delivery_rows, total_keys, "duration_seconds", 3600),
+                "total_per_km_median": _median_rate(delivery_rows, total_keys, "distance_km"),
+                "net_per_delivery_median": _median_rate(delivery_rows, net_keys, "deliveries"),
+                "net_per_hour_median": _median_rate(delivery_rows, net_keys, "duration_seconds", 3600),
+                "net_per_km_median": _median_rate(delivery_rows, net_keys, "distance_km"),
             }
         )
         row["date_from"] = date_from
