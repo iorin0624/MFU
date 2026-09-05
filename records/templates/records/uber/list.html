@@ -11,9 +11,15 @@
 {% block records_content %}
 <style>
   .uber-fetch-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.75rem; }
-  .uber-summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:.65rem; }
+  .uber-summary-section + .uber-summary-section { margin-top:1rem; }
+  .uber-summary-section-title { font-size:.82rem; font-weight:700; color:#475569; margin:0 0 .45rem; }
+  .uber-summary-grid { display:grid; gap:.65rem; }
+  .uber-summary-grid.uber-summary-grid-six { grid-template-columns:repeat(6,minmax(0,1fr)); }
+  .uber-summary-grid.uber-summary-grid-three { grid-template-columns:repeat(3,minmax(0,1fr)); }
   .uber-summary-tile { border:1px solid #d8e0ea; border-radius:.75rem; padding:.75rem; background:#f8fafc; }
   .uber-summary-tile strong { display:block; font-size:1.15rem; margin-top:.2rem; }
+  .uber-summary-tile .uber-average-median { display:flex; flex-wrap:wrap; align-items:baseline; gap:.2rem .45rem; }
+  .uber-summary-tile .uber-average-median small { color:#64748b; font-size:.72rem; font-weight:600; }
   .uber-job-progress { min-height:1.5rem; }
   .uber-tab-panel { display:none; }
   .uber-tab-panel.is-active { display:block; }
@@ -22,6 +28,7 @@
   .uber-section-tabs .nav-link { white-space:nowrap; }
   .uber-mobile-card { border:1px solid #d8e0ea; border-radius:.8rem; padding:.85rem; background:#fff; }
   @media (max-width:767.98px) {
+    .uber-summary-grid.uber-summary-grid-six, .uber-summary-grid.uber-summary-grid-three { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .uber-responsive-cards, .uber-responsive-cards tbody { display:block; width:100%; }
     .uber-responsive-cards thead { display:none; }
     .uber-responsive-cards tbody { display:grid; gap:.75rem; }
@@ -32,7 +39,6 @@
   }
   @media (max-width:575.98px) {
     .uber-fetch-grid { grid-template-columns:1fr; }
-    .uber-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .uber-summary-tile { min-width:0; }
   }
 </style>
@@ -124,19 +130,38 @@
         <button class="btn btn-sm {{ 'btn-primary' if activity_summary_mode == 'range' else 'btn-outline-primary' }}" type="submit">期間指定</button>
       </form>
     </div>
-    <div class="uber-summary-grid">
-      <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">配達売上</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong>¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">チップ</span><strong>¥{{ selected_activity_summary.tip_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong>¥{{ selected_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong>{{ '%.1f'|format(selected_activity_summary.duration_hours) }}時間</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong>{{ '%.1f'|format(selected_activity_summary.distance_km|float) }}km</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong>{{ ('¥' ~ (selected_activity_summary.yen_per_delivery|fmt_yen)) if selected_activity_summary.yen_per_delivery is not none else '-' }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong>{{ ('¥' ~ (selected_activity_summary.yen_per_hour|fmt_yen)) if selected_activity_summary.yen_per_hour is not none else '-' }}</strong></div>
-      <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong>{{ ('¥' ~ (selected_activity_summary.yen_per_km|fmt_yen)) if selected_activity_summary.yen_per_km is not none else '-' }}</strong></div>
+    <div class="uber-summary-section">
+      <div class="uber-summary-grid uber-summary-grid-six">
+        <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">配達のみ</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong>¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">チップ</span><strong>¥{{ selected_activity_summary.tip_yen|fmt_yen }}</strong></div>
+      </div>
+    </div>
+    <div class="uber-summary-section">
+      <div class="uber-summary-grid uber-summary-grid-three">
+        <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong>{{ '%.1f'|format(selected_activity_summary.duration_hours) }}時間</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong>{{ '%.1f'|format(selected_activity_summary.distance_km|float) }}km</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1時間当たりの件数</span><strong>{{ ('%.1f件'|format(selected_activity_summary.deliveries_per_hour)) if selected_activity_summary.deliveries_per_hour is not none else '-' }}</strong></div>
+      </div>
+    </div>
+    <div class="uber-summary-section">
+      <div class="uber-summary-section-title">売上合計（平均値 ／ 中央値）</div>
+      <div class="uber-summary-grid uber-summary-grid-three">
+        <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.yen_per_delivery|fmt_yen)) if selected_activity_summary.yen_per_delivery is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.total_per_delivery_median|fmt_yen)) if selected_activity_summary.total_per_delivery_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.yen_per_hour|fmt_yen)) if selected_activity_summary.yen_per_hour is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.total_per_hour_median|fmt_yen)) if selected_activity_summary.total_per_hour_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.yen_per_km|fmt_yen)) if selected_activity_summary.yen_per_km is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.total_per_km_median|fmt_yen)) if selected_activity_summary.total_per_km_median is not none else '-' }}</small></strong></div>
+      </div>
+    </div>
+    <div class="uber-summary-section">
+      <div class="uber-summary-section-title">配達のみ（平均値 ／ 中央値）</div>
+      <div class="uber-summary-grid uber-summary-grid-three">
+        <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_delivery|fmt_yen)) if selected_activity_summary.net_yen_per_delivery is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_delivery_median|fmt_yen)) if selected_activity_summary.net_per_delivery_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_hour|fmt_yen)) if selected_activity_summary.net_yen_per_hour is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_hour_median|fmt_yen)) if selected_activity_summary.net_per_hour_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_km|fmt_yen)) if selected_activity_summary.net_yen_per_km is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_km_median|fmt_yen)) if selected_activity_summary.net_per_km_median is not none else '-' }}</small></strong></div>
+      </div>
     </div>
   </div>
 </div>
