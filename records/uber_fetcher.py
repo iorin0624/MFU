@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
@@ -38,6 +39,20 @@ def _week_chunks(date_from: date, date_to: date):
 def _event_type(detail_url: str) -> str:
     values = parse_qs(urlparse(detail_url).query).get("eventType") or []
     return str(values[0] if values else "").upper()
+
+
+def _without_placeholder_quest_rows(rows: list[dict]) -> list[dict]:
+    """Skip Uber's duplicate ``{0} Trip Quest`` activity cards."""
+    result = []
+    for row in rows:
+        label = re.sub(r"\s+", " ", str(row.get("list_type") or "")).strip().casefold()
+        placeholder = "{0}" in label and (
+            "trip quest" in label or "回乗車クエスト" in label
+        )
+        if _event_type(row["detail_url"]) == "QUEST" and placeholder:
+            continue
+        result.append(row)
+    return result
 
 
 def _without_mirrored_quest_rows(rows: list[dict]) -> list[dict]:
@@ -118,6 +133,7 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     # to the preceding Uber business date.
                     if wanted_from <= row["occurred_at"].date() <= wanted_to + timedelta(days=1):
                         normalized_rows.append(row)
+                normalized_rows = _without_placeholder_quest_rows(normalized_rows)
                 normalized_rows = _without_mirrored_quest_rows(normalized_rows)
                 row_keys = [row["activity_key"] for row in normalized_rows]
                 cached_activities = get_cached_activities(row_keys)

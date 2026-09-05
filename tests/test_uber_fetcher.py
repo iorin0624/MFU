@@ -1,7 +1,11 @@
 from datetime import datetime
 
 from app.records.uber_browser import _access_restriction_reason
-from app.records.uber_fetcher import _cached_activity_is_complete, _without_mirrored_quest_rows
+from app.records.uber_fetcher import (
+    _cached_activity_is_complete,
+    _without_mirrored_quest_rows,
+    _without_placeholder_quest_rows,
+)
 from app.records.uber_repository import _is_mirrored_quest, _quest_goal_count
 
 
@@ -29,6 +33,20 @@ def test_mirrored_misc_quest_is_removed_one_to_one():
 def test_distinct_misc_quest_is_preserved():
     rows = [_row("MISC", "misc-a", 1), _row("QUEST", "quest-a", 10)]
     assert _without_mirrored_quest_rows(rows) == rows
+
+
+def test_placeholder_trip_quest_is_skipped_before_opening_detail():
+    placeholder = _row("QUEST", "quest-placeholder", 10, 900)
+    placeholder["list_type"] = "{0} Trip Quest"
+    payment = _row("MISC", "misc-payment", 20, 900)
+    payment["list_type"] = "Quest"
+    assert _without_placeholder_quest_rows([placeholder, payment]) == [payment]
+
+
+def test_japanese_placeholder_trip_quest_is_skipped():
+    placeholder = _row("QUEST", "quest-placeholder", 10, 0)
+    placeholder["list_type"] = "{0} 回乗車クエスト"
+    assert _without_placeholder_quest_rows([placeholder]) == []
 
 
 def test_uber_access_restriction_detection():
