@@ -920,6 +920,67 @@ def _uber_row_needs_freee_resync(row: dict) -> bool:
     return bool(updated_at and updated_at > synced_at)
 
 
+def _is_freee_missing_deal_error(exc: Exception) -> bool:
+    return "指定された取引は存在しません" in str(exc)
+
+
+def _find_uber_freee_deals_by_ref_number(work_date: date, company_id: int) -> list[dict]:
+    ref_number = f"uber-{work_date.strftime('%Y%m%d')}"
+    matches: list[dict] = []
+    limit = 100
+    for offset in range(0, 1000, limit):
+        data = freee_services.freee_api_request(
+            "GET",
+            "/api/1/deals",
+            params={
+                "company_id": int(company_id),
+                "issue_date_start": work_date.isoformat(),
+                "issue_date_end": work_date.isoformat(),
+                "type": "income",
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        deals = data.get("deals") if isinstance(data, dict) else []
+        deals = deals if isinstance(deals, list) else []
+        matches.extend(
+            deal for deal in deals
+            if isinstance(deal, dict) and deal.get("ref_number") == ref_number
+        )
+        if len(deals) < limit:
+            break
+    return matches
+
+
+def _save_uber_freee_link(row_id: int, deal_id: int) -> None:
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE uber_daily
+        SET freee_deal_id = %s,
+            freee_api_synced_at = %s,
+            freee_api_status = 'synced',
+            freee_api_error = NULL,
+            updated_at = updated_at
+        WHERE id = %s
+        """,
+        (deal_id, now_ts(), row_id),
+    )
+    db.commit()
+    db.close()
+
+
+def _freee_deal_id(data: dict) -> int:
+    deal = data.get("deal") if isinstance(data, dict) else None
+    deal_id = (deal or {}).get("id") or (data.get("id") if isinstance(data, dict) else None)
+    if not deal_id:
+        raise RuntimeError(
+            f"freee API response does not include deal id: {json.dumps(data, ensure_ascii=False)[:500]}"
+        )
+    return int(deal_id)
+
+
 def _sync_uber_freee_payment(deal_id: int, payload: dict) -> None:
     payments = payload.get("payments") or []
     if not payments:
@@ -947,6 +1008,39 @@ def _sync_uber_freee_payment(deal_id: int, payload: dict) -> None:
         f"/api/1/deals/{deal_id}/payments",
         json_body=payment,
     )
+
+
+def _recover_missing_uber_freee_deal(row: dict, settings: dict, payload: dict) -> dict:
+    work_date = row["work_date"]
+    matches = _find_uber_freee_deals_by_ref_number(work_date, int(settings["company_id"]))
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"freeeに取引番号 uber-{work_date.strftime('%Y%m%d')} の取引が複数あります。"
+            "重複登録を防ぐため自動復旧を停止しました。"
+        )
+
+    if matches:
+        deal_id = int(matches[0]["id"])
+        deal_payload = dict(payload)
+        deal_payload.pop("payments", None)
+        freee_services.freee_api_request("PUT", f"/api/1/deals/{deal_id}", json_body=deal_payload)
+        if (settings.get("deal_payment_mode") or "settled") == "settled":
+            _sync_uber_freee_payment(deal_id, payload)
+        status = "updated"
+        recovery = "relinked"
+    else:
+        data = freee_services.freee_api_request("POST", "/api/1/deals", json_body=payload)
+        deal_id = _freee_deal_id(data)
+        status = "synced"
+        recovery = "recreated"
+
+    _save_uber_freee_link(row["id"], deal_id)
+    return {
+        "date": work_date.isoformat(),
+        "status": status,
+        "freee_deal_id": deal_id,
+        "recovery": recovery,
+    }
 
 
 def _update_uber_row_to_freee(row: dict, settings: dict) -> dict:
@@ -978,6 +1072,11 @@ def _update_uber_row_to_freee(row: dict, settings: dict) -> dict:
         db.close()
         return {"date": date_label, "status": "updated", "freee_deal_id": deal_id}
     except Exception as exc:
+        if _is_freee_missing_deal_error(exc):
+            try:
+                return _recover_missing_uber_freee_deal(row, settings, payload)
+            except Exception as recovery_exc:
+                exc = recovery_exc
         message = freee_services.sanitize_freee_error(str(exc))
         _mark_uber_freee_error(row["id"], message)
         return {"date": date_label, "status": "error", "message": message}
@@ -1012,10 +1111,7 @@ def _sync_uber_row_to_freee(row: dict, settings: dict) -> dict:
         return {"date": date_label, "status": "skipped_zero_amount"}
     try:
         data = freee_services.freee_api_request("POST", "/api/1/deals", json_body=_build_freee_deal_payload(row, settings))
-        deal = data.get("deal") if isinstance(data, dict) else None
-        freee_deal_id = (deal or {}).get("id") or data.get("id")
-        if not freee_deal_id:
-            raise RuntimeError(f"freee API response does not include deal id: {json.dumps(data, ensure_ascii=False)[:500]}")
+        freee_deal_id = _freee_deal_id(data)
         db = get_db()
         cur = db.cursor()
         now = now_ts()
