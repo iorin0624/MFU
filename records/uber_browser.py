@@ -429,10 +429,17 @@ class UberPage:
                 raise RuntimeError("Uberの「Load More」を押せませんでした。")
 
             deadline = time.time() + 10
+            absent_since = None
             while time.time() < deadline:
                 after = int(self.evaluate("document.querySelectorAll('table tbody tr').length") or 0)
                 if after > before:
                     break
+                if not self.evaluate(f"!!({button_expression})"):
+                    absent_since = absent_since or time.time()
+                    if time.time() - absent_since >= 3:
+                        return
+                else:
+                    absent_since = None
                 time.sleep(0.2)
             else:
                 raise RuntimeError("Uberの「Load More」を押しても明細が増えませんでした。")
