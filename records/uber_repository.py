@@ -15,8 +15,8 @@ TERMINAL_JOB_STATUSES = {"success", "partial", "error", "auth_required", "blocke
 def _quest_goal_count(raw_text: str | None) -> int | None:
     text = str(raw_text or "")
     patterns = (
-        r"completing\s*(\d+)\s*trips?",
         r"completed\s*\d+\s*/\s*(\d+)\s*trips?",
+        r"completing\s*(\d+)\s*trips?",
         r"(?:^|[):：])\s*(\d+)\s*回の乗車",
         r"(\d+)\s*回(?:の)?(?:乗車|配達)",
     )
