@@ -35,6 +35,15 @@ def _is_mirrored_quest(misc: dict, quest: dict) -> bool:
         return False
     if seconds <= 120:
         return True
+    misc_text = str(misc.get("raw_text") or "")
+    quest_text = str(quest.get("raw_text") or "")
+    explicit_completion_pair = bool(
+        re.search(r"クエスト.*達成", misc_text, re.I | re.S)
+        and re.search(r"(?:支払い明細|お支払い明細).*追加", misc_text, re.I | re.S)
+        and re.search(r"QUEST\s+COMPLETE", quest_text, re.I)
+    )
+    if explicit_completion_pair and seconds <= 30 * 60:
+        return True
     misc_goal = _quest_goal_count(misc.get("raw_text"))
     quest_goal = _quest_goal_count(quest.get("raw_text"))
     return bool(misc_goal is not None and misc_goal == quest_goal and seconds <= 6 * 3600)
