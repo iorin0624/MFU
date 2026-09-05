@@ -99,6 +99,7 @@ def ensure_uber_schema(db=None) -> None:
         """
         CREATE TABLE IF NOT EXISTS uber_import_jobs (
             id CHAR(32) PRIMARY KEY,
+            mode VARCHAR(32) NOT NULL DEFAULT 'manual',
             date_from DATE NOT NULL,
             date_to DATE NOT NULL,
             status VARCHAR(32) NOT NULL,
@@ -119,6 +120,47 @@ def ensure_uber_schema(db=None) -> None:
             INDEX idx_uber_import_job_status (status),
             INDEX idx_uber_import_job_created_at (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = 'uber_import_jobs'
+        """
+    )
+    import_job_columns = {row[0] for row in cur.fetchall()}
+    if "mode" not in import_job_columns:
+        cur.execute(
+            "ALTER TABLE uber_import_jobs ADD COLUMN mode VARCHAR(32) NOT NULL DEFAULT 'manual' AFTER id"
+        )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uber_continuous_fetch_state (
+            id TINYINT PRIMARY KEY,
+            enabled TINYINT(1) NOT NULL DEFAULT 0,
+            active_work_date DATE NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'stopped',
+            started_at DATETIME NULL,
+            stopped_at DATETIME NULL,
+            last_run_started_at DATETIME NULL,
+            last_run_finished_at DATETIME NULL,
+            next_run_at DATETIME NULL,
+            last_job_id CHAR(32) NULL,
+            last_found_count INT NOT NULL DEFAULT 0,
+            last_inserted_count INT NOT NULL DEFAULT 0,
+            last_updated_count INT NOT NULL DEFAULT 0,
+            last_unchanged_count INT NOT NULL DEFAULT 0,
+            last_error_count INT NOT NULL DEFAULT 0,
+            consecutive_errors INT NOT NULL DEFAULT 0,
+            last_error TEXT NULL,
+            updated_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        INSERT IGNORE INTO uber_continuous_fetch_state (id, enabled, status, updated_at)
+        VALUES (1, 0, 'stopped', NOW())
         """
     )
     db.commit()

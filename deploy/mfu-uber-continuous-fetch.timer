@@ -1,0 +1,11 @@
+[Unit]
+Description=Check enabled Uber continuous fetch hourly
+
+[Timer]
+OnCalendar=*-*-* *:40:00 Asia/Tokyo
+RandomizedDelaySec=8min
+Persistent=true
+Unit=mfu-uber-continuous-fetch.service
+
+[Install]
+WantedBy=timers.target

@@ -50,7 +50,7 @@ def _is_mirrored_quest(misc: dict, quest: dict) -> bool:
     return bool(misc_goal is not None and misc_goal == quest_goal and seconds <= 6 * 3600)
 
 
-def create_import_job(date_from: date, date_to: date) -> str:
+def create_import_job(date_from: date, date_to: date, *, mode: str = "manual") -> str:
     job_id = uuid.uuid4().hex
     now = datetime.now()
     db = get_db()
@@ -65,10 +65,10 @@ def create_import_job(date_from: date, date_to: date) -> str:
         cur.execute(
             """
             INSERT INTO uber_import_jobs (
-                id, date_from, date_to, status, total_days, created_at, updated_at
-            ) VALUES (%s, %s, %s, 'pending', %s, %s, %s)
+                id, mode, date_from, date_to, status, total_days, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s)
             """,
-            (job_id, date_from, date_to, (date_to - date_from).days + 1, now, now),
+            (job_id, mode, date_from, date_to, (date_to - date_from).days + 1, now, now),
         )
         db.commit()
         return job_id
@@ -211,6 +211,40 @@ def upsert_activity(activity: dict) -> str:
         return "updated" if previous else "inserted"
     finally:
         db.close()
+
+
+def get_continuous_fetch_state() -> dict:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT * FROM uber_continuous_fetch_state WHERE id = 1")
+        return cur.fetchone() or {"id": 1, "enabled": 0, "status": "stopped"}
+    finally:
+        db.close()
+
+
+def update_continuous_fetch_state(**fields) -> dict:
+    allowed = {
+        "enabled", "active_work_date", "status", "started_at", "stopped_at",
+        "last_run_started_at", "last_run_finished_at", "next_run_at", "last_job_id",
+        "last_found_count", "last_inserted_count", "last_updated_count",
+        "last_unchanged_count", "last_error_count", "consecutive_errors", "last_error",
+    }
+    values = {key: value for key, value in fields.items() if key in allowed}
+    if values:
+        values["updated_at"] = datetime.now()
+        assignments = ", ".join(f"{key} = %s" for key in values)
+        db = get_db()
+        try:
+            cur = db.cursor()
+            cur.execute(
+                f"UPDATE uber_continuous_fetch_state SET {assignments} WHERE id = 1",
+                tuple(values.values()),
+            )
+            db.commit()
+        finally:
+            db.close()
+    return get_continuous_fetch_state()
 
 
 def get_cached_activities(activity_keys: list[str]) -> dict[str, dict]:
