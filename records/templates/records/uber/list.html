@@ -148,7 +148,12 @@
       <input type="hidden" name="tab" value="details">
       <div class="col-sm-4"><label class="form-label" for="activityFrom">開始日</label><input id="activityFrom" class="form-control" type="date" name="activity_from" value="{{ activity_history_from }}"></div>
       <div class="col-sm-4"><label class="form-label" for="activityTo">終了日</label><input id="activityTo" class="form-control" type="date" name="activity_to" value="{{ activity_history_to }}"></div>
-      <div class="col-sm-4"><button class="btn btn-outline-primary w-100" type="submit">表示</button></div>
+      <div class="col-sm-4">
+        <div class="d-grid d-sm-flex gap-2">
+          <button class="btn btn-outline-primary flex-fill" type="submit">表示</button>
+          <button class="btn btn-outline-success flex-fill" type="submit" formaction="{{ url_for('records.uber_activity_csv') }}">CSVダウンロード</button>
+        </div>
+      </div>
     </form>
     <div class="table-responsive">
       <table class="table table-sm align-middle uber-responsive-cards">

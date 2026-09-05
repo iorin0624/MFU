@@ -360,3 +360,24 @@ def list_activities(date_from: date, date_to: date, limit: int = 1000) -> list[d
         return cur.fetchall()
     finally:
         db.close()
+
+
+def list_activities_for_export(date_from: date, date_to: date) -> list[dict]:
+    """Return every activity in a range in chronological CSV order."""
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT activity_type, occurred_at, duration_seconds, distance_km,
+                deliveries, earnings_yen, cash_collected_yen, merchant_name,
+                delivery_address
+            FROM uber_activities
+            WHERE work_date BETWEEN %s AND %s
+            ORDER BY occurred_at, id
+            """,
+            (date_from, date_to),
+        )
+        return cur.fetchall()
+    finally:
+        db.close()
