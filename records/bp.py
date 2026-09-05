@@ -44,6 +44,7 @@ from .uber_repository import (
     get_import_job,
     list_activity_daily_summaries,
     list_activities,
+    list_activities_for_export,
     list_import_jobs,
 )
 
@@ -1601,11 +1602,73 @@ def _build_uber_daily_csv_response(rows: list[dict]) -> Response:
     )
 
 
+def _format_activity_duration(value) -> str:
+    if value is None:
+        return ""
+    seconds = max(0, int(value))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _csv_safe_text(value) -> str:
+    text = str(value or "")
+    return f"'{text}" if text.startswith(("=", "+", "-", "@")) else text
+
+
+def _build_uber_activity_csv_response(rows: list[dict], date_from: date, date_to: date) -> Response:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(["日時", "種別", "件数", "時間", "距離", "売上", "現金", "店舗", "配達先"])
+    type_labels = {"delivery": "配達", "quest": "クエスト", "other": "その他"}
+    for row in rows:
+        occurred_at = row.get("occurred_at")
+        writer.writerow(
+            [
+                occurred_at.strftime("%Y-%m-%d %H:%M:%S") if occurred_at else "",
+                type_labels.get(str(row.get("activity_type") or ""), "その他"),
+                int(row.get("deliveries") or 0),
+                _format_activity_duration(row.get("duration_seconds")),
+                "" if row.get("distance_km") is None else str(row["distance_km"]),
+                int(row.get("earnings_yen") or 0),
+                int(row.get("cash_collected_yen") or 0),
+                _csv_safe_text(row.get("merchant_name")),
+                _csv_safe_text(row.get("delivery_address")),
+            ]
+        )
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    output.close()
+    filename = f"uber_activities_{date_from:%Y%m%d}-{date_to:%Y%m%d}.csv"
+    return Response(
+        csv_bytes,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @records_bp.get("/uber.csv")
 @login_required
 def uber_csv():
     rows = _fetch_uber_daily_rows(order_desc=False)
     return _build_uber_daily_csv_response(rows)
+
+
+@records_bp.get("/uber/activities.csv")
+@login_required
+@admin_required
+def uber_activity_csv():
+    try:
+        date_from = datetime.strptime(str(request.args.get("activity_from") or ""), "%Y-%m-%d").date()
+        date_to = datetime.strptime(str(request.args.get("activity_to") or ""), "%Y-%m-%d").date()
+    except ValueError:
+        abort(400, "開始日と終了日を正しく指定してください。")
+    if date_from > date_to:
+        abort(400, "開始日は終了日以前にしてください。")
+    if date_from < date(2015, 1, 1) or (date_to - date_from).days > 3650:
+        abort(400, "CSVに指定できる期間は2015年以降の10年間までです。")
+    return _build_uber_activity_csv_response(
+        list_activities_for_export(date_from, date_to), date_from, date_to
+    )
 
 
 @records_bp.post("/uber/freee.csv")
