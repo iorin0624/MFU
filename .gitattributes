@@ -1,0 +1,3 @@
+deploy/install_mfu_uber_continuous_fetch.sh text eol=lf
+deploy/mfu-uber-continuous-fetch.service text eol=lf
+deploy/mfu-uber-continuous-fetch.timer text eol=lf
