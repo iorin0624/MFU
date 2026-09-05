@@ -408,7 +408,22 @@ class UberPage:
                 f"(() => {{ const button=({button_expression}); if (!button) return false; button.scrollIntoView({{block:'center'}}); return true; }})()"
             )
             if not scrolled:
-                return
+                # React temporarily removes the button while appending a page.
+                # Only finish after both the row count and button absence have
+                # remained stable, otherwise older busy weeks are truncated.
+                stable_deadline = time.time() + 3
+                last_count = before
+                while time.time() < stable_deadline:
+                    if self.evaluate(f"!!({button_expression})"):
+                        break
+                    current = int(self.evaluate("document.querySelectorAll('table tbody tr').length") or 0)
+                    if current != last_count:
+                        last_count = current
+                        stable_deadline = time.time() + 3
+                    time.sleep(0.25)
+                else:
+                    return
+                continue
             time.sleep(0.15)
             if not self.trusted_click(button_expression):
                 raise RuntimeError("Uberの「Load More」を押せませんでした。")
@@ -416,12 +431,13 @@ class UberPage:
             deadline = time.time() + 10
             while time.time() < deadline:
                 after = int(self.evaluate("document.querySelectorAll('table tbody tr').length") or 0)
-                has_more = bool(self.evaluate(f"!!({button_expression})"))
-                if after > before or not has_more:
+                if after > before:
                     break
                 time.sleep(0.2)
             else:
                 raise RuntimeError("Uberの「Load More」を押しても明細が増えませんでした。")
+            # Give the next-page button time to return before the next pass.
+            time.sleep(0.75)
         raise RuntimeError("Uber明細の追加読み込み回数が上限を超えました。")
 
     def list_rows(self) -> list[dict]:
