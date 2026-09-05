@@ -67,6 +67,29 @@
         </a>
       </div>
     </div>
+    <div class="border rounded p-3 mb-3" id="uberContinuousFetchCard">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+        <div>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+            <span class="fw-semibold">1時間ごとの継続取得</span>
+            <span class="badge text-bg-secondary" id="uberContinuousStatus">確認中</span>
+          </div>
+          <div class="text-muted small">開始した営業日だけを監視し、翌日4:00に自動停止します。新規・金額変更・未完成の明細だけを開きます。</div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          <button type="button" class="btn btn-success" id="uberContinuousStart">開始</button>
+          <button type="button" class="btn btn-outline-primary" id="uberContinuousRunNow">今すぐ増分取得</button>
+          <button type="button" class="btn btn-outline-danger" id="uberContinuousStop">停止</button>
+        </div>
+      </div>
+      <div class="row g-2 mt-2 small">
+        <div class="col-sm-6 col-lg-3"><span class="text-muted">対象営業日：</span><span id="uberContinuousWorkDate">-</span></div>
+        <div class="col-sm-6 col-lg-3"><span class="text-muted">前回完了：</span><span id="uberContinuousLastRun">-</span></div>
+        <div class="col-sm-6 col-lg-3"><span class="text-muted">次回予定：</span><span id="uberContinuousNextRun">-</span></div>
+        <div class="col-sm-6 col-lg-3"><span class="text-muted">前回結果：</span><span id="uberContinuousCounts">-</span></div>
+      </div>
+      <div class="alert alert-warning py-2 mt-2 mb-0 d-none" id="uberContinuousError"></div>
+    </div>
     <div class="uber-fetch-grid">
       <div class="border rounded p-3">
         <div class="fw-semibold mb-2">本日</div>
@@ -97,8 +120,8 @@
       <div class="progress-bar" id="uberImportProgress" style="width:0%">0%</div>
     </div>
     <details class="mt-3"><summary>直近の取得履歴</summary>
-      <div class="table-responsive mt-2"><table class="table table-sm"><thead><tr><th>期間</th><th>状態</th><th>進捗</th><th>新規</th><th>更新</th><th>失敗</th></tr></thead><tbody>
-      {% for job in uber_import_jobs %}<tr><td>{{ job.date_from }}～{{ job.date_to }}</td><td>{{ job.status }}</td><td>{{ job.processed_days }}/{{ job.total_days }}日</td><td>{{ job.inserted_count }}</td><td>{{ job.updated_count }}</td><td>{{ job.error_count }}</td></tr>{% else %}<tr><td colspan="6" class="text-muted">履歴がありません。</td></tr>{% endfor %}
+      <div class="table-responsive mt-2"><table class="table table-sm"><thead><tr><th>方式</th><th>期間</th><th>状態</th><th>進捗</th><th>新規</th><th>更新</th><th>失敗</th></tr></thead><tbody>
+      {% for job in uber_import_jobs %}<tr><td>{{ '継続' if job.mode == 'continuous' else '手動' }}</td><td>{{ job.date_from }}～{{ job.date_to }}</td><td>{{ job.status }}</td><td>{{ job.processed_days }}/{{ job.total_days }}日</td><td>{{ job.inserted_count }}</td><td>{{ job.updated_count }}</td><td>{{ job.error_count }}</td></tr>{% else %}<tr><td colspan="7" class="text-muted">履歴がありません。</td></tr>{% endfor %}
       </tbody></table></div>
     </details>
   </div>
@@ -1215,8 +1238,62 @@
       const message = document.getElementById('uberImportMessage');
       const progressWrap = document.getElementById('uberImportProgressWrap');
       const progress = document.getElementById('uberImportProgress');
-      const actionButtons = card.querySelectorAll('button');
+      const actionButtons = ['uberFetchToday', 'uberFetchSingle', 'uberFetchWeek', 'uberFetchRange']
+        .map(function (id) { return document.getElementById(id); }).filter(Boolean);
       let pollTimer = null;
+      let continuousPollTimer = null;
+
+      const continuousStatus = document.getElementById('uberContinuousStatus');
+      const continuousStart = document.getElementById('uberContinuousStart');
+      const continuousStop = document.getElementById('uberContinuousStop');
+      const continuousRunNow = document.getElementById('uberContinuousRunNow');
+      const continuousError = document.getElementById('uberContinuousError');
+      const statusLabels = {
+        stopped:'停止中', monitoring:'監視中', running:'取得中',
+        auth_required:'再ログインが必要', blocked:'アクセス制限で停止', error_paused:'エラーで停止'
+      };
+
+      function formatDateTime(value) {
+        if (!value) return '-';
+        return String(value).replace('T', ' ').slice(0, 16);
+      }
+      function renderContinuousState(state) {
+        const enabled = Boolean(Number(state.enabled || 0));
+        const status = String(state.status || 'stopped');
+        continuousStatus.textContent = statusLabels[status] || status;
+        continuousStatus.className = `badge ${status === 'monitoring' ? 'text-bg-success' : status === 'running' ? 'text-bg-primary' : status === 'stopped' ? 'text-bg-secondary' : 'text-bg-warning'}`;
+        continuousStart.disabled = enabled;
+        continuousStop.disabled = !enabled;
+        continuousRunNow.disabled = !enabled || status === 'running';
+        document.getElementById('uberContinuousWorkDate').textContent = state.active_work_date || '-';
+        document.getElementById('uberContinuousLastRun').textContent = formatDateTime(state.last_run_finished_at);
+        document.getElementById('uberContinuousNextRun').textContent = formatDateTime(state.next_run_at);
+        document.getElementById('uberContinuousCounts').textContent = state.last_run_finished_at
+          ? `新規${state.last_inserted_count || 0}・更新${state.last_updated_count || 0}・変更なし${state.last_unchanged_count || 0}` : '-';
+        continuousError.textContent = state.last_error || '';
+        continuousError.classList.toggle('d-none', !state.last_error);
+      }
+      async function loadContinuousState() {
+        const response = await fetch('{{ url_for("records.uber_continuous_fetch_status") }}', {cache:'no-store'});
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || '継続取得の状態を確認できません。');
+        renderContinuousState(data.state || {});
+      }
+      async function continuousAction(url) {
+        continuousStart.disabled = true;
+        continuousStop.disabled = true;
+        continuousRunNow.disabled = true;
+        try {
+          const response = await fetch(url, {method:'POST', headers:{'X-CSRF-Token':csrf}});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.message || '操作に失敗しました。');
+          showMessage(data.message || '操作しました。', 'success');
+          await loadContinuousState();
+        } catch (error) {
+          showMessage(error.message || '操作に失敗しました。', 'danger');
+          await loadContinuousState().catch(function () {});
+        }
+      }
 
       function showMessage(text, kind) {
         message.textContent = text;
@@ -1311,6 +1388,11 @@
           showMessage(error.message || 'ログイン画面を開けません。', 'danger');
         }
       });
+      continuousStart.addEventListener('click', function () { continuousAction('{{ url_for("records.uber_continuous_fetch_start") }}'); });
+      continuousStop.addEventListener('click', function () { continuousAction('{{ url_for("records.uber_continuous_fetch_stop") }}'); });
+      continuousRunNow.addEventListener('click', function () { continuousAction('{{ url_for("records.uber_continuous_fetch_run_now") }}'); });
+      loadContinuousState().catch(function (error) { continuousError.textContent = error.message; continuousError.classList.remove('d-none'); });
+      continuousPollTimer = setInterval(function () { loadContinuousState().catch(function () {}); }, 10000);
       if (card.dataset.activeJob) {
         setBusy(true);
         pollJob(card.dataset.activeJob).then(function (completed) {

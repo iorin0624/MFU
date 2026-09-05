@@ -41,11 +41,13 @@ from .uber_repository import (
     activity_range_summary,
     create_import_job,
     get_active_import_job,
+    get_continuous_fetch_state,
     get_import_job,
     list_activity_daily_summaries,
     list_activities,
     list_activities_for_export,
     list_import_jobs,
+    update_continuous_fetch_state,
 )
 
 records_bp = Blueprint(
@@ -1450,6 +1452,7 @@ def uber_list():
         activity_history_to=history_to,
         uber_import_jobs=list_import_jobs(10),
         active_uber_import_job=get_active_import_job(),
+        uber_continuous_state=get_continuous_fetch_state(),
         summary={
             "deliveries_sum": deliveries_sum,
             "net_sum": summary.get("net_sum") or 0,
@@ -1549,6 +1552,89 @@ def uber_import_job_status(job_id: str):
     processed = int(job.get("processed_days") or 0)
     job["progress"] = round(processed * 100 / total) if total else 0
     return jsonify({"ok": True, "job": job})
+
+
+def _start_uber_continuous_process(*, force: bool = False) -> None:
+    root = str(Path(current_app.root_path).parent)
+    command = [sys.executable, "-m", "app.records.uber_continuous_fetch_cli"]
+    if force:
+        command.append("--force")
+    subprocess.Popen(
+        command,
+        cwd=root,
+        env=os.environ.copy(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
+@records_bp.get("/uber/continuous-fetch")
+@login_required
+@admin_required
+def uber_continuous_fetch_status():
+    return jsonify({"ok": True, "state": get_continuous_fetch_state()})
+
+
+@records_bp.post("/uber/continuous-fetch/start")
+@login_required
+@admin_required
+def uber_continuous_fetch_start():
+    _require_uber_csrf()
+    active = get_active_import_job()
+    if active:
+        return jsonify({"ok": False, "message": "別のUber取得処理が実行中です。"}), 409
+    now = datetime.now(ZoneInfo("Asia/Tokyo")).replace(tzinfo=None)
+    work_date = uber_work_date(datetime.now(ZoneInfo("Asia/Tokyo")))
+    state = update_continuous_fetch_state(
+        enabled=1,
+        active_work_date=work_date,
+        status="monitoring",
+        started_at=now,
+        stopped_at=None,
+        next_run_at=now,
+        consecutive_errors=0,
+        last_error=None,
+    )
+    try:
+        _start_uber_continuous_process(force=True)
+    except Exception as exc:
+        update_continuous_fetch_state(enabled=0, status="error_paused", stopped_at=now, last_error=str(exc))
+        return jsonify({"ok": False, "message": str(exc)}), 500
+    return jsonify({"ok": True, "state": state, "message": "継続取得を開始しました。"}), 202
+
+
+@records_bp.post("/uber/continuous-fetch/stop")
+@login_required
+@admin_required
+def uber_continuous_fetch_stop():
+    _require_uber_csrf()
+    now = datetime.now(ZoneInfo("Asia/Tokyo")).replace(tzinfo=None)
+    state = update_continuous_fetch_state(
+        enabled=0,
+        status="stopped",
+        stopped_at=now,
+        next_run_at=None,
+    )
+    return jsonify({"ok": True, "state": state, "message": "継続取得を停止しました。"})
+
+
+@records_bp.post("/uber/continuous-fetch/run-now")
+@login_required
+@admin_required
+def uber_continuous_fetch_run_now():
+    _require_uber_csrf()
+    state = get_continuous_fetch_state()
+    if not state.get("enabled"):
+        return jsonify({"ok": False, "message": "先に継続取得を開始してください。"}), 409
+    if get_active_import_job():
+        return jsonify({"ok": False, "message": "別のUber取得処理が実行中です。"}), 409
+    try:
+        _start_uber_continuous_process(force=True)
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
+    return jsonify({"ok": True, "message": "増分取得を開始しました。"}), 202
 
 
 def _fetch_uber_daily_rows(

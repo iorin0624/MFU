@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from .uber_browser import UberAccessRestricted, UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
-from .uber_parser import activity_key, normalize_list_row, parse_detail_text
+from .uber_parser import activity_key, normalize_list_row, parse_detail_text, uber_work_date
 from .uber_repository import get_cached_activities, remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
 
 
@@ -105,7 +105,20 @@ def _cached_activity_is_complete(cached: dict | None) -> bool:
     )
 
 
-def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
+def _incremental_detail_required(row: dict, cached: dict | None) -> bool:
+    """Open only new, changed, or incomplete details during continuous fetches."""
+    if not _cached_activity_is_complete(cached):
+        return True
+    return int(row.get("list_amount_yen") or 0) != int(cached.get("earnings_yen") or 0)
+
+
+def fetch_uber_activities(
+    job_id: str,
+    date_from: date,
+    date_to: date,
+    *,
+    incremental: bool = False,
+) -> dict:
     counters = {"found_count": 0, "inserted_count": 0, "updated_count": 0, "unchanged_count": 0, "error_count": 0}
     touched_days: set[date] = set()
     conflict_days: list[str] = []
@@ -141,6 +154,12 @@ def fetch_uber_activities(job_id: str, date_from: date, date_to: date) -> dict:
                     try:
                         key = row["activity_key"]
                         cached = cached_activities.get(key)
+                        if incremental and not _incremental_detail_required(row, cached):
+                            if wanted_from <= uber_work_date(row["occurred_at"]) <= wanted_to:
+                                counters["found_count"] += 1
+                                counters["unchanged_count"] += 1
+                            update_import_job(job_id, **counters)
+                            continue
                         use_cache = bool(
                             _cached_activity_is_complete(cached)
                             and row["occurred_at"] < recent_cutoff

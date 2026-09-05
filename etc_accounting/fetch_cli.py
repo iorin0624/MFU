@@ -9,6 +9,7 @@ from .fetcher import fetch_month, scheduled_months
 from .manual_jobs import update_manual_fetch_job
 from .notifications import dispatch_pending_new_record_notifications
 from .repository import record_scheduled_fetch_completed
+from app.utils.browser_automation_lock import BrowserAutomationBusy, browser_automation_lock
 
 
 def main() -> int:
@@ -29,12 +30,17 @@ def main() -> int:
     exit_code = 0
     if args.manual_job_id:
         update_manual_fetch_job(args.manual_job_id, status="running")
-    for month in months:
-        try:
-            results.append(fetch_month(month, force_record_ids=set(args.force_id)))
-        except Exception as exc:
-            results.append({"status": "error", "statement_month": month, "error": str(exc)})
-            exit_code = 1
+    try:
+        with browser_automation_lock("etc", wait_seconds=600):
+            for month in months:
+                try:
+                    results.append(fetch_month(month, force_record_ids=set(args.force_id)))
+                except Exception as exc:
+                    results.append({"status": "error", "statement_month": month, "error": str(exc)})
+                    exit_code = 1
+    except BrowserAutomationBusy as exc:
+        results.append({"status": "error", "error": str(exc)})
+        exit_code = 1
     notification_error = ""
     try:
         notification = dispatch_pending_new_record_notifications()
