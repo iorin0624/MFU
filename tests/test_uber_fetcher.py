@@ -114,3 +114,17 @@ def test_same_amount_is_not_enough_to_remove_distinct_quest():
         "raw_text": "Get ¥900 extra by completing 9 trips",
     }
     assert not _is_mirrored_quest(misc, quest)
+
+
+def test_explicit_misc_payment_mirrors_completed_quest_with_different_stage_counts():
+    misc = {
+        "occurred_at": datetime(2026, 9, 5, 20, 49),
+        "earnings_yen": 900,
+        "raw_text": "クエスト: 12 回の乗車 (レベル4) を達成しました。お支払い明細に ¥900 が追加されました。",
+    }
+    quest = {
+        "occurred_at": datetime(2026, 9, 5, 20, 38),
+        "earnings_yen": 900,
+        "raw_text": "QUEST COMPLETE\nCompleted 3/3 trips\nGet ¥900 extra by completing 3 trips",
+    }
+    assert _is_mirrored_quest(misc, quest)
