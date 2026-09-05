@@ -219,9 +219,13 @@ def _present_uber_activity_summary(row: dict) -> dict:
         "deliveries": deliveries,
         "total_yen": total_yen,
         "duration_hours": duration_seconds / 3600 if duration_seconds else 0,
+        "deliveries_per_hour": round(deliveries * 3600 / duration_seconds, 1) if duration_seconds else None,
         "yen_per_delivery": round(total_yen / deliveries) if deliveries else None,
         "yen_per_hour": round(total_yen * 3600 / duration_seconds) if duration_seconds else None,
         "yen_per_km": round(total_yen / distance_km) if distance_km else None,
+        "net_yen_per_delivery": round(int(value.get("net_yen") or 0) / deliveries) if deliveries else None,
+        "net_yen_per_hour": round(int(value.get("net_yen") or 0) * 3600 / duration_seconds) if duration_seconds else None,
+        "net_yen_per_km": round(int(value.get("net_yen") or 0) / distance_km) if distance_km else None,
     })
     return value
 

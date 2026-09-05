@@ -6,7 +6,7 @@ from app.records.uber_fetcher import (
     _without_mirrored_quest_rows,
     _without_placeholder_quest_rows,
 )
-from app.records.uber_repository import _is_mirrored_quest, _quest_goal_count
+from app.records.uber_repository import _is_mirrored_quest, _median_rate, _quest_goal_count
 
 
 def _row(event_type: str, feed_id: str, minute: int, amount: int = 150) -> dict:
@@ -146,3 +146,12 @@ def test_explicit_misc_payment_mirrors_completed_quest_with_different_stage_coun
         "raw_text": "QUEST COMPLETE\nCompleted 3/3 trips\nGet ¥900 extra by completing 3 trips",
     }
     assert _is_mirrored_quest(misc, quest)
+
+
+def test_activity_summary_median_uses_each_work_days_rate():
+    rows = [
+        {"net_yen": 1000, "promo_yen": 0, "deliveries": 10},
+        {"net_yen": 2000, "promo_yen": 0, "deliveries": 10},
+        {"net_yen": 3000, "promo_yen": 0, "deliveries": 3},
+    ]
+    assert _median_rate(rows, ("net_yen", "promo_yen"), "deliveries") == 200
