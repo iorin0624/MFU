@@ -84,6 +84,7 @@ def test_zero_delivery_cache_requires_duration_but_not_route():
 
 def test_quest_goal_count_supports_uber_quest_and_misc_text():
     assert _quest_goal_count("Get ¥900 extra by completing 9 trips") == 9
+    assert _quest_goal_count("Completed 12/12 trips\nGet ¥900 extra by completing 3 trips") == 12
     assert _quest_goal_count("クエスト: 9 回の乗車 (レベル 1) を達成しました") == 9
 
 
