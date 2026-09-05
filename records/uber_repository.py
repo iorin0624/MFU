@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -9,6 +10,34 @@ from app.utils.db import get_db
 
 
 TERMINAL_JOB_STATUSES = {"success", "partial", "error", "auth_required", "blocked"}
+
+
+def _quest_goal_count(raw_text: str | None) -> int | None:
+    text = str(raw_text or "")
+    patterns = (
+        r"completing\s*(\d+)\s*trips?",
+        r"completed\s*\d+\s*/\s*(\d+)\s*trips?",
+        r"(?:^|[):：])\s*(\d+)\s*回の乗車",
+        r"(\d+)\s*回(?:の)?(?:乗車|配達)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I | re.M)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _is_mirrored_quest(misc: dict, quest: dict) -> bool:
+    seconds = abs((quest["occurred_at"] - misc["occurred_at"]).total_seconds())
+    if int(quest.get("earnings_yen") or 0) != int(misc.get("earnings_yen") or 0):
+        return False
+    if quest["occurred_at"].date() != misc["occurred_at"].date():
+        return False
+    if seconds <= 120:
+        return True
+    misc_goal = _quest_goal_count(misc.get("raw_text"))
+    quest_goal = _quest_goal_count(quest.get("raw_text"))
+    return bool(misc_goal is not None and misc_goal == quest_goal and seconds <= 6 * 3600)
 
 
 def create_import_job(date_from: date, date_to: date) -> str:
@@ -204,7 +233,7 @@ def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT activity_key, occurred_at, earnings_yen
+            SELECT activity_key, occurred_at, earnings_yen, raw_text
             FROM uber_activities
             WHERE work_date BETWEEN %s AND %s
               AND activity_type = 'quest'
@@ -223,9 +252,7 @@ def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
                 (abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()), quest)
                 for quest in quest_rows
                 if quest["activity_key"] not in used_quest_keys
-                and int(quest["earnings_yen"] or 0) == int(row["earnings_yen"] or 0)
-                and quest["occurred_at"].date() == row["occurred_at"].date()
-                and abs((quest["occurred_at"] - row["occurred_at"]).total_seconds()) <= 120
+                and _is_mirrored_quest(row, quest)
             ]
             if candidates:
                 _, quest = min(candidates, key=lambda item: item[0])

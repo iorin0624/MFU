@@ -2,6 +2,7 @@ from datetime import datetime
 
 from app.records.uber_browser import _access_restriction_reason
 from app.records.uber_fetcher import _cached_activity_is_complete, _without_mirrored_quest_rows
+from app.records.uber_repository import _is_mirrored_quest, _quest_goal_count
 
 
 def _row(event_type: str, feed_id: str, minute: int, amount: int = 150) -> dict:
@@ -79,3 +80,36 @@ def test_zero_delivery_cache_requires_duration_but_not_route():
         "delivery_address": None,
     }
     assert _cached_activity_is_complete(cached)
+
+
+def test_quest_goal_count_supports_uber_quest_and_misc_text():
+    assert _quest_goal_count("Get ¥900 extra by completing 9 trips") == 9
+    assert _quest_goal_count("クエスト: 9 回の乗車 (レベル 1) を達成しました") == 9
+
+
+def test_mirrored_quest_matches_same_amount_and_goal_outside_two_minutes():
+    misc = {
+        "occurred_at": datetime(2026, 9, 5, 20, 49),
+        "earnings_yen": 900,
+        "raw_text": "クエスト: 9 回の乗車を達成しました。",
+    }
+    quest = {
+        "occurred_at": datetime(2026, 9, 5, 20, 38),
+        "earnings_yen": 900,
+        "raw_text": "Get ¥900 extra by completing 9 trips",
+    }
+    assert _is_mirrored_quest(misc, quest)
+
+
+def test_same_amount_is_not_enough_to_remove_distinct_quest():
+    misc = {
+        "occurred_at": datetime(2026, 9, 5, 20, 49),
+        "earnings_yen": 900,
+        "raw_text": "クエスト: 8 回の乗車を達成しました。",
+    }
+    quest = {
+        "occurred_at": datetime(2026, 9, 5, 20, 38),
+        "earnings_yen": 900,
+        "raw_text": "Get ¥900 extra by completing 9 trips",
+    }
+    assert not _is_mirrored_quest(misc, quest)
