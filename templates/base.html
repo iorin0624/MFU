@@ -268,7 +268,18 @@
       items.forEach((it) => {
         latestId = Math.max(latestId, Number(it.id || 0));
         const a = document.createElement('a');
-        const targetUrl = (typeof it?.target_url === 'string' && it.target_url.trim()) ? it.target_url.trim() : '/';
+        let targetUrl = (typeof it?.target_url === 'string' && it.target_url.trim()) ? it.target_url.trim() : '/';
+        if (['chat_message', 'event_chat', 'dm'].includes(String(it?.kind || ''))) {
+          try {
+            const target = new URL(targetUrl, window.location.origin);
+            if (target.pathname.startsWith('/external-login/app/') && !target.searchParams.has('auth_scope')) {
+              target.searchParams.set('auth_scope', 'mfu');
+              targetUrl = `${target.pathname}${target.search}${target.hash}`;
+            } else if (target.pathname === '/chat' || target.pathname === '/chat/') {
+              targetUrl = '/external-login/app/chat?auth_scope=mfu';
+            }
+          } catch (_) {}
+        }
         a.href = targetUrl;
         a.dataset.targetUrl = targetUrl;
         a.className = 'mfu-notif-item' + (it.is_read ? '' : ' unread');

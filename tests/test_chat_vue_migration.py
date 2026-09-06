@@ -45,6 +45,13 @@ class ChatVueMigrationSourceTests(unittest.TestCase):
         self.assertIn("SELECT id, event_uuid, title", backend)
         self.assertIn("uuid: item.event_uuid", view)
 
+    def test_legacy_chat_index_and_mfu_nav_notifications_use_mfu_vue_scope(self):
+        backend = (ROOT / "chat/__init__.py").read_text(encoding="utf-8-sig")
+        nav = (ROOT / "templates/base.html").read_text(encoding="utf-8-sig")
+        self.assertIn('return redirect("/external-login/app/chat?auth_scope=mfu")', backend)
+        self.assertIn("target.searchParams.set('auth_scope', 'mfu')", nav)
+        self.assertIn("targetUrl = '/external-login/app/chat?auth_scope=mfu'", nav)
+
     def test_core_legacy_features_are_wired(self):
         pane = (ROOT / "external_login_user/frontend/src/components/ChatRoomPane.vue").read_text(encoding="utf-8-sig")
         manager = (ROOT / "external_login_user/frontend/src/components/ChatRoomManager.vue").read_text(encoding="utf-8-sig")
