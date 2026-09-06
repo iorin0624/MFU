@@ -1,4 +1,4 @@
-const SW_VERSION = '2026-03-04-01';
+const SW_VERSION = '2026-09-07-01';
 const BADGE_SYNC_MESSAGE = 'SYNC_BADGE';
 
 function badgeApiUrl(overridePath) {
@@ -15,8 +15,8 @@ async function setBadgeSafe(count) {
     return;
   }
   try {
-    if (self.registration && typeof self.registration.setAppBadge === 'function') {
-      await self.registration.setAppBadge(normalized);
+    if (self.navigator && typeof self.navigator.setAppBadge === 'function') {
+      await self.navigator.setAppBadge(normalized);
     }
   } catch (e) {
     console.debug('[sw] set badge failed', e);
@@ -25,8 +25,8 @@ async function setBadgeSafe(count) {
 
 async function clearBadgeSafe() {
   try {
-    if (self.registration && typeof self.registration.clearAppBadge === 'function') {
-      await self.registration.clearAppBadge();
+    if (self.navigator && typeof self.navigator.clearAppBadge === 'function') {
+      await self.navigator.clearAppBadge();
     }
   } catch (e) {
     console.debug('[sw] clear badge failed', e);
@@ -66,9 +66,17 @@ self.addEventListener('install', () => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     await clients.claim();
-    await syncBadgeFromApi();
   })());
 });
+
+function payloadBadgeApiUrl(payload) {
+  if (typeof payload?.badge_api_url === 'string' && payload.badge_api_url.trim()) {
+    return payload.badge_api_url.trim();
+  }
+  return payload?.notification_scope === 'mfu'
+    ? '/api/mfu-notifications/unread-count'
+    : '/external-login/api/notifications/unread-count';
+}
 
 function normalizeTargetUrl(rawUrl, eventId) {
   const fallbackPath = eventId ? `/chat/events/${eventId}` : '/';
@@ -101,10 +109,11 @@ self.addEventListener('push', (event) => {
   const body = payload.body || '新着通知があります';
   const rawTargetUrl = payload.target_url || payload.url;
   const targetUrl = normalizeTargetUrl(rawTargetUrl, payload.event_id);
+  const badgeUrl = payloadBadgeApiUrl(payload);
 
   const showPromise = self.registration.showNotification(title, {
     body,
-    data: { url: targetUrl, target_url: targetUrl },
+    data: { url: targetUrl, target_url: targetUrl, badge_api_url: badgeUrl },
   });
 
   const broadcastPromise = (async () => {
@@ -124,7 +133,7 @@ self.addEventListener('push', (event) => {
     }
   })();
 
-  event.waitUntil(Promise.all([showPromise, broadcastPromise, syncBadgeFromApi()]));
+  event.waitUntil(Promise.all([showPromise, broadcastPromise, syncBadgeFromApi(badgeUrl)]));
 });
 
 self.addEventListener('notificationclick', (event) => {
@@ -139,7 +148,7 @@ self.addEventListener('notificationclick', (event) => {
   }
 
   event.waitUntil((async () => {
-    await syncBadgeFromApi();
+    await syncBadgeFromApi(event.notification?.data?.badge_api_url);
     let windowClients = [];
     try {
       windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -185,5 +194,10 @@ self.addEventListener('notificationclick', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event?.data?.type !== BADGE_SYNC_MESSAGE) return;
+  const count = Number(event?.data?.count);
+  if (Number.isFinite(count)) {
+    event.waitUntil(setBadgeSafe(count));
+    return;
+  }
   event.waitUntil(syncBadgeFromApi(event?.data?.badgeApiUrl));
 });

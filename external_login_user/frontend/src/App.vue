@@ -37,17 +37,24 @@ const immersiveChatRoute = computed(() => route.name === 'event-chat' || route.n
 const viewportStyle = ref<Record<string, string>>({});
 const shortChatViewport = computed(() => parseFloat(viewportStyle.value['--chat-viewport-height'] || '1000') < 420);
 let stopViewportTracking: (() => void) | undefined;
+function configureNotificationRealtime() {
+  stopNotificationRealtime();
+  if (!store.notificationAuthenticated) return;
+  startNotificationRealtime(
+    store.effectiveNotificationScope,
+    () => store.refreshUnread(),
+    (counts) => store.applyUnread(counts),
+  );
+}
 onMounted(async () => {
   stopViewportTracking = trackChatViewport((style) => { viewportStyle.value = style; });
   await store.bootstrap();
-  if (store.session?.authenticated) {
-    startNotificationRealtime(
-      store.session.notificationScope,
-      () => store.refreshUnread(),
-      (counts) => store.applyUnread(counts),
-    );
-  }
+  configureNotificationRealtime();
 });
+watch(
+  [() => store.notificationAuthenticated, () => store.effectiveNotificationScope],
+  configureNotificationRealtime,
+);
 onBeforeUnmount(stopNotificationRealtime);
 onBeforeUnmount(() => stopViewportTracking?.());
 async function agreePrivacy() {
