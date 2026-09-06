@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from time import perf_counter
+from time import perf_counter, time_ns
 from typing import Any
 
 
@@ -420,3 +420,65 @@ def send_push(
         elapsed_ms,
     )
     return result
+
+
+def send_external_event_push(
+    *,
+    user_id: int,
+    event_id: int,
+    event_uuid: str,
+    kind: str,
+    title: str,
+    body: str,
+    target_suffix: str = "",
+    target_url: str | None = None,
+    sender_label: str = "Mimoria",
+    dedup_token: str | None = None,
+) -> dict[str, Any]:
+    """Best-effort in-app + Web Push delivery for an event participant.
+
+    Business operations such as joining or payment confirmation must not be
+    rolled back merely because a browser push endpoint is unavailable.  The
+    common gateway still creates the in-app notification when no subscription
+    exists and records each channel's delivery result.
+    """
+    try:
+        normalized_user_id = int(user_id)
+        normalized_event_id = int(event_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "invalid_recipient"}
+    normalized_uuid = str(event_uuid or "").strip()
+    explicit_target = str(target_url or "").strip()
+    if normalized_user_id <= 0 or normalized_event_id <= 0 or (not normalized_uuid and not explicit_target):
+        return {"ok": False, "reason": "invalid_recipient"}
+
+    suffix = str(target_suffix or "").strip()
+    if suffix and not suffix.startswith("/"):
+        suffix = f"/{suffix}"
+    resolved_target = explicit_target or (
+        f"/external-login/app/events/{normalized_uuid}{suffix}"
+    )
+    token = str(dedup_token or time_ns()).strip()
+    dedup_key = f"event:{normalized_event_id}:{kind}:{normalized_user_id}:{token}"[:191]
+    try:
+        return send_push(
+            recipient_type="external_user_id",
+            recipient_value=normalized_user_id,
+            title=title,
+            body=body,
+            target_url=resolved_target,
+            kind=kind,
+            sender_label=sender_label,
+            dedup_key=dedup_key,
+            event_id=normalized_event_id,
+            create_in_app=True,
+            send_web_push=True,
+        )
+    except Exception as exc:
+        _LOG.exception(
+            "event participant push failed user_id=%s event_id=%s kind=%s",
+            normalized_user_id,
+            normalized_event_id,
+            kind,
+        )
+        return {"ok": False, "reason": type(exc).__name__}

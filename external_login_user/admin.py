@@ -29,6 +29,8 @@ from .utils import (
 )
 
 from app.utils.mail import send_mail
+from app.utils.push import send_external_event_push
+from .event_push import notify_member_payment_push, notify_member_status_push
 
 
 from io import StringIO, BytesIO
@@ -252,6 +254,13 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
             )
         except Exception as e:
             current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
+
+    notify_member_status_push(
+        event_id=event_id,
+        user_id=user_id,
+        old_status=old_status,
+        new_status=new_status,
+    )
 
     cur.close(); db.close()
     return True, "ok", new_status
@@ -1504,24 +1513,43 @@ def admin_event_edit(event_id: int):
                 dbn = get_db(); curn = dbn.cursor()
                 try:
                     curn.execute("""
-                        SELECT DISTINCT u.email
+                        SELECT DISTINCT u.id AS user_id, u.email
                          FROM mfu_event_member m
                           JOIN external_login_user u ON u.id = m.user_id
                          WHERE m.event_id=%s
                            AND (m.status='approved' OR m.status IS NULL)
                            AND COALESCE(m.is_canceled,0)=0
-                           AND u.email IS NOT NULL
+                           AND COALESCE(u.is_deleted,0)=0
                     """, (event_id,))
                     rows = curn.fetchall() or []
                 finally:
                     try: curn.close(); dbn.close()
                     except Exception: pass
 
-                emails = [ (r[0] if isinstance(r, tuple) else r["email"]) for r in rows if (r and (r[0] if isinstance(r, tuple) else r.get("email"))) ]
+                contacts = [
+                    {
+                        "user_id": int(r[0] if isinstance(r, tuple) else r["user_id"]),
+                        "email": (r[1] if isinstance(r, tuple) else r.get("email")),
+                    }
+                    for r in rows if r
+                ]
+                emails = [c["email"] for c in contacts if c.get("email")]
+
+                subject  = f"【{title or ev.get('title')}】全体メモが更新されました"
+                push_body = "イベントの全体メモが更新されました。イベント詳細をご確認ください。"
+                for contact in contacts:
+                    send_external_event_push(
+                        user_id=contact["user_id"],
+                        event_id=event_id,
+                        event_uuid=ev["event_uuid_str"],
+                        kind="event_memo_updated",
+                        title=subject,
+                        body=push_body,
+                        sender_label="イベント",
+                    )
 
                 if emails:
                     view_url = url_for("external_login_user.view_event", event_uuid=ev["event_uuid_str"], _external=True)
-                    subject  = f"【{title or ev.get('title')}】全体メモが更新されました"
                     body     = (
                         "全体メモが更新されました。\n\n"
                         "―― 新しい全体メモ ――\n"
@@ -2428,6 +2456,18 @@ def admin_set_paid_amount(event_id: int, user_id: int):
     except Exception:
         current_app.logger.exception("failed to send set-paid-amount mail (user_id=%s, event_id=%s)", user_id, event_id)
 
+    notify_member_payment_push(
+        event_id=event_id,
+        user_id=user_id,
+        payment_status=next_status,
+        kind=("event_payment_status" if cur_status != next_status else "event_payment_details_updated"),
+        body=(
+            None
+            if cur_status != next_status
+            else "実際の支払金額または領収書情報が更新されました。イベント詳細をご確認ください。"
+        ),
+    )
+
     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
 
@@ -2505,6 +2545,9 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
         finally:
             cur.close(); db.close()
         _recalc_event_fee_if_auto(event_id)
+        notify_member_status_push(
+            event_id=event_id, user_id=user_id, old_status="canceled", new_status="active"
+        )
         flash("参加キャンセルを解除しました。", "success")
         return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
@@ -2536,6 +2579,9 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
             finally:
                 cur.close(); db.close()
             _recalc_event_fee_if_auto(event_id)
+            notify_member_status_push(
+                event_id=event_id, user_id=user_id, old_status="active", new_status="canceled"
+            )
             flash("参加者をキャンセル済みにしました。", "success")
             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
         abort(400, "unsupported action")
@@ -2597,6 +2643,12 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
                     )
                 except Exception as e:
                     current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
+            notify_member_status_push(
+                event_id=event_id,
+                user_id=user_id,
+                old_status=old_status,
+                new_status=new_status,
+            )
     finally:
         try:
             cur.close(); db.close()
@@ -3151,7 +3203,7 @@ def admin_member_set_payment_status(event_id: int, member_id: int):
     try:
         # 事前に現在値＋通知に必要な情報を取得
         cur.execute("""
-            SELECT m.payment_status, u.email, u.nickname
+            SELECT m.payment_status, m.user_id, u.email, u.nickname
               FROM mfu_event_member m
               JOIN external_login_user u ON u.id = m.user_id
              WHERE m.id=%s AND m.event_id=%s
@@ -3161,7 +3213,8 @@ def admin_member_set_payment_status(event_id: int, member_id: int):
         if not row:
             abort(404, "member not found")
         cur_status = row[0] if isinstance(row, tuple) else row["payment_status"]
-        to_email   = row[1] if isinstance(row, tuple) else row["email"]
+        target_user_id = int(row[1] if isinstance(row, tuple) else row["user_id"])
+        to_email   = row[2] if isinstance(row, tuple) else row["email"]
         # nickname はメール送信には使わない（send_mailはアドレスのみ）
 
         # イベント情報（件名/From用）
@@ -3217,6 +3270,13 @@ def admin_member_set_payment_status(event_id: int, member_id: int):
                 )
     except Exception:
         current_app.logger.exception("failed to send payment-status mail (member_id=%s, event_id=%s)", member_id, event_id)
+
+    if cur_status != set_status:
+        notify_member_payment_push(
+            event_id=event_id,
+            user_id=target_user_id,
+            payment_status=set_status,
+        )
 
     return redirect(url_for("external_login_user.admin_member_edit", event_id=event_id, member_id=member_id))
 
@@ -3417,7 +3477,7 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
     db = get_db(); cur = db.cursor()
     try:
         cur.execute("""
-            SELECT m.payment_status, m.paid_at, u.email, u.nickname
+            SELECT m.payment_status, m.paid_at, m.user_id, u.email, u.nickname
               FROM mfu_event_member m
               JOIN external_login_user u ON u.id = m.user_id
              WHERE m.event_id=%s AND m.id=%s
@@ -3426,7 +3486,8 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
         row = cur.fetchone()
         cur_ps = (row[0] if isinstance(row, tuple) else row.get("payment_status")) if row else "unpaid"
         cur_paid_at = (row[1] if isinstance(row, tuple) else row.get("paid_at")) if row else None
-        to_email   = row[2] if row and isinstance(row, tuple) else (row.get("email") if row else None)
+        target_user_id = int(row[2] if isinstance(row, tuple) else row.get("user_id")) if row else 0
+        to_email   = row[3] if row and isinstance(row, tuple) else (row.get("email") if row else None)
 
         cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
         ev = cur.fetchone()
@@ -3520,6 +3581,20 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
                 )
         except Exception:
             current_app.logger.exception("failed to send payment-details mail (member_id=%s, event_id=%s)", member_id, event_id)
+
+    if target_user_id > 0:
+        effective_status = new_pstatus or cur_ps or "unpaid"
+        notify_member_payment_push(
+            event_id=event_id,
+            user_id=target_user_id,
+            payment_status=effective_status,
+            kind=("event_payment_status" if will_change else "event_payment_details_updated"),
+            body=(
+                None
+                if will_change
+                else "支払金額・支払方法・領収書などの支払詳細が更新されました。"
+            ),
+        )
 
     flash("支払い詳細を更新しました。", "success")
     ref = request.headers.get("Referer")
@@ -3768,6 +3843,13 @@ def admin_member_update_status(event_id: int, member_id: int):
             flash("ステータスは更新しましたが、メール送信でエラーが発生しました。", "warning")
     else:
         flash("ステータスを更新しました（メールアドレス未設定のため通知なし）。", "warning")
+
+    notify_member_status_push(
+        event_id=event_id,
+        user_id=target_user_id,
+        old_status=old_status,
+        new_status=new_status,
+    )
 
     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 

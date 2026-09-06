@@ -46,6 +46,8 @@ from . import bp, oauth
 
 from app.utils.db import get_db
 from app.utils.mail import send_mail
+from app.utils.push import send_external_event_push
+from .event_push import notify_member_status_push
 from .identity_lock import get_deleted_identity_lock
 from .utils import (
     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
@@ -785,6 +787,13 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
             )
         except Exception as e:
             current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
+
+    notify_member_status_push(
+        event_id=event_id,
+        user_id=user_id,
+        old_status=old_status,
+        new_status=new_status,
+    )
 
     cur.close(); db.close()
     return True, "ok", new_status
@@ -2816,6 +2825,24 @@ def join_event(event_uuid: str):
                         )
             except Exception:
                 current_app.logger.exception("join: user mail failed")
+
+            if new_status == "approved":
+                join_push_title = f"【{ev['title']}】参加が承認されました"
+                join_push_body = "参加申込みが承認されました。イベント詳細をご確認ください。"
+                join_push_kind = "event_join_approved"
+            else:
+                join_push_title = f"【{ev['title']}】参加申請を受け付けました"
+                join_push_body = "参加申請を受け付けました。現在は主催者の承認待ちです。"
+                join_push_kind = "event_join_pending"
+            send_external_event_push(
+                user_id=ext_uid,
+                event_id=int(ev["id"]),
+                event_uuid=ev_uuid_str,
+                kind=join_push_kind,
+                title=join_push_title,
+                body=join_push_body,
+                sender_label="イベント",
+            )
 
         # ===== 管理者メール（ACLメンバーのみ）＋ Discord =====
         if should_notify:
