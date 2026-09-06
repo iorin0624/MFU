@@ -1330,11 +1330,26 @@ def uber_list():
             and row.get("updated_at")
             and row["updated_at"] > row["freee_api_synced_at"]
         )
+        row["freee_requires_sync"] = bool(
+            not row.get("freee_deal_id")
+            or row.get("freee_api_status") != "synced"
+            or row.get("freee_needs_resync")
+        )
     freee_synced_date_strings = [
         str(row["work_date"])
         for row in rows
         if row.get("freee_deal_id") and not row.get("freee_needs_resync")
     ]
+    sales_year_options = sorted({int(row["work_date"].year) for row in rows}, reverse=True)
+    try:
+        requested_sales_year = int(request.args.get("sales_year") or today.year)
+    except (TypeError, ValueError):
+        requested_sales_year = today.year
+    selected_sales_year = (
+        requested_sales_year
+        if requested_sales_year in sales_year_options
+        else (sales_year_options[0] if sales_year_options else today.year)
+    )
 
     calc_basis = {
         "year": today.year,
@@ -1453,6 +1468,8 @@ def uber_list():
         uber_import_jobs=list_import_jobs(10),
         active_uber_import_job=get_active_import_job(),
         uber_continuous_state=get_continuous_fetch_state(),
+        sales_year_options=sales_year_options,
+        selected_sales_year=selected_sales_year,
         summary={
             "deliveries_sum": deliveries_sum,
             "net_sum": summary.get("net_sum") or 0,
