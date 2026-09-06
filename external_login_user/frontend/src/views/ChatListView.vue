@@ -4,18 +4,18 @@ import { useRouter } from 'vue-router';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import { portalApi } from '@/api/client';
 import { useChatStore } from '@/stores/chat';
-import { usePortalStore } from '@/stores/portal';
+import { useRoute } from 'vue-router';
 import { formatDateTime } from '@/utils/format';
 import { chatPushState, disableChatPush, enableChatPush } from '@/services/chatPush';
 
 const chat = useChatStore();
-const portal = usePortalStore();
+const route = useRoute();
 const router = useRouter();
 const pushEnabled = ref(false); const pushBusy = ref(false); const pushMessage = ref('');
 const dmSettingsOpen=ref(false); const dmSettingsBusy=ref(false); const dmUserUser=ref(false); const dmAdminKey=ref('admin:1');
 const eventItems = computed(() => chat.events.map((item) => ({
   ...item,
-  uuid: portal.events.find((event) => Number(event.id) === Number(item.id))?.uuid || '',
+  uuid: item.event_uuid || '',
 })));
 
 async function togglePush() {
@@ -27,7 +27,7 @@ async function togglePush() {
 async function openDm(item:{dm_uuid:string;peer_actor_key:string}) {
   let dmUuid=item.dm_uuid;
   if(!dmUuid) dmUuid=(await portalApi.chatDmOpen(item.peer_actor_key)).dm_uuid;
-  if(dmUuid)await router.push({name:'chat-dm',params:{dmUuid}});
+  if(dmUuid)await router.push({name:'chat-dm',params:{dmUuid},query:route.query.auth_scope==='mfu'?{auth_scope:'mfu'}:{}});
 }
 function openDmSettings() { const settings=chat.bootstrap?.dm_settings;dmUserUser.value=Boolean(settings?.enable_user_user);dmAdminKey.value=settings?.admin_actor_key||'admin:1';dmSettingsOpen.value=true; }
 async function saveDmSettings() { dmSettingsBusy.value=true;try{await portalApi.chatDmSettings(dmUserUser.value,dmAdminKey.value);await chat.loadBootstrap(true);dmSettingsOpen.value=false;}finally{dmSettingsBusy.value=false;} }
@@ -46,7 +46,7 @@ onMounted(() => { void chat.loadBootstrap(true); void chatPushState().then((valu
     <section class="panel chat-index-panel">
       <h2>イベントチャット</h2>
       <div class="chat-destination-list">
-        <button v-for="item in eventItems" :key="item.id" type="button" :disabled="!item.uuid" @click="router.push({name:'event-chat',params:{uuid:item.uuid}})">
+        <button v-for="item in eventItems" :key="item.id" type="button" :disabled="!item.uuid" @click="router.push({name:'event-chat',params:{uuid:item.uuid},query:route.query.auth_scope==='mfu'?{auth_scope:'mfu'}:{}})">
           <span class="destination-icon">💬</span>
           <span><strong>{{ item.title }}</strong><small v-if="item.start_at">{{ formatDateTime(item.start_at) }}</small></span>
           <b v-if="item.unread_count" class="chat-count">{{ item.unread_count > 99 ? '99+' : item.unread_count }}</b><i>›</i>

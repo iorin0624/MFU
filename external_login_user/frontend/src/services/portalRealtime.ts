@@ -22,6 +22,18 @@ const resumeListeners = new Set<() => void>();
 const boundEvents = new Set<string>();
 let resumeBound = false;
 let resumeTimer = 0;
+let chatAuthScope = '';
+
+export function setPortalChatAuthScope(value: string) {
+  const next = value === 'mfu' ? 'mfu' : '';
+  if (next === chatAuthScope) return;
+  chatAuthScope = next;
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+    boundEvents.clear();
+  }
+}
 
 function scheduleResume() {
   if (document.hidden) return;
@@ -58,7 +70,11 @@ function bind(event: string) {
 
 export function portalSocket(): SocketLike | null {
   if (socket || !window.io) return socket;
-  socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+  socket = window.io({
+    path: '/socket.io',
+    transports: ['websocket', 'polling'],
+    query: chatAuthScope ? { chat_auth_scope: chatAuthScope } : undefined,
+  });
   boundEvents.clear();
   socket.on('connect', () => lifecycleListeners.forEach((handler) => handler(true)));
   socket.on('disconnect', () => lifecycleListeners.forEach((handler) => handler(false)));

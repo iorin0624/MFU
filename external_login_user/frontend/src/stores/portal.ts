@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
-import { portalApi, setCsrfToken } from '@/api/client';
-import type { EventItem, PortalSession } from '@/types';
+import { portalApi, setChatAuthScope as configureChatAuthScope, setCsrfToken } from '@/api/client';
+import type { ChatVueSession, EventItem, PortalSession } from '@/types';
+import { setPortalChatAuthScope } from '@/services/portalRealtime';
 
 export const usePortalStore = defineStore('portal', {
   state: () => ({
@@ -9,11 +10,23 @@ export const usePortalStore = defineStore('portal', {
     loading: false,
     ready: false,
     error: '',
+    chatAuthScope: '' as '' | 'mfu',
+    chatSession: null as ChatVueSession | null,
   }),
   getters: {
-    displayName: (state) => state.session?.profile?.nickname || '',
+    displayName: (state) => state.session?.profile?.nickname || state.chatSession?.actor?.display_name || '',
+    mfuChatAuthenticated: (state) => Boolean(
+      state.chatAuthScope === 'mfu'
+      && state.chatSession?.authenticated
+      && ['admin', 'acl'].includes(String(state.chatSession?.actor?.actor_type || ''))
+    ),
   },
   actions: {
+    setChatAuthScope(scope: string) {
+      this.chatAuthScope = scope === 'mfu' ? 'mfu' : '';
+      configureChatAuthScope(this.chatAuthScope);
+      setPortalChatAuthScope(this.chatAuthScope);
+    },
     async bootstrap(force = false) {
       if (this.loading || (this.ready && !force)) return;
       this.loading = true;
@@ -23,6 +36,7 @@ export const usePortalStore = defineStore('portal', {
         this.session = response.session;
         this.events = response.events;
         setCsrfToken(response.session.csrfToken);
+        this.chatSession = this.chatAuthScope === 'mfu' ? await portalApi.chatSession() : null;
         this.ready = true;
       } catch (error) {
         this.error = error instanceof Error ? error.message : '初期データを取得できませんでした。';

@@ -355,9 +355,17 @@ export interface ChatMessage {
 
 export interface ChatEventSummary {
   id: number;
+  event_uuid: string;
   title: string;
   start_at?: string | null;
   unread_count: number;
+}
+
+export interface ChatVueSession {
+  ok: true;
+  authenticated: boolean;
+  actor?: ChatBootstrap['actor'] | null;
+  csrf_token: string;
 }
 
 export interface ChatDmSummary {

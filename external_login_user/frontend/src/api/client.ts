@@ -16,11 +16,13 @@ import type {
   ChatRoom,
   ChatRoomMember,
   ChatReadState,
+  ChatVueSession,
 } from '@/types';
 import { runtimeConfig } from '@/config';
 
 let csrfToken = '';
 let chatCsrfToken = '';
+let chatAuthScope = '';
 
 export class ApiError extends Error {
   constructor(
@@ -38,6 +40,10 @@ export function setCsrfToken(value: string): void {
 
 export function setChatCsrfToken(value: string): void {
   chatCsrfToken = value || '';
+}
+
+export function setChatAuthScope(value: string): void {
+  chatAuthScope = value === 'mfu' ? 'mfu' : '';
 }
 
 function passkeyHeader(token?: string): HeadersInit | undefined {
@@ -61,6 +67,7 @@ export async function requestJson<T>(url: string, init: RequestInit = {}): Promi
   const headers = new Headers(init.headers || {});
   headers.set('Accept', 'application/json');
   if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+  if (chatAuthScope && url.startsWith('/chat/')) headers.set('X-Chat-Auth-Scope', chatAuthScope);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -108,6 +115,7 @@ export function uploadMediaWithProgress(albumId: string, childId: string, files:
 }
 
 export const portalApi = {
+  chatSession: () => requestJson<ChatVueSession>('/chat/api/vue/session'),
   eventChatUnreadCounts: (ids: number[]) => requestJson<{ok:true;counts:Record<string,number>}>(
     `/external-login/api/events/chat-unread-counts?event_ids=${encoded(ids.join(','))}`,
   ),
