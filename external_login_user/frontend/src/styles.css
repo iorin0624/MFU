@@ -471,6 +471,8 @@ a { color: inherit; }
 .chat-latest-jump { position:absolute; z-index:5; right:18px; bottom:78px; padding:8px 13px; border:1px solid #a9bde5; border-radius:99px; background:#fff; color:#285eb7; box-shadow:0 5px 16px #18386824; font-weight:800; cursor:pointer; }.chat-date-divider { display:flex; align-items:center; gap:8px; margin:12px 0; color:#6a7890; font-size:.74rem; }.chat-date-divider::before,.chat-date-divider::after { content:""; height:1px; flex:1; background:#dce4ef; }.chat-date-divider span { padding:3px 9px; border-radius:99px; background:#eef3f9; }
 .chat-latest-jump.with-compose-context { bottom:116px; }
 .event-chat-page,.chat-dm-page { min-height:0; display:flex; flex-direction:column; }.event-chat-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }.event-chat-back { padding:6px 2px; border:0; background:none; color:var(--blue); font-weight:800; cursor:pointer; }.short-label { display:none; }.chat-page-actions { display:flex; justify-content:flex-end; gap:8px; margin:0; }
+.chat-connection-button { width:38px; min-width:38px; min-height:38px; padding:0; border:1px solid var(--line); border-radius:50%; background:#fff; cursor:pointer; font-size:1rem; line-height:1; }
+.connection-detail-modal .detail-list { margin-bottom:18px; }
 .chat-room-manager { display:grid; gap:14px; }
 .chat-room-manager fieldset { max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:14px; padding:10px 14px; }
 .chat-room-manager legend { padding:0 6px; font-weight:800; }

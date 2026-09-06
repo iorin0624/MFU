@@ -41,6 +41,8 @@ export const useChatStore = defineStore('chat', {
     recoveryToken: 0,
     roomGeneration: 0,
     recoveryError: '',
+    lastRecoveryAt: 0,
+    lastDisconnectedAt: 0,
   }),
   getters: {
     mode: (state): 'event' | 'dm' | null => state.currentDmUuid ? 'dm' : state.currentEventId ? 'event' : null,
@@ -51,11 +53,15 @@ export const useChatStore = defineStore('chat', {
     bindRealtime() {
       if (this.realtimeBound) return;
       this.realtimeBound = true;
-      portalSocket();
+      this.connected = Boolean(portalSocket()?.connected);
       this.disposers.push(onPortalConnection((connected) => {
         this.connected = connected;
         if (connected) { this.joinCurrent(); void this.recoverCurrent(); }
-        else this.typingNames = [];
+        else {
+          this.lastDisconnectedAt = Date.now();
+          this.typingNames = [];
+          void this.recoverCurrent();
+        }
       }));
       this.disposers.push(onPortalResume(() => { this.joinCurrent(); void this.recoverCurrent(); }));
       this.recoveryTimer = window.setInterval(() => { void this.recoverCurrent(); }, 30000);
@@ -173,6 +179,8 @@ export const useChatStore = defineStore('chat', {
         this.hasMore = this.messages.length >= 100;
         setChatCsrfToken(response.csrf_token);
         this.bindRealtime(); this.joinCurrent(); this.markSeen();
+        this.lastRecoveryAt = Date.now();
+        this.recoveryError = '';
         await Promise.all([this.refreshRoomUnread(), this.markCurrentNotificationsRead()]);
         void this.enterPresence();
       } catch (reason) { this.error = reason instanceof Error ? reason.message : 'チャットを開けませんでした。'; }
@@ -194,6 +202,8 @@ export const useChatStore = defineStore('chat', {
         this.hasMore = this.messages.length >= 200;
         setChatCsrfToken(response.csrf_token);
         this.bindRealtime(); this.joinCurrent(); this.markSeen();
+        this.lastRecoveryAt = Date.now();
+        this.recoveryError = '';
         const dm = this.dms.find((item) => item.dm_uuid === dmUuid);
         if (dm) dm.unread_count = 0;
         await this.markCurrentNotificationsRead();
@@ -230,6 +240,7 @@ export const useChatStore = defineStore('chat', {
           this.canManageRooms = response.can_manage_rooms;
         }
         setChatCsrfToken(response.csrf_token);
+        this.lastRecoveryAt = Date.now();
         this.recoveryError = '';
         if (!document.hidden) {
           this.markSeen();
