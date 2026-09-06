@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ChatRoomPane from '@/components/ChatRoomPane.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import { portalApi } from '@/api/client';
 import { useChatStore } from '@/stores/chat';
 import ChatRoomManager from '@/components/ChatRoomManager.vue';
+import { eventThemeStyle, useDocumentEventTheme } from '@/utils/eventTheme';
 
 const route = useRoute(); const router = useRouter(); const chat = useChatStore();
 const eventId = ref(0); const error = ref('');
+const activeEvent = computed(() => chat.events.find((item) => item.id === eventId.value));
+useDocumentEventTheme(computed(() => activeEvent.value?.theme_color));
 const managerOpen = ref(false); const muted = ref(false);
 async function load(roomId = '') {
   try { await chat.loadBootstrap(); const event = chat.events.find((item) => item.event_uuid === String(route.params.uuid)); if (!event) throw new Error('このイベントのチャットを利用する権限がありません。'); eventId.value = event.id; await chat.openEvent(eventId.value, roomId); muted.value=Boolean(chat.activeRoom?.muted_until && new Date(chat.activeRoom.muted_until).getTime()>Date.now()); }
@@ -28,7 +31,7 @@ onMounted(() => {
 onBeforeUnmount(()=>{ document.removeEventListener('visibilitychange',visibilityChanged); chat.resetRoom(); chat.unbindRealtime(); });
 </script>
 <template>
-  <section class="event-chat-page">
+  <section class="event-chat-page event-theme" :style="eventThemeStyle(activeEvent?.theme_color)">
     <div class="event-chat-toolbar">
       <button class="event-chat-back" type="button" @click="backToEvent"><span class="wide-label">← イベント詳細へ</span><span class="short-label">← 詳細</span></button>
       <div v-if="chat.currentEventId" class="chat-page-actions">

@@ -5,10 +5,12 @@ import LoadingBlock from '@/components/LoadingBlock.vue';
 import { portalApi } from '@/api/client';
 import type { ParticipantPass } from '@/types';
 import { formatDateTime, formatMoney } from '@/utils/format';
+import { eventThemeStyle, useDocumentEventTheme } from '@/utils/eventTheme';
 
 const route = useRoute();
 const router = useRouter();
 const participantPass = ref<ParticipantPass | null>(null);
+useDocumentEventTheme(computed(() => participantPass.value?.event.themeColor));
 const loading = ref(true);
 const error = ref('');
 const now = ref(new Date());
@@ -34,6 +36,7 @@ onBeforeUnmount(() => window.clearInterval(timer));
 </script>
 
 <template>
+ <div class="event-theme" :style="eventThemeStyle(participantPass?.event.themeColor)">
   <button type="button" class="back-link pass-back" @click="router.push({ name: 'event', params: { uuid: route.params.uuid } })">← イベント詳細</button>
   <LoadingBlock v-if="loading">参加証を読み込んでいます</LoadingBlock>
   <div v-else-if="error" class="alert error">
@@ -90,4 +93,5 @@ onBeforeUnmount(() => window.clearInterval(timer));
       <p class="pass-hint">提示中は画面の明るさを上げ、受付担当者にこの画面をお見せください。</p>
     </article>
   </section>
+ </div>
 </template>

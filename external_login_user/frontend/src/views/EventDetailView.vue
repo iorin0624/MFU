@@ -7,10 +7,12 @@ import { portalApi } from '@/api/client';
 import type { EventItem } from '@/types';
 import { formatDateTime, formatMoney, membershipLabel } from '@/utils/format';
 import { isInAppBrowser } from '@/utils/inAppBrowser';
+import { eventThemeStyle, useDocumentEventTheme } from '@/utils/eventTheme';
 
 const route = useRoute();
 const router = useRouter();
 const event = ref<EventItem | null>(null);
+useDocumentEventTheme(computed(() => event.value?.themeColor));
 const loading = ref(true);
 const error = ref('');
 const showInAppAlbumNotice = ref(false);
@@ -134,6 +136,7 @@ onMounted(async () => {
 </script>
 
 <template>
+ <div class="event-theme" :style="eventThemeStyle(event?.themeColor)">
   <button type="button" class="back-link" @click="router.push('/')">← イベント一覧へ</button>
   <LoadingBlock v-if="loading">イベント詳細を読み込んでいます</LoadingBlock>
   <div v-else-if="error" class="alert error">{{ error }}</div>
@@ -285,4 +288,5 @@ onMounted(async () => {
       <div class="modal-actions"><button type="button" class="button secondary" @click="showTipDialog = false">キャンセル</button><button type="submit" class="button primary">投げ銭する</button></div>
     </form>
   </div>
+ </div>
 </template>

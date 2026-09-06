@@ -78,6 +78,7 @@ export interface EventItem {
   id: number;
   uuid: string;
   title: string;
+  themeColor: string;
   startsAt?: string | null;
   placeName?: string | null;
   address?: string | null;
@@ -129,6 +130,7 @@ export interface ParticipantPass {
     title: string;
     startsAt?: string | null;
     placeName?: string | null;
+    themeColor?: string | null;
   };
   participant: {
     id: number;
@@ -234,7 +236,7 @@ export interface AlbumItem {
   owner?: string;
   accessMode: string;
   eventId?: number | null;
-  event?: { id: number; event_uuid?: string; title: string; starts_at?: string | null; place_name?: string | null } | null;
+  event?: { id: number; event_uuid?: string; title: string; starts_at?: string | null; place_name?: string | null; theme_color?: string | null } | null;
   permissions: AlbumPermissions;
   childrenUrl: string;
   accessUrl: string;
@@ -357,6 +359,7 @@ export interface ChatEventSummary {
   id: number;
   event_uuid: string;
   title: string;
+  theme_color?: string | null;
   start_at?: string | null;
   unread_count: number;
 }

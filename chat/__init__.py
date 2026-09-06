@@ -3425,12 +3425,12 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
         where_deleted = f" WHERE {' AND '.join(deleted_filters_plain)}" if deleted_filters_plain else ""
         where_deleted_clause = f"AND {' AND '.join(deleted_filters_alias)}" if deleted_filters_alias else ""
         if actor["actor_type"] == "admin":
-            cur.execute(f"SELECT id, event_uuid, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
+            cur.execute(f"SELECT id, event_uuid, title, theme_color, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
             events = cur.fetchall() or []
         elif actor["actor_type"] == "line":
             cur.execute(
                 f"""
-                SELECT e.id, e.event_uuid, e.title, e.starts_at AS start_at
+                SELECT e.id, e.event_uuid, e.title, e.theme_color, e.starts_at AS start_at
                   FROM mfu_event e
                   JOIN mfu_event_member m ON m.event_id = e.id
                  WHERE m.user_id = %s
@@ -3444,7 +3444,7 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
         else:
             cur.execute(
                 f"""
-                SELECT e.id, e.event_uuid, e.title, e.starts_at AS start_at
+                SELECT e.id, e.event_uuid, e.title, e.theme_color, e.starts_at AS start_at
                   FROM mfu_event e
                   JOIN mfu_event_admin_acl a ON a.event_id = e.id
                  WHERE a.username = %s

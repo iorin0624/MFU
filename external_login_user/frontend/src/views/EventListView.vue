@@ -8,6 +8,7 @@ import type { EventItem } from '@/types';
 import { formatDateTime, formatMoney, membershipLabel } from '@/utils/format';
 import { isInAppBrowser } from '@/utils/inAppBrowser';
 import { portalApi } from '@/api/client';
+import { eventThemeStyle } from '@/utils/eventTheme';
 import { onPortalConnection, onPortalEvent, onPortalResume } from '@/services/portalRealtime';
 
 const store = usePortalStore();
@@ -136,7 +137,7 @@ async function selectScope(value: typeof scope.value) {
 
   <EmptyState v-if="!events.length" icon="📅" title="表示できるイベントはありません" text="参加登録されたイベントがここに表示されます。" />
   <div v-else class="event-grid" :aria-busy="refreshing">
-    <article v-for="event in events" :key="event.uuid" class="event-card" @click="router.push(`/events/${event.uuid}`)">
+    <article v-for="event in events" :key="event.uuid" class="event-card event-theme" :style="eventThemeStyle(event.themeColor)" @click="router.push(`/events/${event.uuid}`)">
       <div class="event-date">
         <span>{{ event.startsAt ? new Date(event.startsAt).getDate() : '–' }}</span>
         <small>{{ event.startsAt ? `${new Date(event.startsAt).getMonth() + 1}月` : '未定' }}</small>

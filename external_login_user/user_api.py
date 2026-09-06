@@ -31,6 +31,7 @@ from .utils import (
     _uuid_bytes_to_str,
     avatar_url_for,
     is_withdrawn_ext_user,
+    normalize_event_theme_color,
 )
 
 
@@ -416,6 +417,7 @@ def _event_payload(event: dict[str, Any], membership: dict[str, Any] | None, rol
         "id": int(event.get("id") or 0),
         "uuid": event_uuid,
         "title": str(event.get("title") or ""),
+        "themeColor": normalize_event_theme_color(event.get("theme_color")),
         "startsAt": _value(event.get("starts_at")),
         "placeName": event.get("place_name"),
         "address": event.get("address"),
@@ -625,6 +627,7 @@ def user_api_event_pass(event_uuid: str):
             "event": {
                 "uuid": event_uuid,
                 "title": str(event.get("title") or ""),
+                "themeColor": normalize_event_theme_color(event.get("theme_color")),
                 "startsAt": _value(event.get("starts_at")),
                 "placeName": event.get("place_name"),
             },
@@ -857,6 +860,7 @@ def user_api_join_info(event_uuid: str):
         "event": {
             "uuid": event_uuid,
             "title": str(event.get("title") or ""),
+            "themeColor": normalize_event_theme_color(event.get("theme_color")),
             "startsAt": _value(event.get("starts_at")),
             "feeYen": event.get("fee_yen"),
             "placeName": event.get("place_name"),

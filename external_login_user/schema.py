@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS mfu_event (
   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   event_uuid      BINARY(16)      NOT NULL,
   title           VARCHAR(200)    NOT NULL,
+  theme_color     CHAR(7)         NULL,
   owner_user_id   BIGINT UNSIGNED NULL,
   starts_at       DATETIME        NULL,
   fee_yen         INT UNSIGNED    NULL,
@@ -355,6 +356,11 @@ def _on_bp_registered(state) -> None:
                 "mfu_event",
                 "fee_calc_method",
                 "fee_calc_method ENUM('legacy','new') NOT NULL DEFAULT 'legacy' AFTER fee_auto_calc",
+            )
+            _ensure_col(
+                "mfu_event",
+                "theme_color",
+                "theme_color CHAR(7) NULL AFTER title",
             )
             _ensure_col(
                 "mfu_event",
