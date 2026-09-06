@@ -2688,12 +2688,21 @@ def _get_external_user_chat_admin_alias(ext_user_id: int) -> bool:
     return bool(row and int(row.get("chat_admin_alias") or 0) == 1)
 
 
-def get_chat_actor() -> dict[str, Any] | None:
+def get_chat_actor(auth_scope: str | None = None) -> dict[str, Any] | None:
     """admin / acl / line を統一形式へ正規化。"""
+    requested_scope = str(
+        auth_scope
+        or request.headers.get("X-Chat-Auth-Scope")
+        or request.args.get("chat_auth_scope")
+        or ""
+    ).strip().lower()
+    force_mfu = requested_scope == "mfu"
+    force_external = requested_scope in {"external", "line"}
+
     # A LINE external user explicitly configured as the chat admin alias wins
     # only inside chat, even when an MFU login remains in the same browser.
     ext_user_id = session.get("ext_user_id")
-    if ext_user_id:
+    if ext_user_id and not force_mfu:
         alias_row = _get_chat_admin_alias_row(int(ext_user_id))
         if alias_row and int(alias_row.get("chat_admin_alias") or 0) == 1:
             display_name = get_external_user_display_name(int(ext_user_id))
@@ -2712,7 +2721,7 @@ def get_chat_actor() -> dict[str, Any] | None:
                 "source_social_id": alias_row.get("social_id"),
             }
 
-    if session.get("user"):
+    if session.get("user") and not force_external:
         username = str(session.get("user"))
         actor_type = "admin" if username == "admin" else "acl"
         email = None
@@ -2735,7 +2744,7 @@ def get_chat_actor() -> dict[str, Any] | None:
             "email": email,
         }
 
-    if ext_user_id:
+    if ext_user_id and not force_mfu:
         row = _get_chat_admin_alias_row(int(ext_user_id))
         if not row:
             current_app.logger.warning("chat actor load failed for ext_user_id=%s", ext_user_id)
@@ -3416,12 +3425,12 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
         where_deleted = f" WHERE {' AND '.join(deleted_filters_plain)}" if deleted_filters_plain else ""
         where_deleted_clause = f"AND {' AND '.join(deleted_filters_alias)}" if deleted_filters_alias else ""
         if actor["actor_type"] == "admin":
-            cur.execute(f"SELECT id, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
+            cur.execute(f"SELECT id, event_uuid, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
             events = cur.fetchall() or []
         elif actor["actor_type"] == "line":
             cur.execute(
                 f"""
-                SELECT e.id, e.title, e.starts_at AS start_at
+                SELECT e.id, e.event_uuid, e.title, e.starts_at AS start_at
                   FROM mfu_event e
                   JOIN mfu_event_member m ON m.event_id = e.id
                  WHERE m.user_id = %s
@@ -3435,7 +3444,7 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
         else:
             cur.execute(
                 f"""
-                SELECT e.id, e.title, e.starts_at AS start_at
+                SELECT e.id, e.event_uuid, e.title, e.starts_at AS start_at
                   FROM mfu_event e
                   JOIN mfu_event_admin_acl a ON a.event_id = e.id
                  WHERE a.username = %s
@@ -3450,6 +3459,16 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
         cur.close()
         db.close()
 
+    for event in events:
+        raw_uuid = event.pop("event_uuid", None)
+        try:
+            if isinstance(raw_uuid, (bytes, bytearray)):
+                value = bytes(raw_uuid)
+                event["event_uuid"] = str(uuid.UUID(bytes=value)) if len(value) == 16 else str(uuid.UUID(value.decode("ascii")))
+            else:
+                event["event_uuid"] = str(uuid.UUID(str(raw_uuid)))
+        except Exception:
+            event["event_uuid"] = ""
     return _attach_event_unread_counts(events, actor)
 
 
@@ -6162,8 +6181,14 @@ def admin_system_template_join_approved_post():
 
 @chat_bp.route("/events/<int:event_id>")
 def room(event_id: int):
-    actor = get_chat_actor()
+    requested_scope = str(request.args.get("auth_scope") or "").strip().lower()
+    actor = get_chat_actor(requested_scope or None)
+    if not requested_scope and actor and actor.get("actor_type") in {"admin", "acl"} and not actor.get("is_chat_admin_alias"):
+        requested_scope = "mfu"
     if not actor:
+        next_url = request.full_path.rstrip("?")
+        if requested_scope == "mfu":
+            return redirect(url_for("login", next=next_url))
         abort(403)
     if not _can_access_event(event_id, actor):
         abort(403)
@@ -6185,6 +6210,30 @@ def room(event_id: int):
     event = _get_event(event_id)
     if not event:
         abort(404)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+        raw_uuid = (cur.fetchone() or {}).get("event_uuid")
+    finally:
+        cur.close()
+        db.close()
+    try:
+        if isinstance(raw_uuid, (bytes, bytearray)):
+            value = bytes(raw_uuid)
+            event_uuid = str(uuid.UUID(bytes=value)) if len(value) == 16 else str(uuid.UUID(value.decode("ascii")))
+        else:
+            event_uuid = str(uuid.UUID(str(raw_uuid)))
+    except Exception:
+        event_uuid = ""
+    if event_uuid:
+        query: dict[str, str] = {}
+        if requested_scope == "mfu":
+            query["auth_scope"] = "mfu"
+        if requested_room_id:
+            query["room_id"] = requested_room_id
+        suffix = f"?{urlencode(query)}" if query else ""
+        return redirect(f"/external-login/app/events/{event_uuid}/chat{suffix}")
     avatar_cache: dict[str, str] = {}
     raw_messages = _load_messages(event_id, effective_room_id)
     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]

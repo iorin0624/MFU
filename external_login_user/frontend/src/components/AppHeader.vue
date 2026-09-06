@@ -10,6 +10,11 @@ const open = ref(false);
 const totalUnread = computed(() => store.session?.unread.total || 0);
 const noticeUnread = computed(() => store.session?.unread.notifications || 0);
 const chatUnread = computed(() => store.session?.unread.chat || 0);
+const navigationItems = computed(() => store.mfuChatAuthenticated ? [
+  { id: 'events-admin', label: 'イベント管理', url: '/external-login/admin/events' },
+  { id: 'chat', label: 'チャット', url: '/external-login/app/chat?auth_scope=mfu' },
+  { id: 'notifications-admin', label: '通知', url: '/mfu-notifications' },
+] : (store.session?.navigation || []));
 
 function badgeText(value: number) {
   return value > 99 ? '99+' : String(value);
@@ -27,16 +32,21 @@ function activate(item: { id: string; url: string }) {
     return;
   }
   if (item.id === 'notifications') { router.push('/notifications'); return; }
-  if (item.id === 'chat') { router.push('/chat'); return; }
+  if (item.id === 'chat') { router.push(store.mfuChatAuthenticated ? { path: '/chat', query: { auth_scope: 'mfu' } } : '/chat'); return; }
   if (item.id === 'account') { router.push('/profile'); return; }
   window.location.assign(item.url);
+}
+
+function openBrand() {
+  if (store.mfuChatAuthenticated) window.location.assign('/external-login/admin/events');
+  else void router.push('/');
 }
 </script>
 
 <template>
   <header class="app-header">
     <div class="header-inner">
-      <button class="brand" type="button" @click="router.push('/')" aria-label="イベント一覧へ">
+      <button class="brand" type="button" @click="openBrand" aria-label="イベント一覧へ">
         <span class="brand-mark">M</span>
         <span>Mimoria</span>
       </button>
@@ -46,7 +56,7 @@ function activate(item: { id: string; url: string }) {
       </button>
       <nav :class="['main-nav', { open }]" aria-label="イベント管理ナビゲーション">
         <button
-          v-for="item in store.session?.navigation || []"
+          v-for="item in navigationItems"
           :key="item.id"
           type="button"
           :aria-label="navAriaLabel(item)"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import AppHeader from '@/components/AppHeader.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import EmptyState from '@/components/EmptyState.vue';
@@ -13,7 +13,15 @@ import { trackChatViewport } from '@/utils/chatViewport';
 
 const store = usePortalStore();
 const route = useRoute();
+const router = useRouter();
 const loginRoute = computed(() => ({ name: 'login', query: { next: route.fullPath } }));
+const chatOnlyRoute = computed(() => ['chat', 'chat-dm', 'event-chat'].includes(String(route.name || '')));
+const requestedMfuChat = computed(() => chatOnlyRoute.value && route.query.auth_scope === 'mfu');
+store.setChatAuthScope(requestedMfuChat.value ? 'mfu' : '');
+const loginUrl = computed(() => requestedMfuChat.value
+  ? `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
+  : router.resolve(loginRoute.value).href);
+const mfuChatAllowed = computed(() => chatOnlyRoute.value && store.mfuChatAuthenticated);
 const publicRoute = computed(() => route.name === 'login');
 const verificationRoute = computed(() => route.name === 'email-verify');
 const profileRoute = computed(() => route.name === 'profile');
@@ -58,14 +66,14 @@ async function agreePrivacy() {
     </div>
     <RouterView v-else-if="publicRoute" />
     <EmptyState
-      v-else-if="store.session && !store.session.authenticated"
+      v-else-if="store.session && !store.session.authenticated && !mfuChatAllowed"
       icon="🔐"
       title="ログインが必要です"
-      text="イベント情報を見るにはLINEログインまたはメールPIN認証を行ってください。"
+      :text="requestedMfuChat ? 'MFUへログインすると、元のチャットへ戻ります。' : 'イベント情報を見るにはLINEログインまたはメールPIN認証を行ってください。'"
     >
-      <RouterLink class="button primary" :to="loginRoute">ログイン画面へ</RouterLink>
+      <a class="button primary" :href="loginUrl">ログイン画面へ</a>
     </EmptyState>
-    <div v-else-if="store.session?.prerequisites.privacyAgreementRequired" class="alert warning">
+    <div v-else-if="!mfuChatAllowed && store.session?.prerequisites.privacyAgreementRequired" class="alert warning">
       <strong>プライバシーポリシーへの同意が必要です</strong>
       <span>内容を確認し、同意してからご利用ください。</span>
       <a v-if="store.session.documents.privacyPolicyUrl" class="button secondary" :href="store.session.documents.privacyPolicyUrl" target="_blank" rel="noopener">プライバシーポリシーを確認</a>
@@ -74,10 +82,10 @@ async function agreePrivacy() {
       <span v-if="privacyError" class="danger-text">{{ privacyError }}</span>
     </div>
     <RouterView v-else-if="profileRoute || verificationRoute" />
-    <div v-else-if="store.session?.prerequisites.profileCompletionRequired" class="alert warning">
+    <div v-else-if="!mfuChatAllowed && store.session?.prerequisites.profileCompletionRequired" class="alert warning">
       <strong>プロフィール登録が必要です</strong><span>利用を開始するため、プロフィールを登録してください。</span><RouterLink class="button secondary" to="/profile">プロフィール登録へ</RouterLink>
     </div>
-    <div v-else-if="store.session?.prerequisites.emailVerificationRequired" class="alert warning">
+    <div v-else-if="!mfuChatAllowed && store.session?.prerequisites.emailVerificationRequired" class="alert warning">
       <strong>メール認証が必要です</strong><span>登録済みメールアドレスの確認を完了してからご利用ください。</span><RouterLink class="button secondary" to="/email-verify">メール認証へ</RouterLink>
     </div>
     <template v-else-if="store.ready"><RouterView /><PortalUtilities v-if="!immersiveChatRoute" /></template>

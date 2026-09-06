@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, time, timedelta, timezone
 from time import perf_counter
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
 
@@ -294,11 +294,21 @@ def _vue_chat_target_url(
     cur,
     row: dict[str, Any],
     event_uuid_cache: dict[int, str] | None = None,
+    *,
+    auth_scope: str = "",
 ) -> str:
     """旧チャット通知URLを利用者VueのURLへ読み替える。既存通知にも適用する。"""
     target_url = str(row.get("target_url") or "").strip()
-    if not target_url or target_url.startswith("/external-login/app/"):
-        return target_url or "/external-login/app/notifications"
+    scope = str(auth_scope or "").strip().lower()
+    if not target_url:
+        return "/mfu-notifications" if scope == "mfu" else "/external-login/app/notifications"
+    if target_url.startswith("/external-login/app/"):
+        if scope != "mfu":
+            return target_url
+        parsed_existing = urlparse(target_url)
+        existing_query = dict(parse_qsl(parsed_existing.query, keep_blank_values=True))
+        existing_query["auth_scope"] = "mfu"
+        return f"{parsed_existing.path}?{urlencode(existing_query)}"
 
     try:
         parsed = urlparse(target_url)
@@ -308,7 +318,9 @@ def _vue_chat_target_url(
     dm_prefix = "/chat/dm/room/"
     if parsed.path.startswith(dm_prefix):
         dm_uuid = parsed.path[len(dm_prefix):].strip("/")
-        return f"/external-login/app/chat/dm/{dm_uuid}" if dm_uuid else target_url
+        suffix = "?auth_scope=mfu" if scope == "mfu" else ""
+        base = f"/external-login/app/chat/dm/{dm_uuid}"
+        return f"{base}{suffix}" if dm_uuid else target_url
 
     if not parsed.path.startswith("/chat/events/"):
         return target_url
@@ -329,7 +341,12 @@ def _vue_chat_target_url(
     if not event_uuid:
         return target_url
 
-    suffix = f"?{urlencode({'room_id': room_id})}" if room_id else ""
+    query = {}
+    if room_id:
+        query["room_id"] = room_id
+    if scope == "mfu":
+        query["auth_scope"] = "mfu"
+    suffix = f"?{urlencode(query)}" if query else ""
     return f"/external-login/app/events/{event_uuid}/chat{suffix}"
 
 
@@ -1444,7 +1461,7 @@ def _fetch_mfu_notifications(
         event_uuid_cache: dict[int, str] = {}
         for row in rows:
             if str(row.get("kind") or "") in _CHAT_NOTIFICATION_KINDS:
-                row["target_url"] = _vue_chat_target_url(cur, row, event_uuid_cache)
+                row["target_url"] = _vue_chat_target_url(cur, row, event_uuid_cache, auth_scope="mfu")
         items = [_serialize_mfu_notification_item(r) for r in rows]
         if since_id <= 0:
             items = sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)

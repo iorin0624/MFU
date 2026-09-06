@@ -27,6 +27,24 @@ class ChatVueMigrationSourceTests(unittest.TestCase):
         self.assertNotIn('/api/gui/login', api)
         self.assertNotIn('/api/gui/', api)
 
+    def test_mfu_chat_scope_uses_the_vue_screen_without_becoming_a_participant_session(self):
+        chat = (ROOT / "chat/__init__.py").read_text(encoding="utf-8-sig")
+        client = (ROOT / "external_login_user/frontend/src/api/client.ts").read_text(encoding="utf-8-sig")
+        app = (ROOT / "external_login_user/frontend/src/App.vue").read_text(encoding="utf-8-sig")
+        event_chat = (ROOT / "external_login_user/frontend/src/views/EventChatView.vue").read_text(encoding="utf-8-sig")
+        realtime = (ROOT / "external_login_user/frontend/src/services/portalRealtime.ts").read_text(encoding="utf-8-sig")
+        self.assertIn('query["auth_scope"] = "mfu"', chat)
+        self.assertIn('X-Chat-Auth-Scope', client)
+        self.assertIn('!store.session.authenticated && !mfuChatAllowed', app)
+        self.assertIn("route.query.auth_scope === 'mfu'", event_chat)
+        self.assertIn('chat_auth_scope', realtime)
+
+    def test_chat_bootstrap_events_include_uuid_for_mfu_navigation(self):
+        backend = (ROOT / "chat/__init__.py").read_text(encoding="utf-8-sig")
+        view = (ROOT / "external_login_user/frontend/src/views/ChatListView.vue").read_text(encoding="utf-8-sig")
+        self.assertIn("SELECT id, event_uuid, title", backend)
+        self.assertIn("uuid: item.event_uuid", view)
+
     def test_core_legacy_features_are_wired(self):
         pane = (ROOT / "external_login_user/frontend/src/components/ChatRoomPane.vue").read_text(encoding="utf-8-sig")
         manager = (ROOT / "external_login_user/frontend/src/components/ChatRoomManager.vue").read_text(encoding="utf-8-sig")
