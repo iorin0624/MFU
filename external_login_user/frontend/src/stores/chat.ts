@@ -43,6 +43,9 @@ export const useChatStore = defineStore('chat', {
     recoveryError: '',
     lastRecoveryAt: 0,
     lastDisconnectedAt: 0,
+    indexRefreshTimer: 0,
+    indexRefreshBusy: false,
+    indexRefreshPending: false,
   }),
   getters: {
     mode: (state): 'event' | 'dm' | null => state.currentDmUuid ? 'dm' : state.currentEventId ? 'event' : null,
@@ -56,15 +59,26 @@ export const useChatStore = defineStore('chat', {
       this.connected = Boolean(portalSocket()?.connected);
       this.disposers.push(onPortalConnection((connected) => {
         this.connected = connected;
-        if (connected) { this.joinCurrent(); void this.recoverCurrent(); }
+        if (connected) {
+          this.joinCurrent();
+          if (this.currentEventId || this.currentDmUuid) void this.recoverCurrent();
+          else this.queueIndexRefresh(0);
+        }
         else {
           this.lastDisconnectedAt = Date.now();
           this.typingNames = [];
           void this.recoverCurrent();
         }
       }));
-      this.disposers.push(onPortalResume(() => { this.joinCurrent(); void this.recoverCurrent(); }));
-      this.recoveryTimer = window.setInterval(() => { void this.recoverCurrent(); }, 30000);
+      this.disposers.push(onPortalResume(() => {
+        this.joinCurrent();
+        if (this.currentEventId || this.currentDmUuid) void this.recoverCurrent();
+        else this.queueIndexRefresh(0);
+      }));
+      this.recoveryTimer = window.setInterval(() => {
+        if (this.currentEventId || this.currentDmUuid) void this.recoverCurrent();
+        else this.queueIndexRefresh(0);
+      }, 30000);
       this.disposers.push(onPortalEvent('chat_message', (payload: ChatMessage) => {
         if (!this.matches(payload)) return;
         payload = presentChatMessage(payload, this.bootstrap?.actor, true);
@@ -75,6 +89,7 @@ export const useChatStore = defineStore('chat', {
       }));
       this.disposers.push(onPortalEvent('notif_unread', () => {
         if (this.currentEventId) void this.refreshRoomUnread();
+        else if (!this.currentDmUuid) this.queueIndexRefresh();
       }));
       this.disposers.push(onPortalEvent('chat_edit_update', (payload: ChatMessage) => {
         if (!this.matches(payload)) return;
@@ -122,6 +137,8 @@ export const useChatStore = defineStore('chat', {
     },
     unbindRealtime() {
       window.clearInterval(this.recoveryTimer);
+      window.clearTimeout(this.indexRefreshTimer);
+      this.indexRefreshTimer = 0;
       this.disposers.forEach((dispose) => dispose());
       this.disposers = [];
       this.realtimeBound = false;
@@ -149,6 +166,37 @@ export const useChatStore = defineStore('chat', {
       } catch (reason) {
         this.error = reason instanceof Error ? reason.message : 'チャット情報を取得できませんでした。';
       } finally { this.loading = false; }
+    },
+    queueIndexRefresh(delay = 200) {
+      if (this.currentEventId || this.currentDmUuid || this.indexRefreshTimer) return;
+      this.indexRefreshTimer = window.setTimeout(() => {
+        this.indexRefreshTimer = 0;
+        void this.refreshIndex();
+      }, delay);
+    },
+    async refreshIndex() {
+      if (this.currentEventId || this.currentDmUuid) return;
+      if (this.indexRefreshBusy) {
+        this.indexRefreshPending = true;
+        return;
+      }
+      this.indexRefreshBusy = true;
+      try {
+        const response = await portalApi.chatBootstrap();
+        if (this.currentEventId || this.currentDmUuid) return;
+        this.bootstrap = response;
+        this.events = response.accessible_events || [];
+        this.dms = response.dm_inbox || [];
+        setChatCsrfToken(response.csrf_token);
+      } catch {
+        // WebSocket切断時は次の再接続・画面復帰・定期取得で再試行する。
+      } finally {
+        this.indexRefreshBusy = false;
+        if (this.indexRefreshPending) {
+          this.indexRefreshPending = false;
+          this.queueIndexRefresh(0);
+        }
+      }
     },
     resetRoom() {
       this.roomGeneration++;
