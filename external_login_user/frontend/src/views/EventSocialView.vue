@@ -4,10 +4,12 @@ import { useRoute, useRouter } from 'vue-router';
 import LoadingBlock from '@/components/LoadingBlock.vue';
 import { portalApi } from '@/api/client';
 import type { EventItem, EventMemberItem } from '@/types';
+import { eventThemeStyle, useDocumentEventTheme } from '@/utils/eventTheme';
 
 const route = useRoute();
 const router = useRouter();
 const event = ref<EventItem | null>(null);
+useDocumentEventTheme(computed(() => event.value?.themeColor));
 const members = ref<EventMemberItem[]>([]);
 const loading = ref(true);
 const error = ref('');
@@ -59,6 +61,7 @@ onMounted(async () => {
 </script>
 
 <template>
+ <div class="event-theme" :style="eventThemeStyle(event?.themeColor)">
   <button type="button" class="back-link" @click="router.push({ name: 'event', params: { uuid: route.params.uuid } })">← イベント詳細</button>
   <LoadingBlock v-if="loading">参加者のSNS情報を読み込んでいます</LoadingBlock>
   <div v-else-if="error" class="alert error">{{ error }}</div>
@@ -74,4 +77,5 @@ onMounted(async () => {
       </section>
     </div>
   </template>
+ </div>
 </template>

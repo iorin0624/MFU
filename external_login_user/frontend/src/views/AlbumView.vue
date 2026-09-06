@@ -10,6 +10,7 @@ import { isInAppBrowser } from '@/utils/inAppBrowser';
 import AlbumUploadDialog from '@/components/AlbumUploadDialog.vue';
 import { usePortalStore } from '@/stores/portal';
 import { CHILD_NAME_TEMPLATES, childTemplateMode } from '@/utils/albumUpload';
+import { eventThemeStyle, useDocumentEventTheme } from '@/utils/eventTheme';
 
 declare global {
   interface Window {
@@ -34,6 +35,7 @@ function setAllGroups(open:boolean) { groupContainer.value?.querySelectorAll('de
 function chooseChildTemplate() { childMode.value=childTemplateMode(childTemplate.value); }
 const albumId = String(route.params.albumId);
 const album = ref<AlbumItem | null>(null);
+useDocumentEventTheme(computed(() => album.value?.event?.theme_color));
 const canChooseChildType = computed(() => Boolean(album.value?.permissions.canChooseChildType));
 const availableChildTemplates = computed(() => canChooseChildType.value ? CHILD_NAME_TEMPLATES : CHILD_NAME_TEMPLATES.filter(Boolean));
 const children = ref<AlbumChild[]>([]);
@@ -553,7 +555,7 @@ onBeforeUnmount(() => {
   <InAppBrowserAlbumNotice v-if="blockedByInAppBrowser" :target-url="externalAlbumUrl" />
   <LoadingBlock v-else-if="loading">アルバムを読み込んでいます</LoadingBlock>
   <div v-else-if="error && !album" class="alert error">{{ error }}</div>
-  <template v-else-if="album">
+  <div v-else-if="album" class="event-theme album-event-theme" :style="eventThemeStyle(album.event?.theme_color)">
     <header class="album-workspace-header">
       <button type="button" class="back-link" @click="backToEvent">← イベント詳細</button>
       <div class="album-title-block">
@@ -716,7 +718,7 @@ onBeforeUnmount(() => {
       <progress :value="downloadProgress.percent || 0" max="100"></progress>
       <div><span>{{ downloadProgress.percent || 0 }}%</span><span>{{ formatBytes(downloadProgress.processed_bytes) }} / {{ formatBytes(downloadProgress.total_bytes) }}</span></div>
     </div>
-  </template>
+  </div>
 
   <div v-if="dialog" class="modal-backdrop" @click.self="dialog = null">
     <form class="modal-card" @submit.prevent="saveDialog">

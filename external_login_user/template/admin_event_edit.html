@@ -50,6 +50,18 @@
               {% if errors.title %}<div class="text-danger small mt-1">{{ errors.title }}</div>{% endif %}
             </div>
             <div class="col-12 col-md-6">
+              <label class="form-label" for="theme-color-text">テーマカラー</label>
+              <div class="input-group">
+                <input type="color" class="form-control form-control-color" id="theme-color-picker"
+                       value="{{ (form.theme_color or default_theme_color)|e }}" aria-label="テーマカラーを選択">
+                <input type="text" name="theme_color" id="theme-color-text" class="form-control font-monospace"
+                       value="{{ (form.theme_color or default_theme_color)|e }}" pattern="#[0-9A-Fa-f]{6}" maxlength="7" required>
+                <button type="button" class="btn btn-outline-secondary" id="theme-color-reset">標準色</button>
+              </div>
+              <div class="form-text">利用者向けのイベント詳細・チャット・アルバムなどに適用されます。</div>
+              {% if errors.theme_color %}<div class="text-danger small mt-1">{{ errors.theme_color }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-md-6">
               <label class="form-label">開始日時（任意）</label>
               <input type="datetime-local" name="starts_at" class="form-control"
                      value="{{ (form_iso.starts_at or '')|e }}">
@@ -442,6 +454,18 @@
     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">キャンセル</a>
   </div>
 </form>
+
+<script>
+(() => {
+  const picker = document.getElementById('theme-color-picker');
+  const text = document.getElementById('theme-color-text');
+  const reset = document.getElementById('theme-color-reset');
+  if (!picker || !text) return;
+  picker.addEventListener('input', () => { text.value = picker.value.toUpperCase(); });
+  text.addEventListener('input', () => { if (/^#[0-9a-f]{6}$/i.test(text.value)) picker.value = text.value; });
+  reset?.addEventListener('click', () => { picker.value = '{{ default_theme_color }}'; text.value = '{{ default_theme_color }}'; });
+})();
+</script>
 
 <hr class="my-4">
 

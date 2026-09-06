@@ -10,6 +10,8 @@ from . import bp, oauth  # oauth は None の可能性あり
 from app.utils.db import get_db
 
 QR_TRADEMARK_NOTICE = "QRコードは株式会社デンソーウェーブの登録商標です。"
+DEFAULT_EVENT_THEME_COLOR = "#2563EB"
+EVENT_THEME_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 SESSION_MAP_MAX_ITEMS = 8
 SESSION_VALUE_MAX_LEN = 128
 EXT_LOGIN_MODE_BROWSER = "browser"
@@ -20,6 +22,14 @@ PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY = "mfu_pwa_resume_at"
 PWA_RESUME_LOCAL_STORAGE_CLIENT_ID_KEY = "mfu_pwa_client_id"
 JST = timezone(timedelta(hours=9))
 WITHDRAWN_EXT_USER_NAME_PREFIX = "退会済みユーザー"
+
+
+def normalize_event_theme_color(value: Any, *, default: str | None = DEFAULT_EVENT_THEME_COLOR) -> str | None:
+    """Return a canonical event theme color without accepting CSS fragments."""
+    color = str(value or "").strip()
+    if EVENT_THEME_COLOR_RE.fullmatch(color):
+        return color.upper()
+    return default
 
 
 def is_withdrawn_ext_user(row: dict[str, Any] | None) -> bool:

@@ -4,11 +4,13 @@ import { useRoute, useRouter } from 'vue-router';
 import { portalApi } from '@/api/client';
 import type { EventItem } from '@/types';
 import { formatDateTime, formatMoney } from '@/utils/format';
+import { eventThemeStyle, useDocumentEventTheme } from '@/utils/eventTheme';
 
 type Bank={id:number;label:string;bankName:string;branchName:string;accountKind:string;accountNumber:string;accountHolder:string;memo?:string};
 type PaymentOptions={methods:{card:boolean;paypay:boolean;bank:boolean};feeYen:number;paypayUrl?:string;paypayDisplay?:string;banks:Bank[];squareUrl:string};
 const route=useRoute(); const router=useRouter();
 const event=ref<EventItem|null>(null); const options=ref<PaymentOptions|null>(null);
+useDocumentEventTheme(computed(() => event.value?.themeColor));
 const error=ref(''); const busy=ref(false); const method=ref<'card'|'paypay'|'bank'>('card');
 const remitterName=ref(''); const bankId=ref(''); const depositDate=ref(new Date().toISOString().slice(0,10));
 const availableMethods=computed(()=>options.value ? (['card','paypay','bank'] as const).filter(key=>options.value?.methods[key]) : []);
@@ -19,6 +21,7 @@ onMounted(load);
 </script>
 
 <template>
+ <div class="event-theme" :style="eventThemeStyle(event?.themeColor)">
   <button class="back-link" type="button" @click="router.push({name:'event',params:{uuid:route.params.uuid}})">← イベント詳細</button>
   <div v-if="error" class="alert error">{{ error }}</div>
   <template v-if="event">
@@ -31,4 +34,5 @@ onMounted(load);
       <button type="button" class="button primary wide" :disabled="busy || (method!=='card'&&!remitterName.trim()) || (method==='bank'&&(!bankId||!depositDate))" @click="submit">{{ busy?'処理中…':method==='card'?'Square決済へ進む':'申告を送信' }}</button>
     </section>
   </template>
+ </div>
 </template>

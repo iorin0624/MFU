@@ -24,6 +24,8 @@ from .utils import (
     _is_privacy_policy_effective,
     _is_participant_terms_effective,
     _privacy_policy_date_label,
+    DEFAULT_EVENT_THEME_COLOR,
+    normalize_event_theme_color,
 )
 
 from app.utils.mail import send_mail
@@ -936,7 +938,7 @@ def admin_event_new():
     if guard: return guard
 
     if request.method == "GET":
-        return render_template("admin_event_new.html", form={}, errors={})
+        return render_template("admin_event_new.html", form={"theme_color": DEFAULT_EVENT_THEME_COLOR}, errors={}, default_theme_color=DEFAULT_EVENT_THEME_COLOR)
 
     title     = (request.form.get("title") or "").strip()
     starts_at = (request.form.get("starts_at") or "").strip()
@@ -944,6 +946,8 @@ def admin_event_new():
     place     = (request.form.get("place_name") or "").strip()
     address   = (request.form.get("address") or "").strip()
     maps_url  = (request.form.get("maps_url") or "").strip()
+    theme_color_raw = (request.form.get("theme_color") or "").strip()
+    theme_color = normalize_event_theme_color(theme_color_raw, default=None)
     # ▼ 新規：支払期間（未入力は None → NULL）
     pay_from  = (request.form.get("pay_from") or "").strip() or None
     pay_until = (request.form.get("pay_until") or "").strip() or None
@@ -954,26 +958,29 @@ def admin_event_new():
         errors["title"] = "タイトルは必須です。"
     if fee_yen and not fee_yen.isdigit():
         errors["fee_yen"] = "参加費は半角数字（円）で入力してください。"
+    if theme_color is None:
+        errors["theme_color"] = "テーマカラーは #RRGGBB 形式で指定してください。"
 
     if errors:
         return render_template("admin_event_new.html",
                                form={"title": title, "starts_at": starts_at, "fee_yen": fee_yen,
                                      "place_name": place, "address": address, "maps_url": maps_url,
-                                     "pay_from": pay_from, "pay_until": pay_until},
-                               errors=errors), 400
+                                     "pay_from": pay_from, "pay_until": pay_until,
+                                     "theme_color": theme_color_raw},
+                               errors=errors, default_theme_color=DEFAULT_EVENT_THEME_COLOR), 400
 
     db = get_db(); cur = db.cursor()
     cur.execute("""
       INSERT INTO mfu_event (
-        event_uuid, title, owner_user_id, starts_at, fee_yen,
+        event_uuid, title, theme_color, owner_user_id, starts_at, fee_yen,
         pay_from, pay_until,
         place_name, address, maps_url,
         checkin_qr_enabled,
         fee_calc_method,
         square_fee_rate_percent
       )
-      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1, 'new', 3.6)
-    """, (title, (starts_at or None), (int(fee_yen) if fee_yen else None),
+      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1, 'new', 3.6)
+    """, (title, theme_color, (starts_at or None), (int(fee_yen) if fee_yen else None),
           pay_from, pay_until,
           (place or None), (address or None), (maps_url or None)))
     db.commit()
@@ -1238,7 +1245,7 @@ def admin_event_edit(event_id: int):
     try:
         cur.execute("""
             SELECT
-              id, title, event_uuid,
+              id, title, theme_color, event_uuid,
               starts_at, fee_yen,
               pay_from, pay_until,
               place_name, address, maps_url,
@@ -1302,6 +1309,7 @@ def admin_event_edit(event_id: int):
     }
     form = {
         "title": ev.get("title"),
+        "theme_color": normalize_event_theme_color(ev.get("theme_color")),
         "fee_yen": ev.get("fee_yen"),
         "place_name": ev.get("place_name"),
         "address": ev.get("address"),
@@ -1334,6 +1342,8 @@ def admin_event_edit(event_id: int):
             abort(400, "invalid csrf token")
 
         title       = (request.form.get("title") or "").strip()
+        theme_color_raw = (request.form.get("theme_color") or "").strip()
+        theme_color = normalize_event_theme_color(theme_color_raw, default=None)
         starts_at_in= request.form.get("starts_at") or ""
         pay_from_in = request.form.get("pay_from")  or ""
         pay_until_in= request.form.get("pay_until") or ""
@@ -1366,6 +1376,8 @@ def admin_event_edit(event_id: int):
 
         if not title:
             errors["title"] = "タイトルは必須です。"
+        if theme_color is None:
+            errors["theme_color"] = "テーマカラーは #RRGGBB 形式で指定してください。"
 
         fee_yen = None
         if fee_yen_in not in (None, ""):
@@ -1419,6 +1431,7 @@ def admin_event_edit(event_id: int):
 
         form.update({
             "title": title, "fee_yen": fee_yen_in,
+            "theme_color": theme_color_raw,
             "place_name": place_name or "", "address": address or "", "maps_url": maps_url or "",
             "sns_hashtag": sns_hashtag or "",
             "line_openchat_url": line_openchat_url or "", "line_openchat_pass": line_openchat_pass or "",
@@ -1441,7 +1454,7 @@ def admin_event_edit(event_id: int):
             return render_template("admin_event_edit.html",
                 ev=ev, form=form, form_iso=form_iso, errors=errors,
                 require_payment_count=require_payment_count, admin_csrf=admin_csrf,
-        qr_trademark_notice=QR_TRADEMARK_NOTICE)
+                qr_trademark_notice=QR_TRADEMARK_NOTICE, default_theme_color=DEFAULT_EVENT_THEME_COLOR)
 
         # === 保存処理 ===
         event_album_name = format_event_album_name(title=title, starts_at=starts_at)
@@ -1449,7 +1462,7 @@ def admin_event_edit(event_id: int):
         try:
             curu.execute("""
                 UPDATE mfu_event
-                   SET title=%s, starts_at=%s, fee_yen=%s,
+                   SET title=%s, theme_color=%s, starts_at=%s, fee_yen=%s,
                        studio_fee_yen=%s, fee_rate_percent=%s, admin_fee_yen=%s,
                        fee_auto_calc=%s,
                        fee_calc_method=%s, square_fee_rate_percent=%s,
@@ -1460,7 +1473,7 @@ def admin_event_edit(event_id: int):
                        allow_square=%s, allow_paypay=%s, allow_bank=%s, tip_enabled=%s, paypay_display=%s
                  WHERE id=%s
                  LIMIT 1
-            """, (title, starts_at, fee_yen,
+            """, (title, theme_color, starts_at, fee_yen,
                   studio_fee_yen, fee_rate_percent, admin_fee_yen,
                   fee_auto_calc, fee_calc_method, square_fee_rate_percent,
                   pay_from, pay_until,
@@ -1542,7 +1555,7 @@ def admin_event_edit(event_id: int):
     return render_template("admin_event_edit.html",
         ev=ev, form=form, form_iso=form_iso, errors=errors,
         require_payment_count=require_payment_count, admin_csrf=admin_csrf,
-        qr_trademark_notice=QR_TRADEMARK_NOTICE)
+        qr_trademark_notice=QR_TRADEMARK_NOTICE, default_theme_color=DEFAULT_EVENT_THEME_COLOR)
 
 
 def _fetch_event_members_in_admin_order(event_id: int):

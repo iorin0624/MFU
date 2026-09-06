@@ -49,10 +49,38 @@
              value="{{ (form.maps_url or '')|e }}">
     </div>
 
+    <div class="col-12 col-md-6">
+      <label class="form-label" for="theme-color-text">テーマカラー</label>
+      <div class="input-group">
+        <input type="color" class="form-control form-control-color" id="theme-color-picker"
+               value="{{ (form.theme_color or default_theme_color)|e }}" aria-label="テーマカラーを選択">
+        <input type="text" name="theme_color" id="theme-color-text" class="form-control font-monospace"
+               value="{{ (form.theme_color or default_theme_color)|e }}" pattern="#[0-9A-Fa-f]{6}" maxlength="7" required>
+        <button type="button" class="btn btn-outline-secondary" id="theme-color-reset">標準色</button>
+      </div>
+      <div class="form-text">イベント詳細・チャット・アルバムなど、利用者向けイベント画面に適用されます。</div>
+      {% if errors.theme_color %}<div class="text-danger small mt-1">{{ errors.theme_color }}</div>{% endif %}
+    </div>
+
     <div class="col-12 d-grid d-md-flex gap-2">
       <button class="btn btn-primary">作成する</button>
       <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_events_list') }}">キャンセル</a>
     </div>
   </form>
 
+{% endblock %}
+
+{% block body_extra %}
+{{ super() }}
+<script>
+(() => {
+  const picker = document.getElementById('theme-color-picker');
+  const text = document.getElementById('theme-color-text');
+  const reset = document.getElementById('theme-color-reset');
+  if (!picker || !text) return;
+  picker.addEventListener('input', () => { text.value = picker.value.toUpperCase(); });
+  text.addEventListener('input', () => { if (/^#[0-9a-f]{6}$/i.test(text.value)) picker.value = text.value; });
+  reset?.addEventListener('click', () => { picker.value = '{{ default_theme_color }}'; text.value = '{{ default_theme_color }}'; });
+})();
+</script>
 {% endblock %}

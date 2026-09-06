@@ -23,7 +23,7 @@ from typing import Any
 from flask import current_app, jsonify, request, send_file, session, url_for
 from PIL import Image
 
-from app.external_login_user.utils import _event_acl_role, is_withdrawn_ext_user
+from app.external_login_user.utils import _event_acl_role, is_withdrawn_ext_user, normalize_event_theme_color
 from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.utils.thumbs import enqueue_thumb_job
 from app.utils.zip_stream import read_zip_progress, start_zip_entries_job
@@ -101,12 +101,14 @@ def _event_summary(event_id: int | None) -> dict | None:
     if not event_id:
         return None
     row = db_get_one(
-        "SELECT id, event_uuid, title, starts_at, place_name FROM mfu_event WHERE id=%s LIMIT 1",
+        "SELECT id, event_uuid, title, starts_at, place_name, theme_color FROM mfu_event WHERE id=%s LIMIT 1",
         (int(event_id),),
     )
     if not row:
         return None
-    return {key: _json_value(value) for key, value in row.items()}
+    result = {key: _json_value(value) for key, value in row.items()}
+    result["theme_color"] = normalize_event_theme_color(result.get("theme_color"))
+    return result
 
 
 def _current_external_user_id() -> int | None:
