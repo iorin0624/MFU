@@ -32,7 +32,6 @@ import threading
 from mysql.connector import errors as MySQLErrors
 from app.utils.db import get_db  #
 from app.utils.logs import log_request_raw
-from app.utils.mail import send_mail
 from app.utils.admin_passkey_stepup import require_admin_passkey
 
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
@@ -458,34 +457,18 @@ def _notify_requester_process_completion(
         return
     if not requester_row:
         return
-    requester_email = (requester_row.get("email") or "").strip()
     current_app.logger.info(
         "notify: pre_send kind=process_all_done album_id=%s child_id=%s request_by=%s recipients=%s recipients_count=%s pending_sql=%s",
         album_id,
         child_id,
-        requester_email,
-        [requester_email],
+        request_by_id,
+        [request_by_id],
         1,
         "request_flag=1 AND complete_flag=0",
     )
     album_name = meta.get("album_name", "アルバム")
     child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
-    link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
     subject = f"【加工完了】{album_name}"
-    body = (
-        f"{album_name} の「{child_name}」について、依頼した加工回しが完了しました。\n\n"
-        f"アクセスはこちら:\n{link}\n\n"
-        "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
-    )
-    if requester_email:
-        try:
-            send_mail(requester_email, subject, body)
-        except Exception as exc:
-            current_app.logger.warning(
-                "process completion mail failed to requester_id=%s: %s",
-                request_by_id,
-                exc,
-            )
     send_external_event_push(
         user_id=int(request_by_id),
         event_id=int(event_meta["event_id"]),
@@ -1545,11 +1528,6 @@ def upload_child(album_id, child_id):
                 )
                 return
 
-            mail_recipients = [
-                str(r.get("email") or "").strip()
-                for r in recipients
-                if str(r.get("email") or "").strip()
-            ]
             push_candidate_user_ids = []
             for r in recipients:
                 try:
@@ -1569,30 +1547,23 @@ def upload_child(album_id, child_id):
             )
 
             current_app.logger.info(
-                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_candidates=%d push_recipients=%d notify_kind_excluded=%d push_subscription_excluded=%d",
+                "notify: recipients(after filter)=%d album_id=%s child_id=%s push_candidates=%d push_recipients=%d notify_kind_excluded=%d push_subscription_excluded=%d",
                 len(recipients),
                 album_id,
                 child_id,
-                len(mail_recipients),
                 len(push_candidate_user_ids),
                 len(push_recipients),
                 notify_kind_excluded_count,
                 push_subscription_excluded_count,
             )
-            request_by_email = None
-            if _is_ext_logged_in():
-                ext_user_id = session.get("ext_user_id")
-                if ext_user_id:
-                    me = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (int(ext_user_id),))
-                    request_by_email = (me or {}).get("email")
             current_app.logger.info(
                 "notify: pre_send kind=%s album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
                 kind,
                 album_id,
                 child_id,
-                request_by_email,
-                len(mail_recipients),
-                _preview_recipients(mail_recipients),
+                session.get("ext_user_id") if _is_ext_logged_in() else session.get("user"),
+                len(push_recipients),
+                push_recipients[:10],
                 "request_flag=1 AND complete_flag=0" if (mode == "process" and kind in ("upload", "process_done")) else "n/a",
             )
 
@@ -1675,17 +1646,8 @@ def upload_child(album_id, child_id):
                     return f"album:{album_id}:{child_id}:process_done:mfu:admin:{process_done_state}"[:191]
                 return f"album:{album_id}:{child_id}:{kind}:mfu:admin"[:191]
 
-            # 送信
+            # 一般利用者への通知は通知一覧 + Web Push のみ。
             sent_ok = False
-            mail_failed_count = 0
-            for to in mail_recipients:
-                try:
-                    current_app.logger.info("notify: send -> %s", to)
-                    send_mail(to, title, body)
-                    sent_ok = True
-                except Exception as e:
-                    mail_failed_count += 1
-                    current_app.logger.warning("notify send failed to %s: %s", to, e)
 
             push_failed_count = 0
             push_skipped_count = 0
@@ -1796,16 +1758,15 @@ def upload_child(album_id, child_id):
                     current_app.logger.warning("notify(cooldown write) failed: %s", e)
 
             current_app.logger.info(
-                "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s mail_recipients_count=%s push_recipients_count=%s "
+                "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s push_recipients_count=%s "
                 "notify_kind_excluded_count=%s push_subscription_excluded_count=%s "
                 "relative_target_url=%s absolute_target_url=%s admin_target_url=%s dedup_key_samples=%s dedup_key_count=%s "
-                "mail_failed_count=%s push_failed_count=%s push_skipped_count=%s admin_push_attempted=%s admin_push_dedup_key=%s "
+                "push_failed_count=%s push_skipped_count=%s admin_push_attempted=%s admin_push_dedup_key=%s "
                 "admin_push_in_app=%s admin_push_web_push=%s admin_push_duplicate=%s admin_push_ok=%s admin_push_failure=%s",
                 kind,
                 album_id,
                 child_id,
                 recipients_total,
-                len(mail_recipients),
                 len(push_recipients),
                 notify_kind_excluded_count,
                 push_subscription_excluded_count,
@@ -1814,7 +1775,6 @@ def upload_child(album_id, child_id):
                 admin_target_url,
                 dedup_key_samples,
                 len(push_recipients),
-                mail_failed_count,
                 push_failed_count,
                 push_skipped_count,
                 admin_push_result["attempted"],
@@ -2523,41 +2483,20 @@ def request_process(album_id, child_id):
         contacts = _fetch_event_notification_contacts(event_id, request_targets)
         album_name = meta.get("album_name", "アルバム")
         child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
-        link = _build_event_album_link(event_id, album_id, child_id)
         subject = f"【加工依頼】{album_name}"
-        body = (
-            f"{album_name} の「{child_name}」について加工のご協力をお願いします。\n\n"
-            f"アクセスはこちら:\n{link}\n\n"
-            "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
-        )
-
-        recipients = [
-            c.get("email") for c in contacts
-            if c.get("email") and int(c.get("notify_album_process", 1)) == 1
-        ]
-        request_by_email = None
-        if requester_id:
-            requester = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (requester_id,))
-            request_by_email = (requester or {}).get("email")
         current_app.logger.info(
             "notify: pre_send kind=process_request album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
             album_id,
             child_id,
-            request_by_email,
-            len(recipients),
-            recipients,
+            requester_id,
+            len(contacts),
+            [c.get("user_id") for c in contacts],
             "request_flag=1 AND complete_flag=0",
         )
         pushed_count = 0
         for c in contacts:
             if int(c.get("notify_album_process", 1)) != 1:
                 continue
-            if c.get("email"):
-                try:
-                    send_mail(c["email"], subject, body)
-                    sent_count += 1
-                except Exception as e:
-                    current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
             push_result = send_external_event_push(
                 user_id=int(c["user_id"]),
                 event_id=event_id,

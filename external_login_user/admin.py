@@ -28,7 +28,6 @@ from .utils import (
     normalize_event_theme_color,
 )
 
-from app.utils.mail import send_mail
 from app.utils.push import send_external_event_push
 from .event_push import notify_member_payment_push, notify_member_status_push
 
@@ -185,7 +184,7 @@ _AVATAR_ROOT = Path("/mnt/mfu/avatars")
 def _update_member_status_and_notify(event_id: int, user_id: int, new_status: str):
     """
     mfu_event_member.status を new_status に更新。
-    変化があれば対象者へ「イベント名 <UUID@mail.iori0624.jp>」でメール通知。
+    変化があれば対象者へ通知一覧 + Web Pushで通知。
     戻り: (ok: bool, msg: str, applied_status: str)
     """
     if new_status not in ("approved", "rejected", "pending"):
@@ -228,32 +227,6 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
 
     # 更新（承認遷移時の System 自動投稿は共通関数で処理）
     update_event_member_status(event_id=event_id, user_id=user_id, new_status=new_status)
-
-    # メール通知（宛先・UUIDがあれば）→ send_mail 統一
-    if to_email and ev_uuid_str:
-        try:
-            from flask import current_app
-            # ★ 日本語ラベルへの変換
-            STATUS_JA = {"approved": "承認", "rejected": "拒否", "pending": "保留"}
-            old_j = STATUS_JA.get(old_status, old_status)
-            new_j = STATUS_JA.get(new_status, new_status)
-
-            subject = f"【{ev_title}】参加ステータスが更新されました"
-            body = (
-                f"{nickname or '参加者'} 様\n\n"
-                f"イベント「{ev_title}」の参加ステータスが「{old_j}」から「{new_j}」に更新されました。\n"
-                f"詳細は以下のページをご確認ください。\n{view_url}\n"
-            )
-
-            send_mail(
-                to=to_email,
-                subject=subject,
-                body=body,
-                event_uuid=ev_uuid_str,  # From: <UUID@mail.iori0624.jp>
-                from_display_name=f"{ev_title} by Mimoria",
-            )
-        except Exception as e:
-            current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
 
     notify_member_status_push(
         event_id=event_id,
@@ -1504,7 +1477,7 @@ def admin_event_edit(event_id: int):
             try: curu.close(); dbu.close()
             except Exception: pass
 
-        # === ここから追加：全体メモ変更時のメール通知 ===
+        # === 全体メモ変更時のPush通知 ===
         try:
             before = (ev.get("memo_all") or "").strip()
             after  = (memo_all or "").strip()
@@ -1533,8 +1506,6 @@ def admin_event_edit(event_id: int):
                     }
                     for r in rows if r
                 ]
-                emails = [c["email"] for c in contacts if c.get("email")]
-
                 subject  = f"【{title or ev.get('title')}】全体メモが更新されました"
                 push_body = "イベントの全体メモが更新されました。イベント詳細をご確認ください。"
                 for contact in contacts:
@@ -1548,30 +1519,7 @@ def admin_event_edit(event_id: int):
                         sender_label="イベント",
                     )
 
-                if emails:
-                    view_url = url_for("external_login_user.view_event", event_uuid=ev["event_uuid_str"], _external=True)
-                    body     = (
-                        "全体メモが更新されました。\n\n"
-                        "―― 新しい全体メモ ――\n"
-                        f"{after}\n\n"
-                        f"イベントページ: {view_url}\n"
-                    )
-                    sent = 0
-                    for addr in emails:
-                        try:
-                            send_mail(
-                                to=addr,
-                                subject=subject,
-                                body=body,
-                                event_uuid=ev["event_uuid_str"],
-                                from_display_name=f"{title or ev.get('title') or 'イベント'} by Mimoria",
-                            )
-                            sent += 1
-                        except Exception:
-                            current_app.logger.exception("failed to send memo_all update mail to %s (event_id=%s)", addr, event_id)
-                    flash(f"イベントを保存しました（全体メモ更新の通知 {sent} 件）", "success")
-                else:
-                    flash("イベントを保存しました（通知対象のメールアドレスなし）", "success")
+                flash(f"イベントを保存しました（全体メモ更新のPush通知 {len(contacts)} 件）", "success")
             else:
                 flash("イベントを保存しました。", "success")
         except Exception:
@@ -2365,7 +2313,7 @@ def _parse_optional_int(raw_value: str, field_label: str):
 
 @bp.post("/admin/events/<int:event_id>/members/<int:user_id>/set-paid-amount")
 def admin_set_paid_amount(event_id: int, user_id: int):
-    """支払金額入力に応じて paid/unpaid 切替＋メール通知（send_mail統一）"""
+    """支払金額入力に応じて paid/unpaid を切り替え、Push通知する。"""
     guard = _require_mfu_login_redirect()
     if guard: return guard
     if request.form.get("csrf_token") != session.get("admin_csrf"):
@@ -2436,25 +2384,6 @@ def admin_set_paid_amount(event_id: int, user_id: int):
     finally:
         try: cur.close(); db.close()
         except Exception: pass
-
-    # === メール通知（ステータスが変わった時のみ） ===
-    try:
-        if to_email and ev_uuid_str and cur_status != next_status and next_status in ("paid", "unpaid"):
-            MSG = {
-                "paid":   "お支払いありがとうございます！💕当日の参加お待ちしております💕",
-                "unpaid": "お支払いが確認出来ませんでした🙇　後ほど主催から個別に連絡致します。",
-            }
-            body = MSG.get(next_status)
-            if body:
-                send_mail(
-                    to=to_email,
-                    subject=f"【{ev_title}】お支払い状況の更新",
-                    body=body,
-                    event_uuid=ev_uuid_str,
-                    from_display_name=f"{ev_title} by Mimoria",
-                )
-    except Exception:
-        current_app.logger.exception("failed to send set-paid-amount mail (user_id=%s, event_id=%s)", user_id, event_id)
 
     notify_member_payment_push(
         event_id=event_id,
@@ -2621,28 +2550,6 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
         if old_status != new_status:
             update_event_member_status(event_id, user_id, new_status)
 
-            if to_email and ev_uuid_str:
-                try:
-                    old_j = STATUS_JA.get(old_status, old_status)
-                    new_j = STATUS_JA.get(new_status, new_status)
-
-                    # 既存文面・件名は維持（テンプレ名変更なし）
-                    subject = f"[{ev_title}] 参加ステータスが更新されました"
-                    body = (
-                        f"{nickname or '参加者'} 様\n\n"
-                        f"イベント「{ev_title}」の参加ステータスが「{old_j}」から「{new_j}」に更新されました。\n"
-                        f"詳細は以下のページをご確認ください。\n{view_url}\n"
-                    )
-
-                    send_mail(
-                        to=to_email,
-                        subject=subject,
-                        body=body,
-                        event_uuid=ev_uuid_str,  # From: <UUID@mail.iori0624.jp>
-                        from_display_name=f"{ev_title} by Mimoria",
-                    )
-                except Exception as e:
-                    current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
             notify_member_status_push(
                 event_id=event_id,
                 user_id=user_id,
@@ -2791,7 +2698,7 @@ def admin_discord_action():
     applied_ja = STATUS_JA.get(applied, applied)
     if ok:
         done = f"{'承認しました。' if applied == 'approved' else '拒否しました。'}"
-        note = "メール通知を送信しました。" if msg != "no change" else "（変更なし：通知は送信されていません）"
+        note = "Push通知を送信しました。" if msg != "no change" else "（変更なし：通知は送信されていません）"
     else:
         done = "更新に失敗しました。"
         note = f"理由: {msg}"
@@ -3183,7 +3090,7 @@ def admin_event_banks(event_id: int):
 
 @bp.route("/admin/events/<int:event_id>/members/<int:member_id>/payment-status", methods=["POST"])
 def admin_member_set_payment_status(event_id: int, member_id: int):
-    """支払い確認フラグの更新（paid / pending）＋メール通知（send_mail統一）。"""
+    """支払い確認フラグを更新（paid / pending）し、Push通知する。"""
     guard = _require_mfu_login_redirect()
     if guard:
         return guard
@@ -3215,7 +3122,6 @@ def admin_member_set_payment_status(event_id: int, member_id: int):
         cur_status = row[0] if isinstance(row, tuple) else row["payment_status"]
         target_user_id = int(row[1] if isinstance(row, tuple) else row["user_id"])
         to_email   = row[2] if isinstance(row, tuple) else row["email"]
-        # nickname はメール送信には使わない（send_mailはアドレスのみ）
 
         # イベント情報（件名/From用）
         cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
@@ -3251,25 +3157,6 @@ def admin_member_set_payment_status(event_id: int, member_id: int):
             cur.close(); db.close()
         except Exception:
             pass
-
-    # === メール通知（変化があった場合のみ） ===
-    try:
-        if cur_status != set_status and to_email:
-            MSG = {
-                "paid":   "お支払いありがとうございます！  当日の参加お待ちしております💕",
-                "pending":"お支払い確認しております。もう少々お待ちください。",
-            }
-            body = MSG.get(set_status)
-            if body:
-                send_mail(
-                    to=to_email,
-                    subject=f"【{ev_title}】お支払い状況の更新",
-                    body=body,
-                    event_uuid=ev_uuid_str,  # From: <UUID>@mail.iori0624.jp
-                    from_display_name=f"{ev_title} by Mimoria",
-                )
-    except Exception:
-        current_app.logger.exception("failed to send payment-status mail (member_id=%s, event_id=%s)", member_id, event_id)
 
     if cur_status != set_status:
         notify_member_payment_push(
@@ -3406,7 +3293,7 @@ def admin_member_bulk_update(event_id: int, user_id: int):
 
 @bp.post("/admin/events/<int:event_id>/members/<int:member_id>/payment-details")
 def admin_member_update_payment_details(event_id: int, member_id: int):
-    """支払い詳細の更新（require_payment には触れない）＋メール通知（send_mail統一）"""
+    """支払い詳細を更新（require_payment には触れない）し、Push通知する。"""
     guard = _require_mfu_login_redirect()
     if guard: return guard
     if not _event_admin_can_manage(event_id):
@@ -3561,26 +3448,6 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
     finally:
         try: cur.close(); db.close()
         except Exception: pass
-
-    # === メール通知（必要時） ===
-    if will_change and new_pstatus in ("paid", "pending", "unpaid") and to_email:
-        try:
-            MSG = {
-                "paid":   "お支払いありがとうございます！💕当日の参加お待ちしております💕",
-                "pending":"お支払い確認しております。もう少々お待ちください。",
-                "unpaid":"お支払いが確認出来ませんでした🙇　後ほど主催から個別に連絡致します。",
-            }
-            body = MSG.get(new_pstatus)
-            if body:
-                send_mail(
-                    to=to_email,
-                    subject=f"【{ev_title}】お支払い状況の更新",
-                    body=body,
-                    event_uuid=ev_uuid_str,
-                    from_display_name=f"{ev_title} by Mimoria",
-                )
-        except Exception:
-            current_app.logger.exception("failed to send payment-details mail (member_id=%s, event_id=%s)", member_id, event_id)
 
     if target_user_id > 0:
         effective_status = new_pstatus or cur_ps or "unpaid"
@@ -3740,7 +3607,7 @@ def admin_update_checkin_qr_expires(event_id: int):
 @bp.route("/admin/events/<int:event_id>/members/<int:member_id>/status", methods=["POST"], endpoint="admin_member_update_status")
 def admin_member_update_status(event_id: int, member_id: int):
     """
-    管理画面：参加者の承認ステータス変更 + 本人へメール通知
+    管理画面：参加者の承認ステータス変更 + 本人へPush通知
     フォーム: status=approved|pending|rejected
     """
     guard = _require_mfu_login_redirect()
@@ -3754,7 +3621,7 @@ def admin_member_update_status(event_id: int, member_id: int):
 
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
-        # 対象メンバーとイベント情報を取得（メールテンプレ材料）
+        # 対象メンバーとイベント情報を取得
         cur.execute("""
             SELECT m.id AS member_id, m.status AS old_status, m.user_id,
                    e.id AS event_id, e.title, e.event_uuid,
@@ -3775,7 +3642,7 @@ def admin_member_update_status(event_id: int, member_id: int):
             abort(404, "参加者が見つかりません。")
         if old_status == new_status:
             # ステータスが変わらない場合は更新せず完了
-            flash("ステータスに変更はありません（メール送信なし）。", "info")
+            flash("ステータスに変更はありません（通知送信なし）。", "info")
             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
         # ステータス更新（承認遷移時のSystem自動投稿を含む共通処理）
@@ -3784,72 +3651,13 @@ def admin_member_update_status(event_id: int, member_id: int):
         try: cur.close()
         except Exception: pass
 
-    # ===== メール送信 =====
-    nickname = row.get("nickname") or "参加者"
-    email    = (row.get("email") or "").strip()
-    title    = row.get("title") or "イベント"
-    # event_uuid は bytes の可能性があるので文字列化
-    try:
-        event_uuid_str = _uuid_bytes_to_str(row.get("event_uuid"))
-    except Exception:
-        event_uuid_str = row.get("event_uuid")
-
-    view_url = url_for("external_login_user.view_event", event_uuid=event_uuid_str, _external=True)
-
-    # 日本語テンプレ
-    jp = {
-        "approved": {
-            "subject": f"【{title}】参加申請のステータス：承認",
-            "body": f"""{nickname} 様
-
-イベント「{title}」への参加が承認されました。
-当日のご参加をお待ちしております！
-{view_url}
-""",
-        },
-        "pending": {
-            "subject": f"【{title}】参加申請のステータス：保留",
-            "body": f"""{nickname} 様
-
-イベント「{title}」への参加が保留されました。
-確認事項があります。後ほど主催から個別にご連絡いたします。
-{view_url}
-""",
-        },
-        "rejected": {
-            "subject": f"【{title}】参加申請のステータス：拒否",
-            "body": f"""{nickname} 様
-
-イベント「{title}」への参加が拒否されました。
-確認事項があります。後ほど主催から個別にご連絡いたします。
-{view_url}
-""",
-        },
-    }
-
-    # メールがあれば送る（なければフラッシュだけ）
-    if email:
-        try:
-            send_mail(
-                to=email,
-                subject=jp[new_status]["subject"],
-                body=jp[new_status]["body"],
-                event_uuid=event_uuid_str,
-                from_display_name=f"{title} by Mimoria",
-            )
-            flash("ステータスを更新し、参加者へメール通知しました。", "success")
-        except Exception:
-            current_app.logger.exception("failed to send status mail (member_id=%s, event_id=%s)", member_id, event_id)
-            flash("ステータスは更新しましたが、メール送信でエラーが発生しました。", "warning")
-    else:
-        flash("ステータスを更新しました（メールアドレス未設定のため通知なし）。", "warning")
-
     notify_member_status_push(
         event_id=event_id,
         user_id=target_user_id,
         old_status=old_status,
         new_status=new_status,
     )
+    flash("ステータスを更新し、参加者へPush通知しました。", "success")
 
     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 

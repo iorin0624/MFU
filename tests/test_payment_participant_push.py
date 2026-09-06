@@ -106,6 +106,23 @@ class PaymentParticipantPushTest(unittest.TestCase):
         self.assertIn("push_result = _send_refund_completion_push", payment_source)
         self.assertIn('dedup_token=f"square:{token or resolved_payment_row_id', browser_source)
 
+    def test_event_participant_transactional_emails_are_removed(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        payment_source = (repo_root / "payment" / "__init__.py").read_text(encoding="utf-8")
+        browser_source = (repo_root / "external_login_user" / "payments.py").read_text(encoding="utf-8")
+        admin_source = (repo_root / "external_login_user" / "admin.py").read_text(encoding="utf-8")
+        album_source = (repo_root / "albums" / "routes.py").read_text(encoding="utf-8")
+        user_source = (repo_root / "external_login_user" / "users.py").read_text(encoding="utf-8")
+
+        # Payment module now delegates administrator mail elsewhere and sends
+        # participant completions through the push gateway only.
+        self.assertNotIn("send_mail(", payment_source)
+        self.assertNotIn("send_mail(", admin_source)
+        self.assertNotIn("send_mail(", album_source)
+        self.assertEqual(browser_source.count("send_mail("), 1)  # admin/ACL helper only
+        self.assertNotIn("join: user mail failed", user_source)
+        self.assertNotIn("status notify mail failed", user_source)
+
 
 if __name__ == "__main__":
     unittest.main()
