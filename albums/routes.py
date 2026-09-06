@@ -38,7 +38,7 @@ from app.utils.admin_passkey_stepup import require_admin_passkey
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
 from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
-from app.utils.push import send_push
+from app.utils.push import send_external_event_push, send_push
 from app.external_login_user.utils import _event_acl_role, _get_ext_user_by_social, is_withdrawn_ext_user
 
 
@@ -456,9 +456,9 @@ def _notify_requester_process_completion(
     )
     if is_withdrawn_ext_user(requester_row):
         return
-    requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
-    if not requester_email:
+    if not requester_row:
         return
+    requester_email = (requester_row.get("email") or "").strip()
     current_app.logger.info(
         "notify: pre_send kind=process_all_done album_id=%s child_id=%s request_by=%s recipients=%s recipients_count=%s pending_sql=%s",
         album_id,
@@ -477,7 +477,27 @@ def _notify_requester_process_completion(
         f"アクセスはこちら:\n{link}\n\n"
         "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
     )
-    send_mail(requester_email, subject, body)
+    if requester_email:
+        try:
+            send_mail(requester_email, subject, body)
+        except Exception as exc:
+            current_app.logger.warning(
+                "process completion mail failed to requester_id=%s: %s",
+                request_by_id,
+                exc,
+            )
+    send_external_event_push(
+        user_id=int(request_by_id),
+        event_id=int(event_meta["event_id"]),
+        event_uuid="",
+        kind="album_process_all_done",
+        title=subject,
+        body=f"{album_name} の「{child_name}」について、依頼した加工回しがすべて完了しました。",
+        target_url=_build_event_album_target_urls(
+            int(event_meta["event_id"]), album_id, child_id
+        )["relative_url"],
+        sender_label="アルバム",
+    )
 
 def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
     if not user_ids:
@@ -527,7 +547,7 @@ def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
     sql = (
         "SELECT DISTINCT actor_id "
         "  FROM chat_push_subscriptions "
-        " WHERE actor_type='external_user_id' "
+        " WHERE actor_type='line' "
         f"   AND actor_id IN ({placeholders})"
     )
     rows = db_get_all(sql, tuple(str(uid) for uid in normalized_ids)) or []
@@ -1540,8 +1560,13 @@ def upload_child(album_id, child_id):
                     push_candidate_user_ids.append(ext_user_id)
 
             push_subscribed_user_ids = _fetch_push_subscribed_ext_user_ids(push_candidate_user_ids)
-            push_recipients = [ext_user_id for ext_user_id in push_candidate_user_ids if ext_user_id in push_subscribed_user_ids]
-            push_subscription_excluded_count = max(0, len(push_candidate_user_ids) - len(push_recipients))
+            # Every eligible participant receives an in-app notification.  The
+            # shared push gateway independently skips Web Push when the user has
+            # no active `line` subscription.
+            push_recipients = push_candidate_user_ids
+            push_subscription_excluded_count = max(
+                0, len(push_candidate_user_ids) - len(push_subscribed_user_ids)
+            )
 
             current_app.logger.info(
                 "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_candidates=%d push_recipients=%d notify_kind_excluded=%d push_subscription_excluded=%d",
@@ -2523,18 +2548,30 @@ def request_process(album_id, child_id):
             recipients,
             "request_flag=1 AND complete_flag=0",
         )
+        pushed_count = 0
         for c in contacts:
-            if not c.get("email"):
-                continue
             if int(c.get("notify_album_process", 1)) != 1:
                 continue
-            try:
-                send_mail(c["email"], subject, body)
-                sent_count += 1
-            except Exception as e:
-                current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
+            if c.get("email"):
+                try:
+                    send_mail(c["email"], subject, body)
+                    sent_count += 1
+                except Exception as e:
+                    current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
+            push_result = send_external_event_push(
+                user_id=int(c["user_id"]),
+                event_id=event_id,
+                event_uuid="",
+                kind="album_process_request",
+                title=subject,
+                body=f"{album_name} の「{child_name}」について加工のご協力をお願いします。",
+                target_url=_build_event_album_target_urls(event_id, album_id, child_id)["relative_url"],
+                sender_label="アルバム",
+            )
+            if push_result.get("created") or push_result.get("ok"):
+                pushed_count += 1
 
-    return jsonify({"ok": True, "sent": sent_count})
+    return jsonify({"ok": True, "sent": sent_count, "pushed": pushed_count if request_targets else 0})
 
 @album_bp.route('/<album_id>/image/<child_id>/<filename>')
 def image(album_id, child_id, filename):

@@ -18,6 +18,7 @@ from .utils import (
 )
 from app.utils.db import get_db
 from app.utils.mail import send_mail
+from .event_push import notify_member_payment_push
 from flask import current_app
 from app.utils.mail import send_mail
 
@@ -1214,6 +1215,14 @@ def pay_return(event_uuid: str):
         except Exception:
             current_app.logger.exception("notify (user mail) failed")
 
+        notify_member_payment_push(
+            event_id=int(ev["id"]),
+            user_id=int(me["id"]),
+            payment_status="paid",
+            kind="event_payment_square_completed",
+            body="Squareでのお支払いが完了しました。領収書はイベント詳細から確認できます。",
+        )
+
         flash("お支払いが完了しました。ありがとうございます。", "success")
 
         # ★ 講座モード：支払い後は参加申請へ誘導
@@ -1387,6 +1396,14 @@ def pay_paypay(event_uuid: str):
             )
         except Exception:
             current_app.logger.exception("notify (paypay) failed")
+
+        notify_member_payment_push(
+            event_id=int(ev["id"]),
+            user_id=int(me["id"]),
+            payment_status="pending",
+            kind="event_payment_paypay_submitted",
+            body="PayPayの送金申告を受け付けました。主催者の確認までお待ちください。",
+        )
 
         flash("送金申告を受け付けました。主催の確認までお待ちください。", "success")
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
@@ -1577,6 +1594,14 @@ def pay_bank(event_uuid: str):
             )
         except Exception:
             current_app.logger.exception("notify (bank) failed")
+
+        notify_member_payment_push(
+            event_id=int(ev["id"]),
+            user_id=int(me["id"]),
+            payment_status="pending",
+            kind="event_payment_bank_submitted",
+            body="銀行振込の申告を受け付けました。主催者の確認までお待ちください。",
+        )
 
         flash("振込申告を受け付けました。主催の確認までお待ちください。", "success")
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
@@ -2016,6 +2041,14 @@ def lecture_return(event_uuid: str):
                 )
         except Exception:
             current_app.logger.exception("notify (lecture user mail) failed")
+
+        notify_member_payment_push(
+            event_id=int(ev["id"]),
+            user_id=int(me["id"]),
+            payment_status="paid",
+            kind="event_payment_square_completed",
+            body="Squareでのお支払いが完了しました。領収書はイベント詳細から確認できます。",
+        )
 
         flash("お支払いが完了しました。次に『参加申請ページ』で役割/衣装を入力してください。", "success")
     elif is_success and already_paid:

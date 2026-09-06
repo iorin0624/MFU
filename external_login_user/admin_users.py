@@ -16,6 +16,7 @@ from .utils import (
     _privacy_policy_date_label,
 )
 from .deletion_service import anonymize_external_user
+from .event_push import notify_member_status_push
 
 # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
 try:
@@ -801,6 +802,12 @@ def admin_ext_users_assign(user_id: int):
                      LIMIT 1
                 """, (existing_id,))
                 db.commit()
+                notify_member_status_push(
+                    event_id=event_id,
+                    user_id=user_id,
+                    old_status="canceled",
+                    new_status="active",
+                )
                 return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, revived=1))
             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, duplicated=1))
 
@@ -820,6 +827,11 @@ def admin_ext_users_assign(user_id: int):
         except Exception:
             pass
 
+    notify_member_status_push(
+        event_id=event_id,
+        user_id=user_id,
+        new_status="pending",
+    )
     return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, assigned=1))
 
 
@@ -965,11 +977,13 @@ def admin_ext_users_member_delete(user_id: int, member_id: int):
     db = get_db(); cur = db.cursor()
     try:
         # 所有確認してからキャンセル
-        cur.execute("SELECT 1 FROM mfu_event_member WHERE id=%s AND user_id=%s LIMIT 1",
+        cur.execute("SELECT event_id FROM mfu_event_member WHERE id=%s AND user_id=%s LIMIT 1",
                     (member_id, user_id))
-        if not cur.fetchone():
+        member_row = cur.fetchone()
+        if not member_row:
             return redirect(url_for("external_login_user.admin_ext_users_edit_page",
                                     user_id=user_id, error="not_found"))
+        event_id = int(member_row[0] if isinstance(member_row, tuple) else member_row.get("event_id"))
 
         canceled_by = (session.get("user") or "admin")
         cur.execute("""
@@ -984,6 +998,13 @@ def admin_ext_users_member_delete(user_id: int, member_id: int):
     finally:
         try: cur.close(); db.close()
         except Exception: pass
+
+    notify_member_status_push(
+        event_id=event_id,
+        user_id=user_id,
+        old_status="active",
+        new_status="canceled",
+    )
 
     return redirect(url_for("external_login_user.admin_ext_users_edit_page",
                             user_id=user_id, canceled="1"))
