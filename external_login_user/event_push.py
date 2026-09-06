@@ -45,6 +45,28 @@ def _member_event_context(event_id: int, user_id: int) -> dict[str, Any] | None:
         db.close()
 
 
+def _event_user_context(event_id: int, user_id: int) -> dict[str, Any] | None:
+    """Resolve trusted payment recipients even when no membership row exists."""
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT e.title, e.event_uuid, u.nickname
+              FROM mfu_event e
+              JOIN external_login_user u ON u.id=%s
+             WHERE e.id=%s
+             LIMIT 1
+            """,
+            (int(user_id), int(event_id)),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
 def notify_member_status_push(
     *, event_id: int, user_id: int, new_status: str, old_status: str | None = None
 ) -> dict[str, Any]:
@@ -74,8 +96,10 @@ def notify_member_payment_push(
     payment_status: str,
     body: str | None = None,
     kind: str = "event_payment_status",
+    title_suffix: str | None = None,
+    dedup_token: str | None = None,
 ) -> dict[str, Any]:
-    row = _member_event_context(event_id, user_id)
+    row = _event_user_context(event_id, user_id)
     if not row:
         return {"ok": False, "reason": "member_not_found"}
     event_uuid = _uuid_bytes_to_str(row.get("event_uuid")) or ""
@@ -88,8 +112,9 @@ def notify_member_payment_push(
         event_id=event_id,
         event_uuid=event_uuid,
         kind=kind,
-        title=f"【{event_title}】お支払い情報が更新されました",
+        title=f"【{event_title}】{title_suffix or 'お支払い情報が更新されました'}",
         body=message,
         target_suffix="/payment",
         sender_label="支払",
+        dedup_token=dedup_token,
     )
