@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppHeader from '@/components/AppHeader.vue';
 import LoadingBlock from '@/components/LoadingBlock.vue';
@@ -17,7 +17,12 @@ const router = useRouter();
 const loginRoute = computed(() => ({ name: 'login', query: { next: route.fullPath } }));
 const chatOnlyRoute = computed(() => ['chat', 'chat-dm', 'event-chat'].includes(String(route.name || '')));
 const requestedMfuChat = computed(() => chatOnlyRoute.value && route.query.auth_scope === 'mfu');
-store.setChatAuthScope(requestedMfuChat.value ? 'mfu' : '');
+watch(requestedMfuChat, async (enabled) => {
+  store.setChatAuthScope(enabled ? 'mfu' : '');
+  // Vue Router may resolve the initial route after App setup. Refresh an
+  // already-loaded session when navigation changes its authentication scope.
+  if (store.ready) await store.bootstrap(true);
+}, { immediate: true });
 const loginUrl = computed(() => requestedMfuChat.value
   ? `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
   : router.resolve(loginRoute.value).href);
