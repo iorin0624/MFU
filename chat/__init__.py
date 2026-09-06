@@ -5597,27 +5597,18 @@ def _require_any_login():
 
 @chat_bp.route("/")
 def index():
-    actor = get_chat_actor()
+    requested_scope = str(request.args.get("auth_scope") or "").strip().lower()
+    if not requested_scope and session.get("user"):
+        requested_scope = "mfu"
+    actor = get_chat_actor(requested_scope or None)
     if not actor:
+        next_url = request.full_path.rstrip("?")
+        if requested_scope == "mfu":
+            return redirect(url_for("login", next=next_url))
         abort(403)
-    events = _accessible_events(actor)
-    dm_inbox_items: list[dict[str, Any]] = []
-    if _is_chat_admin_actor(actor) and _ensure_chat_dm_schema():
-        actor_key = get_chat_actor_key(actor) or "admin:1"
-        dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
-    notif_ctx = _build_chat_notification_context(actor)
-    return render_template(
-        "chat/index.html",
-        actor=actor,
-        events=events,
-        csrf_token=_chat_csrf(),
-        nav_mode="chat",
-        dm_inbox_items=dm_inbox_items,
-        dm_user_user_enabled=_chat_dm_enable_user_user(),
-        vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-        **notif_ctx,
-    )
-
+    if requested_scope == "mfu":
+        return redirect("/external-login/app/chat?auth_scope=mfu")
+    return redirect("/external-login/app/chat")
 
 @chat_bp.get("/api/index/unread-summary")
 def api_index_unread_summary():
