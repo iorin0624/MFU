@@ -769,25 +769,6 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
     # 更新（承認遷移時の System 自動投稿は共通関数で処理）
     update_event_member_status(event_id=event_id, user_id=user_id, new_status=new_status)
 
-    # メール通知（宛先・UUIDがあれば）→ send_mail に統一
-    if to_email and ev_uuid_str:
-        try:
-            subject = f"【{ev_title}】参加ステータスが更新されました"
-            body = (
-                f"{nickname or '参加者'} 様\n\n"
-                f"イベント「{ev_title}」の参加ステータスが「{old_status}」→「{new_status}」に更新されました。\n"
-                f"詳細は以下のページをご確認ください。\n{view_url}\n"
-            )
-            send_mail(
-                to=to_email,
-                subject=subject,
-                body=body,
-                event_uuid=ev_uuid_str,
-                from_display_name=f"{ev_title} by Mimoria",
-            )
-        except Exception as e:
-            current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
-
     notify_member_status_push(
         event_id=event_id,
         user_id=user_id,
@@ -2796,36 +2777,8 @@ def join_event(event_uuid: str):
             except Exception:
                 pass
 
-        # ===== 参加者メール（件名はすでに【イベント名】統一済み） =====
+        # 参加者本人への連絡は通知一覧 + Web Push に統一する。
         if should_notify:
-            try:
-                if to_email:
-                    if new_status == "approved":
-                        send_mail(
-                            to=to_email,
-                            subject=f"【{ev['title']}】参加が承認されました",
-                            body=(f"{nick or '参加者'} 様\n\n"
-                                  f"イベント「{ev['title']}」への参加が承認されました。\n"
-                                  f"当日のご参加をお待ちしております！\n"
-                                  f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
-                            event_uuid=ev_uuid_str,
-                            from_display_name=f"{ev['title']} by Mimoria",
-                        )
-                    else:
-                        send_mail(
-                            to=to_email,
-                            subject=f"【{ev['title']}】参加申請を受け付けました（承認待ち）",
-                            body=(f"{nick or '参加者'} 様\n\n"
-                                  f"イベント「{ev['title']}」への参加申請を受け付けました。\n"
-                                  f"主催の承認後にご案内いたします。\n"
-                                  f"申請状況は以下のページで確認できます。\n"
-                                  f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
-                            event_uuid=ev_uuid_str,
-                            from_display_name=f"{ev['title']} by Mimoria",
-                        )
-            except Exception:
-                current_app.logger.exception("join: user mail failed")
-
             if new_status == "approved":
                 join_push_title = f"【{ev['title']}】参加が承認されました"
                 join_push_body = "参加申込みが承認されました。イベント詳細をご確認ください。"

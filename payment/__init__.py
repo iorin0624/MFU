@@ -31,7 +31,6 @@ from flask import (
     Blueprint, render_template, request, redirect, jsonify,
     session, abort, Response, url_for
 )
-from app.utils.mail import send_mail
 from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.external_login_user.payments import _notify_payment_to_admin_and_acl
 from app.external_login_user.utils import _uuid_bytes_to_str
@@ -603,19 +602,6 @@ def _notify_tip_payment_completion(
         except Exception:
             logging.exception("tip discord notify failed")
 
-    if disp_email:
-        try:
-            subject = "ご支援ありがとうございます💕"
-            body = f"{disp_name or '参加者'}さん、投げ銭ありがとうございます！{amount_int}円のご支援、運営の力にさせていただきます。"
-            send_mail(
-                to=disp_email,
-                subject=subject,
-                body=body,
-                event_uuid=event_uuid_str,
-            )
-        except Exception:
-            logging.exception("tip thanks mail failed")
-
     try:
         from app.external_login_user.event_push import notify_member_payment_push
 
@@ -729,22 +715,6 @@ def _notify_mfu_payment_completion(
         mail_lines=lines,
         discord_lines=None,
     )
-
-    user_email = (user.get("email") or "").strip()
-    if user_email:
-        subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-        body_user = (
-            f"{user.get('nickname') or '参加者'} 様\n\n"
-            "お忙しい中、お支払いいただきありがとうございます。\n"
-            "このメールを持って決済完了とさせていただきます。\n"
-            "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n\n"
-            "当日、お会いできるのを楽しみにしております！\n\n"
-            f"イベント: {ev.get('title','(無題)')}\n"
-            f"金額: {amount_line}\n"
-            f"領収書PDF: {receipt_pdf_url or '(領収書発行準備中)'}\n"
-            f"イベント詳細: {event_view_link or '(なし)'}\n\n"
-        )
-        send_mail(to=user_email, subject=subject_user, body=body_user, event_uuid=ev_uuid_str)
 
 # ───────────────────────────────────────────────────────────
 # スキーマ
@@ -2715,129 +2685,6 @@ def _create_refund_record(cur, *, payment_row_id: int, amount_yen: int, reason: 
     return cur.lastrowid
 
 
-def _summarize_mail_error(err: Exception) -> str:
-    msg = f"{type(err).__name__}: {err}".strip()
-    return msg[:250] if msg else type(err).__name__
-
-
-def _format_yyyymd(dt: datetime) -> str:
-    return f"{dt.year}年{dt.month}月{dt.day}日"
-
-
-def _mark_refund_notify_error(conn, *, refund_id: int, reason: str) -> None:
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "UPDATE event_refunds SET notify_error=%s WHERE id=%s",
-            ((reason or "notify failed")[:500], refund_id),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-
-
-def _send_bulk_refund_mail(conn, *, refund_id: int, event_title: str) -> dict:
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT r.id, r.payment_row_id, r.amount_yen, r.notified_at,
-                   p.event_member_id
-              FROM event_refunds r
-              JOIN event_payments p ON p.id = r.payment_row_id
-             WHERE r.id=%s
-             LIMIT 1
-            """,
-            (refund_id,),
-        )
-        refund = _fetchone_dict(cur)
-        if not refund:
-            return {"status": "send_blocked", "reason": "refund_not_found"}
-        if refund.get("notified_at"):
-            return {"status": "already_notified", "reason": "already_notified"}
-
-        member_id = refund.get("event_member_id")
-        if not member_id:
-            reason = "event_member_id_missing"
-            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=reason)
-            return {"status": "send_blocked", "reason": reason}
-
-        cur.execute(
-            "SELECT user_id FROM mfu_event_member WHERE id=%s LIMIT 1",
-            (member_id,),
-        )
-        member = _fetchone_dict(cur)
-        user_id = int(member.get("user_id")) if member and member.get("user_id") else None
-        if not user_id:
-            reason = "member_user_id_missing"
-            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=reason)
-            return {"status": "send_blocked", "reason": reason}
-
-        cur.execute(
-            "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
-            (user_id,),
-        )
-        user = _fetchone_dict(cur)
-        to_email = (user.get("email") or "").strip() if user else ""
-        if not to_email:
-            reason = "user_email_missing"
-            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=reason)
-            return {"status": "send_blocked", "reason": reason}
-
-        refund_yen = int(refund.get("amount_yen") or 0)
-        exec_date = _format_yyyymd(datetime.now())
-        safe_title = (event_title or "イベント").strip() or "イベント"
-        subject = f"【{safe_title}】差額返金が完了しました。"
-        body = (
-            "差額返金の手続きが完了しました。\n\n"
-            f"イベント名: {safe_title}\n"
-            f"返金額: {refund_yen:,}円\n"
-            f"返金実行日: {exec_date}\n\n"
-            "カード明細への反映、返金はカード会社により数日～２か月ほどかかる場合があります。\n"
-            "\n"
-        )
-        try:
-            send_mail(
-                to=to_email,
-                subject=subject,
-                body=body,
-                event_name=safe_title,
-                external_login_user_id=user_id,
-                mail_kind="bulk_refund_completed",
-            )
-        except Exception as e:
-            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=_summarize_mail_error(e))
-            return {"status": "send_failed", "reason": "send_mail_error"}
-
-        cur.execute(
-            """
-            UPDATE event_refunds
-               SET notified_at=NOW(),
-                   notify_to_email=%s,
-                   notify_error=NULL
-             WHERE id=%s
-               AND notified_at IS NULL
-            """,
-            (to_email, refund_id),
-        )
-        conn.commit()
-        return {"status": "sent", "reason": "sent"}
-    except Exception as e:
-        logging.exception("send_bulk_refund_mail failed: refund_id=%s", refund_id)
-        _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=_summarize_mail_error(e))
-        return {"status": "send_failed", "reason": "internal_error"}
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-
-
 def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen: int) -> None:
     cur = conn.cursor()
     try:
@@ -2988,12 +2835,7 @@ def _finalize_completed_refund(conn, *, refund_id: int, event_title: str) -> dic
             conn,
             refund_id=int(refund_id),
         )
-        mail_result = _send_bulk_refund_mail(
-            conn,
-            refund_id=int(refund_id),
-            event_title=event_title or "イベント",
-        )
-        return {"status": "completed", "push": push_result, "mail": mail_result}
+        return {"status": "completed", "push": push_result}
     finally:
         try:
             cur.close()

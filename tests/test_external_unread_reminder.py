@@ -183,6 +183,19 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             )
         )
 
+    def test_email_reminder_excludes_push_only_event_notifications(self):
+        notifications = load_notifications_module()
+        rows = [
+            {"id": 1, "kind": "event_join_pending", "target_url": "", "event_id": 10},
+            {"id": 2, "kind": "album_upload", "target_url": "", "event_id": 10},
+            {"id": 3, "kind": "chat_message", "target_url": "", "event_id": 10},
+        ]
+
+        with patch.object(notifications, "get_db", return_value=self._FakeDB(rows)):
+            count = notifications._compute_email_reminder_unread_count_external(10)
+
+        self.assertEqual(count, 1)
+
     def test_can_send_external_unread_reminder_allows_when_jst_resend_window_started(self):
         notifications = load_notifications_module()
         jst = timezone(timedelta(hours=9))
@@ -237,7 +250,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
             patch.object(notifications, "send_mail") as mocked_send,
-            patch.object(notifications, "_compute_unread_count_external", return_value=0) as mocked_unread,
+            patch.object(notifications, "_compute_email_reminder_unread_count_external", return_value=0) as mocked_unread,
         ):
             summary = notifications.send_external_unread_reminder_emails(
                 now_utc=datetime(2026, 3, 22, 0, 59, 59, tzinfo=timezone.utc)
@@ -261,7 +274,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
             patch.object(notifications, "send_mail") as mocked_send,
-            patch.object(notifications, "_compute_unread_count_external", return_value=2) as mocked_unread,
+            patch.object(notifications, "_compute_email_reminder_unread_count_external", return_value=2) as mocked_unread,
         ):
             summary = notifications.send_external_unread_reminder_emails(
                 now_utc=datetime(2026, 3, 22, 0, 59, 59, tzinfo=timezone.utc)
@@ -286,7 +299,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
             patch.object(notifications, "send_mail") as mocked_send,
-            patch.object(notifications, "_compute_unread_count_external", return_value=3),
+            patch.object(notifications, "_compute_email_reminder_unread_count_external", return_value=3),
         ):
             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
 
@@ -323,7 +336,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
             patch.object(notifications, "send_mail") as mocked_send,
-            patch.object(notifications, "_compute_unread_count_external", return_value=1),
+            patch.object(notifications, "_compute_email_reminder_unread_count_external", return_value=1),
         ):
             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
 
@@ -354,7 +367,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
                 "send_mail",
                 side_effect=RuntimeError("smtp error"),
             ) as mocked_send,
-            patch.object(notifications, "_compute_unread_count_external", return_value=2),
+            patch.object(notifications, "_compute_email_reminder_unread_count_external", return_value=2),
         ):
             summary = notifications.send_external_unread_reminder_emails(
                 now_utc=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)

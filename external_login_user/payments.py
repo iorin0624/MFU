@@ -1181,40 +1181,6 @@ def pay_return(event_uuid: str):
         except Exception:
             current_app.logger.exception("notify (card) failed")
 
-        # 参加者控えメール（既存のまま）
-        try:
-            user_email = (me.get("email") or "").strip()
-            if user_email:
-                from app.utils.mail import send_mail
-                amount_line = f"{paid_amount_yen:,} 円" if isinstance(paid_amount_yen, int) else "— 円"
-                subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-                body_user = (
-                    f"{me.get('nickname') or '参加者'} 様\n\n"
-                    "お忙しい中、お支払いいただきありがとうございます。\n"
-                    "このメールを持って決済完了とさせていただきます。\n"
-                    "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n"
-                    "※クレジットカード加盟店は「小松　伊織」と表示されますが、変更処理が間に合っておらず「チームイカ」と記載される場合があります。間違いではありませんが、ご面倒お掛けします。\n\n"
-                    "当日、お会いできるのを楽しみにしております！\n\n"
-                    f"イベント: {ev.get('title','(無題)')}\n"
-                    f"金額: {amount_line}\n"
-                    f"領収書PDF: {receipt_label}\n"
-                    f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
-                    "--\n"
-                    "小松　伊織\n"
-                    "050-6874-1025\n"
-                    "admin@mail.iori0624.jp\n"
-                    "--\n"
-                )
-                send_mail(
-                    to=user_email,
-                    subject=subject_user,
-                    body=body_user,
-                    event_uuid=event_uuid,
-                    from_display_name=f"{ev.get('title', 'イベント')} by Mimoria",
-                )
-        except Exception:
-            current_app.logger.exception("notify (user mail) failed")
-
         notify_member_payment_push(
             event_id=int(ev["id"]),
             user_id=int(me["id"]),
@@ -2010,39 +1976,6 @@ def lecture_return(event_uuid: str):
             )
         except Exception:
             current_app.logger.exception("notify (lecture card) failed")
-
-        # ===== 参加者控えメール =====
-        try:
-            user_email = (me.get("email") or "").strip()
-            if user_email:
-                amount_line = f"{paid_amount_yen:,} 円" if isinstance(paid_amount_yen, int) else "— 円"
-                subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-                body_user = (
-                    f"{me.get('nickname') or '参加者'} 様\n\n"
-                    "お忙しい中、お支払いいただきありがとうございます。\n"
-                    "このメールを持って決済完了とさせていただきます。\n"
-                    "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n"
-                    "※クレジットカード加盟店は「小松　伊織」と表示されますが、変更処理が間に合っておらず「チームイカ」と記載される場合があります。間違いではありませんが、ご面倒お掛けします。\n\n"
-                    "当日、お会いできるのを楽しみにしております！\n\n"
-                    f"イベント: {ev.get('title','(無題)')}\n"
-                    f"金額: {amount_line}\n"
-                    f"領収書PDF: {receipt_label}\n"
-                    f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
-                    "--\n"
-                    "小松　伊織\n"
-                    "050-6874-1025\n"
-                    "admin@mail.iori0624.jp\n"
-                    "--\n"
-                )
-                send_mail(
-                    to=user_email,
-                    subject=subject_user,
-                    body=body_user,
-                    event_uuid=event_uuid,
-                    from_display_name=f"{ev.get('title', 'イベント')} by Mimoria",
-                )
-        except Exception:
-            current_app.logger.exception("notify (lecture user mail) failed")
 
         notify_member_payment_push(
             event_id=int(ev["id"]),
