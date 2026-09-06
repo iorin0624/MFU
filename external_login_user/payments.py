@@ -1221,6 +1221,8 @@ def pay_return(event_uuid: str):
             payment_status="paid",
             kind="event_payment_square_completed",
             body="Squareでのお支払いが完了しました。領収書はイベント詳細から確認できます。",
+            title_suffix="Square決済が完了しました",
+            dedup_token=f"square:{token or resolved_payment_row_id or 'unknown'}",
         )
 
         flash("お支払いが完了しました。ありがとうございます。", "success")
@@ -2048,6 +2050,8 @@ def lecture_return(event_uuid: str):
             payment_status="paid",
             kind="event_payment_square_completed",
             body="Squareでのお支払いが完了しました。領収書はイベント詳細から確認できます。",
+            title_suffix="Square決済が完了しました",
+            dedup_token=f"square:{token or resolved_payment_row_id or 'unknown'}",
         )
 
         flash("お支払いが完了しました。次に『参加申請ページ』で役割/衣装を入力してください。", "success")

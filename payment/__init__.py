@@ -616,6 +616,21 @@ def _notify_tip_payment_completion(
         except Exception:
             logging.exception("tip thanks mail failed")
 
+    try:
+        from app.external_login_user.event_push import notify_member_payment_push
+
+        notify_member_payment_push(
+            event_id=int(event_id),
+            user_id=int(user_id),
+            payment_status="paid",
+            kind="event_tip_completed",
+            title_suffix="ご支援ありがとうございます💕",
+            body=f"投げ銭ありがとうございます！{amount_int:,}円のご支援を受け付けました。",
+            dedup_token=f"tip:{payment_token or event_id}",
+        )
+    except Exception:
+        logging.exception("tip thanks push failed")
+
 
 def _notify_mfu_payment_completion(
     conn,
@@ -625,6 +640,7 @@ def _notify_mfu_payment_completion(
     amount_yen: int | None,
     receipt_url: str | None,
     payment_status: str | None,
+    payment_token: str | None,
 ) -> None:
     status = (payment_status or "").upper()
     if status != "COMPLETED":
@@ -668,6 +684,24 @@ def _notify_mfu_payment_completion(
             user = {"id": user_row[0], "nickname": user_row[1], "email": user_row[2]}
 
     receipt_pdf_url = _build_receipt_pdf_url(conn, event_id=event_id, user_id=user_id)
+
+    # The Square webhook may complete before the participant's browser returns.
+    # Dispatch independently from email so a mail failure cannot suppress the
+    # in-app/Web Push notification.
+    try:
+        from app.external_login_user.event_push import notify_member_payment_push
+
+        notify_member_payment_push(
+            event_id=int(event_id),
+            user_id=int(user_id),
+            payment_status="paid",
+            kind="event_payment_square_completed",
+            title_suffix="Square決済が完了しました",
+            body="Squareでのお支払いが完了しました。領収書はイベント詳細から確認できます。",
+            dedup_token=f"square:{payment_token or event_id}",
+        )
+    except Exception:
+        logging.exception("mfu payment completion push failed")
 
     admin_base = _app_base_url().rstrip("/")
     admin_link = f"{admin_base}/external-login/admin/events/{event_id}"
@@ -1284,6 +1318,7 @@ def _mark_payment_token_used_and_apply_member_status(
                     amount_yen=int(amount_yen) if amount_yen is not None else None,
                     receipt_url=receipt_url,
                     payment_status=payment_status,
+                    payment_token=payment_token,
                 )
             except Exception:
                 logging.exception("mfu notify failed")
@@ -2858,6 +2893,64 @@ def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen
             pass
 
 
+def _send_refund_completion_push(conn, *, refund_id: int) -> dict:
+    """Create one participant notification for a completed refund.
+
+    Bulk refunds and individual refunds both produce an ``event_refunds`` row,
+    so this common finalization hook covers both paths.  Delivery is deliberately
+    independent from email availability.
+    """
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT r.amount_yen,
+                   COALESCE(m.event_id, me.id) AS event_id,
+                   COALESCE(m.user_id, p.external_login_user_id) AS user_id
+              FROM event_refunds r
+              JOIN event_payments p ON p.id=r.payment_row_id
+              JOIN events pe ON pe.id=p.event_id
+              LEFT JOIN mfu_event_member m ON m.id=p.event_member_id
+              LEFT JOIN mfu_event me
+                ON me.payment_uuid COLLATE utf8mb4_unicode_ci = pe.uuid COLLATE utf8mb4_unicode_ci
+             WHERE r.id=%s
+               AND r.status='COMPLETED'
+             LIMIT 1
+            """,
+            (int(refund_id),),
+        )
+        row = _fetchone_dict(cur)
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+    if not row or not row.get("event_id") or not row.get("user_id"):
+        return {"ok": False, "reason": "refund_member_not_found"}
+
+    refund_yen = int(row.get("amount_yen") or 0)
+    try:
+        from app.external_login_user.event_push import notify_member_payment_push
+
+        return notify_member_payment_push(
+            event_id=int(row["event_id"]),
+            user_id=int(row["user_id"]),
+            payment_status="refunded",
+            kind="event_payment_refund_completed",
+            title_suffix="返金が完了しました",
+            body=(
+                f"{refund_yen:,}円の返金が完了しました。"
+                "カード明細への反映時期はカード会社により異なります。"
+            ),
+            dedup_token=f"refund:{int(refund_id)}",
+        )
+    except Exception as exc:
+        logging.exception("refund completion push failed refund_id=%s", refund_id)
+        return {"ok": False, "reason": type(exc).__name__}
+
+
 def _finalize_completed_refund(conn, *, refund_id: int, event_title: str) -> dict:
     """Apply accounting and notification once, and only after COMPLETED."""
 
@@ -2891,12 +2984,16 @@ def _finalize_completed_refund(conn, *, refund_id: int, event_title: str) -> dic
             """, (refund_id,))
             conn.commit()
 
+        push_result = _send_refund_completion_push(
+            conn,
+            refund_id=int(refund_id),
+        )
         mail_result = _send_bulk_refund_mail(
             conn,
             refund_id=int(refund_id),
             event_title=event_title or "イベント",
         )
-        return {"status": "completed", "mail": mail_result}
+        return {"status": "completed", "push": push_result, "mail": mail_result}
     finally:
         try:
             cur.close()
