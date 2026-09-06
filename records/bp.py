@@ -214,17 +214,26 @@ def _is_admin_user() -> bool:
 def _present_uber_activity_summary(row: dict) -> dict:
     value = dict(row or {})
     deliveries = int(value.get("deliveries") or 0)
-    total_yen = sum(int(value.get(key) or 0) for key in ("net_yen", "promo_yen", "other_yen", "tip_yen"))
+    total_yen = sum(int(value.get(key) or 0) for key in ("net_yen", "promo_yen", "tip_yen"))
     duration_seconds = int(value.get("duration_seconds") or 0)
     distance_km = float(value.get("distance_km") or 0)
+
+    def display_rate(key: str) -> int | None:
+        if value.get(key) is None:
+            return None
+        return int(_round_decimal(Decimal(str(value[key])), 0))
+
     value.update({
         "deliveries": deliveries,
         "total_yen": total_yen,
         "duration_hours": duration_seconds / 3600 if duration_seconds else 0,
         "deliveries_per_hour": round(deliveries * 3600 / duration_seconds, 1) if duration_seconds else None,
-        "yen_per_delivery": round(total_yen / deliveries) if deliveries else None,
-        "yen_per_hour": round(total_yen * 3600 / duration_seconds) if duration_seconds else None,
-        "yen_per_km": round(total_yen / distance_km) if distance_km else None,
+        "yen_per_delivery": display_rate("total_per_delivery_average"),
+        "yen_per_hour": display_rate("total_per_hour_average"),
+        "yen_per_km": display_rate("total_per_km_average"),
+        "total_per_delivery_median": display_rate("total_per_delivery_median"),
+        "total_per_hour_median": display_rate("total_per_hour_median"),
+        "total_per_km_median": display_rate("total_per_km_median"),
         "net_yen_per_delivery": round(int(value.get("net_yen") or 0) / deliveries) if deliveries else None,
         "net_yen_per_hour": round(int(value.get("net_yen") or 0) * 3600 / duration_seconds) if duration_seconds else None,
         "net_yen_per_km": round(int(value.get("net_yen") or 0) / distance_km) if distance_km else None,

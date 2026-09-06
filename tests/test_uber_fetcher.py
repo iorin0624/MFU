@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from app.records.uber_browser import _access_restriction_reason
 from app.records.uber_fetcher import (
@@ -6,7 +7,12 @@ from app.records.uber_fetcher import (
     _without_mirrored_quest_rows,
     _without_placeholder_quest_rows,
 )
-from app.records.uber_repository import _is_mirrored_quest, _median_rate, _quest_goal_count
+from app.records.uber_repository import (
+    _is_mirrored_quest,
+    _median_rate,
+    _quest_adjusted_rate_statistics,
+    _quest_goal_count,
+)
 
 
 def _row(event_type: str, feed_id: str, minute: int, amount: int = 150) -> dict:
@@ -165,3 +171,36 @@ def test_activity_summary_median_uses_each_delivery_duration_and_ignores_zero():
     ]
 
     assert _median_rate(rows, ("sales_yen",), "duration_seconds", 3600) == 1500
+
+
+def test_sales_total_statistics_allocate_quest_by_delivery_count_before_row_rates():
+    rows = [
+        {"sales_yen": 1000, "tip_yen": 100, "deliveries": 2, "duration_seconds": 3600, "distance_km": 10},
+        {"sales_yen": 600, "tip_yen": 0, "deliveries": 1, "duration_seconds": 1800, "distance_km": 5},
+    ]
+
+    result = _quest_adjusted_rate_statistics(rows, 900)
+
+    # Quest allocation is 300 yen per delivery. Row totals become 1700 and 900.
+    assert result["total_per_delivery_average"] == Decimal("875")
+    assert result["total_per_delivery_median"] == Decimal("875")
+    assert result["total_per_hour_average"] == Decimal("1750")
+    assert result["total_per_hour_median"] == Decimal("1750")
+    assert result["total_per_km_average"] == Decimal("175")
+    assert result["total_per_km_median"] == Decimal("175")
+
+
+def test_sales_total_statistics_exclude_zero_delivery_rows_and_zero_denominators():
+    rows = [
+        {"sales_yen": 0, "tip_yen": 0, "deliveries": 0, "duration_seconds": 60, "distance_km": 1},
+        {"sales_yen": 500, "tip_yen": 50, "deliveries": 1, "duration_seconds": 0, "distance_km": 0},
+    ]
+
+    result = _quest_adjusted_rate_statistics(rows, 50)
+
+    assert result["total_per_delivery_average"] == Decimal("600")
+    assert result["total_per_delivery_median"] == Decimal("600")
+    assert result["total_per_hour_average"] is None
+    assert result["total_per_hour_median"] is None
+    assert result["total_per_km_average"] is None
+    assert result["total_per_km_median"] is None
