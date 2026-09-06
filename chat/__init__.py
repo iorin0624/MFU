@@ -4756,6 +4756,14 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
     cur = db.cursor(dictionary=True)
     sent = 0
     try:
+        notification_scope = "mfu" if str(actor_type) in {"admin", "acl"} else "external"
+        push_payload = dict(payload)
+        push_payload["notification_scope"] = notification_scope
+        push_payload["badge_api_url"] = (
+            "/api/mfu-notifications/unread-count"
+            if notification_scope == "mfu"
+            else "/external-login/api/notifications/unread-count"
+        )
         actor_ids = [str(actor_id)]
         if str(actor_type) == "admin":
             # DM側のactor_keyは admin:1 を使うが、push購読は admin ユーザー名で保存される。
@@ -4788,7 +4796,7 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
                             "endpoint": endpoint,
                             "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
                         },
-                        data=json.dumps(payload, ensure_ascii=False),
+                        data=json.dumps(push_payload, ensure_ascii=False),
                         vapid_private_key=private,
                         vapid_claims={"sub": subject},
                         timeout=PUSH_REQUEST_TIMEOUT_SECONDS,

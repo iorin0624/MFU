@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { portalApi } from '@/api/client';
+import { usePortalStore } from '@/stores/portal';
 
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -19,6 +20,7 @@ const installPrompt = ref<InstallPromptEvent | null>(null);
 let registration: ServiceWorkerRegistration | null = null;
 let pushCsrf = '';
 let vapidKey = '';
+const store = usePortalStore();
 
 function toUint8(value: string) {
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
@@ -38,7 +40,10 @@ async function initPush() {
     pushCsrf = data.csrf_token || '';
     vapidKey = data.vapid_public_key || '';
     registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    try { await registration.update(); }
+    catch (reason) { console.debug('[sw] update check failed', reason); }
     pushEnabled.value = Boolean(await registration.pushManager.getSubscription());
+    await store.refreshUnread();
   } catch (reason) {
     pushSupported.value = false;
     pushMessage.value = reason instanceof Error ? reason.message : 'Push通知を初期化できませんでした。';

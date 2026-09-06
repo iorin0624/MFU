@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { portalApi, setChatAuthScope as configureChatAuthScope, setCsrfToken } from '@/api/client';
 import type { ChatVueSession, EventItem, PortalSession } from '@/types';
 import { setPortalChatAuthScope } from '@/services/portalRealtime';
+import { updatePwaBadge, type NotificationScope } from '@/services/pwaBadge';
 
 export const usePortalStore = defineStore('portal', {
   state: () => ({
@@ -20,6 +21,16 @@ export const usePortalStore = defineStore('portal', {
       && state.chatSession?.authenticated
       && ['admin', 'acl'].includes(String(state.chatSession?.actor?.actor_type || ''))
     ),
+    effectiveNotificationScope: (state): NotificationScope => (
+      state.chatAuthScope === 'mfu'
+      && state.chatSession?.authenticated
+      && ['admin', 'acl'].includes(String(state.chatSession?.actor?.actor_type || ''))
+        ? 'mfu'
+        : (state.session?.notificationScope === 'mfu' ? 'mfu' : 'external')
+    ),
+    notificationAuthenticated(): boolean {
+      return Boolean(this.session?.authenticated || this.mfuChatAuthenticated);
+    },
   },
   actions: {
     setChatAuthScope(scope: string) {
@@ -38,6 +49,8 @@ export const usePortalStore = defineStore('portal', {
         setCsrfToken(response.session.csrfToken);
         this.chatSession = this.chatAuthScope === 'mfu' ? await portalApi.chatSession() : null;
         this.ready = true;
+        this.applyUnread(response.session.unread);
+        if (this.mfuChatAuthenticated) await this.refreshUnread();
       } catch (error) {
         this.error = error instanceof Error ? error.message : '初期データを取得できませんでした。';
       } finally {
@@ -58,14 +71,16 @@ export const usePortalStore = defineStore('portal', {
         chat,
         total: Math.max(0, Number(payload.total ?? (notifications + chat))),
       };
+      void updatePwaBadge(this.session.unread.total, this.effectiveNotificationScope);
     },
     async refreshUnread() {
-      if (!this.session?.authenticated) return;
-      const counts = await portalApi.notificationUnread(this.session.notificationScope);
+      if (!this.notificationAuthenticated) return;
+      const counts = await portalApi.notificationUnread(this.effectiveNotificationScope);
       this.applyUnread(counts);
     },
     async logout() {
       await portalApi.logout();
+      await updatePwaBadge(0, this.effectiveNotificationScope);
       this.session = null;
       this.events = [];
       window.location.assign('/external-login/app/login');
