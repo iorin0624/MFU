@@ -27,28 +27,6 @@ _JST = timezone(timedelta(hours=9))
 mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
 _EXTERNAL_UNREAD_REMINDER_COLUMN = "notification_unread_reminder_last_sent_at"
 
-# These event notifications are intentionally delivered through the in-app
-# notification list and Web Push only.  Excluding them here also prevents the
-# generic unread-reminder job from turning a Push-only event into an email.
-_PUSH_ONLY_NOTIFICATION_KINDS = frozenset(
-    {
-        "event_join_pending",
-        "event_join_approved",
-        "event_membership_status",
-        "event_memo_updated",
-        "event_payment_status",
-        "event_payment_details_updated",
-        "event_payment_square_completed",
-        "event_tip_completed",
-        "event_payment_refund_completed",
-        "album_upload",
-        "album_update",
-        "album_process_done",
-        "album_process_request",
-        "album_process_all_done",
-    }
-)
-
 
 def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
     if str(user_kind) == "mfu":
@@ -443,11 +421,7 @@ def _prune_old_read_notifications(cur, user_id: int) -> int:
     return int(cur.rowcount or 0)
 
 
-def _compute_unread_counts_external(
-    uid: int,
-    *,
-    excluded_kinds: frozenset[str] = frozenset(),
-) -> dict[str, int]:
+def _compute_unread_counts_external(uid: int) -> dict[str, int]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -467,12 +441,9 @@ def _compute_unread_counts_external(
         notice_count = 0
         chat_count = 0
         for row in unread_rows:
-            kind = str(row.get("kind") or "")
-            if kind in excluded_kinds:
-                continue
             visible, _room_name = _is_notification_visible_for_external(cur, int(uid), row, room_cache)
             if visible:
-                if kind in _CHAT_NOTIFICATION_KINDS:
+                if str(row.get("kind") or "") in _CHAT_NOTIFICATION_KINDS:
                     chat_count += 1
                 else:
                     notice_count += 1
@@ -488,15 +459,6 @@ def _compute_unread_counts_external(
 
 def _compute_unread_count_external(uid: int) -> int:
     return int(_compute_unread_counts_external(uid)["total"])
-
-
-def _compute_email_reminder_unread_count_external(uid: int) -> int:
-    return int(
-        _compute_unread_counts_external(
-            uid,
-            excluded_kinds=_PUSH_ONLY_NOTIFICATION_KINDS,
-        )["total"]
-    )
 
 
 def _emit_notif_unread(uid: int, reason: str = "sync", latest_id: int | None = None) -> None:
@@ -813,7 +775,7 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
                 continue
 
             try:
-                unread_count = _compute_email_reminder_unread_count_external(user_id)
+                unread_count = _compute_unread_count_external(user_id)
             except Exception:
                 summary["failed"] += 1
                 current_app.logger.exception(
