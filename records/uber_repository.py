@@ -326,6 +326,42 @@ def _median_rate(rows: list[dict], numerator_keys: tuple[str, ...], denominator_
     return round(median(values)) if values else None
 
 
+def _quest_adjusted_rate_statistics(delivery_rows: list[dict], promo_yen: int | Decimal) -> dict:
+    """Return unrounded per-request averages/medians including allocated quest earnings."""
+    eligible_rows = [row for row in delivery_rows if int(row.get("deliveries") or 0) > 0]
+    total_deliveries = sum(int(row.get("deliveries") or 0) for row in eligible_rows)
+    quest_per_delivery = (
+        Decimal(str(promo_yen or 0)) / Decimal(total_deliveries)
+        if total_deliveries > 0
+        else Decimal("0")
+    )
+    rates: dict[str, list[Decimal]] = {
+        "delivery": [],
+        "hour": [],
+        "km": [],
+    }
+    for row in eligible_rows:
+        deliveries = Decimal(str(row.get("deliveries") or 0))
+        adjusted_sales = (
+            Decimal(str(row.get("sales_yen") or 0))
+            + Decimal(str(row.get("tip_yen") or 0))
+            + quest_per_delivery * deliveries
+        )
+        rates["delivery"].append(adjusted_sales / deliveries)
+        duration_seconds = Decimal(str(row.get("duration_seconds") or 0))
+        if duration_seconds > 0:
+            rates["hour"].append(adjusted_sales * Decimal("3600") / duration_seconds)
+        distance_km = Decimal(str(row.get("distance_km") or 0))
+        if distance_km > 0:
+            rates["km"].append(adjusted_sales / distance_km)
+
+    result = {}
+    for key, values in rates.items():
+        result[f"total_per_{key}_average"] = sum(values, Decimal("0")) / len(values) if values else None
+        result[f"total_per_{key}_median"] = median(values) if values else None
+    return result
+
+
 def activity_range_summary(date_from: date, date_to: date) -> dict:
     db = get_db()
     try:
@@ -360,18 +396,15 @@ def activity_range_summary(date_from: date, date_to: date) -> dict:
             (date_from, date_to),
         )
         delivery_rows = cur.fetchall()
-        total_keys = ("sales_yen", "tip_yen")
         net_keys = ("sales_yen",)
         row.update(
             {
-                "total_per_delivery_median": _median_rate(delivery_rows, total_keys, "deliveries"),
-                "total_per_hour_median": _median_rate(delivery_rows, total_keys, "duration_seconds", 3600),
-                "total_per_km_median": _median_rate(delivery_rows, total_keys, "distance_km"),
                 "net_per_delivery_median": _median_rate(delivery_rows, net_keys, "deliveries"),
                 "net_per_hour_median": _median_rate(delivery_rows, net_keys, "duration_seconds", 3600),
                 "net_per_km_median": _median_rate(delivery_rows, net_keys, "distance_km"),
             }
         )
+        row.update(_quest_adjusted_rate_statistics(delivery_rows, row.get("promo_yen") or 0))
         row["date_from"] = date_from
         row["date_to"] = date_to
         return row
