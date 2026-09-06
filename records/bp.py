@@ -1331,9 +1331,12 @@ def uber_list():
             and row["updated_at"] > row["freee_api_synced_at"]
         )
         row["freee_requires_sync"] = bool(
-            not row.get("freee_deal_id")
-            or row.get("freee_api_status") != "synced"
-            or row.get("freee_needs_resync")
+            int(row.get("total_yen") or 0) != 0
+            and (
+                not row.get("freee_deal_id")
+                or row.get("freee_api_status") != "synced"
+                or row.get("freee_needs_resync")
+            )
         )
     freee_synced_date_strings = [
         str(row["work_date"])
