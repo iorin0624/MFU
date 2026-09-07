@@ -58,7 +58,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .lightbox img,.lightbox video { max-width:100%; max-height:calc(100vh - 124px); object-fit:contain; }
 .lightbox-close,.lightbox-nav { position:absolute; border:0; background:rgba(255,255,255,.14); color:#fff; cursor:pointer; }
 .lightbox-close { top:max(14px,env(safe-area-inset-top)); right:18px; width:46px; height:46px; border-radius:50%; font-size:2rem; }
-.lightbox-nav { top:50%; translate:0 -50%; width:48px; height:70px; border-radius:12px; font-size:3rem; }.lightbox-nav.previous{left:14px}.lightbox-nav.next{right:14px}
+.lightbox-nav { top:50%; translate:0 -50%; width:48px; height:70px; border-radius:12px; font-size:3rem; touch-action:manipulation; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }.lightbox-nav.previous{left:14px}.lightbox-nav.next{right:14px}
 .lightbox-footer { position:absolute; left:50%; bottom:max(18px,env(safe-area-inset-bottom)); translate:-50% 0; width:min(920px,calc(100% - 120px)); display:flex; align-items:center; justify-content:center; gap:14px; color:#fff; }
 .lightbox-filename { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; text-shadow:0 1px 4px #000; }
 .lightbox-footer button { flex:0 0 auto; border:1px solid rgba(255,255,255,.45); border-radius:999px; padding:9px 14px; color:#fff; font-weight:800; cursor:pointer; }
