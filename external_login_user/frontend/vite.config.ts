@@ -14,14 +14,19 @@ export default defineConfig({
     // is opened through the Windows Y: mapped drive.
     outDir: resolve(process.cwd(), '../../static/external_login_vue'),
     emptyOutDir: true,
-    cssCodeSplit: false,
+    cssCodeSplit: true,
     rollupOptions: {
-      input: fileURLToPath(new URL('./src/main.ts', import.meta.url)),
+      input: {
+        'event-portal': fileURLToPath(new URL('./src/main.ts', import.meta.url)),
+        'public-upload-viewer': fileURLToPath(new URL('./src/public-upload-main.ts', import.meta.url)),
+      },
       output: {
-        entryFileNames: 'event-portal.js',
+        entryFileNames: '[name].js',
         chunkFileNames: 'chunks/[name]-[hash].js',
         assetFileNames: (assetInfo) =>
-          assetInfo.names?.some((name) => name.endsWith('.css'))
+          assetInfo.names?.some((name) => name.includes('public-upload'))
+            ? 'public-upload-viewer.css'
+            : assetInfo.names?.some((name) => name.endsWith('.css'))
             ? 'event-portal.css'
             : 'assets/[name]-[hash][extname]',
       },
