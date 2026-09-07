@@ -48,7 +48,8 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert '@touchend.passive="finishLightboxSwipe"' in component
     assert "Math.abs(deltaX) < 48" in component
     assert "event.key.toLowerCase() === 'x'" in component
-    assert "changeLightboxVisibility(lightboxFile.value, true)" in component
+    assert "changeLightboxVisibility(lightboxFile.value)" in component
+    assert "&& !lightboxFile.value.hidden" not in component
     assert "@dblclick.prevent" in component
 
 
