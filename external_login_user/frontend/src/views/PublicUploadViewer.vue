@@ -64,6 +64,7 @@ const toast = ref('');
 const progress = ref<number | null>(null);
 const progressText = ref('');
 const lightboxIndex = ref(-1);
+let lightboxTouchStart: { x: number; y: number; at: number } | null = null;
 
 const filteredFiles = computed(() => {
   const files = data.value?.files || [];
@@ -137,6 +138,35 @@ function keydown(event: KeyboardEvent) {
   if (event.key === 'Escape') closeLightbox();
   if (event.key === 'ArrowLeft') moveLightbox(-1);
   if (event.key === 'ArrowRight') moveLightbox(1);
+  if (
+    event.key.toLowerCase() === 'x'
+    && data.value?.permissions.manageVisibility
+    && lightboxFile.value
+    && !lightboxFile.value.hidden
+  ) {
+    event.preventDefault();
+    void changeLightboxVisibility(lightboxFile.value, true);
+  }
+}
+
+function startLightboxSwipe(event: TouchEvent) {
+  if (event.touches.length !== 1) {
+    lightboxTouchStart = null;
+    return;
+  }
+  const touch = event.touches[0];
+  lightboxTouchStart = { x: touch.clientX, y: touch.clientY, at: Date.now() };
+}
+
+function finishLightboxSwipe(event: TouchEvent) {
+  const start = lightboxTouchStart;
+  lightboxTouchStart = null;
+  if (!start || event.changedTouches.length !== 1) return;
+  const touch = event.changedTouches[0];
+  const deltaX = touch.clientX - start.x;
+  const deltaY = touch.clientY - start.y;
+  if (Date.now() - start.at > 800 || Math.abs(deltaX) < 48 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.2) return;
+  moveLightbox(deltaX < 0 ? 1 : -1);
 }
 
 async function createShortcutJob(paths: string[]) {
@@ -217,9 +247,10 @@ async function changeVisibility(hidden: boolean) {
   } finally { busy.value = false; }
 }
 
-async function changeLightboxVisibility(file: PublicFile) {
+async function changeLightboxVisibility(file: PublicFile, forceHidden?: boolean) {
   if (busy.value || !data.value?.permissions.manageVisibility) return;
-  const hidden = !file.hidden;
+  const hidden = typeof forceHidden === 'boolean' ? forceHidden : !file.hidden;
+  if (hidden === file.hidden) return;
   const fileId = file.id;
   busy.value = true;
   try {
@@ -342,12 +373,21 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
         <div v-if="progress !== null" class="progress-row"><span :style="{width:`${progress}%`}"></span><small>{{ progressText }}</small></div>
       </div>
 
-      <div v-if="lightboxFile" class="lightbox" role="dialog" aria-modal="true" @click.self="closeLightbox">
+      <div
+        v-if="lightboxFile"
+        class="lightbox"
+        role="dialog"
+        aria-modal="true"
+        @click.self="closeLightbox"
+        @touchstart.passive="startLightboxSwipe"
+        @touchend.passive="finishLightboxSwipe"
+        @touchcancel="lightboxTouchStart=null"
+      >
         <button class="lightbox-close" type="button" aria-label="閉じる" @click="closeLightbox">×</button>
-        <button class="lightbox-nav previous" type="button" aria-label="前へ" @click="moveLightbox(-1)">‹</button>
+        <button class="lightbox-nav previous" type="button" aria-label="前へ" @click="moveLightbox(-1)" @dblclick.prevent>‹</button>
         <img v-if="lightboxFile.kind === 'image'" :src="lightboxFile.url" :alt="lightboxFile.name">
         <video v-else :src="lightboxFile.url" controls autoplay playsinline></video>
-        <button class="lightbox-nav next" type="button" aria-label="次へ" @click="moveLightbox(1)">›</button>
+        <button class="lightbox-nav next" type="button" aria-label="次へ" @click="moveLightbox(1)" @dblclick.prevent>›</button>
         <div class="lightbox-footer">
           <span class="lightbox-filename">{{ lightboxFile.name }}</span>
           <button
