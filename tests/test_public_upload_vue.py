@@ -25,7 +25,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
         / "PublicUploadViewer.vue"
     ).read_text(encoding="utf-8")
 
-    assert "<h2>お知らせ</h2>" in component
+    assert '<h2 class="notice-alert-title">⚠️お知らせ⚠️</h2>' in component
     assert '<details v-if="data.notice" class="notice-card">' in component
     assert '<details v-if="data.notice" class="notice-card" open>' not in component
     assert "<h2>折り返し</h2>" in component
@@ -51,6 +51,13 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert "changeLightboxVisibility(lightboxFile.value)" in component
     assert "&& !lightboxFile.value.hidden" not in component
     assert "@dblclick.prevent" in component
+    styles = (
+        ROOT / "external_login_user" / "frontend" / "src" / "public-upload.css"
+    ).read_text(encoding="utf-8")
+    assert "notice-alert-blink 1.5s" in styles
+    assert "0%,66.666%" in styles
+    assert "66.667%,100%" in styles
+    assert "align-items:stretch" in styles
 
 
 def test_public_upload_viewer_build_artifacts_exist():
