@@ -4,6 +4,13 @@ import { imageViewerApi } from '@/api/client';
 import { useDesktopStore } from '@/stores/desktop';
 import { useNotificationStore } from '@/stores/notifications';
 import type { DesktopWindow, MediaItem } from '@/types';
+import {
+  DEFAULT_WHEEL_NAVIGATION_COOLDOWN_MS,
+  loadWheelNavigationCooldown,
+  saveWheelNavigationCooldown,
+  VIEWER_SETTINGS_CHANGED_EVENT,
+} from '@/utils/viewerSettings';
+import XpDialog from './XpDialog.vue';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
@@ -12,7 +19,9 @@ const fit = ref(true);
 const zoom = ref(100);
 const rotation = ref(0);
 const moving = ref(false);
-const WHEEL_NAVIGATION_COOLDOWN_MS = 300;
+const settingsOpen = ref(false);
+const wheelNavigationCooldownMs = ref(loadWheelNavigationCooldown());
+const wheelNavigationCooldownDraft = ref(wheelNavigationCooldownMs.value);
 let wheelNavigationAllowedAt = 0;
 
 const item = computed(() => props.win.media!);
@@ -103,6 +112,27 @@ function setZoom(next: number) {
   zoom.value = Math.min(400, Math.max(25, next));
 }
 
+function openSettings() {
+  wheelNavigationCooldownDraft.value = wheelNavigationCooldownMs.value;
+  settingsOpen.value = true;
+}
+
+function saveSettings() {
+  wheelNavigationCooldownMs.value = saveWheelNavigationCooldown(wheelNavigationCooldownDraft.value);
+  wheelNavigationAllowedAt = 0;
+  settingsOpen.value = false;
+  window.dispatchEvent(new CustomEvent(VIEWER_SETTINGS_CHANGED_EVENT));
+}
+
+function resetSettings() {
+  wheelNavigationCooldownDraft.value = DEFAULT_WHEEL_NAVIGATION_COOLDOWN_MS;
+}
+
+function syncSettings() {
+  wheelNavigationCooldownMs.value = loadWheelNavigationCooldown();
+  wheelNavigationAllowedAt = 0;
+}
+
 function wheel(event: WheelEvent) {
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault();
@@ -112,7 +142,7 @@ function wheel(event: WheelEvent) {
   event.preventDefault();
   const now = performance.now();
   if (now < wheelNavigationAllowedAt) return;
-  wheelNavigationAllowedAt = now + WHEEL_NAVIGATION_COOLDOWN_MS;
+  wheelNavigationAllowedAt = now + wheelNavigationCooldownMs.value;
   move(event.deltaY > 0 ? 1 : -1);
 }
 
@@ -126,8 +156,14 @@ function keydown(event: KeyboardEvent) {
   if (event.key.toLowerCase() === 'r') rotation.value = (rotation.value + 90) % 360;
 }
 
-onMounted(() => document.addEventListener('keydown', keydown));
-onBeforeUnmount(() => document.removeEventListener('keydown', keydown));
+onMounted(() => {
+  document.addEventListener('keydown', keydown);
+  window.addEventListener(VIEWER_SETTINGS_CHANGED_EVENT, syncSettings);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', keydown);
+  window.removeEventListener(VIEWER_SETTINGS_CHANGED_EVENT, syncSettings);
+});
 </script>
 
 <template>
@@ -141,11 +177,33 @@ onBeforeUnmount(() => document.removeEventListener('keydown', keydown));
       <span class="zoom-label">{{ fit ? '全体' : `${zoom}%` }}</span>
       <button type="button" @click="setZoom(zoom + 10)">+</button>
       <button type="button" @click="rotation = (rotation + 90) % 360">回転</button>
+      <button type="button" title="画像ビューアー設定" @click="openSettings">設定</button>
       <span class="viewer-counter">{{ globalIndex + 1 }} / {{ counterTotal }}</span>
     </nav>
     <div class="image-stage" @wheel="wheel">
       <img :src="item.url" :alt="item.name" :class="{fit}" :style="imageStyle" draggable="false">
     </div>
     <footer class="viewer-status">{{ item.name }}</footer>
+    <XpDialog v-if="settingsOpen" title="画像ビューアー設定" @close="settingsOpen = false">
+      <form class="xp-form" @submit.prevent="saveSettings">
+        <label>ホイール画像送り間隔（ミリ秒）
+          <input
+            v-model.number="wheelNavigationCooldownDraft"
+            type="number"
+            min="0"
+            max="2000"
+            step="50"
+            inputmode="numeric"
+            autofocus
+          >
+        </label>
+        <p class="dialog-hint">0～2000msで設定できます。標準は300msです。0にすると待ち時間なしになります。</p>
+        <div class="xp-dialog-actions">
+          <button type="submit">保存</button>
+          <button type="button" @click="resetSettings">標準に戻す</button>
+          <button type="button" @click="settingsOpen = false">キャンセル</button>
+        </div>
+      </form>
+    </XpDialog>
   </div>
 </template>
