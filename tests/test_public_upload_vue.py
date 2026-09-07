@@ -32,6 +32,13 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert '>折り返し</a>' in component
     assert "お知らせをコピー" not in component
     assert "notice-card" in component
+    assert "FILE UPLOAD" in component
+    assert "SHARED ALBUM" not in component
+    assert "<dt>撮影日</dt>" in component
+    assert "<dt>枚数</dt>" in component
+    assert "<dt>保存期間</dt>" in component
+    assert " 23:59" in component
+    assert "data.upload.modeLabel" not in component
 
 
 def test_public_upload_viewer_build_artifacts_exist():

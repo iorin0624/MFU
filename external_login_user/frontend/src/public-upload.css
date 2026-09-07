@@ -9,7 +9,11 @@ button { color:inherit; }
 .eyebrow { color:#2866e8; font-size:.75rem; font-weight:900; letter-spacing:.18em; }
 h1 { margin:6px 0 10px; font-size:clamp(1.65rem,3vw,2.65rem); line-height:1.2; overflow-wrap:anywhere; }
 h2 { margin:0; font-size:1.15rem; }
-.metadata { display:flex; flex-wrap:wrap; gap:8px 18px; color:#697892; }
+.metadata { display:grid; gap:5px; margin:0; color:#697892; }
+.metadata div { display:grid; grid-template-columns:5.5em minmax(0,1fr); gap:4px; }
+.metadata dt,.metadata dd { margin:0; }
+.metadata dt::after { content:"："; }
+.metadata dd { color:#33425d; }
 .notice-grid { display:grid; grid-template-columns:minmax(0,2fr) minmax(280px,1fr); align-items:start; gap:18px; margin:20px 0; }
 .notice-card,.reply-card { padding:24px 28px; }
 .notice-card summary { display:flex; align-items:center; justify-content:space-between; gap:16px; cursor:pointer; list-style:none; }
