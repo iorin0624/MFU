@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send a Discord notification for a call blocked by the MFU whitelist."""
+"""Send one compact Discord card for every inbound MFU-managed call."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import requests
 
 ENV_PATH = Path("/etc/asterisk/vm-watch-10610.env")
 ACTION_ENV_PATH = Path("/etc/asterisk/mfu-blacklist-action.env")
+PHONE_LIST_PATH = Path("/etc/asterisk/caller_whitelist.txt")
 DONE_DIR = Path("/var/lib/asterisk/mfu_blocked_call_notify_done")
 JST = ZoneInfo("Asia/Tokyo")
 MARKER_RETENTION = timedelta(days=31)
@@ -29,6 +30,37 @@ TOKEN_LIFETIME_SECONDS = 2 * 60 * 60
 DEFAULT_BLACKLIST_ACTION_URL = "https://mfu.iori0624.jp/phone-blacklist/register"
 DEFAULT_WHITELIST_ACTION_URL = "https://mfu.iori0624.jp/phone-whitelist/register"
 DEFAULT_CLICK_TO_CALL_ACTION_URL = "https://mfu.iori0624.jp/phone-click-to-call"
+CLASSIFICATIONS = {
+    "whitelist": {
+        "title": "✅ ホワイトリストからの着信",
+        "color": 0x2ECC71,
+    },
+    "unregistered": {
+        "title": "📞 ホワイトリスト外からの着信",
+        "color": 0xF39C12,
+    },
+    "blacklist": {
+        "title": "🚫 ブラックリストからの着信",
+        "color": 0xE74C3C,
+    },
+    "anonymous": {
+        "title": "🔒 非通知着信",
+        "color": 0x95A5A6,
+    },
+    "call_through": {
+        "title": "🔁 コールスルー着信",
+        "color": 0x3498DB,
+    },
+}
+PROCESS_LABELS = {
+    "ring_group_106": "Ring Groups 106へ転送",
+    "voicemail_announce": "VoiceMail_Announceへ転送",
+    "hangup_21": "Hangup(21)で即時拒否",
+    "blacklist_ring_until": "発信者側へ呼出音のみ（相手が切るまで）",
+    "blacklist_ring_15": "発信者側へ呼出音のみ（15秒後に終話）",
+    "blacklist_busy": "話中として拒否",
+    "call_through_pin": "コールスルーPIN認証へ接続",
+}
 
 
 def read_env_value(path: Path, key: str) -> str:
@@ -98,21 +130,70 @@ def build_registration_urls(
     )
 
 
-def build_content(caller: str, now: datetime | None = None) -> str:
-    now = now or datetime.now(JST)
-    lines = [
-        "**📞 ホワイトリスト外からの着信**",
-        "",
-        f"日時 : {now.strftime('%Y/%m/%d %H:%M:%S')}",
-    ]
-    if caller:
-        lines.append(f"相手 : {caller}（tel:{caller}）")
-    else:
-        lines.append("相手 : 非通知")
-    return "\n".join(lines)
+def load_phone_names(path: Path = PHONE_LIST_PATH) -> tuple[dict[str, str], dict[str, str]]:
+    whitelist: dict[str, str] = {}
+    blacklist: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return whitelist, blacklist
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("# MFU_NOTIFY_NAME|"):
+            parts = line.split("|", 3)
+            if len(parts) != 4 or parts[1] not in {"W", "B"}:
+                continue
+            number, encoded_name = parts[2], parts[3]
+            if not re.fullmatch(r"0\d{9,10}", number):
+                continue
+            try:
+                name = base64.b64decode(encoded_name, validate=True).decode("utf-8") if encoded_name else ""
+            except (ValueError, UnicodeDecodeError):
+                name = ""
+            (blacklist if parts[1] == "B" else whitelist)[number] = name
+            continue
+        if line.startswith("#"):
+            continue
+        parts = line.split("|")
+        is_blacklist = len(parts) == 3 and parts[0] == "B"
+        if is_blacklist:
+            number, encoded_name = parts[1], parts[2]
+        elif len(parts) == 2:
+            number, encoded_name = parts
+        else:
+            continue
+        if not re.fullmatch(r"0\d{9,10}", number):
+            continue
+        try:
+            name = base64.b64decode(encoded_name, validate=True).decode("utf-8") if encoded_name else ""
+        except (ValueError, UnicodeDecodeError):
+            name = ""
+        target = blacklist if is_blacklist else whitelist
+        target.setdefault(number, name)
+    return whitelist, blacklist
+
+
+def resolve_name(
+    classification: str,
+    caller: str,
+    whitelist: dict[str, str] | None = None,
+    blacklist: dict[str, str] | None = None,
+) -> str:
+    if classification == "anonymous":
+        return "―"
+    if classification == "unregistered" or not caller:
+        return "未登録"
+    if whitelist is None or blacklist is None:
+        whitelist, blacklist = load_phone_names()
+    if classification == "blacklist":
+        return blacklist.get(caller) or "名称未登録"
+    return whitelist.get(caller) or "未登録"
 
 
 def build_components(
+    classification: str,
     caller: str,
     blacklist_url: str,
     whitelist_url: str,
@@ -120,14 +201,9 @@ def build_components(
 ) -> list[dict[str, object]]:
     if not caller:
         return []
-    buttons: list[dict[str, object]] = [
-        {
-            "type": 2,
-            "style": 5,
-            "label": "📖 電話帳ナビ",
-            "url": f"https://www.telnavi.jp/phone/{caller}",
-        }
-    ]
+    if classification not in {"whitelist", "unregistered"}:
+        return []
+    buttons: list[dict[str, object]] = []
     if click_to_call_url:
         buttons.append(
             {
@@ -137,7 +213,7 @@ def build_components(
                 "url": click_to_call_url,
             }
         )
-    if whitelist_url:
+    if classification == "unregistered" and whitelist_url:
         buttons.append(
             {
                 "type": 2,
@@ -146,7 +222,7 @@ def build_components(
                 "url": whitelist_url,
             }
         )
-    if blacklist_url:
+    if classification == "unregistered" and blacklist_url:
         buttons.append(
             {
                 "type": 2,
@@ -155,18 +231,59 @@ def build_components(
                 "url": blacklist_url,
             }
         )
-    return [{"type": 1, "components": buttons}]
+    buttons.append(
+        {
+            "type": 2,
+            "style": 5,
+            "label": "📖 電話帳ナビ",
+            "url": f"https://www.telnavi.jp/phone/{caller}",
+        }
+    )
+    return [{"type": 1, "components": buttons}] if buttons else []
 
 
 def build_discord_payload(
     caller: str,
+    classification: str = "unregistered",
+    caller_name: str = "",
+    did: str = "",
+    process: str = "voicemail_announce",
     blacklist_url: str = "",
     whitelist_url: str = "",
     click_to_call_url: str = "",
     now: datetime | None = None,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {"content": build_content(caller, now=now)}
-    components = build_components(caller, blacklist_url, whitelist_url, click_to_call_url)
+    now = now or datetime.now(JST)
+    meta = CLASSIFICATIONS.get(classification, CLASSIFICATIONS["unregistered"])
+    display_caller = caller or "非通知"
+    display_name = caller_name or resolve_name(classification, caller)
+    display_did = did or "不明"
+    display_process = PROCESS_LABELS.get(process, process or "不明")
+    payload: dict[str, object] = {
+        "embeds": [
+            {
+                "title": meta["title"],
+                "color": meta["color"],
+                "fields": [
+                    {
+                        "name": "日時",
+                        "value": now.strftime("%Y/%m/%d %H:%M:%S"),
+                        "inline": False,
+                    },
+                    {"name": "相手", "value": display_caller, "inline": True},
+                    {"name": "名称", "value": display_name, "inline": True},
+                    {
+                        "name": "着信先　｜　処理",
+                        "value": f"{display_did}　｜　{display_process}",
+                        "inline": False,
+                    },
+                ],
+            }
+        ]
+    }
+    components = build_components(
+        classification, caller, blacklist_url, whitelist_url, click_to_call_url,
+    )
     if components:
         payload["components"] = components
     return payload
@@ -216,8 +333,11 @@ def discord_post(webhook_url: str, payload: dict[str, object]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("classification", choices=sorted(CLASSIFICATIONS))
     parser.add_argument("caller", nargs="?", default="")
     parser.add_argument("unique_id", nargs="?", default="")
+    parser.add_argument("did", nargs="?", default="")
+    parser.add_argument("process", nargs="?", choices=sorted(PROCESS_LABELS), default="voicemail_announce")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -225,9 +345,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     caller = normalize_caller(args.caller)
+    did = normalize_caller(args.did)
 
     if args.dry_run:
-        print(json.dumps(build_discord_payload(caller), ensure_ascii=False, indent=2))
+        print(json.dumps(build_discord_payload(
+            caller,
+            classification=args.classification,
+            did=did,
+            process=args.process,
+        ), ensure_ascii=False, indent=2))
         return 0
 
     unique_id = re.sub(r"[^A-Za-z0-9_.:-]", "_", args.unique_id.strip())
@@ -263,7 +389,7 @@ def main() -> int:
             read_env_value(ACTION_ENV_PATH, "PHONE_CLICK_TO_CALL_ACTION_URL")
             or DEFAULT_CLICK_TO_CALL_ACTION_URL
         )
-        if caller and action_secret:
+        if caller and action_secret and args.classification in {"whitelist", "unregistered"}:
             try:
                 blacklist_url, whitelist_url, click_to_call_url = build_registration_urls(
                     caller,
@@ -274,7 +400,20 @@ def main() -> int:
                 )
             except (ValueError, TypeError):
                 print("Phone list registration link generation failed", file=sys.stderr)
-        payload = build_discord_payload(caller, blacklist_url, whitelist_url, click_to_call_url)
+        whitelist_names, blacklist_names = load_phone_names()
+        caller_name = resolve_name(
+            args.classification, caller, whitelist_names, blacklist_names,
+        )
+        payload = build_discord_payload(
+            caller,
+            classification=args.classification,
+            caller_name=caller_name,
+            did=did,
+            process=args.process,
+            blacklist_url=blacklist_url,
+            whitelist_url=whitelist_url,
+            click_to_call_url=click_to_call_url,
+        )
         discord_post(webhook_url, payload)
         marker.write_text("sent\n", encoding="utf-8")
         prune_markers()

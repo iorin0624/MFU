@@ -30,6 +30,7 @@
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h1 class="mb-0">請求書一覧</h1>
   <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-primary" href="{{ url_for('invoice.received_invoice_list') }}">受取請求書・作成依頼</a>
     <a class="btn btn-outline-danger" href="{{ url_for('invoice.invoice_deleted_list') }}">削除済み</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.contact_list') }}">請求先アドレス帳</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.issuer_template_list') }}">発行者テンプレート管理</a>

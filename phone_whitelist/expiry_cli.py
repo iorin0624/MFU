@@ -14,6 +14,7 @@ from utils.db import get_db  # noqa: E402
 
 
 SETTINGS = {
+    "blacklist_disabled": "blacklist_disabled_until",
     "whitelist_disabled": "whitelist_disabled_until",
     "anonymous_allowed": "anonymous_allowed_until",
 }
@@ -25,7 +26,8 @@ def expire_settings() -> list[str]:
     try:
         cur = db.cursor(dictionary=True)
         cur.execute(
-            "SELECT whitelist_disabled_until, anonymous_allowed_until, NOW() AS now_value "
+            "SELECT blacklist_disabled_until, whitelist_disabled_until, anonymous_allowed_until, "
+            "       NOW() AS now_value "
             "FROM phone_whitelist_sync_state WHERE id=1 FOR UPDATE"
         )
         row = cur.fetchone() or {}
@@ -60,4 +62,3 @@ def expire_settings() -> list[str]:
 
 if __name__ == "__main__":
     print(json.dumps({"expired": expire_settings()}, ensure_ascii=False))
-

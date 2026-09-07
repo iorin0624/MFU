@@ -52,7 +52,10 @@ async function loadAdjacentWindow(direction: -1 | 1) {
   moving.value = true;
   try {
     for (let attempt = 0; attempt < 4 && wanted >= 0 && wanted < context.total; attempt += 1) {
-      const payload = await imageViewerApi.list(context.folder, context.sort, 1, 1000, wanted);
+      const payload = await imageViewerApi.list(
+        context.folder, context.sort, 1, 1000, wanted,
+        context.groupBy || 'none', context.groupUnit || 'day',
+      );
       const entries = payload.images || [];
       const offset = Number(payload.pagination?.offset || 0);
       const candidate = direction > 0

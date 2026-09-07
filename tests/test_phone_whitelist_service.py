@@ -48,23 +48,41 @@ class PhoneWhitelistServiceTest(unittest.TestCase):
                 {"phone_number": "0436252137", "name": "千葉南警察署　鎌取駅前交番"},
                 "09011112222",
             ],
+            blacklist_disabled_until=789,
             whitelist_disabled_until=123,
             anonymous_allowed_until=456,
         )
         self.assertEqual(
             payload,
             "# Managed by MFU.2 phone whitelist\n"
+            "# MFU_BLACKLIST_DISABLED_UNTIL=789\n"
             "# MFU_WHITELIST_DISABLED_UNTIL=123\n"
             "# MFU_ANONYMOUS_ALLOWED_UNTIL=456\n"
+            "# MFU_ANONYMOUS_HANGUP_ENABLED=0\n"
+            "# MFU_NOTIFY_NAME|W|08093242655|6Ieq5YiG44Gu6Zu76Kmx55Wq5Y+3\n"
+            "# MFU_NOTIFY_NAME|W|09000000000|44OG44K544OI5Lya56S+\n"
             "08093242655|6Ieq5YiG44Gu6Zu76Kmx55Wq5Y+3\n"
             "09000000000|44OG44K544OI5Lya56S+\n"
-            "B|0436252137|5Y2D6JGJ5Y2X6K2m5a+f572y44CA6Y6M5Y+W6aeF5YmN5Lqk55Wq\n"
+            "# MFU_NOTIFY_NAME|B|0436252137|5Y2D6JGJ5Y2X6K2m5a+f572y44CA6Y6M5Y+W6aeF5YmN5Lqk55Wq\n"
+            "# MFU_NOTIFY_NAME|B|09011112222|\n"
+            "# MFU_BLACKLIST_ACTION|0436252137|hangup\n"
+            "# MFU_BLACKLIST_ACTION|09011112222|hangup\n"
+            "B|0436252137|5Y2D6JGJ5Y2X6K2m5a+f572y44CA6Y6M5Y+W6aeF5YmN\n"
             "B|09011112222|\n",
         )
 
     def test_sanitize_sip_caller_name(self):
         self.assertEqual(service.sanitize_sip_caller_name("会社\r\nInjected"), "会社Injected")
-        self.assertEqual(len(service.sanitize_sip_caller_name("あ" * 40)), 32)
+        self.assertEqual(len(service.sanitize_sip_caller_name("あ" * 40)), 13)
+
+    def test_parse_blacklist_actions_and_default(self):
+        rows = service.parse_blacklist_csv_bytes(
+            "phone_number,name,note,action\n"
+            "08093242655,A,,ring_until_caller_hangup\n"
+            "0436252137,B,,\n".encode("utf-8")
+        )
+        self.assertEqual(rows[0]["action"], "ring_until_caller_hangup")
+        self.assertEqual(rows[1]["action"], "hangup")
 
 
 if __name__ == "__main__":

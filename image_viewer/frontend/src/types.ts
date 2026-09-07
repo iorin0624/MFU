@@ -1,5 +1,7 @@
 export type SortDirection = 'asc' | 'desc';
 export type ViewSize = 'xxl' | 'xl' | 'lg';
+export type GroupBy = 'none' | 'captured' | 'registered' | 'updated';
+export type GroupUnit = 'day' | 'month' | 'year';
 export type WindowKind =
   | 'explorer'
   | 'image'
@@ -17,12 +19,14 @@ export interface MediaItem {
   mediaType: 'image' | 'video';
   size: number;
   mtime: number;
+  contentUpdatedAt?: number;
+  registeredAt?: number;
+  capturedAt?: number | null;
   url: string;
   thumbUrl?: string | null;
   hasThumb?: boolean;
   sourceUrl?: string;
 }
-
 export interface Pagination {
   page: number;
   perPage: number;
@@ -42,6 +46,14 @@ export interface ImageListPayload {
   folder?: string;
   version?: string;
   pagination?: Pagination;
+  groups?: DateGroup[];
+}
+
+export interface DateGroup {
+  key: string;
+  label: string;
+  start: number;
+  count: number;
 }
 
 export interface RuntimeConfig {
@@ -100,6 +112,8 @@ export interface ExplorerWindowState {
   anchorPath: string;
   numbering: boolean;
   appendSources: string[];
+  groupBy: GroupBy;
+  groupUnit: GroupUnit;
 }
 
 export interface DesktopWindow {
@@ -121,6 +135,8 @@ export interface DesktopWindow {
     sort: SortDirection;
     offset: number;
     total: number;
+    groupBy?: GroupBy;
+    groupUnit?: GroupUnit;
   };
 }
 

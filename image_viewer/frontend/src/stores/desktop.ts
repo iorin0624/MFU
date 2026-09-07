@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
-import type { DesktopWindow, MediaItem, SortDirection, ViewSize } from '@/types';
+import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, SortDirection, ViewSize } from '@/types';
 
 export function savedSort(folder: string): SortDirection {
   try {
@@ -24,6 +24,25 @@ function savedSize(folder: string): ViewSize {
   } catch { return 'xl'; }
 }
 
+export function savedGrouping(folder: string): {groupBy: GroupBy; groupUnit: GroupUnit} {
+  try {
+    const values = JSON.parse(localStorage.getItem('mfu.imageViewer.vue.grouping') || '{}');
+    const value = values[folder] || {};
+    return {
+      groupBy: ['captured', 'registered', 'updated'].includes(value.groupBy) ? value.groupBy : 'none',
+      groupUnit: ['month', 'year'].includes(value.groupUnit) ? value.groupUnit : 'day',
+    };
+  } catch { return { groupBy: 'none', groupUnit: 'day' }; }
+}
+
+export function saveGrouping(folder: string, groupBy: GroupBy, groupUnit: GroupUnit) {
+  try {
+    const values = JSON.parse(localStorage.getItem('mfu.imageViewer.vue.grouping') || '{}');
+    values[folder] = { groupBy, groupUnit };
+    localStorage.setItem('mfu.imageViewer.vue.grouping', JSON.stringify(values));
+  } catch { /* storage is optional */ }
+}
+
 export const useDesktopStore = defineStore('image-viewer-desktop', () => {
   const windows = ref<DesktopWindow[]>([]);
   const activeId = ref('');
@@ -44,6 +63,7 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
   function openExplorer(folder = '') {
     const id = `vue-explorer-${nextExplorer++}`;
     const offset = (nextExplorer % 6) * 28;
+    const grouping = savedGrouping(folder);
     windows.value.push({
       id, kind: 'explorer', title: 'エクスプローラー',
       x: 56 + offset, y: 42 + offset, width: 980, height: 650,
@@ -51,6 +71,7 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
       explorer: {
         folder, sort: savedSort(folder), viewSize: savedSize(folder),
         selectedPaths: [], anchorPath: '', numbering: true, appendSources: [],
+        groupBy: grouping.groupBy, groupUnit: grouping.groupUnit,
       },
     });
     activeId.value = id;
