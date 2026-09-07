@@ -142,10 +142,9 @@ function keydown(event: KeyboardEvent) {
     event.key.toLowerCase() === 'x'
     && data.value?.permissions.manageVisibility
     && lightboxFile.value
-    && !lightboxFile.value.hidden
   ) {
     event.preventDefault();
-    void changeLightboxVisibility(lightboxFile.value, true);
+    void changeLightboxVisibility(lightboxFile.value);
   }
 }
 
