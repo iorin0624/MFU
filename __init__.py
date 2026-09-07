@@ -2700,6 +2700,16 @@ def view_upload(uuid):
 
     owner_management = is_upload_owner(upload)
 
+    # The public upload viewer uses the same Vue design language as the event
+    # album while keeping its independent password/token/OTP authentication.
+    # `?legacy=1` is intentionally retained as an immediate rollback path.
+    vue_viewer_enabled = current_app.config.get("PUBLIC_UPLOAD_VIEWER_VUE_ENABLED", True)
+    if vue_viewer_enabled and request.args.get("legacy") != "1":
+        return render_template(
+            "public_upload_vue.html",
+            uuid=uuid,
+        )
+
     # 一般閲覧者には公開中だけ、アップロード者には管理用として全件を返す。
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -2839,6 +2849,124 @@ def view_upload(uuid):
         jpeg_count=len(jpeg_relpaths),
         mobile_download_enabled=True,
         file_entries=file_entries,
+    )
+
+
+@app.get("/view/<uuid>/api")
+def public_upload_view_api(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
+    if not _can_access_upload_record(upload):
+        return jsonify({"ok": False, "message": "閲覧認証が必要です。"}), 401
+
+    owner_management = is_upload_owner(upload)
+    generate_thumbnails = bool(upload.get("generate_thumbnails"))
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT id, filename, is_hidden
+              FROM files
+             WHERE upload_id = %s
+               AND (%s = 1 OR is_hidden = 0)
+             ORDER BY filename ASC
+            """,
+            (upload["id"], 1 if owner_management else 0),
+        )
+        file_rows = cursor.fetchall()
+        cursor.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uuid,))
+        message_row = cursor.fetchone() or {}
+        cursor.execute(
+            """
+            SELECT label, enable_layer_upload_url
+              FROM upload_modes
+             WHERE username = %s AND mode = %s
+             LIMIT 1
+            """,
+            (upload["username"], upload["mode"]),
+        )
+        mode_row = cursor.fetchone() or {}
+    finally:
+        cursor.close()
+        db.close()
+
+    image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}
+    video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
+    mobile_extensions = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
+    storage_root = Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR))
+    thumb_dir = storage_root / uuid / "thumb"
+    files = []
+    for row in file_rows:
+        filename = str(row["filename"])
+        suffix = Path(filename).suffix.lower()
+        webp_name = f"{Path(filename).stem}.webp"
+        webp_path = thumb_dir / webp_name
+        fallback_path = thumb_dir / filename
+        thumbnail_url = None
+        if generate_thumbnails and webp_path.is_file():
+            thumbnail_url = url_for(
+                "uploaded_file",
+                subpath=f"{uuid}/thumb/{webp_name}",
+                source=filename,
+            )
+        elif generate_thumbnails and fallback_path.is_file():
+            thumbnail_url = url_for(
+                "uploaded_file",
+                subpath=f"{uuid}/thumb/{filename}",
+                source=filename,
+            )
+        files.append(
+            {
+                "id": int(row["id"]),
+                "name": filename,
+                "hidden": bool(row.get("is_hidden")),
+                "kind": "image" if suffix in image_extensions else ("video" if suffix in video_extensions else "file"),
+                "url": url_for("uploaded_file", subpath=f"{uuid}/original/{filename}"),
+                "thumbnailUrl": thumbnail_url,
+                "relativePath": f"{uuid}/original/{filename}",
+                "mobileDownload": suffix in mobile_extensions,
+            }
+        )
+
+    def iso_date(value):
+        if value is None:
+            return ""
+        if hasattr(value, "isoformat"):
+            return value.isoformat()[:10]
+        return str(value)[:10]
+
+    public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
+    hidden_count = sum(1 for row in file_rows if row.get("is_hidden"))
+    return jsonify(
+        {
+            "ok": True,
+            "upload": {
+                "uuid": uuid,
+                "title": str(upload.get("title") or ""),
+                "date": iso_date(upload.get("date")),
+                "expireAt": iso_date(upload.get("expire_at")),
+                "modeLabel": str(mode_row.get("label") or upload.get("mode") or ""),
+                "generateThumbnails": generate_thumbnails,
+            },
+            "permissions": {"manageVisibility": owner_management},
+            "counts": {"public": public_count, "hidden": hidden_count, "total": len(file_rows)},
+            "notice": str(message_row.get("message") or "").strip(),
+            "reply": {
+                "enabled": bool(
+                    upload.get("mode") == "layer"
+                    and mode_row.get("enable_layer_upload_url")
+                ),
+                "url": url_for("layer_reply.layer_upload", uuid=uuid),
+            },
+            "download": {
+                "zipUrl": url_for("download_zip_for_upload", uuid=uuid),
+                "historyUrl": url_for("view_upload_download_history", uuid=uuid) if owner_management else None,
+                "mobileEnabled": True,
+            },
+            "files": files,
+        }
     )
 
 
