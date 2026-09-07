@@ -54,7 +54,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .viewer-toast { position:fixed; z-index:120; left:50%; bottom:110px; translate:-50% 0; max-width:calc(100% - 30px); padding:11px 18px; border-radius:12px; background:#172136; color:#fff; box-shadow:0 8px 24px rgba(0,0,0,.24); }
 @media(max-width:720px){
   .public-viewer{width:100%;padding:0 0 20px}.viewer-header,.album-panel,.notice-card,.reply-card{border-radius:0;border-left:0;border-right:0;box-shadow:none}
-  .viewer-header{padding:22px 18px;align-items:flex-start;flex-direction:column}.notice-grid{display:block;margin:10px 0}.notice-card,.reply-card{padding:18px;margin-bottom:10px}.reply-card{align-items:flex-start}
+  .viewer-header{padding:22px 18px;align-items:flex-start;flex-direction:column}.notice-grid{display:flex;flex-direction:column;margin:10px 0}.notice-card,.reply-card{padding:18px}.reply-card{order:-1;align-items:flex-start}
   .album-panel{margin-top:10px;padding:12px}.album-toolbar{align-items:flex-start;flex-direction:column;margin:4px 4px 14px}.toolbar-actions{justify-content:flex-start}
   .media-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.media-card{border-radius:12px}.select-button{top:7px;left:7px;width:32px;height:32px}
   .selection-bar{gap:7px;padding:9px 10px;border-radius:14px}.selection-bar button{padding:9px 11px;font-size:.83rem}.selection-bar strong{order:-1;flex:1 1 100%;text-align:center;font-size:.82rem}
