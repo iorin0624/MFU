@@ -4805,6 +4805,9 @@ def pin_login():
     session["ext_user_social_id"] = target["social_id"]
     session["ext_user_id"] = target["id"]
     session["ext_user_nickname"] = target.get("nickname") or "（未設定）"
+    # LINEログインと同様に、ブラウザを閉じても保持されるスライド式
+    # セッションにする。Cookieの期限は共通SessionInterfaceで7日間。
+    session.permanent = True
 
     _clear_pin_login_failures(email, request_ip)
 
