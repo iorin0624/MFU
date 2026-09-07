@@ -257,10 +257,10 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
       </header>
 
       <section v-if="data.notice || data.reply.enabled" class="notice-grid">
-        <article v-if="data.notice" class="notice-card">
-          <h2>お知らせ</h2>
+        <details v-if="data.notice" class="notice-card">
+          <summary><h2>お知らせ</h2><span aria-hidden="true">⌄</span></summary>
           <p>{{ data.notice }}</p>
-        </article>
+        </details>
         <article v-if="data.reply.enabled" class="reply-card">
           <div><h2>折り返し</h2><p>加工済みの写真はこちらから送信できます。</p></div>
           <a class="primary-button" :href="data.reply.url">折り返し</a>

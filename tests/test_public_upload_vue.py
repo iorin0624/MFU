@@ -26,6 +26,8 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     ).read_text(encoding="utf-8")
 
     assert "<h2>お知らせ</h2>" in component
+    assert '<details v-if="data.notice" class="notice-card">' in component
+    assert '<details v-if="data.notice" class="notice-card" open>' not in component
     assert "<h2>折り返し</h2>" in component
     assert '>折り返し</a>' in component
     assert "お知らせをコピー" not in component
