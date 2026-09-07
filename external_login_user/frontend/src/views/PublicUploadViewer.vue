@@ -217,6 +217,30 @@ async function changeVisibility(hidden: boolean) {
   } finally { busy.value = false; }
 }
 
+async function changeLightboxVisibility(file: PublicFile) {
+  if (busy.value || !data.value?.permissions.manageVisibility) return;
+  const hidden = !file.hidden;
+  const fileId = file.id;
+  busy.value = true;
+  try {
+    const response = await fetch(`/view/${encodeURIComponent(data.value.upload.uuid)}/visibility`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      body: JSON.stringify({ file_ids: [fileId], hidden }),
+    });
+    const payload = await response.json().catch(() => null) as { message?: string } | null;
+    if (!response.ok) throw new Error(payload?.message || '公開状態を変更できませんでした。');
+    await load();
+    const newIndex = lightboxFiles.value.findIndex((candidate) => candidate.id === fileId);
+    if (newIndex >= 0) lightboxIndex.value = newIndex;
+    else closeLightbox();
+    showToast(hidden ? '非公開に変更しました。' : '公開に戻しました。');
+  } catch (reason) {
+    showToast(reason instanceof Error ? reason.message : '公開状態を変更できませんでした。');
+  } finally { busy.value = false; }
+}
+
 function startManaging() {
   managing.value = true;
   filter.value = 'all';
@@ -324,6 +348,16 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
         <img v-if="lightboxFile.kind === 'image'" :src="lightboxFile.url" :alt="lightboxFile.name">
         <video v-else :src="lightboxFile.url" controls autoplay playsinline></video>
         <button class="lightbox-nav next" type="button" aria-label="次へ" @click="moveLightbox(1)">›</button>
+        <div class="lightbox-footer">
+          <span class="lightbox-filename">{{ lightboxFile.name }}</span>
+          <button
+            v-if="data.permissions.manageVisibility"
+            type="button"
+            :disabled="busy"
+            :class="lightboxFile.hidden ? 'make-public' : 'make-hidden'"
+            @click="changeLightboxVisibility(lightboxFile)"
+          >{{ lightboxFile.hidden ? '公開に戻す' : '非公開にする' }}</button>
+        </div>
       </div>
       <div v-if="toast" class="viewer-toast" aria-live="polite">{{ toast }}</div>
     </template>

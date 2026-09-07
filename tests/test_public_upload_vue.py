@@ -39,6 +39,11 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert "<dt>保存期間</dt>" in component
     assert " 23:59" in component
     assert "data.upload.modeLabel" not in component
+    assert 'class="lightbox-filename"' in component
+    assert "{{ lightboxFile.name }}" in component
+    assert "changeLightboxVisibility(lightboxFile)" in component
+    assert "公開に戻す" in component
+    assert "非公開にする" in component
 
 
 def test_public_upload_viewer_build_artifacts_exist():
