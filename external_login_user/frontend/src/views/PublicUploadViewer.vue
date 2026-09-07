@@ -245,13 +245,13 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
     <template v-else-if="data">
       <header class="viewer-header">
         <div>
-          <span class="eyebrow">SHARED ALBUM</span>
+          <span class="eyebrow">FILE UPLOAD</span>
           <h1>{{ data.upload.title }}</h1>
-          <div class="metadata">
-            <span v-if="data.upload.date">{{ formatDate(data.upload.date) }}</span>
-            <span>{{ data.counts.total }}件</span>
-            <span v-if="data.upload.modeLabel">{{ data.upload.modeLabel }}</span>
-          </div>
+          <dl class="metadata">
+            <div><dt>撮影日</dt><dd>{{ formatDate(data.upload.date) || '未設定' }}</dd></div>
+            <div><dt>枚数</dt><dd>{{ data.counts.total }}枚</dd></div>
+            <div><dt>保存期間</dt><dd>{{ formatDate(data.upload.expireAt) || '未設定' }}<template v-if="data.upload.expireAt"> 23:59</template></dd></div>
+          </dl>
         </div>
         <a v-if="data.download.historyUrl" class="outline-button" :href="data.download.historyUrl">ダウンロード履歴</a>
       </header>
