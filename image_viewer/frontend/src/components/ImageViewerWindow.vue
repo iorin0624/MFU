@@ -12,6 +12,8 @@ const fit = ref(true);
 const zoom = ref(100);
 const rotation = ref(0);
 const moving = ref(false);
+const WHEEL_NAVIGATION_COOLDOWN_MS = 300;
+let wheelNavigationAllowedAt = 0;
 
 const item = computed(() => props.win.media!);
 const sequence = computed(() => props.win.sequence || []);
@@ -107,6 +109,10 @@ function wheel(event: WheelEvent) {
     setZoom(zoom.value + (event.deltaY < 0 ? 10 : -10));
     return;
   }
+  event.preventDefault();
+  const now = performance.now();
+  if (now < wheelNavigationAllowedAt) return;
+  wheelNavigationAllowedAt = now + WHEEL_NAVIGATION_COOLDOWN_MS;
   move(event.deltaY > 0 ? 1 : -1);
 }
 
