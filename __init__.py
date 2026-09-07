@@ -272,6 +272,7 @@ app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
 
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 app.session_interface = MFUSecureCookieSessionInterface()
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン

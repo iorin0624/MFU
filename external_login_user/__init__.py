@@ -302,6 +302,14 @@ def _endpoint_allowed_when_unverified(ep: str | None) -> bool:
 
 
 @bp.before_app_request
+def _refresh_external_user_session_lifetime():
+    """Upgrade and refresh authenticated external-user sessions on access."""
+    if session.get("ext_user_id"):
+        session.permanent = True
+    return None
+
+
+@bp.before_app_request
 def _lock_deleted_external_user():
     try:
         uid = int(session.get("ext_user_id") or 0)
