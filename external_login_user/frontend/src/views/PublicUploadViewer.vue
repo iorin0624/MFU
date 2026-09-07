@@ -312,7 +312,7 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
 
       <section v-if="data.notice || data.reply.enabled" class="notice-grid">
         <details v-if="data.notice" class="notice-card">
-          <summary><h2>お知らせ</h2><span aria-hidden="true">⌄</span></summary>
+          <summary><h2 class="notice-alert-title">⚠️お知らせ⚠️</h2><span aria-hidden="true">⌄</span></summary>
           <p>{{ data.notice }}</p>
         </details>
         <article v-if="data.reply.enabled" class="reply-card">
