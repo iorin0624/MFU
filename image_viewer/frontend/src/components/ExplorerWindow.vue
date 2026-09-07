@@ -1,26 +1,36 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import FileGrid from './FileGrid.vue';
 import FolderTree from './FolderTree.vue';
 import XpDialog from './XpDialog.vue';
 import { imageViewerApi } from '@/api/client';
-import { saveSort, savedSort, useDesktopStore } from '@/stores/desktop';
+import { saveGrouping, saveSort, savedGrouping, savedSort, useDesktopStore } from '@/stores/desktop';
 import { useExplorerStore } from '@/stores/explorer';
 import { useNotificationStore } from '@/stores/notifications';
-import type { DesktopWindow, MediaItem, ViewSize } from '@/types';
+import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, ViewSize } from '@/types';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
 const explorer = useExplorerStore();
 const notice = useNotificationStore();
 const uploadInput = ref<HTMLInputElement>();
-const fileGrid = ref<InstanceType<typeof FileGrid>>();
-const contextMenu = ref<{visible: boolean; x: number; y: number; item?: MediaItem}>({ visible: false, x: 0, y: 0 });
+const fileGrid = ref<{
+  scrollToTop: () => void;
+  navigate: (
+    key: string,
+    currentPath: string,
+    options: { extend: boolean; toggle: boolean; focusOnly: boolean },
+  ) => Promise<void>;
+}>();
+const contextMenu = ref<{visible: boolean; x: number; y: number; item?: MediaItem; folder?: string}>({ visible: false, x: 0, y: 0 });
 type ExplorerDialog =
   | { kind: 'new-folder'; title: string; value: string }
   | { kind: 'rename'; title: string; value: string; extension: string; item: MediaItem }
   | { kind: 'move' | 'copy'; title: string; destination: string; paths: string[] }
   | { kind: 'delete'; title: string; paths: string[] }
+  | { kind: 'rename-folder'; title: string; value: string; folder: string }
+  | { kind: 'move-folder'; title: string; destination: string; folder: string }
+  | { kind: 'delete-folder'; title: string; folder: string }
   | { kind: 'append-confirm'; title: string; sources: string[]; target: MediaItem }
   | { kind: 'properties'; title: string; item: MediaItem; data: Record<string, unknown> };
 const dialog = ref<ExplorerDialog | null>(null);
@@ -29,14 +39,23 @@ const viewSizes: ViewSize[] = ['xxl', 'xl', 'lg'];
 const viewLabels: Record<ViewSize, string> = { xxl: '特大', xl: '大', lg: '中' };
 
 const model = computed(() => props.win.explorer!);
-const folderData = computed(() => explorer.dataFor(model.value.folder, model.value.sort));
+const folderData = computed(() => explorer.dataFor(
+  model.value.folder, model.value.sort, model.value.groupBy, model.value.groupUnit,
+));
+const collapsedGroups = ref<string[]>([]);
 const items = computed(() => folderData.value.items);
 const selectedItems = computed(() => {
   const selected = new Set(model.value.selectedPaths);
   return items.value.filter((item) => selected.has(item.path));
 });
+const selectedClipboardImage = computed(() =>
+  selectedItems.value.length === 1 && selectedItems.value[0]?.mediaType === 'image'
+    ? selectedItems.value[0]
+    : undefined);
 const currentLabel = computed(() => `画像ライブラリ${model.value.folder ? `/${model.value.folder}` : ''}`);
 const parentFolder = computed(() => model.value.folder.split('/').slice(0, -1).join('/'));
+const folderParent = (folder: string) => folder.split('/').slice(0, -1).join('/');
+const folderName = (folder: string) => folder.split('/').at(-1) || folder;
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -44,7 +63,9 @@ function errorMessage(error: unknown, fallback: string) {
 
 async function load(reset = false) {
   try {
-    await explorer.load(model.value.folder, model.value.sort, reset);
+    await explorer.load(
+      model.value.folder, model.value.sort, reset, model.value.groupBy, model.value.groupUnit,
+    );
     props.win.title = `エクスプローラー - ${currentLabel.value}`;
   } catch (error) {
     notice.show(errorMessage(error, '画像一覧を読み込めませんでした。'), true);
@@ -54,10 +75,18 @@ async function load(reset = false) {
 async function changeFolder(folder: string) {
   model.value.folder = folder;
   model.value.sort = savedSort(folder);
+  const grouping = savedGrouping(folder);
+  model.value.groupBy = grouping.groupBy;
+  model.value.groupUnit = grouping.groupUnit;
+  loadCollapsedGroups();
   model.value.selectedPaths = [];
   model.value.anchorPath = '';
   model.value.appendSources = [];
+  await nextTick();
+  fileGrid.value?.scrollToTop();
   await load(true);
+  await nextTick();
+  fileGrid.value?.scrollToTop();
 }
 
 function setSort() {
@@ -73,6 +102,38 @@ function setSize(size: ViewSize) {
     values[model.value.folder] = size;
     localStorage.setItem('mfu.imageViewer.vue.size', JSON.stringify(values));
   } catch { /* storage is optional */ }
+}
+
+function collapsedStorageKey() {
+  return `${model.value.folder}|${model.value.groupBy}|${model.value.groupUnit}`;
+}
+
+function loadCollapsedGroups() {
+  try {
+    const values = JSON.parse(localStorage.getItem('mfu.imageViewer.vue.collapsedGroups') || '{}');
+    collapsedGroups.value = Array.isArray(values[collapsedStorageKey()]) ? values[collapsedStorageKey()] : [];
+  } catch { collapsedGroups.value = []; }
+}
+
+function toggleGroup(key: string) {
+  collapsedGroups.value = collapsedGroups.value.includes(key)
+    ? collapsedGroups.value.filter((value) => value !== key)
+    : [...collapsedGroups.value, key];
+  try {
+    const values = JSON.parse(localStorage.getItem('mfu.imageViewer.vue.collapsedGroups') || '{}');
+    values[collapsedStorageKey()] = collapsedGroups.value;
+    localStorage.setItem('mfu.imageViewer.vue.collapsedGroups', JSON.stringify(values));
+  } catch { /* storage is optional */ }
+}
+
+async function setGrouping(groupBy?: GroupBy, groupUnit?: GroupUnit) {
+  if (groupBy) model.value.groupBy = groupBy;
+  if (groupUnit) model.value.groupUnit = groupUnit;
+  saveGrouping(model.value.folder, model.value.groupBy, model.value.groupUnit);
+  loadCollapsedGroups();
+  model.value.selectedPaths = [];
+  model.value.anchorPath = '';
+  await load(true);
 }
 
 function createFolder() {
@@ -159,6 +220,8 @@ function openItem(item: MediaItem) {
       sort: model.value.sort,
       offset: folderData.value.offset,
       total: folderData.value.total,
+      groupBy: model.value.groupBy,
+      groupUnit: model.value.groupUnit,
     });
     return;
   }
@@ -189,6 +252,95 @@ async function movePaths(paths = model.value.selectedPaths, destination?: string
     await Promise.all([explorer.refreshFolder(model.value.folder), explorer.refreshFolder(target)]);
     notice.show(`${paths.length}件を移動しました。`);
   } catch (error) { notice.show(errorMessage(error, '移動に失敗しました。'), true); }
+}
+
+function remapFolderPath(value: string, source: string, replacement: string) {
+  if (value === source) return replacement;
+  if (value.startsWith(`${source}/`)) return `${replacement}${value.slice(source.length)}`;
+  return value;
+}
+
+async function syncOpenExplorerFolders(source: string, replacement: string) {
+  const loads: Array<{folder: string; sort: 'asc'|'desc'; groupBy: GroupBy; groupUnit: GroupUnit}> = [];
+  desktop.windows.forEach((win) => {
+    if (!win.explorer) return;
+    const next = remapFolderPath(win.explorer.folder, source, replacement);
+    if (next !== win.explorer.folder) {
+      win.explorer.folder = next;
+      win.explorer.sort = savedSort(next);
+      const grouping = savedGrouping(next);
+      win.explorer.groupBy = grouping.groupBy;
+      win.explorer.groupUnit = grouping.groupUnit;
+      win.explorer.selectedPaths = [];
+      win.explorer.anchorPath = '';
+      win.explorer.appendSources = [];
+    }
+    loads.push({ folder: win.explorer.folder, sort: win.explorer.sort, groupBy: win.explorer.groupBy, groupUnit: win.explorer.groupUnit });
+  });
+  await Promise.all(loads.map((entry) => explorer.load(entry.folder, entry.sort, true, entry.groupBy, entry.groupUnit)));
+}
+
+function openFolderInWindow(folder: string) {
+  contextMenu.value.visible = false;
+  desktop.openExplorer(folder);
+}
+
+function renameFolder(folder: string) {
+  if (!folder) return;
+  dialog.value = { kind: 'rename-folder', title: 'フォルダー名の変更', value: folderName(folder), folder };
+}
+
+async function commitRenameFolder(folder: string, name: string) {
+  const cleanName = name.trim();
+  if (!cleanName || cleanName === folderName(folder)) { dialog.value = null; return; }
+  try {
+    const result = await imageViewerApi.renameFolder(folder, cleanName);
+    dialog.value = null;
+    await syncOpenExplorerFolders(folder, result.path);
+    notice.show('フォルダー名を変更しました。');
+  } catch (error) { notice.show(errorMessage(error, 'フォルダー名を変更できませんでした。'), true); }
+}
+
+function folderMoveDestinations(source: string) {
+  return explorer.allFolders.filter((folder) => folder !== source && !folder.startsWith(`${source}/`));
+}
+
+async function moveFolder(source: string, destination?: string) {
+  if (!source) return;
+  if (destination === undefined) {
+    dialog.value = {
+      kind: 'move-folder', title: 'フォルダーの移動',
+      destination: folderParent(source), folder: source,
+    };
+    return;
+  }
+  if (destination === source || destination.startsWith(`${source}/`)) {
+    notice.show('フォルダーを自分自身の配下へ移動できません。', true);
+    return;
+  }
+  try {
+    const result = await imageViewerApi.moveFolder(source, destination);
+    dialog.value = null;
+    await syncOpenExplorerFolders(source, result.path);
+    notice.show(`「${folderName(source)}」を移動しました。`);
+  } catch (error) { notice.show(errorMessage(error, 'フォルダーを移動できませんでした。'), true); }
+}
+
+function deleteFolder(folder: string, confirmed = false) {
+  if (!folder) return;
+  if (!confirmed) {
+    dialog.value = { kind: 'delete-folder', title: 'フォルダー削除の確認', folder };
+    return;
+  }
+  void (async () => {
+    try {
+      await imageViewerApi.deleteFolder(folder);
+      const destination = folderParent(folder);
+      dialog.value = null;
+      await syncOpenExplorerFolders(folder, destination);
+      notice.show(`空フォルダー「${folderName(folder)}」を削除しました。`);
+    } catch (error) { notice.show(errorMessage(error, 'フォルダーを削除できませんでした。'), true); }
+  })();
 }
 
 async function copyPaths(paths = model.value.selectedPaths, destination?: string) {
@@ -355,6 +507,34 @@ function pasteHandler(event: ClipboardEvent) {
   uploadFiles(files, true);
 }
 
+function clipboardImageExtension(type: string) {
+  const subtype = type.split('/')[1]?.toLowerCase() || 'png';
+  if (subtype === 'jpeg') return 'jpg';
+  if (subtype === 'svg+xml') return 'svg';
+  return subtype.replace(/[^a-z0-9]/g, '') || 'png';
+}
+
+async function pasteFromClipboard() {
+  try {
+    if (!navigator.clipboard?.read) {
+      throw new Error('このブラウザーでは貼付ボタンからクリップボード画像を読み取れません。Ctrl+Vをお試しください。');
+    }
+    const clipboardItems = await navigator.clipboard.read();
+    const files: File[] = [];
+    for (const item of clipboardItems) {
+      const type = item.types.find((candidate) => candidate.startsWith('image/'));
+      if (!type) continue;
+      const blob = await item.getType(type);
+      const extension = clipboardImageExtension(type);
+      files.push(new File([blob], `clipboard-${Date.now()}-${files.length + 1}.${extension}`, { type }));
+    }
+    if (!files.length) throw new Error('クリップボードに貼り付け可能な画像がありません。');
+    await uploadFiles(files, true);
+  } catch (error) {
+    notice.show(errorMessage(error, 'クリップボード画像を貼り付けできませんでした。'), true);
+  }
+}
+
 function startAppend() {
   if (model.value.appendSources.length) {
     cancelAppendMode();
@@ -467,6 +647,10 @@ function showContext(event: MouseEvent, item: MediaItem) {
   contextMenu.value = { visible: true, x: event.clientX, y: event.clientY, item };
 }
 
+function showFolderContext(event: MouseEvent, folder: string) {
+  contextMenu.value = { visible: true, x: event.clientX, y: event.clientY, folder };
+}
+
 function closeContext() { contextMenu.value.visible = false; }
 
 async function copyImageToClipboard(item?: MediaItem) {
@@ -496,7 +680,9 @@ async function copyImageToClipboard(item?: MediaItem) {
 
 async function loadAt(index: number) {
   try {
-    await explorer.loadCenter(model.value.folder, model.value.sort, index);
+    await explorer.loadCenter(
+      model.value.folder, model.value.sort, index, model.value.groupBy, model.value.groupUnit,
+    );
   } catch (error) {
     notice.show(errorMessage(error, '画像一覧の読み込みに失敗しました。'), true);
   }
@@ -525,6 +711,7 @@ function propertySourceUrl() {
 
 watch(() => model.value.folder, () => { props.win.title = `エクスプローラー - ${currentLabel.value}`; });
 onMounted(() => {
+  loadCollapsedGroups();
   load(true);
   document.addEventListener('paste', pasteHandler);
   document.addEventListener('keydown', keyHandler);
@@ -543,7 +730,14 @@ onBeforeUnmount(() => {
   <div class="explorer-layout" :class="{ busy: folderData.loading }">
     <aside class="explorer-sidebar">
       <div class="sidebar-title">フォルダー</div>
-      <FolderTree :folders="explorer.allFolders" :current="model.folder" @select="changeFolder" @move="movePaths" />
+      <FolderTree
+        :folders="explorer.allFolders"
+        :current="model.folder"
+        @select="changeFolder"
+        @move="movePaths"
+        @move-folder="moveFolder"
+        @context="showFolderContext"
+      />
     </aside>
     <section class="explorer-main">
       <div class="explorer-toolbar">
@@ -551,6 +745,21 @@ onBeforeUnmount(() => {
         <button type="button" @click="load(true)">更新</button>
         <button type="button" :disabled="!model.folder" @click="changeFolder(parentFolder)">上へ</button>
         <button type="button" @click="setSort">{{ model.sort === 'asc' ? '昇順' : '逆順' }}</button>
+        <label class="toolbar-select">グループ
+          <select :value="model.groupBy" @change="setGrouping(($event.target as HTMLSelectElement).value as GroupBy, undefined)">
+            <option value="none">なし</option>
+            <option value="captured">撮影日</option>
+            <option value="registered">MFU登録日</option>
+            <option value="updated">更新日</option>
+          </select>
+        </label>
+        <label v-if="model.groupBy !== 'none'" class="toolbar-select">単位
+          <select :value="model.groupUnit" @change="setGrouping(undefined, ($event.target as HTMLSelectElement).value as GroupUnit)">
+            <option value="day">日</option>
+            <option value="month">月</option>
+            <option value="year">年</option>
+          </select>
+        </label>
         <button v-for="size in viewSizes" :key="size" type="button" :class="{pressed: model.viewSize === size}" @click="setSize(size)">{{ viewLabels[size] }}</button>
         <button type="button" @click="desktop.openExplorer(model.folder)">別窓</button>
       </div>
@@ -562,6 +771,8 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
         <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>
         <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
+        <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
+        <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
         <button type="button" :class="{pressed: model.appendSources.length}" :disabled="!selectedItems.length && !model.appendSources.length" @click="startAppend">{{ model.appendSources.length ? '後付け解除' : '後付け' }}</button>
         <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>
         <button type="button" @click="rebuildThumbnails">サムネイル再生成</button>
@@ -578,6 +789,8 @@ onBeforeUnmount(() => {
         :append-mode="Boolean(model.appendSources.length)"
         :total="folderData.total"
         :offset="folderData.offset"
+        :groups="folderData.groups"
+        :collapsed-groups="collapsedGroups"
         @select="selectItem"
         @open="openFromKeyboard"
         @context="showContext"
@@ -585,13 +798,14 @@ onBeforeUnmount(() => {
         @marquee="marquee"
         @keyboard="keyboardSelect"
         @load-center="loadAt"
+        @toggle-group="toggleGroup"
       />
       <footer class="explorer-status">
         <span>{{ folderData.total || items.length }}件</span>
         <span>{{ selectedItems.length }}件選択</span>
       </footer>
     </section>
-    <div v-if="contextMenu.visible" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
+    <div v-if="contextMenu.visible && contextMenu.item" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
       <button type="button" @click="contextMenu.item && openItem(contextMenu.item); closeContext()">開く</button>
       <button type="button" @click="renameSelected(); closeContext()">名前変更</button>
       <button type="button" @click="movePaths(); closeContext()">移動</button>
@@ -600,6 +814,14 @@ onBeforeUnmount(() => {
       <button type="button" @click="showProperties(); closeContext()">プロパティ</button>
       <hr>
       <button type="button" class="danger" @click="deletePaths(); closeContext()">削除</button>
+    </div>
+    <div v-else-if="contextMenu.visible && contextMenu.folder !== undefined" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
+      <button type="button" @click="openFolderInWindow(contextMenu.folder)">新しいウィンドウで開く</button>
+      <hr>
+      <button type="button" :disabled="!contextMenu.folder" @click="renameFolder(contextMenu.folder); closeContext()">名前の変更</button>
+      <button type="button" :disabled="!contextMenu.folder" @click="moveFolder(contextMenu.folder); closeContext()">フォルダーの移動</button>
+      <hr>
+      <button type="button" class="danger" :disabled="!contextMenu.folder" @click="deleteFolder(contextMenu.folder); closeContext()">フォルダーの削除</button>
     </div>
 
     <XpDialog v-if="dialog?.kind === 'new-folder'" :title="dialog.title" @close="dialog = null">
@@ -613,6 +835,30 @@ onBeforeUnmount(() => {
         <label>新しい名前<span class="filename-editor"><input v-model="dialog.value" autofocus><span class="extension-box">{{ dialog.extension || '拡張子なし' }}</span></span></label>
         <p class="dialog-hint">拡張子は変更されません。</p>
         <div class="xp-dialog-actions"><button type="submit">変更</button><button type="button" @click="dialog = null">キャンセル</button></div>
+      </form>
+    </XpDialog>
+    <XpDialog v-else-if="dialog?.kind === 'rename-folder'" :title="dialog.title" @close="dialog = null">
+      <form class="xp-form" @submit.prevent="commitRenameFolder(dialog.folder, dialog.value)">
+        <label>新しいフォルダー名<input v-model="dialog.value" autofocus></label>
+        <div class="xp-dialog-actions"><button type="submit">変更</button><button type="button" @click="dialog = null">キャンセル</button></div>
+      </form>
+    </XpDialog>
+    <XpDialog v-else-if="dialog?.kind === 'move-folder'" :title="dialog.title" @close="dialog = null">
+      <form class="xp-form" @submit.prevent="moveFolder(dialog.folder, dialog.destination)">
+        <p>「{{ folderName(dialog.folder) }}」を別の階層へ移動します。</p>
+        <label>移動先フォルダー
+          <select v-model="dialog.destination" autofocus>
+            <option v-for="folder in folderMoveDestinations(dialog.folder)" :key="folder || '__root__'" :value="folder">{{ folder || '画像ライブラリ' }}</option>
+          </select>
+        </label>
+        <div class="xp-dialog-actions"><button type="submit">移動</button><button type="button" @click="dialog = null">キャンセル</button></div>
+      </form>
+    </XpDialog>
+    <XpDialog v-else-if="dialog?.kind === 'delete-folder'" :title="dialog.title" @close="dialog = null">
+      <form @submit.prevent="deleteFolder(dialog.folder, true)">
+        <div class="xp-confirm"><span class="xp-confirm-icon">⚠️</span><p>空フォルダー「{{ folderName(dialog.folder) }}」を削除しますか？<br>ファイルまたはサブフォルダーがある場合は削除できません。</p></div>
+        <p class="dialog-hint">実行時に管理者パスキー認証を行います。</p>
+        <div class="xp-dialog-actions"><button type="submit" class="danger" autofocus>削除</button><button type="button" @click="dialog = null">キャンセル</button></div>
       </form>
     </XpDialog>
     <XpDialog v-else-if="dialog?.kind === 'move' || dialog?.kind === 'copy'" :title="dialog.title" @close="dialog = null">

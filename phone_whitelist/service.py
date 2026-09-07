@@ -14,6 +14,12 @@ MAX_NOTE_LENGTH = 500
 MAX_SIP_CALLER_NAME_BYTES = 40
 BLACKLIST_CALLER_NAME_PREFIX = "BL　"
 MAX_BLACKLIST_NAME_BYTES = MAX_SIP_CALLER_NAME_BYTES - len(BLACKLIST_CALLER_NAME_PREFIX.encode("utf-8"))
+BLACKLIST_ACTIONS = {
+    "hangup",
+    "ring_until_caller_hangup",
+    "ring_15",
+    "busy",
+}
 
 
 class WhitelistValidationError(ValueError):
@@ -43,11 +49,32 @@ def validate_entry(phone_number: object, name: object, note: object) -> dict[str
     return {"phone_number": phone, "name": clean_name, "note": clean_note}
 
 
+def validate_blacklist_action(value: object) -> str:
+    action = str(value or "hangup").strip().lower()
+    aliases = {
+        "即時拒否": "hangup",
+        "疑似呼出音（相手が切るまで）": "ring_until_caller_hangup",
+        "疑似呼出音(相手が切るまで)": "ring_until_caller_hangup",
+        "疑似呼出音（15秒断）": "ring_15",
+        "疑似呼出音(15秒断)": "ring_15",
+        "話中": "busy",
+    }
+    action = aliases.get(action, action)
+    if action not in BLACKLIST_ACTIONS:
+        raise WhitelistValidationError(f"ブラックリスト処理が不正です: {value}")
+    return action
+
+
 def sanitize_sip_caller_name(value: object, *, max_bytes: int = MAX_SIP_CALLER_NAME_BYTES) -> str:
     text = str(value or "").strip()
     safe = "".join(char for char in text if not unicodedata.category(char).startswith("C"))
     encoded = safe.encode("utf-8")[:max_bytes]
     return encoded.decode("utf-8", errors="ignore")
+
+
+def sanitize_notification_name(value: object) -> str:
+    text = str(value or "").strip()
+    return "".join(char for char in text if not unicodedata.category(char).startswith("C"))
 
 
 def decode_csv_bytes(data: bytes) -> str:
@@ -115,43 +142,100 @@ def parse_csv_bytes(data: bytes) -> list[dict[str, str]]:
     return entries
 
 
+def parse_blacklist_csv_bytes(data: bytes) -> list[dict[str, str]]:
+    entries = parse_csv_bytes(data)
+    text = decode_csv_bytes(data)
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    normalized_headers = {
+        unicodedata.normalize("NFKC", str(header or "")).strip().lower(): header
+        for header in (reader.fieldnames or [])
+    }
+    action_column = next(
+        (
+            normalized_headers[name]
+            for name in ("action", "処理", "着信時の処理")
+            if name in normalized_headers
+        ),
+        None,
+    )
+    data_rows = [
+        row for row in reader
+        if any(str(value or "").strip() for value in row.values())
+    ]
+    for index, entry in enumerate(entries):
+        raw_action = data_rows[index].get(action_column, "") if action_column else ""
+        try:
+            entry["action"] = validate_blacklist_action(raw_action)
+        except WhitelistValidationError as exc:
+            raise WhitelistValidationError(f"CSV {index + 2}行目: {exc}") from exc
+    return entries
+
+
 def build_pbx_payload(
     entries: list[dict[str, object] | str],
     *,
     blacklist_numbers: list[object] | None = None,
+    blacklist_disabled_until: int = 0,
     whitelist_disabled_until: int = 0,
     anonymous_allowed_until: int = 0,
     anonymous_hangup_enabled: bool | int = False,
 ) -> str:
     normalized: dict[str, str] = {}
+    notification_names: dict[str, str] = {}
     for entry in entries:
         if isinstance(entry, str):
             phone = normalize_phone_number(entry)
             name = ""
+            notification_name = ""
         else:
             phone = normalize_phone_number(entry.get("phone_number"))
             name = sanitize_sip_caller_name(entry.get("name"))
+            notification_name = sanitize_notification_name(entry.get("name"))
         normalized[phone] = base64.b64encode(name.encode("utf-8")).decode("ascii")
-    for value in (whitelist_disabled_until, anonymous_allowed_until):
+        notification_names[phone] = base64.b64encode(notification_name.encode("utf-8")).decode("ascii")
+    for value in (blacklist_disabled_until, whitelist_disabled_until, anonymous_allowed_until):
         if not isinstance(value, int) or value < 0:
             raise WhitelistValidationError("切替期限が不正です")
     if anonymous_hangup_enabled not in (False, True, 0, 1):
         raise WhitelistValidationError("非通知拒否設定が不正です")
     lines = [
         "# Managed by MFU.2 phone whitelist",
+        f"# MFU_BLACKLIST_DISABLED_UNTIL={blacklist_disabled_until}",
         f"# MFU_WHITELIST_DISABLED_UNTIL={whitelist_disabled_until}",
         f"# MFU_ANONYMOUS_ALLOWED_UNTIL={anonymous_allowed_until}",
         f"# MFU_ANONYMOUS_HANGUP_ENABLED={int(bool(anonymous_hangup_enabled))}",
     ]
+    lines.extend(
+        f"# MFU_NOTIFY_NAME|W|{phone}|{notification_names[phone]}"
+        for phone in sorted(notification_names)
+    )
     lines.extend(f"{phone}|{normalized[phone]}" for phone in sorted(normalized))
     blacklist: dict[str, str] = {}
+    blacklist_notification_names: dict[str, str] = {}
+    blacklist_actions: dict[str, str] = {}
     for entry in blacklist_numbers or []:
         if isinstance(entry, dict):
             phone = normalize_phone_number(entry.get("phone_number"))
             name = sanitize_sip_caller_name(entry.get("name"), max_bytes=MAX_BLACKLIST_NAME_BYTES)
+            notification_name = sanitize_notification_name(entry.get("name"))
+            action = validate_blacklist_action(entry.get("action"))
         else:
             phone = normalize_phone_number(entry)
             name = ""
+            notification_name = ""
+            action = "hangup"
         blacklist[phone] = base64.b64encode(name.encode("utf-8")).decode("ascii")
+        blacklist_notification_names[phone] = base64.b64encode(
+            notification_name.encode("utf-8")
+        ).decode("ascii")
+        blacklist_actions[phone] = action
+    lines.extend(
+        f"# MFU_NOTIFY_NAME|B|{phone}|{blacklist_notification_names[phone]}"
+        for phone in sorted(blacklist_notification_names)
+    )
+    lines.extend(
+        f"# MFU_BLACKLIST_ACTION|{phone}|{blacklist_actions[phone]}"
+        for phone in sorted(blacklist_actions)
+    )
     lines.extend(f"B|{phone}|{blacklist[phone]}" for phone in sorted(blacklist))
     return "\n".join(lines) + "\n"

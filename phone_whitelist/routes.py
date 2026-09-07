@@ -31,10 +31,13 @@ from .action_token import (
     validate_action_token,
 )
 from .service import (
+    BLACKLIST_ACTIONS,
     MAX_CSV_BYTES,
     WhitelistValidationError,
     build_pbx_payload,
+    parse_blacklist_csv_bytes,
     parse_csv_bytes,
+    validate_blacklist_action,
     validate_entry,
 )
 
@@ -50,6 +53,7 @@ JST = timezone(timedelta(hours=9))
 MANUAL_UNTIL = datetime(9999, 12, 31, 23, 59, 59)
 MANUAL_EPOCH = 4_102_444_800
 SETTING_COLUMNS = {
+    "blacklist_disabled": "blacklist_disabled_until",
     "anonymous_allowed": "anonymous_allowed_until",
     "whitelist_disabled": "whitelist_disabled_until",
 }
@@ -114,6 +118,12 @@ CALL_THROUGH_STATUS_LABELS = {
     "target_blacklisted": "発信先がブラックリスト",
     "failed": "予約処理失敗",
 }
+BLACKLIST_ACTION_LABELS = {
+    "hangup": "即時拒否",
+    "ring_until_caller_hangup": "疑似呼出音（相手が切るまで）",
+    "ring_15": "疑似呼出音（15秒断）",
+    "busy": "話中",
+}
 
 
 class PhoneWhitelistError(RuntimeError):
@@ -152,12 +162,19 @@ def ensure_phone_whitelist_schema() -> None:
                 phone_number VARCHAR(16) NOT NULL UNIQUE,
                 name VARCHAR(100) NOT NULL DEFAULT '',
                 note VARCHAR(500) NOT NULL DEFAULT '',
+                action VARCHAR(32) NOT NULL DEFAULT 'hangup',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_phone_blacklist_name (name)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+        cur.execute("SHOW COLUMNS FROM phone_blacklist_entries LIKE 'action'")
+        if cur.fetchone() is None:
+            cur.execute(
+                "ALTER TABLE phone_blacklist_entries "
+                "ADD COLUMN action VARCHAR(32) NOT NULL DEFAULT 'hangup' AFTER note"
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS phone_whitelist_sync_state (
@@ -254,7 +271,7 @@ def ensure_phone_whitelist_schema() -> None:
             "INSERT IGNORE INTO phone_call_through_settings (id, allowed_phone_number, updated_by) "
             "VALUES (1, '', 'system')"
         )
-        for column in ("whitelist_disabled_until", "anonymous_allowed_until"):
+        for column in ("blacklist_disabled_until", "whitelist_disabled_until", "anonymous_allowed_until"):
             cur.execute(f"SHOW COLUMNS FROM phone_whitelist_sync_state LIKE '{column}'")
             if cur.fetchone() is None:
                 cur.execute(f"ALTER TABLE phone_whitelist_sync_state ADD COLUMN {column} DATETIME NULL")
@@ -268,7 +285,7 @@ def ensure_phone_whitelist_schema() -> None:
         if cur.fetchone() is None:
             cur.execute(
                 "ALTER TABLE phone_whitelist_sync_state "
-                "ADD COLUMN anonymous_hangup_enabled TINYINT(1) NOT NULL DEFAULT 1"
+                "ADD COLUMN anonymous_hangup_enabled TINYINT(1) NOT NULL DEFAULT 0"
             )
         cur.execute("SELECT id FROM phone_whitelist_sync_state WHERE id=1")
         if cur.fetchone() is None:
@@ -289,11 +306,7 @@ def ensure_phone_whitelist_schema() -> None:
                 """,
                 (count, "system", "initialized", "FreePBXの既存番号を初期データとして取り込みました"),
             )
-        cur.execute(
-            "UPDATE phone_whitelist_sync_state "
-            "SET anonymous_allowed_until=NULL "
-            "WHERE id=1 AND anonymous_hangup_enabled=1 AND anonymous_allowed_until IS NOT NULL"
-        )
+        cur.execute("UPDATE phone_whitelist_sync_state SET anonymous_hangup_enabled=0 WHERE id=1")
         db.commit()
     finally:
         db.close()
@@ -438,7 +451,8 @@ def _until_epoch(value: datetime | None) -> int:
 
 def _fetch_settings(cur) -> dict[str, Any]:
     cur.execute(
-        "SELECT whitelist_disabled_until, anonymous_allowed_until, anonymous_hangup_enabled "
+        "SELECT blacklist_disabled_until, whitelist_disabled_until, anonymous_allowed_until, "
+        "       anonymous_hangup_enabled "
         "FROM phone_whitelist_sync_state WHERE id=1"
     )
     return cur.fetchone() or {}
@@ -463,9 +477,10 @@ def _apply_to_pbx(
             input=build_pbx_payload(
                 entries,
                 blacklist_numbers=blacklist_numbers,
+                blacklist_disabled_until=_until_epoch(settings.get("blacklist_disabled_until")),
                 whitelist_disabled_until=_until_epoch(settings.get("whitelist_disabled_until")),
                 anonymous_allowed_until=_until_epoch(settings.get("anonymous_allowed_until")),
-                anonymous_hangup_enabled=bool(settings.get("anonymous_hangup_enabled")),
+                anonymous_hangup_enabled=False,
             ),
             text=True,
             capture_output=True,
@@ -572,9 +587,13 @@ def _fetch_sync_entries(cur) -> list[dict[str, str]]:
 
 
 def _fetch_blacklist_numbers(cur) -> list[dict[str, str]]:
-    cur.execute("SELECT phone_number, name FROM phone_blacklist_entries ORDER BY phone_number")
+    cur.execute("SELECT phone_number, name, action FROM phone_blacklist_entries ORDER BY phone_number")
     return [
-        {"phone_number": str(row["phone_number"]), "name": str(row.get("name") or "")}
+        {
+            "phone_number": str(row["phone_number"]),
+            "name": str(row.get("name") or ""),
+            "action": validate_blacklist_action(row.get("action")),
+        }
         for row in cur.fetchall()
     ]
 
@@ -639,6 +658,7 @@ def _render_index(*, preview_entries=None, csv_payload="", list_type: str | None
     if list_type not in {"whitelist", "blacklist"}:
         list_type = "whitelist"
     table = "phone_blacklist_entries" if list_type == "blacklist" else "phone_whitelist_entries"
+    action_select = ", action" if list_type == "blacklist" else ", 'hangup' AS action"
     query = (request.args.get("q") or "").strip()
     try:
         page = max(1, int(request.args.get("page") or 1))
@@ -658,7 +678,7 @@ def _render_index(*, preview_entries=None, csv_payload="", list_type: str | None
         offset = (page - 1) * PAGE_SIZE
         cur.execute(
             f"""
-            SELECT id, phone_number, name, note, created_at, updated_at
+            SELECT id, phone_number, name, note{action_select}, created_at, updated_at
               FROM {table}
               {where}
              ORDER BY phone_number
@@ -703,7 +723,6 @@ def _render_index(*, preview_entries=None, csv_payload="", list_type: str | None
         until = sync_state.get(column)
         sync_state[f"{setting}_active"] = bool(until and until > now)
         sync_state[f"{setting}_manual"] = bool(until and until.year >= 2099)
-    sync_state["anonymous_hangup_enabled"] = bool(sync_state.get("anonymous_hangup_enabled"))
     return render_template(
         "admin_phone_whitelist.html",
         entries=entries, total=total, query=query, page=page, pages=pages,
@@ -716,6 +735,7 @@ def _render_index(*, preview_entries=None, csv_payload="", list_type: str | None
         call_through_reservation=call_through_reservation,
         call_through_trunks=CALL_THROUGH_TRUNKS,
         call_through_status_labels=CALL_THROUGH_STATUS_LABELS,
+        blacklist_action_labels=BLACKLIST_ACTION_LABELS,
         call_through_busy=bool(
             call_through_reservation
             and call_through_reservation.get("status") in CALL_THROUGH_ACTIVE_STATUSES
@@ -1803,11 +1823,13 @@ def delete_entry(entry_id: int):
 def add_blacklist_entry():
     try:
         entry = validate_entry(request.form.get("phone_number"), request.form.get("name"), request.form.get("note"))
+        entry["action"] = validate_blacklist_action(request.form.get("action"))
 
         def change(cur):
             cur.execute(
-                "INSERT INTO phone_blacklist_entries (phone_number, name, note) VALUES (%s, %s, %s)",
-                (entry["phone_number"], entry["name"], entry["note"]),
+                "INSERT INTO phone_blacklist_entries (phone_number, name, note, action) "
+                "VALUES (%s, %s, %s, %s)",
+                (entry["phone_number"], entry["name"], entry["note"], entry["action"]),
             )
             cur.execute("SELECT 1 FROM phone_whitelist_entries WHERE phone_number=%s", (entry["phone_number"],))
             return {"after": entry, "whitelist_overlap": cur.fetchone() is not None}
@@ -1831,15 +1853,20 @@ def add_blacklist_entry():
 def edit_blacklist_entry(entry_id: int):
     try:
         entry = validate_entry(request.form.get("phone_number"), request.form.get("name"), request.form.get("note"))
+        entry["action"] = validate_blacklist_action(request.form.get("action"))
 
         def change(cur):
-            cur.execute("SELECT phone_number, name, note FROM phone_blacklist_entries WHERE id=%s", (entry_id,))
+            cur.execute(
+                "SELECT phone_number, name, note, action FROM phone_blacklist_entries WHERE id=%s",
+                (entry_id,),
+            )
             before = cur.fetchone()
             if not before:
                 raise WhitelistValidationError("対象のブラックリスト番号が見つかりません")
             cur.execute(
-                "UPDATE phone_blacklist_entries SET phone_number=%s, name=%s, note=%s WHERE id=%s",
-                (entry["phone_number"], entry["name"], entry["note"], entry_id),
+                "UPDATE phone_blacklist_entries "
+                "SET phone_number=%s, name=%s, note=%s, action=%s WHERE id=%s",
+                (entry["phone_number"], entry["name"], entry["note"], entry["action"], entry_id),
             )
             cur.execute("SELECT 1 FROM phone_whitelist_entries WHERE phone_number=%s", (entry["phone_number"],))
             return {
@@ -1892,7 +1919,7 @@ def blacklist_import_preview():
         if not upload or not upload.filename:
             raise WhitelistValidationError("CSVファイルを選択してください")
         data = upload.read(MAX_CSV_BYTES + 1)
-        entries = parse_csv_bytes(data)
+        entries = parse_blacklist_csv_bytes(data)
         payload = base64.b64encode(data).decode("ascii")
         _audit("blacklist_csv_preview", "ok", {"filename": upload.filename, "rows": len(entries)})
         return _render_index(preview_entries=entries, csv_payload=payload, list_type="blacklist")
@@ -1913,7 +1940,7 @@ def blacklist_import_apply():
             data = base64.b64decode(raw_payload, validate=True)
         except ValueError as exc:
             raise WhitelistValidationError("CSV確認データが不正です。再度ファイルを選択してください") from exc
-        entries = parse_csv_bytes(data)
+        entries = parse_blacklist_csv_bytes(data)
 
         def change(cur):
             cur.execute("SELECT phone_number FROM phone_blacklist_entries")
@@ -1927,11 +1954,12 @@ def blacklist_import_apply():
                     inserted += 1
                 cur.execute(
                     """
-                    INSERT INTO phone_blacklist_entries (phone_number, name, note)
-                    VALUES (%s, %s, %s)
-                    ON DUPLICATE KEY UPDATE name=VALUES(name), note=VALUES(note)
+                    INSERT INTO phone_blacklist_entries (phone_number, name, note, action)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        name=VALUES(name), note=VALUES(note), action=VALUES(action)
                     """,
-                    (entry["phone_number"], entry["name"], entry["note"]),
+                    (entry["phone_number"], entry["name"], entry["note"], entry["action"]),
                 )
             numbers = [entry["phone_number"] for entry in entries]
             placeholders = ",".join(["%s"] * len(numbers))
@@ -2028,44 +2056,10 @@ def update_setting():
     setting = (request.form.get("setting") or "").strip()
     enabled = request.form.get("enabled") == "1"
     duration = (request.form.get("duration") or "3600").strip()
-    if setting not in {*SETTING_COLUMNS, "anonymous_hangup"}:
+    if setting not in SETTING_COLUMNS:
         flash("切替項目が不正です", "danger")
         return redirect(url_for("phone_whitelist.index"))
     try:
-        if setting == "anonymous_hangup":
-            def change(cur):
-                cur.execute(
-                    "SELECT anonymous_hangup_enabled, anonymous_allowed_until "
-                    "FROM phone_whitelist_sync_state WHERE id=1 FOR UPDATE"
-                )
-                before_row = cur.fetchone() or {}
-                if enabled:
-                    cur.execute(
-                        "UPDATE phone_whitelist_sync_state "
-                        "SET anonymous_hangup_enabled=1, anonymous_allowed_until=NULL WHERE id=1"
-                    )
-                else:
-                    cur.execute(
-                        "UPDATE phone_whitelist_sync_state SET anonymous_hangup_enabled=0 WHERE id=1"
-                    )
-                return {
-                    "setting": setting,
-                    "before": bool(before_row.get("anonymous_hangup_enabled")),
-                    "after": enabled,
-                    "anonymous_allowed_forced_off": bool(
-                        enabled and before_row.get("anonymous_allowed_until")
-                    ),
-                }
-
-            details, count = _run_locked_change(change, _actor())
-            details["entry_count"] = count
-            _audit("setting_change", "ok", details)
-            flash(
-                f"非通知を常にHangup(21)する設定を{'有効' if enabled else '解除'}にしました",
-                "success",
-            )
-            return redirect(url_for("phone_whitelist.index"))
-
         if enabled:
             if duration == "manual":
                 until = MANUAL_UNTIL
@@ -2079,14 +2073,10 @@ def update_setting():
 
         def change(cur):
             cur.execute(
-                f"SELECT {column} AS value, anonymous_hangup_enabled "
+                f"SELECT {column} AS value "
                 "FROM phone_whitelist_sync_state WHERE id=1 FOR UPDATE"
             )
             before_row = cur.fetchone() or {}
-            if setting == "anonymous_allowed" and enabled and before_row.get("anonymous_hangup_enabled"):
-                raise WhitelistValidationError(
-                    "「非通知を常にHangup(21)」がONのため、非通知着信を許可できません"
-                )
             before = before_row.get("value")
             cur.execute(f"UPDATE phone_whitelist_sync_state SET {column}=%s WHERE id=1", (until,))
             return {
@@ -2099,7 +2089,11 @@ def update_setting():
         details, count = _run_locked_change(change, _actor())
         details["entry_count"] = count
         _audit("setting_change", "ok", details)
-        label = "ホワイトリスト無効化" if setting == "whitelist_disabled" else "非通知着信の許可"
+        label = {
+            "blacklist_disabled": "ブラックリスト無効化",
+            "whitelist_disabled": "ホワイトリスト無効化",
+            "anonymous_allowed": "非通知着信の許可",
+        }[setting]
         flash(f"{label}を{'有効' if enabled else '解除'}にしました", "success")
     except (WhitelistValidationError, PhoneWhitelistError) as exc:
         _audit("setting_change", "error", {"setting": setting, "enabled": enabled}, str(exc))
@@ -2138,15 +2132,18 @@ def export_blacklist_csv():
     db = get_db()
     try:
         cur = db.cursor(dictionary=True)
-        cur.execute("SELECT phone_number, name, note FROM phone_blacklist_entries ORDER BY phone_number")
+        cur.execute(
+            "SELECT phone_number, name, note, action "
+            "FROM phone_blacklist_entries ORDER BY phone_number"
+        )
         rows = cur.fetchall()
     finally:
         db.close()
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\r\n")
-    writer.writerow(["phone_number", "name", "note"])
+    writer.writerow(["phone_number", "name", "note", "action"])
     for row in rows:
-        writer.writerow([row["phone_number"], row["name"], row["note"]])
+        writer.writerow([row["phone_number"], row["name"], row["note"], row["action"]])
     data = "\ufeff" + output.getvalue()
     _audit("blacklist_csv_export", "ok", {"rows": len(rows)})
     filename = datetime.now().strftime("phone_blacklist_%Y%m%d_%H%M%S.csv")

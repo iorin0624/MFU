@@ -10,3 +10,4 @@ invoice_bp = Blueprint(
 )
 
 from . import routes  # noqa: E402,F401
+from . import received_routes  # noqa: E402,F401

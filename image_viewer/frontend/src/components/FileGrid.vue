@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import type { MediaItem, ViewSize } from '@/types';
+import type { DateGroup, MediaItem, ViewSize } from '@/types';
 
 const props = defineProps<{
   items: MediaItem[];
@@ -11,6 +11,8 @@ const props = defineProps<{
   appendMode: boolean;
   total: number;
   offset: number;
+  groups: DateGroup[];
+  collapsedGroups: string[];
 }>();
 const emit = defineEmits<{
   select: [event: MouseEvent, item: MediaItem];
@@ -20,6 +22,7 @@ const emit = defineEmits<{
   marquee: [paths: string[], additive: boolean];
   keyboard: [item: MediaItem, options: { extend: boolean; toggle: boolean; focusOnly: boolean }];
   loadCenter: [index: number];
+  toggleGroup: [key: string];
 }>();
 
 const grid = ref<HTMLElement>();
@@ -27,6 +30,9 @@ const marquee = ref({ visible: false, left: 0, top: 0, width: 0, height: 0 });
 const columns = ref(1);
 const rowStride = ref(220);
 const columnWidth = ref(160);
+const groupHeaderHeight = 38;
+const activeGroupKey = ref('');
+const stickyGroupVisible = ref(false);
 const pendingKeyboardTarget = ref<{
   index: number;
   options: { extend: boolean; toggle: boolean; focusOnly: boolean };
@@ -37,18 +43,62 @@ let suppressScrollUntil = 0;
 let lastRequestedIndex = -1;
 
 const loadedEnd = computed(() => Math.min(props.total, props.offset + props.items.length));
+const groupLayouts = computed(() => {
+  if (!props.groups.length) return [];
+  let top = 0;
+  return props.groups.map((group) => {
+    const collapsed = props.collapsedGroups.includes(group.key);
+    const rows = collapsed ? 0 : Math.ceil(group.count / columns.value);
+    const layout = {
+      ...group, collapsed, top, itemsTop: top + groupHeaderHeight,
+      bottom: top + groupHeaderHeight + (rows * rowStride.value),
+    };
+    top = layout.bottom;
+    return layout;
+  });
+});
 const totalRows = computed(() => Math.ceil(Math.max(0, props.total) / columns.value));
-const canvasHeight = computed(() => Math.max(0, totalRows.value * rowStride.value - 12));
+const canvasHeight = computed(() => Math.max(0,
+  groupLayouts.value.length
+    ? (groupLayouts.value.at(-1)?.bottom || 0)
+    : (totalRows.value * rowStride.value - 12),
+));
+
+function layoutForIndex(globalIndex: number) {
+  return groupLayouts.value.find((group) =>
+    globalIndex >= group.start && globalIndex < group.start + group.count);
+}
 
 function itemStyle(localIndex: number) {
   const globalIndex = props.offset + localIndex;
-  const column = globalIndex % columns.value;
-  const row = Math.floor(globalIndex / columns.value);
+  const group = layoutForIndex(globalIndex);
+  if (group?.collapsed) return { display: 'none' };
+  const relativeIndex = group ? globalIndex - group.start : globalIndex;
+  const column = relativeIndex % columns.value;
+  const row = Math.floor(relativeIndex / columns.value);
   return {
     left: `${column * (columnWidth.value + 12)}px`,
-    top: `${row * rowStride.value}px`,
+    top: `${group ? group.itemsTop + (row * rowStride.value) : row * rowStride.value}px`,
     width: `${columnWidth.value}px`,
   };
+}
+
+function globalIndexAtY(y: number) {
+  if (!groupLayouts.value.length) {
+    const row = Math.max(0, Math.floor(y / Math.max(1, rowStride.value)));
+    return Math.max(0, Math.min(props.total - 1, (row * columns.value) + Math.floor(columns.value / 2)));
+  }
+  let group = groupLayouts.value.find((entry) => y < entry.bottom) || groupLayouts.value.at(-1);
+  if (!group) return 0;
+  if (group.collapsed) {
+    group = groupLayouts.value.find((entry) => !entry.collapsed && entry.top >= group!.top)
+      || [...groupLayouts.value].reverse().find((entry) => !entry.collapsed);
+    if (!group) return 0;
+  }
+  if (y < group.itemsTop) return Math.min(props.total - 1, group.start);
+  const row = Math.max(0, Math.floor((y - group.itemsTop) / Math.max(1, rowStride.value)));
+  return Math.max(group.start, Math.min(group.start + group.count - 1,
+    group.start + (row * columns.value) + Math.floor(columns.value / 2)));
 }
 
 function measureGrid() {
@@ -64,15 +114,14 @@ function measureGrid() {
   rowStride.value = Math.max(80, card?.getBoundingClientRect().height || thumb + 48) + 12;
 }
 
-function reportScrollCenter() {
+function reportScrollCenter(force = false) {
   const root = grid.value;
-  if (!root || props.loading || props.total <= props.items.length || performance.now() < suppressScrollUntil) return;
+  if (!root || (!force && props.loading) || props.total <= props.items.length || (!force && performance.now() < suppressScrollUntil)) return;
   // The spacer rows represent the complete folder, so derive the visible global
   // index from the actual row geometry.  A scroll-height ratio is unstable when
   // a different 1000-item window is mounted and used to make adjacent windows
   // repeatedly replace each other.
-  const visibleRow = Math.max(0, Math.floor((root.scrollTop + (root.clientHeight / 2)) / Math.max(1, rowStride.value)));
-  const center = Math.max(0, Math.min(props.total - 1, (visibleRow * columns.value) + Math.floor(columns.value / 2)));
+  const center = globalIndexAtY(root.scrollTop + (root.clientHeight / 2));
   // Start moving the retained window well before the viewport can reach its
   // edge.  The next/previous cached windows are normally already available,
   // so the user never scrolls into an unloaded white band.
@@ -86,10 +135,53 @@ function reportScrollCenter() {
   emit('loadCenter', center);
 }
 
+function updateStickyGroup() {
+  const root = grid.value;
+  if (!root || !groupLayouts.value.length) {
+    activeGroupKey.value = '';
+    stickyGroupVisible.value = false;
+    return;
+  }
+  const canvasY = Math.max(0, root.scrollTop - 12);
+  const current = groupLayouts.value.find((group) => canvasY < group.bottom)
+    || groupLayouts.value.at(-1);
+  activeGroupKey.value = current?.key || '';
+  // The floating copy only appears after the real heading has completely left
+  // the viewport. This prevents the first row from being displayed twice.
+  stickyGroupVisible.value = Boolean(current && canvasY >= current.top + groupHeaderHeight);
+}
+
+function scrollToTop() {
+  const root = grid.value;
+  if (!root) return;
+  suppressScrollUntil = performance.now() + 250;
+  lastRequestedIndex = -1;
+  root.scrollTop = 0;
+  updateStickyGroup();
+}
+
+function groupHasLoadedItems(group: {start: number; count: number; collapsed: boolean}) {
+  return group.collapsed || (group.start < loadedEnd.value && group.start + group.count > props.offset);
+}
+
+async function toggleDateGroup(key: string) {
+  const root = grid.value;
+  const before = groupLayouts.value.find((group) => group.key === key);
+  const viewportOffset = root && before ? before.top + 12 - root.scrollTop : 0;
+  emit('toggleGroup', key);
+  await nextTick();
+  const after = groupLayouts.value.find((group) => group.key === key);
+  if (root && after) root.scrollTop = Math.max(0, after.top + 12 - viewportOffset);
+  updateStickyGroup();
+  lastRequestedIndex = -1;
+  reportScrollCenter(true);
+}
+
 function onScroll() {
   if (scrollFrame) return;
   scrollFrame = requestAnimationFrame(() => {
     scrollFrame = 0;
+    updateStickyGroup();
     reportScrollCenter();
   });
 }
@@ -178,7 +270,7 @@ function navigate(
   return focusKeyboardTarget(keyboardTargetIndex(key, localIndex), options);
 }
 
-defineExpose({ navigate });
+defineExpose({ navigate, scrollToTop });
 
 function startMarquee(event: PointerEvent) {
   if (event.button !== 0 || (event.target as HTMLElement).closest('.file-card')) return;
@@ -219,11 +311,19 @@ onMounted(async () => {
   measureGrid();
   resizeObserver = new ResizeObserver(measureGrid);
   if (grid.value) resizeObserver.observe(grid.value);
+  updateStickyGroup();
 });
 watch(() => [props.items, props.viewSize], async () => {
   await nextTick();
   measureGrid();
 }, { deep: false });
+watch(() => [props.groups, props.collapsedGroups], () => {
+  void nextTick(() => {
+    updateStickyGroup();
+    lastRequestedIndex = -1;
+    reportScrollCenter(true);
+  });
+}, { deep: false, immediate: true });
 watch(() => [props.offset, props.items], async () => {
   // Replacing a virtual window can itself emit a scroll event.  Do not treat
   // that synthetic/layout event as movement back toward the previous window.
@@ -251,7 +351,27 @@ onBeforeUnmount(() => {
     @drop="dropFiles"
     @scroll.passive="onScroll"
   >
+    <div v-if="stickyGroupVisible && activeGroupKey" class="sticky-date-group">
+      {{ groupLayouts.find((group) => group.key === activeGroupKey)?.label }}
+    </div>
     <div class="virtual-canvas" :style="{ height: `${canvasHeight}px` }">
+      <button
+        v-for="group in groupLayouts"
+        :key="`header-${group.key}`"
+        type="button"
+        class="date-group-header"
+        :style="{ top: `${group.top}px` }"
+        @click="toggleDateGroup(group.key)"
+      >
+        <span>{{ group.collapsed ? '▶' : '▼' }} {{ group.label }}</span>
+        <span>{{ group.count }}件</span>
+      </button>
+      <div
+        v-for="group in groupLayouts.filter((entry) => !groupHasLoadedItems(entry))"
+        :key="`loading-${group.key}`"
+        class="date-group-loading"
+        :style="{ top: `${group.itemsTop + 4}px` }"
+      >画像を読み込み中…</div>
       <button
         v-for="(item, index) in items"
         :key="item.path"

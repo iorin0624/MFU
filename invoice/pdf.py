@@ -167,6 +167,8 @@ def _build_issuer_lines(invoice: dict[str, Any]) -> list[str]:
             lines.append(value)
     if invoice.get("issuer_phone"):
         lines.append(f"TEL: {invoice['issuer_phone']}")
+    if invoice.get("issuer_registration_no"):
+        lines.append(f"登録番号: {invoice['issuer_registration_no']}")
     return lines
 
 
@@ -200,6 +202,7 @@ def _build_item_rows(invoice: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _build_pdf_context(invoice: dict[str, Any]) -> dict[str, Any]:
+    tax_label = "内消費税" if invoice.get("tax_mode") == "internal" else "消費税"
     return {
         "title": "請求書",
         "invoice_no": invoice.get("invoice_no") or "",
@@ -212,6 +215,9 @@ def _build_pdf_context(invoice: dict[str, Any]) -> dict[str, Any]:
         "tax_10_yen_label": format_currency_yen(invoice.get("tax_10_yen")),
         "tax_8_yen_label": format_currency_yen(invoice.get("tax_8_yen")),
         "tax_yen_label": format_currency_yen(invoice.get("tax_yen")),
+        "tax_10_label": f"{tax_label}10%",
+        "tax_8_label": f"{tax_label}8%",
+        "tax_total_label": f"{tax_label}合計",
         "total_yen_label": format_currency_yen(invoice.get("total_yen")),
         "note": normalize_multiline_text(invoice.get("note")) or "",
         "bank_info": get_invoice_effective_bank_info(invoice),

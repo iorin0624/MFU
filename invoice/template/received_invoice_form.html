@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}請求書作成依頼の素案{% endblock %}
+{% block head_extra %}
+<style>
+  .received-sticky-summary{position:sticky;top:1rem}.received-item-table input,.received-item-table select{min-width:90px}
+  .received-item-main td{padding-top:.75rem;padding-bottom:.45rem;border-bottom:0}.received-item-sub td{padding-top:.35rem;padding-bottom:.75rem}
+  .received-subfields{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:.5rem}.received-subfield{display:flex;flex-direction:column;gap:.25rem}
+  .received-label{font-size:.75rem;color:#6c757d;line-height:1.2}.received-actions{display:flex;flex-direction:column;gap:.35rem}.received-actions .btn{white-space:nowrap}
+  .received-item-table .item-name{width:100%}.received-line-total{text-align:right;font-weight:600;min-width:90px}.memo-row td{background:#fcfcfc}
+  @media(max-width:767.98px){.received-subfields{grid-template-columns:repeat(2,minmax(120px,1fr))}.received-sticky-summary{position:static}}
+</style>
+{% endblock %}
+{% block content %}
+<h1 class="mb-3">請求書作成依頼の素案{% if invoice %}を編集{% endif %}</h1>
+<form method="post" id="receivedForm">
+  <div class="row g-3">
+    <div class="col-lg-8">
+      <div class="card shadow-sm mb-3"><div class="card-body">
+        <h2 class="h5">基本情報</h2>
+        <div class="row g-3">
+          <div class="col-md-6"><label class="form-label">相手方名 *</label><input class="form-control" name="counterparty_name" value="{{ form_data.counterparty_name or '' }}" required></div>
+          <div class="col-md-6"><label class="form-label">送付先メール *</label><input class="form-control" type="email" name="counterparty_email" value="{{ form_data.counterparty_email or '' }}" required></div>
+          <div class="col-md-8"><label class="form-label">件名 *</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}" required></div>
+          <div class="col-md-4"><label class="form-label">税モード</label><select class="form-select" name="tax_mode" id="taxMode"><option value="internal" {% if (form_data.tax_mode or 'internal')=='internal' %}selected{% endif %}>内税</option><option value="external" {% if form_data.tax_mode=='external' %}selected{% endif %}>外税</option></select><div class="form-text">送付後は相手方が変更できません。</div></div>
+          <div class="col-md-6"><label class="form-label">対象日</label><input class="form-control" type="date" name="service_date" value="{{ form_data.service_date or '' }}"></div>
+          <div class="col-md-6"><label class="form-label">回答期限</label><input class="form-control" type="date" name="due_date" value="{{ form_data.due_date or '' }}"></div>
+          <div class="col-12">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <label class="form-label mb-0">相手方への案内</label>
+              <a class="small" href="{{ url_for('invoice.received_guidance_template_list') }}">案内テンプレート管理</a>
+            </div>
+            <div class="input-group mb-2">
+              <select class="form-select" id="guidanceTemplateSelect">
+                <option value="">テンプレートを選択</option>
+                {% for template in guidance_templates %}<option value="{{ template.id }}" {% if not invoice and template.is_default %}selected{% endif %}>{{ template.template_name }}{% if template.is_default %}（デフォルト）{% endif %}</option>{% endfor %}
+              </select>
+              <button class="btn btn-outline-primary" type="button" id="applyGuidanceTemplate" {% if not guidance_templates %}disabled{% endif %}>案内文へ反映</button>
+            </div>
+            <textarea class="form-control" name="admin_note" id="adminNote" rows="5">{{ form_data.admin_note or '' }}</textarea>
+            <div class="form-text">この文章は依頼メールと相手方の入力画面の両方に表示されます。</div>
+          </div>
+        </div>
+        <hr>
+        <h2 class="h5">こちら側（請求先）</h2>
+        <div class="row g-3">
+          <div class="col-md-6"><label class="form-label">名称 *</label><input class="form-control" name="bill_to_name" value="{{ form_data.bill_to_name or '' }}" required></div>
+          <div class="col-md-3"><label class="form-label">郵便番号</label><input class="form-control" name="bill_to_postal_code" value="{{ form_data.bill_to_postal_code or '' }}"></div>
+          <div class="col-md-6"><label class="form-label">住所1</label><input class="form-control" name="bill_to_address1" value="{{ form_data.bill_to_address1 or '' }}"></div>
+          <div class="col-md-6"><label class="form-label">住所2</label><input class="form-control" name="bill_to_address2" value="{{ form_data.bill_to_address2 or '' }}"></div>
+          <div class="col-md-4"><label class="form-label">電話</label><input class="form-control" name="bill_to_phone" value="{{ form_data.bill_to_phone or '' }}"></div>
+          <div class="col-md-8"><label class="form-label">提出通知先メール</label><input class="form-control" type="email" name="bill_to_email" value="{{ form_data.bill_to_email or '' }}"></div>
+        </div>
+      </div></div>
+
+      <div class="card shadow-sm"><div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap"><h2 class="h5 mb-0">明細</h2><div class="d-flex gap-2"><button class="btn btn-sm btn-outline-secondary" type="button" id="addItem">明細行を追加</button><button class="btn btn-sm btn-outline-secondary" type="button" id="addMemo">メモ行を追加</button></div></div>
+        <div class="table-responsive"><table class="table align-middle received-item-table" id="itemTable"><thead><tr><th>明細</th><th class="text-center" style="width:1%">操作</th></tr></thead><tbody>
+        {% for item in form_data["items"] %}
+          {% if (item.row_type or 'normal') == 'memo' %}
+          <tr class="received-item-row memo-row" data-row-type="memo"><td>
+            <input type="hidden" name="row_type[]" value="memo"><input type="hidden" name="item_name[]" value=""><input type="hidden" name="quantity[]" value="0"><input type="hidden" name="unit_name[]" value=""><input type="hidden" name="unit_price_yen[]" value="0"><input type="hidden" name="tax_category[]" value="nontax">
+            <div class="received-label mb-1">メモ</div><input class="form-control" name="memo_text[]" value="{{ item.memo_text or '' }}" placeholder="メモを入力してください">
+          </td><td><div class="received-actions"><label class="small text-nowrap"><input class="form-check-input lock-check" type="checkbox" name="locked_index[]" {% if item.locked_by_admin %}checked{% endif %}> ロック</label><button class="btn btn-sm btn-outline-secondary move-up" type="button">上へ</button><button class="btn btn-sm btn-outline-secondary move-down" type="button">下へ</button><button class="btn btn-sm btn-outline-danger remove" type="button">削除</button></div></td></tr>
+          {% else %}
+          <tr class="received-item-row received-item-main" data-row-type="normal"><td><div class="received-label mb-1">品目</div><input type="hidden" name="row_type[]" value="normal"><input class="form-control item-name" name="item_name[]" value="{{ item.item_name or '' }}" required><input type="hidden" name="memo_text[]" value=""></td><td rowspan="2" class="align-top"><div class="received-actions"><label class="small text-nowrap"><input class="form-check-input lock-check" type="checkbox" name="locked_index[]" {% if item.locked_by_admin %}checked{% endif %}> ロック</label><button class="btn btn-sm btn-outline-secondary move-up" type="button">上へ</button><button class="btn btn-sm btn-outline-secondary move-down" type="button">下へ</button><button class="btn btn-sm btn-outline-danger remove" type="button">削除</button></div></td></tr>
+          <tr class="received-item-sub"><td><div class="received-subfields">
+            <div class="received-subfield"><label class="received-label">数量</label><input class="form-control item-quantity" type="number" step=".01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required></div>
+            <div class="received-subfield"><label class="received-label">単位</label><input class="form-control" name="unit_name[]" value="{{ item.unit_name or '式' }}"></div>
+            <div class="received-subfield"><label class="received-label">単価</label><input class="form-control item-price" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required></div>
+            <div class="received-subfield"><label class="received-label">税区分</label><select class="form-select item-tax" name="tax_category[]"><option value="tax10" {% if item.tax_category=='tax10' %}selected{% endif %}>10%</option><option value="tax8" {% if item.tax_category=='tax8' %}selected{% endif %}>8%</option><option value="nontax" {% if item.tax_category=='nontax' %}selected{% endif %}>非課税</option></select></div>
+            <div class="received-subfield"><label class="received-label">金額</label><div class="received-line-total">¥0</div></div>
+          </div></td></tr>
+          {% endif %}
+        {% endfor %}
+        </tbody></table></div>
+        <div class="alert alert-info mb-0">ロックした行は、相手方が内容・金額・税区分・並び順を変更できません。相手方は交通費などの明細を追加できます。</div>
+      </div></div>
+    </div>
+    <div class="col-lg-4"><div class="card shadow-sm received-sticky-summary"><div class="card-body"><h2 class="h5">集計</h2><div class="small text-muted mb-2" id="taxModeHelp"></div><dl class="row mb-0"><dt class="col-6">小計</dt><dd class="col-6 text-end" id="subtotalText">¥0</dd><dt class="col-6 tax-label">内消費税10%</dt><dd class="col-6 text-end" id="tax10Text">¥0</dd><dt class="col-6 tax-label">内消費税8%</dt><dd class="col-6 text-end" id="tax8Text">¥0</dd><dt class="col-6" id="taxTotalLabel">内消費税合計</dt><dd class="col-6 text-end" id="taxText">¥0</dd><dt class="col-6">合計</dt><dd class="col-6 text-end fw-bold" id="totalText">¥0</dd></dl><div class="mt-3 d-grid gap-2"><button class="btn btn-primary" type="submit">保存</button><a class="btn btn-outline-secondary" href="{{ url_for('invoice.received_invoice_list') }}">一覧へ戻る</a></div></div></div></div>
+  </div>
+</form>
+
+<template id="normalTemplate"><tr class="received-item-row received-item-main" data-row-type="normal"><td><div class="received-label mb-1">品目</div><input type="hidden" name="row_type[]" value="normal"><input class="form-control item-name" name="item_name[]" required><input type="hidden" name="memo_text[]" value=""></td><td rowspan="2" class="align-top"><div class="received-actions"><label class="small text-nowrap"><input class="form-check-input lock-check" type="checkbox" name="locked_index[]" checked> ロック</label><button class="btn btn-sm btn-outline-secondary move-up" type="button">上へ</button><button class="btn btn-sm btn-outline-secondary move-down" type="button">下へ</button><button class="btn btn-sm btn-outline-danger remove" type="button">削除</button></div></td></tr><tr class="received-item-sub"><td><div class="received-subfields"><div class="received-subfield"><label class="received-label">数量</label><input class="form-control item-quantity" type="number" step=".01" min="0" name="quantity[]" value="1.00" required></div><div class="received-subfield"><label class="received-label">単位</label><input class="form-control" name="unit_name[]" value="式"></div><div class="received-subfield"><label class="received-label">単価</label><input class="form-control item-price" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></div><div class="received-subfield"><label class="received-label">税区分</label><select class="form-select item-tax" name="tax_category[]"><option value="tax10">10%</option><option value="tax8">8%</option><option value="nontax">非課税</option></select></div><div class="received-subfield"><label class="received-label">金額</label><div class="received-line-total">¥0</div></div></div></td></tr></template>
+<template id="memoTemplate"><tr class="received-item-row memo-row" data-row-type="memo"><td><input type="hidden" name="row_type[]" value="memo"><input type="hidden" name="item_name[]" value=""><input type="hidden" name="quantity[]" value="0"><input type="hidden" name="unit_name[]" value=""><input type="hidden" name="unit_price_yen[]" value="0"><input type="hidden" name="tax_category[]" value="nontax"><div class="received-label mb-1">メモ</div><input class="form-control" name="memo_text[]" placeholder="メモを入力してください"></td><td><div class="received-actions"><label class="small text-nowrap"><input class="form-check-input lock-check" type="checkbox" name="locked_index[]" checked> ロック</label><button class="btn btn-sm btn-outline-secondary move-up" type="button">上へ</button><button class="btn btn-sm btn-outline-secondary move-down" type="button">下へ</button><button class="btn btn-sm btn-outline-danger remove" type="button">削除</button></div></td></tr></template>
+{% endblock %}
+{% block body_extra %}
+<script>
+const guidanceTemplates={{ guidance_template_data|tojson }};
+document.getElementById('applyGuidanceTemplate').addEventListener('click',()=>{const select=document.getElementById('guidanceTemplateSelect'),note=document.getElementById('adminNote'),template=guidanceTemplates.find(item=>String(item.id)===select.value);if(!template)return;if(note.value.trim()&&note.value!==template.body&&!confirm('現在の案内文をテンプレートで置き換えますか？'))return;note.value=template.body;note.dispatchEvent(new Event('input',{bubbles:true}))});
+(()=>{const form=document.getElementById('receivedForm'),body=document.querySelector('#itemTable tbody'),mode=document.getElementById('taxMode'),rates={tax10:.1,tax8:.08,nontax:0},fmt=n=>`¥${Math.round(n||0).toLocaleString('ja-JP')}`;
+const main=r=>r?.classList.contains('received-item-main'),bundle=r=>{if(!r)return[];if(r.dataset.rowType==='memo')return[r];const m=main(r)?r:(main(r.previousElementSibling)?r.previousElementSibling:r);return main(m)&&m.nextElementSibling?.classList.contains('received-item-sub')?[m,m.nextElementSibling]:[m]};
+const amounts=(base,cat)=>{const rate=rates[cat]??.1;if(mode.value==='internal'){const tax=rate?Math.round(base-base/(1+rate)):0;return{subtotal:base-tax,tax,total:base}}const tax=Math.round(base*rate);return{subtotal:base,tax,total:base+tax}};
+const recalc=()=>{let subtotal=0,tax10=0,tax8=0,total=0;body.querySelectorAll('.received-item-main').forEach(m=>{const sub=m.nextElementSibling;if(!sub)return;const qty=parseFloat(sub.querySelector('.item-quantity')?.value||0),price=parseFloat(sub.querySelector('.item-price')?.value||0),cat=sub.querySelector('.item-tax')?.value||'tax10',a=amounts(Math.round((Number.isFinite(qty)?qty:0)*(Number.isFinite(price)?price:0)),cat);subtotal+=a.subtotal;total+=a.total;if(cat==='tax10')tax10+=a.tax;if(cat==='tax8')tax8+=a.tax;sub.querySelector('.received-line-total').textContent=fmt(a.total)});const internal=mode.value==='internal',labels=document.querySelectorAll('.tax-label');labels[0].textContent=(internal?'内消費税':'消費税')+'10%';labels[1].textContent=(internal?'内消費税':'消費税')+'8%';document.getElementById('taxTotalLabel').textContent=(internal?'内消費税':'消費税')+'合計';document.getElementById('taxModeHelp').textContent=internal?'入力単価は税込です。':'入力単価は税抜です。';document.getElementById('subtotalText').textContent=fmt(subtotal);document.getElementById('tax10Text').textContent=fmt(tax10);document.getElementById('tax8Text').textContent=fmt(tax8);document.getElementById('taxText').textContent=fmt(tax10+tax8);document.getElementById('totalText').textContent=fmt(total)};
+const append=id=>{body.append(document.getElementById(id).content.cloneNode(true));recalc()};document.getElementById('addItem').onclick=()=>append('normalTemplate');document.getElementById('addMemo').onclick=()=>append('memoTemplate');mode.onchange=recalc;body.addEventListener('input',recalc);body.addEventListener('change',recalc);body.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const rows=bundle(b.closest('tr')),first=rows[0];if(b.classList.contains('remove'))rows.forEach(r=>r.remove());else if(b.classList.contains('move-up')){const p=first.previousElementSibling;if(p){const anchor=main(p)?p:(main(p.previousElementSibling)?p.previousElementSibling:p);rows.forEach(r=>body.insertBefore(r,anchor))}}else if(b.classList.contains('move-down')){const after=rows.at(-1).nextElementSibling;if(after){const next=bundle(after),anchor=next.at(-1).nextElementSibling;rows.forEach(r=>body.insertBefore(r,anchor))}}recalc()});form.addEventListener('submit',()=>body.querySelectorAll('.received-item-row').forEach((r,i)=>{const c=r.querySelector('.lock-check');if(c)c.value=String(i)}));recalc()})();
+</script>
+{% endblock %}

@@ -13,7 +13,7 @@
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
     <h1 class="h3 mb-1">📞 着信リスト管理</h1>
-    <p class="text-muted mb-0">ブラックリストを最優先し、該当番号は応答前に即時拒否します。</p>
+    <p class="text-muted mb-0">通常時はブラックリストを最優先し、番号ごとに指定した処理を実行します。</p>
   </div>
   <div class="d-flex gap-2">
     <a class="btn btn-outline-secondary" href="{{ url_for('phone_diagnostics.index') }}">通話品質診断</a>
@@ -51,25 +51,32 @@
 
 {% if is_blacklist %}
 <div class="alert alert-danger">
-  ここに登録した番号は、一時設定やホワイトリストより優先して呼出音なしで即時拒否します。Discord通知・留守電接続は行いません。
+  通常はホワイトリストより優先し、番号ごとに選択した処理を実行します。「ブラックリストを一時的に無効化」のON中は通常判定へ進みます。
 </div>
 {% endif %}
 
 <div class="row g-3 mb-4">
   <div class="col-lg-4">
-    <section class="card h-100 {% if sync_state.anonymous_hangup_enabled %}border-danger{% endif %}">
+    <section class="card h-100 {% if sync_state.blacklist_disabled_active %}border-danger{% endif %}">
       <div class="card-body">
-        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('非通知着信の常時拒否設定を変更しますか？');">
+        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('ブラックリスト無効化設定を変更しますか？');">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="setting" value="anonymous_hangup">
+          <input type="hidden" name="setting" value="blacklist_disabled">
           <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" role="switch" id="anonymousHangup" name="enabled" value="1" {% if sync_state.anonymous_hangup_enabled %}checked{% endif %}>
-            <label class="form-check-label fw-bold" for="anonymousHangup">非通知を常にHangup(21)</label>
+            <input class="form-check-input" type="checkbox" role="switch" id="blacklistDisabled" name="enabled" value="1" {% if sync_state.blacklist_disabled_active %}checked{% endif %}>
+            <label class="form-check-label fw-bold" for="blacklistDisabled">ブラックリストを一時的に無効化</label>
           </div>
-          <p class="small text-muted">ONの間、非通知・通知不能の着信はDiscord通知や留守電接続を行わず、呼出音なしで即時拒否します。</p>
-          <button class="btn btn-sm btn-danger" type="submit">設定を反映</button>
-          {% if sync_state.anonymous_hangup_enabled %}
-            <div class="mt-2 small text-danger fw-bold">現在ON：手動でOFFにするまで継続</div>
+          <p class="small text-muted">ONの間、登録済みのブラックリスト番号も通常の登録・未登録判定として処理します。</p>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <select class="form-select form-select-sm" name="duration" style="max-width:180px">
+              <option value="900">15分</option><option value="1800">30分</option>
+              <option value="3600" selected>1時間</option><option value="10800">3時間</option>
+              <option value="manual">手動で戻すまで</option>
+            </select>
+            <button class="btn btn-sm btn-danger" type="submit">設定を反映</button>
+          </div>
+          {% if sync_state.blacklist_disabled_active %}
+            <div class="mt-2 small text-danger">現在ON：{% if sync_state.blacklist_disabled_manual %}手動解除まで{% else %}{{ sync_state.blacklist_disabled_until }}まで{% endif %}</div>
           {% endif %}
         </form>
       </div>
@@ -82,20 +89,17 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="setting" value="anonymous_allowed">
           <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" role="switch" id="anonymousAllowed" name="enabled" value="1" {% if sync_state.anonymous_allowed_active %}checked{% endif %} {% if sync_state.anonymous_hangup_enabled %}disabled{% endif %}>
+            <input class="form-check-input" type="checkbox" role="switch" id="anonymousAllowed" name="enabled" value="1" {% if sync_state.anonymous_allowed_active %}checked{% endif %}>
             <label class="form-check-label fw-bold" for="anonymousAllowed">非通知着信を許可</label>
           </div>
           <p class="small text-muted">ONの間、非通知・通知不能の着信をRing Group 106へ接続します。</p>
-          {% if sync_state.anonymous_hangup_enabled %}
-            <div class="alert alert-danger small py-2">「非通知を常にHangup(21)」がONのため、強制OFFになっています。</div>
-          {% endif %}
           <div class="d-flex flex-wrap gap-2 align-items-center">
-            <select class="form-select form-select-sm" name="duration" style="max-width:180px" {% if sync_state.anonymous_hangup_enabled %}disabled{% endif %}>
+            <select class="form-select form-select-sm" name="duration" style="max-width:180px">
               <option value="900">15分</option><option value="1800">30分</option>
               <option value="3600" selected>1時間</option><option value="10800">3時間</option>
               <option value="manual">手動で戻すまで</option>
             </select>
-            <button class="btn btn-sm btn-warning" type="submit" {% if sync_state.anonymous_hangup_enabled %}disabled{% endif %}>設定を反映</button>
+            <button class="btn btn-sm btn-warning" type="submit">設定を反映</button>
           </div>
           {% if sync_state.anonymous_allowed_active %}
             <div class="mt-2 small text-warning-emphasis">現在ON：{% if sync_state.anonymous_allowed_manual %}手動解除まで{% else %}{{ sync_state.anonymous_allowed_until }}まで{% endif %}</div>
@@ -251,10 +255,10 @@
     <p>同じ電話番号は名称・備考を更新し、CSVにない既存番号は削除しません。</p>
     <div class="table-responsive" style="max-height: 360px;">
       <table class="table table-sm table-striped align-middle">
-        <thead class="table-light sticky-top"><tr><th>電話番号</th><th>名称</th><th>備考</th></tr></thead>
+        <thead class="table-light sticky-top"><tr><th>電話番号</th><th>名称</th><th>備考</th>{% if is_blacklist %}<th>着信時の処理</th>{% endif %}</tr></thead>
         <tbody>
           {% for entry in preview_entries %}
-          <tr><td>{{ entry.phone_number }}</td><td>{{ entry.name }}</td><td>{{ entry.note }}</td></tr>
+          <tr><td>{{ entry.phone_number }}</td><td>{{ entry.name }}</td><td>{{ entry.note }}</td>{% if is_blacklist %}<td>{{ blacklist_action_labels.get(entry.action, entry.action) }}</td>{% endif %}</tr>
           {% endfor %}
         </tbody>
       </table>
@@ -278,9 +282,12 @@
       <div class="card-body">
         <form method="post" action="{{ url_for(add_endpoint) }}" class="row g-2">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <div class="col-md-4"><label class="form-label">電話番号</label><input class="form-control" name="phone_number" required maxlength="32" placeholder="08012345678"></div>
-          <div class="col-md-4"><label class="form-label">名称</label><input class="form-control" name="name" maxlength="100"></div>
-          <div class="col-md-4"><label class="form-label">備考</label><input class="form-control" name="note" maxlength="500"></div>
+          <div class="{% if is_blacklist %}col-md-3{% else %}col-md-4{% endif %}"><label class="form-label">電話番号</label><input class="form-control" name="phone_number" required maxlength="32" placeholder="08012345678"></div>
+          <div class="{% if is_blacklist %}col-md-3{% else %}col-md-4{% endif %}"><label class="form-label">名称</label><input class="form-control" name="name" maxlength="100"></div>
+          <div class="{% if is_blacklist %}col-md-3{% else %}col-md-4{% endif %}"><label class="form-label">備考</label><input class="form-control" name="note" maxlength="500"></div>
+          {% if is_blacklist %}
+          <div class="col-md-3"><label class="form-label">着信時の処理</label><select class="form-select" name="action">{% for value, label in blacklist_action_labels.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
+          {% endif %}
           <div class="col-12"><button class="btn {% if is_blacklist %}btn-danger{% else %}btn-primary{% endif %}" type="submit">{{ list_name }}へ登録して即時反映</button></div>
         </form>
       </div>
@@ -293,7 +300,7 @@
         <form method="post" action="{{ url_for(preview_endpoint) }}" enctype="multipart/form-data">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input class="form-control mb-2" type="file" name="csv_file" accept=".csv,text/csv" required>
-          <div class="form-text mb-2">列: phone_number, name, note（UTF-8／Shift_JIS、最大1MB）</div>
+          <div class="form-text mb-2">列: phone_number, name, note{% if is_blacklist %}, action{% endif %}（UTF-8／Shift_JIS、最大1MB）{% if is_blacklist %}<br>action省略時は hangup。値: hangup / ring_until_caller_hangup / ring_15 / busy{% endif %}</div>
           <button class="btn btn-outline-primary" type="submit">内容を確認</button>
         </form>
       </div>
@@ -309,14 +316,15 @@
 </form>
 
 <div class="table-responsive">
-  <table class="table table-bordered table-hover align-middle" style="min-width: 980px; table-layout: fixed;">
+  <table class="table table-bordered table-hover align-middle" style="min-width: {% if is_blacklist %}1180{% else %}980{% endif %}px; table-layout: fixed;">
     <colgroup>
-      <col style="width: 21%;">
-      <col style="width: 24%;">
-      <col style="width: 31%;">
-      <col style="width: 24%;">
+      <col style="width: {% if is_blacklist %}17{% else %}21{% endif %}%;">
+      <col style="width: {% if is_blacklist %}20{% else %}24{% endif %}%;">
+      <col style="width: {% if is_blacklist %}23{% else %}31{% endif %}%;">
+      {% if is_blacklist %}<col style="width: 25%;">{% endif %}
+      <col style="width: {% if is_blacklist %}15{% else %}24{% endif %}%;">
     </colgroup>
-    <thead class="table-light"><tr><th>電話番号</th><th>名称</th><th>備考</th><th>操作</th></tr></thead>
+    <thead class="table-light"><tr><th>電話番号</th><th>名称</th><th>備考</th>{% if is_blacklist %}<th>着信時の処理</th>{% endif %}<th>操作</th></tr></thead>
     <tbody>
       {% for entry in entries %}
       <tr>
@@ -329,6 +337,9 @@
         </td>
         <td class="p-2"><input class="form-control" form="phone-{{ list_type }}-entry-{{ entry.id }}" name="name" value="{{ entry.name }}" maxlength="100"></td>
         <td class="p-2"><input class="form-control" form="phone-{{ list_type }}-entry-{{ entry.id }}" name="note" value="{{ entry.note }}" maxlength="500"></td>
+        {% if is_blacklist %}
+        <td class="p-2"><select class="form-select" form="phone-{{ list_type }}-entry-{{ entry.id }}" name="action">{% for value, label in blacklist_action_labels.items() %}<option value="{{ value }}" {% if entry.action == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></td>
+        {% endif %}
         <td class="p-2">
           <div class="d-flex flex-wrap gap-2">
             {% if not is_blacklist %}
@@ -355,7 +366,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="text-center text-muted py-4">該当する電話番号はありません</td></tr>
+      <tr><td colspan="{% if is_blacklist %}5{% else %}4{% endif %}" class="text-center text-muted py-4">該当する電話番号はありません</td></tr>
       {% endfor %}
     </tbody>
   </table>

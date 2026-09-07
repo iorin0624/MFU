@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}案内テンプレート管理{% endblock %}
+{% block head_extra %}<style>.guidance-body{white-space:pre-wrap;overflow-wrap:anywhere}.guidance-card{border-left:4px solid #0d6efd}</style>{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div><h1 class="mb-1">案内テンプレート管理</h1><div class="text-muted">請求書作成依頼で繰り返し使う案内文を管理します。</div></div>
+  <div class="d-flex flex-wrap gap-2"><a class="btn btn-outline-secondary" href="{{ url_for('invoice.received_invoice_list') }}">受取請求書へ</a><a class="btn btn-primary" href="{{ url_for('invoice.received_guidance_template_new') }}">新規作成</a></div>
+</div>
+<div class="row g-3">
+{% for template in templates %}
+  <div class="col-12"><div class="card shadow-sm guidance-card"><div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between gap-2">
+      <div><h2 class="h5 mb-1">{{ template.template_name }} {% if template.is_default %}<span class="badge text-bg-primary">デフォルト</span>{% endif %}</h2><div class="small text-muted">並び順 {{ template.sort_order }}</div></div>
+      <div class="d-flex flex-wrap gap-2"><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice.received_guidance_template_edit',template_id=template.id) }}">編集</a>{% if not template.is_default %}<form method="post" action="{{ url_for('invoice.received_guidance_template_default',template_id=template.id) }}"><button class="btn btn-sm btn-outline-primary">デフォルト化</button></form>{% endif %}<form method="post" action="{{ url_for('invoice.received_guidance_template_delete',template_id=template.id) }}" onsubmit="return confirm('この案内テンプレートを削除しますか？')"><button class="btn btn-sm btn-outline-danger">削除</button></form></div>
+    </div>
+    <hr><div class="guidance-body">{{ template.body }}</div>
+  </div></div></div>
+{% else %}
+  <div class="col-12"><div class="alert alert-light border">案内テンプレートはまだありません。<a href="{{ url_for('invoice.received_guidance_template_new') }}">最初のテンプレートを作成</a></div></div>
+{% endfor %}
+</div>
+{% endblock %}

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, reactive, ref } from 'vue';
 import { imageViewerApi } from '@/api/client';
-import type { ImageListPayload, MediaItem, SortDirection } from '@/types';
+import type { DateGroup, GroupBy, GroupUnit, ImageListPayload, MediaItem, SortDirection } from '@/types';
 
 interface FolderData {
   items: MediaItem[];
@@ -13,12 +13,15 @@ interface FolderData {
   version: string;
   offset: number;
   center: number;
+  groups: DateGroup[];
+  groupBy: GroupBy;
+  groupUnit: GroupUnit;
 }
 
 const emptyData = (): FolderData => ({
   items: [], page: 0, pages: 1, total: 0, hasMore: false, loading: false, version: '', offset: 0, center: 0,
+  groups: [], groupBy: 'none', groupUnit: 'day',
 });
-
 const naturalCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 
 function naturalFolders(values: string[]) {
@@ -53,11 +56,17 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
   const windowCache = new Map<string, ImageListPayload[]>();
   const pendingCenters = new Map<string, number>();
 
-  const keyFor = (folder: string, sort: SortDirection) => `${sort}:${folder}`;
-  const dataFor = (folder: string, sort: SortDirection) => cache[keyFor(folder, sort)] ||= emptyData();
-  const itemsFor = (folder: string, sort: SortDirection) => dataFor(folder, sort).items;
-  const isLoading = (folder: string, sort: SortDirection) => dataFor(folder, sort).loading;
-  const hasMore = (folder: string, sort: SortDirection) => dataFor(folder, sort).hasMore;
+  const keyFor = (folder: string, sort: SortDirection, groupBy: GroupBy, groupUnit: GroupUnit) =>
+    `${sort}:${groupBy}:${groupUnit}:${folder}`;
+  const dataFor = (folder: string, sort: SortDirection, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') => {
+    const target = cache[keyFor(folder, sort, groupBy, groupUnit)] ||= emptyData();
+    target.groupBy = groupBy;
+    target.groupUnit = groupUnit;
+    return target;
+  };
+  const itemsFor = (folder: string, sort: SortDirection, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') => dataFor(folder, sort, groupBy, groupUnit).items;
+  const isLoading = (folder: string, sort: SortDirection, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') => dataFor(folder, sort, groupBy, groupUnit).loading;
+  const hasMore = (folder: string, sort: SortDirection, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') => dataFor(folder, sort, groupBy, groupUnit).hasMore;
 
   function mergePayload(target: FolderData, payload: ImageListPayload, reset: boolean) {
     folders.value = naturalFolders(Array.from(new Set(['', ...(payload.folders || [])])));
@@ -76,6 +85,7 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
     target.version = String(payload.version || '');
     target.offset = Number(pagination?.offset || 0);
     target.center = Number(pagination?.center ?? (target.offset + Math.floor(target.items.length / 2)));
+    target.groups = payload.groups || [];
   }
 
   function rememberWindow(key: string, payload: ImageListPayload) {
@@ -159,8 +169,8 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
     return true;
   }
 
-  function scheduleAdjacentPrefetch(folder: string, sort: SortDirection, payload: ImageListPayload) {
-    const key = keyFor(folder, sort);
+  function scheduleAdjacentPrefetch(folder: string, sort: SortDirection, groupBy: GroupBy, groupUnit: GroupUnit, payload: ImageListPayload) {
+    const key = keyFor(folder, sort, groupBy, groupUnit);
     const total = Number(payload.pagination?.total || 0);
     const count = payload.images?.length || 0;
     const offset = Number(payload.pagination?.offset || 0);
@@ -178,10 +188,10 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
       .map((value) => Math.max(0, Math.min(Math.max(0, total - 1), value)));
     candidates.forEach((value) => {
       if (cachedWindow(key, value, String(payload.version || ''))) return;
-      imageViewerApi.list(folder, sort, 1, 1000, value)
+      imageViewerApi.list(folder, sort, 1, 1000, value, groupBy, groupUnit)
         .then((next) => {
           rememberWindow(key, next);
-          const target = dataFor(folder, sort);
+          const target = dataFor(folder, sort, groupBy, groupUnit);
           // Grow the currently visible retained range in the background.  This
           // is intentionally silent: no loading overlay and no scroll reset.
           materializeCachedWindows(key, target, target.center, target.version);
@@ -190,55 +200,55 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
     });
   }
 
-  async function fetchWindow(folder: string, sort: SortDirection, center: number) {
-    const key = keyFor(folder, sort);
-    const target = dataFor(folder, sort);
+  async function fetchWindow(folder: string, sort: SortDirection, groupBy: GroupBy, groupUnit: GroupUnit, center: number) {
+    const key = keyFor(folder, sort, groupBy, groupUnit);
+    const target = dataFor(folder, sort, groupBy, groupUnit);
     const remembered = cachedWindow(key, center, target.version);
     if (remembered) {
       if (!materializeCachedWindows(key, target, center, target.version)) {
         mergePayload(target, remembered, true);
       }
-      scheduleAdjacentPrefetch(folder, sort, remembered);
+      scheduleAdjacentPrefetch(folder, sort, groupBy, groupUnit, remembered);
       return;
     }
-    const payload = await imageViewerApi.list(folder, sort, 1, 1000, center);
+    const payload = await imageViewerApi.list(folder, sort, 1, 1000, center, groupBy, groupUnit);
     rememberWindow(key, payload);
     if (!materializeCachedWindows(key, target, center, String(payload.version || ''))) {
       mergePayload(target, payload, true);
     }
-    scheduleAdjacentPrefetch(folder, sort, payload);
+    scheduleAdjacentPrefetch(folder, sort, groupBy, groupUnit, payload);
   }
 
-  async function load(folder: string, sort: SortDirection, reset = false) {
-    const target = dataFor(folder, sort);
+  async function load(folder: string, sort: SortDirection, reset = false, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') {
+    const target = dataFor(folder, sort, groupBy, groupUnit);
     if (target.loading) return;
     target.loading = true;
     try {
       const center = reset ? 0 : target.center;
-      const payload = await imageViewerApi.list(folder, sort, 1, 1000, center);
-      rememberWindow(keyFor(folder, sort), payload);
+      const payload = await imageViewerApi.list(folder, sort, 1, 1000, center, groupBy, groupUnit);
+      rememberWindow(keyFor(folder, sort, groupBy, groupUnit), payload);
       mergePayload(target, payload, true);
-      scheduleAdjacentPrefetch(folder, sort, payload);
+      scheduleAdjacentPrefetch(folder, sort, groupBy, groupUnit, payload);
     } finally {
       target.loading = false;
     }
   }
 
-  async function loadMore(folder: string, sort: SortDirection) {
-    const target = dataFor(folder, sort);
+  async function loadMore(folder: string, sort: SortDirection, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') {
+    const target = dataFor(folder, sort, groupBy, groupUnit);
     if (target.loading || !target.hasMore) return;
     target.loading = true;
     try {
       const nextPage = Math.min(target.pages, Math.max(1, target.page + 1));
-      mergePayload(target, await imageViewerApi.list(folder, sort, nextPage), false);
+      mergePayload(target, await imageViewerApi.list(folder, sort, nextPage, 1000, undefined, groupBy, groupUnit), false);
     } finally {
       target.loading = false;
     }
   }
 
-  async function loadCenter(folder: string, sort: SortDirection, center: number) {
-    const key = keyFor(folder, sort);
-    const target = dataFor(folder, sort);
+  async function loadCenter(folder: string, sort: SortDirection, center: number, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') {
+    const key = keyFor(folder, sort, groupBy, groupUnit);
+    const target = dataFor(folder, sort, groupBy, groupUnit);
     const edgeMargin = Math.min(450, Math.max(120, Math.floor(target.items.length * 0.20)));
     const loadedEnd = target.offset + target.items.length;
     if (center >= target.offset + edgeMargin && center < loadedEnd - edgeMargin) return;
@@ -255,7 +265,7 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
       while (pendingCenters.has(key)) {
         const wanted = pendingCenters.get(key)!;
         pendingCenters.delete(key);
-        await fetchWindow(folder, sort, wanted);
+        await fetchWindow(folder, sort, groupBy, groupUnit, wanted);
       }
     } finally {
       target.loading = false;
@@ -265,11 +275,14 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
   async function refreshFolder(folder: string) {
     const matching = Object.keys(cache).filter((key) => key.endsWith(`:${folder}`));
     await Promise.all(matching.map(async (key) => {
-      const sort = key.startsWith('desc:') ? 'desc' : 'asc';
-      const target = dataFor(folder, sort);
+      const [sortValue, groupByValue, groupUnitValue] = key.split(':');
+      const sort = sortValue === 'desc' ? 'desc' : 'asc';
+      const groupBy = groupByValue as GroupBy;
+      const groupUnit = groupUnitValue as GroupUnit;
+      const target = dataFor(folder, sort, groupBy, groupUnit);
       const center = target.center;
       windowCache.delete(key);
-      await fetchWindow(folder, sort, center);
+      await fetchWindow(folder, sort, groupBy, groupUnit, center);
     }));
   }
 
