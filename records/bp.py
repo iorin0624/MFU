@@ -215,7 +215,11 @@ def _is_admin_user() -> bool:
 def _present_uber_activity_summary(row: dict) -> dict:
     value = dict(row or {})
     deliveries = int(value.get("deliveries") or 0)
-    total_yen = sum(int(value.get(key) or 0) for key in ("net_yen", "promo_yen", "tip_yen"))
+    delivery_quest_yen = sum(int(value.get(key) or 0) for key in ("net_yen", "promo_yen"))
+    total_yen = sum(
+        int(value.get(key) or 0)
+        for key in ("net_yen", "promo_yen", "other_yen", "tip_yen")
+    )
     duration_seconds = int(value.get("duration_seconds") or 0)
     distance_km = float(value.get("distance_km") or 0)
 
@@ -226,6 +230,7 @@ def _present_uber_activity_summary(row: dict) -> dict:
 
     value.update({
         "deliveries": deliveries,
+        "delivery_quest_yen": delivery_quest_yen,
         "total_yen": total_yen,
         "duration_hours": duration_seconds / 3600 if duration_seconds else 0,
         "deliveries_per_hour": round(deliveries * 3600 / duration_seconds, 1) if duration_seconds else None,
@@ -1220,7 +1225,7 @@ def uber_list():
         SELECT
             COALESCE(SUM(CASE WHEN deliveries > 0 THEN deliveries ELSE 0 END), 0) AS deliveries_sum,
             COALESCE(SUM(CASE WHEN deliveries > 0 THEN net_yen ELSE 0 END), 0) AS net_sum,
-            COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + tip_yen) ELSE 0 END), 0) AS total_sum
+            COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + other_yen + tip_yen) ELSE 0 END), 0) AS total_sum
         FROM uber_daily
         WHERE work_date >= %s AND work_date < %s
         """,
@@ -1264,7 +1269,7 @@ def uber_list():
                 COALESCE(SUM(CASE WHEN deliveries > 0 THEN 1 ELSE 0 END), 0) AS days_count,
                 COALESCE(SUM(CASE WHEN deliveries > 0 THEN deliveries ELSE 0 END), 0) AS deliveries_sum,
                 COALESCE(SUM(CASE WHEN deliveries > 0 THEN net_yen ELSE 0 END), 0) AS net_sum,
-                COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + tip_yen) ELSE 0 END), 0) AS total_sum
+                COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + other_yen + tip_yen) ELSE 0 END), 0) AS total_sum
             FROM daily_base
             GROUP BY month_start
         ),
@@ -1328,7 +1333,7 @@ def uber_list():
     monthly_rows = cur.fetchall()
     cur.execute(
         """
-        SELECT work_date, activity_type, sales_yen, promo_yen, tip_yen, deliveries
+        SELECT work_date, activity_type, sales_yen, promo_yen, other_yen, tip_yen, deliveries
         FROM uber_activities
         WHERE work_date >= %s AND work_date < %s
         ORDER BY work_date, id
@@ -1343,9 +1348,15 @@ def uber_list():
         key = (int(work_date.year), int(work_date.month))
         bucket = activity_months.setdefault(
             key,
-            {"delivery_rows": [], "promo_yen": Decimal("0"), "work_dates": set()},
+            {
+                "delivery_rows": [],
+                "promo_yen": Decimal("0"),
+                "other_yen": Decimal("0"),
+                "work_dates": set(),
+            },
         )
         bucket["promo_yen"] += Decimal(str(activity.get("promo_yen") or 0))
+        bucket["other_yen"] += Decimal(str(activity.get("other_yen") or 0))
         if activity.get("activity_type") == "delivery" and int(activity.get("deliveries") or 0) > 0:
             bucket["delivery_rows"].append(activity)
             bucket["work_dates"].add(work_date)
@@ -1355,7 +1366,9 @@ def uber_list():
         bucket = activity_months.get(key)
         if not bucket or not bucket["delivery_rows"]:
             continue
-        stats = monthly_delivery_unit_statistics(bucket["delivery_rows"], bucket["promo_yen"])
+        stats = monthly_delivery_unit_statistics(
+            bucket["delivery_rows"], bucket["promo_yen"], bucket["other_yen"]
+        )
         monthly_row.update(stats)
         monthly_row["days_count"] = len(bucket["work_dates"])
     db.close()

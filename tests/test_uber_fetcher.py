@@ -198,10 +198,10 @@ def test_sales_total_statistics_exclude_zero_delivery_rows_and_zero_denominators
         {"sales_yen": 500, "tip_yen": 50, "deliveries": 1, "duration_seconds": 0, "distance_km": 0},
     ]
 
-    result = _quest_adjusted_rate_statistics(rows, 50)
+    result = _quest_adjusted_rate_statistics(rows, 50, 100)
 
-    assert result["total_per_delivery_average"] == Decimal("600")
-    assert result["total_per_delivery_median"] == Decimal("600")
+    assert result["total_per_delivery_average"] == Decimal("700")
+    assert result["total_per_delivery_median"] == Decimal("700")
     assert result["total_per_hour_average"] is None
     assert result["total_per_hour_median"] is None
     assert result["total_per_km_average"] is None
@@ -227,19 +227,19 @@ def test_monthly_statistics_expand_multi_drop_rows_into_individual_deliveries():
     assert result["total_median"] == Decimal("430")
 
 
-def test_monthly_statistics_exclude_adjustments_and_zero_delivery_rows():
+def test_monthly_statistics_include_adjustments_and_exclude_zero_delivery_rows():
     rows = [
         {"sales_yen": 500, "tip_yen": 50, "deliveries": 1},
         {"sales_yen": 999, "tip_yen": 999, "deliveries": 0},
     ]
 
-    result = monthly_delivery_unit_statistics(rows, 50)
+    result = monthly_delivery_unit_statistics(rows, 50, 200)
 
     assert result["deliveries_sum"] == 1
     assert result["net_sum"] == Decimal("500")
-    assert result["total_sum"] == Decimal("600")
+    assert result["total_sum"] == Decimal("800")
     assert result["net_median"] == Decimal("500")
-    assert result["total_median"] == Decimal("600")
+    assert result["total_median"] == Decimal("800")
 
 
 def test_range_summary_source_uses_expanded_monthly_population_for_delivery_cards():

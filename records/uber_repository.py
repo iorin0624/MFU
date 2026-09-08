@@ -326,12 +326,14 @@ def _median_rate(rows: list[dict], numerator_keys: tuple[str, ...], denominator_
     return round(median(values)) if values else None
 
 
-def _quest_adjusted_rate_statistics(delivery_rows: list[dict], promo_yen: int | Decimal) -> dict:
-    """Return unrounded per-request averages/medians including allocated quest earnings."""
+def _quest_adjusted_rate_statistics(
+    delivery_rows: list[dict], promo_yen: int | Decimal, other_yen: int | Decimal = 0,
+) -> dict:
+    """Return unrounded per-request rates including allocated quest/adjustment earnings."""
     eligible_rows = [row for row in delivery_rows if int(row.get("deliveries") or 0) > 0]
     total_deliveries = sum(int(row.get("deliveries") or 0) for row in eligible_rows)
-    quest_per_delivery = (
-        Decimal(str(promo_yen or 0)) / Decimal(total_deliveries)
+    allocated_per_delivery = (
+        (Decimal(str(promo_yen or 0)) + Decimal(str(other_yen or 0))) / Decimal(total_deliveries)
         if total_deliveries > 0
         else Decimal("0")
     )
@@ -345,7 +347,7 @@ def _quest_adjusted_rate_statistics(delivery_rows: list[dict], promo_yen: int | 
         adjusted_sales = (
             Decimal(str(row.get("sales_yen") or 0))
             + Decimal(str(row.get("tip_yen") or 0))
-            + quest_per_delivery * deliveries
+            + allocated_per_delivery * deliveries
         )
         rates["delivery"].append(adjusted_sales / deliveries)
         duration_seconds = Decimal(str(row.get("duration_seconds") or 0))
@@ -363,14 +365,14 @@ def _quest_adjusted_rate_statistics(delivery_rows: list[dict], promo_yen: int | 
 
 
 def monthly_delivery_unit_statistics(
-    delivery_rows: list[dict], promo_yen: int | Decimal,
+    delivery_rows: list[dict], promo_yen: int | Decimal, other_yen: int | Decimal = 0,
 ) -> dict:
     """Calculate monthly per-delivery statistics from expanded delivery units.
 
     A multi-drop activity does not expose the earnings of each individual
     delivery, so its earnings and tip are divided evenly and the resulting
     unit value is repeated for the activity's delivery count.  Quest earnings
-    are allocated evenly across every delivery in the month.
+    and adjustments are allocated evenly across every delivery in the month.
     """
     eligible_rows = [row for row in delivery_rows if int(row.get("deliveries") or 0) > 0]
     delivery_count = sum(int(row.get("deliveries") or 0) for row in eligible_rows)
@@ -386,7 +388,8 @@ def monthly_delivery_unit_statistics(
         }
 
     quest_total = Decimal(str(promo_yen or 0))
-    quest_per_delivery = quest_total / Decimal(delivery_count)
+    adjustment_total = Decimal(str(other_yen or 0))
+    allocated_per_delivery = (quest_total + adjustment_total) / Decimal(delivery_count)
     net_values: list[Decimal] = []
     total_values: list[Decimal] = []
     net_sum = Decimal("0")
@@ -398,7 +401,7 @@ def monthly_delivery_unit_statistics(
         sales = Decimal(str(row.get("sales_yen") or 0))
         tip = Decimal(str(row.get("tip_yen") or 0))
         net_unit = sales / count_decimal
-        total_unit = (sales + tip) / count_decimal + quest_per_delivery
+        total_unit = (sales + tip) / count_decimal + allocated_per_delivery
         net_values.extend([net_unit] * count)
         total_values.extend([total_unit] * count)
         net_sum += sales
@@ -407,7 +410,7 @@ def monthly_delivery_unit_statistics(
     return {
         "deliveries_sum": delivery_count,
         "net_sum": net_sum,
-        "total_sum": net_sum + tip_sum + quest_total,
+        "total_sum": net_sum + tip_sum + quest_total + adjustment_total,
         "net_avg": sum(net_values, Decimal("0")) / delivery_count,
         "net_median": median(net_values),
         "total_avg": sum(total_values, Decimal("0")) / delivery_count,
@@ -457,8 +460,18 @@ def activity_range_summary(date_from: date, date_to: date) -> dict:
                 "net_per_km_median": _median_rate(delivery_rows, net_keys, "distance_km"),
             }
         )
-        row.update(_quest_adjusted_rate_statistics(delivery_rows, row.get("promo_yen") or 0))
-        unit_stats = monthly_delivery_unit_statistics(delivery_rows, row.get("promo_yen") or 0)
+        row.update(
+            _quest_adjusted_rate_statistics(
+                delivery_rows,
+                row.get("promo_yen") or 0,
+                row.get("other_yen") or 0,
+            )
+        )
+        unit_stats = monthly_delivery_unit_statistics(
+            delivery_rows,
+            row.get("promo_yen") or 0,
+            row.get("other_yen") or 0,
+        )
         # The per-delivery cards and monthly table must use the same expanded
         # population: one value per actual delivery, not one per activity row.
         row["net_per_delivery_median"] = unit_stats["net_median"]
