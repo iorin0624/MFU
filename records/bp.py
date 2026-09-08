@@ -47,6 +47,7 @@ from .uber_repository import (
     list_activities,
     list_activities_for_export,
     list_import_jobs,
+    monthly_delivery_unit_statistics,
     update_continuous_fetch_state,
 )
 
@@ -1325,6 +1326,38 @@ def uber_list():
         (min_month_start, month_start, min_month_start, month_end),
     )
     monthly_rows = cur.fetchall()
+    cur.execute(
+        """
+        SELECT work_date, activity_type, sales_yen, promo_yen, tip_yen, deliveries
+        FROM uber_activities
+        WHERE work_date >= %s AND work_date < %s
+        ORDER BY work_date, id
+        """,
+        (min_month_start, month_end),
+    )
+    activity_months: dict[tuple[int, int], dict] = {}
+    for activity in cur.fetchall():
+        work_date = activity.get("work_date")
+        if work_date is None:
+            continue
+        key = (int(work_date.year), int(work_date.month))
+        bucket = activity_months.setdefault(
+            key,
+            {"delivery_rows": [], "promo_yen": Decimal("0"), "work_dates": set()},
+        )
+        bucket["promo_yen"] += Decimal(str(activity.get("promo_yen") or 0))
+        if activity.get("activity_type") == "delivery" and int(activity.get("deliveries") or 0) > 0:
+            bucket["delivery_rows"].append(activity)
+            bucket["work_dates"].add(work_date)
+
+    for monthly_row in monthly_rows:
+        key = (int(monthly_row["year"]), int(monthly_row["month"]))
+        bucket = activity_months.get(key)
+        if not bucket or not bucket["delivery_rows"]:
+            continue
+        stats = monthly_delivery_unit_statistics(bucket["delivery_rows"], bucket["promo_yen"])
+        monthly_row.update(stats)
+        monthly_row["days_count"] = len(bucket["work_dates"])
     db.close()
 
     for row in rows:
