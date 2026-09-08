@@ -458,6 +458,12 @@ def activity_range_summary(date_from: date, date_to: date) -> dict:
             }
         )
         row.update(_quest_adjusted_rate_statistics(delivery_rows, row.get("promo_yen") or 0))
+        unit_stats = monthly_delivery_unit_statistics(delivery_rows, row.get("promo_yen") or 0)
+        # The per-delivery cards and monthly table must use the same expanded
+        # population: one value per actual delivery, not one per activity row.
+        row["net_per_delivery_median"] = unit_stats["net_median"]
+        row["total_per_delivery_average"] = unit_stats["total_avg"]
+        row["total_per_delivery_median"] = unit_stats["total_median"]
         row["date_from"] = date_from
         row["date_to"] = date_to
         return row

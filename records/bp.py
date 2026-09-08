@@ -1220,7 +1220,7 @@ def uber_list():
         SELECT
             COALESCE(SUM(CASE WHEN deliveries > 0 THEN deliveries ELSE 0 END), 0) AS deliveries_sum,
             COALESCE(SUM(CASE WHEN deliveries > 0 THEN net_yen ELSE 0 END), 0) AS net_sum,
-            COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + other_yen + tip_yen) ELSE 0 END), 0) AS total_sum
+            COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + tip_yen) ELSE 0 END), 0) AS total_sum
         FROM uber_daily
         WHERE work_date >= %s AND work_date < %s
         """,
@@ -1264,7 +1264,7 @@ def uber_list():
                 COALESCE(SUM(CASE WHEN deliveries > 0 THEN 1 ELSE 0 END), 0) AS days_count,
                 COALESCE(SUM(CASE WHEN deliveries > 0 THEN deliveries ELSE 0 END), 0) AS deliveries_sum,
                 COALESCE(SUM(CASE WHEN deliveries > 0 THEN net_yen ELSE 0 END), 0) AS net_sum,
-                COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + other_yen + tip_yen) ELSE 0 END), 0) AS total_sum
+                COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + tip_yen) ELSE 0 END), 0) AS total_sum
             FROM daily_base
             GROUP BY month_start
         ),
