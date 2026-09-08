@@ -87,5 +87,7 @@ def test_cached_upload_zip_uses_expiry_worker_compatible_permissions():
     source = (ROOT / "__init__.py").read_text(encoding="utf-8")
 
     assert 'os.makedirs(zip_dir, mode=0o750, exist_ok=True)' in source
+    assert 'shutil.chown(zip_dir, user="mfu", group="mfu")' in source
     assert 'os.chmod(zip_dir, 0o750)' in source
+    assert 'shutil.chown(zip_path, user="mfu", group="mfu")' in source
     assert 'os.chmod(zip_path, 0o640)' in source

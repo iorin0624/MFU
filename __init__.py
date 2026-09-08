@@ -3294,6 +3294,8 @@ def download_zip_for_upload(uuid):
     # occasionally created this directory as root, which left the upload
     # visible after its expiry date because the mfu worker could not remove it.
     os.makedirs(zip_dir, mode=0o750, exist_ok=True)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        shutil.chown(zip_dir, user="mfu", group="mfu")
     os.chmod(zip_dir, 0o750)
 
     # ファイル名（タイトルがあればそれを使う）
@@ -3309,6 +3311,8 @@ def download_zip_for_upload(uuid):
                 if os.path.isfile(src):
                     # 画像は既に圧縮済みなのでZIP側では圧縮せず高速化する
                     zf.write(src, arcname=name, compress_type=zipfile.ZIP_STORED)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            shutil.chown(zip_path, user="mfu", group="mfu")
         os.chmod(zip_path, 0o640)
 
     history_event_id = None
