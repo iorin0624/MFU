@@ -362,6 +362,59 @@ def _quest_adjusted_rate_statistics(delivery_rows: list[dict], promo_yen: int | 
     return result
 
 
+def monthly_delivery_unit_statistics(
+    delivery_rows: list[dict], promo_yen: int | Decimal,
+) -> dict:
+    """Calculate monthly per-delivery statistics from expanded delivery units.
+
+    A multi-drop activity does not expose the earnings of each individual
+    delivery, so its earnings and tip are divided evenly and the resulting
+    unit value is repeated for the activity's delivery count.  Quest earnings
+    are allocated evenly across every delivery in the month.
+    """
+    eligible_rows = [row for row in delivery_rows if int(row.get("deliveries") or 0) > 0]
+    delivery_count = sum(int(row.get("deliveries") or 0) for row in eligible_rows)
+    if delivery_count <= 0:
+        return {
+            "deliveries_sum": 0,
+            "net_sum": Decimal("0"),
+            "total_sum": Decimal("0"),
+            "net_avg": None,
+            "net_median": None,
+            "total_avg": None,
+            "total_median": None,
+        }
+
+    quest_total = Decimal(str(promo_yen or 0))
+    quest_per_delivery = quest_total / Decimal(delivery_count)
+    net_values: list[Decimal] = []
+    total_values: list[Decimal] = []
+    net_sum = Decimal("0")
+    tip_sum = Decimal("0")
+
+    for row in eligible_rows:
+        count = int(row.get("deliveries") or 0)
+        count_decimal = Decimal(count)
+        sales = Decimal(str(row.get("sales_yen") or 0))
+        tip = Decimal(str(row.get("tip_yen") or 0))
+        net_unit = sales / count_decimal
+        total_unit = (sales + tip) / count_decimal + quest_per_delivery
+        net_values.extend([net_unit] * count)
+        total_values.extend([total_unit] * count)
+        net_sum += sales
+        tip_sum += tip
+
+    return {
+        "deliveries_sum": delivery_count,
+        "net_sum": net_sum,
+        "total_sum": net_sum + tip_sum + quest_total,
+        "net_avg": sum(net_values, Decimal("0")) / delivery_count,
+        "net_median": median(net_values),
+        "total_avg": sum(total_values, Decimal("0")) / delivery_count,
+        "total_median": median(total_values),
+    }
+
+
 def activity_range_summary(date_from: date, date_to: date) -> dict:
     db = get_db()
     try:

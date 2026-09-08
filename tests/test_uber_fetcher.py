@@ -10,6 +10,7 @@ from app.records.uber_fetcher import (
 from app.records.uber_repository import (
     _is_mirrored_quest,
     _median_rate,
+    monthly_delivery_unit_statistics,
     _quest_adjusted_rate_statistics,
     _quest_goal_count,
 )
@@ -204,3 +205,37 @@ def test_sales_total_statistics_exclude_zero_delivery_rows_and_zero_denominators
     assert result["total_per_hour_median"] is None
     assert result["total_per_km_average"] is None
     assert result["total_per_km_median"] is None
+
+
+def test_monthly_statistics_expand_multi_drop_rows_into_individual_deliveries():
+    rows = [
+        {"sales_yen": 100, "tip_yen": 0, "deliveries": 1},
+        {"sales_yen": 600, "tip_yen": 60, "deliveries": 2},
+    ]
+
+    result = monthly_delivery_unit_statistics(rows, 300)
+
+    # Expanded net values are 100, 300, 300. Quest is 100 per delivery;
+    # the two-drop tip is divided evenly, yielding totals 200, 430, 430.
+    assert result["deliveries_sum"] == 3
+    assert result["net_sum"] == Decimal("700")
+    assert result["total_sum"] == Decimal("1060")
+    assert result["net_avg"] == Decimal("700") / Decimal("3")
+    assert result["net_median"] == Decimal("300")
+    assert result["total_avg"] == Decimal("1060") / Decimal("3")
+    assert result["total_median"] == Decimal("430")
+
+
+def test_monthly_statistics_exclude_adjustments_and_zero_delivery_rows():
+    rows = [
+        {"sales_yen": 500, "tip_yen": 50, "deliveries": 1},
+        {"sales_yen": 999, "tip_yen": 999, "deliveries": 0},
+    ]
+
+    result = monthly_delivery_unit_statistics(rows, 50)
+
+    assert result["deliveries_sum"] == 1
+    assert result["net_sum"] == Decimal("500")
+    assert result["total_sum"] == Decimal("600")
+    assert result["net_median"] == Decimal("500")
+    assert result["total_median"] == Decimal("600")
