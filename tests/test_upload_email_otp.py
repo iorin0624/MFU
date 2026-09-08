@@ -81,3 +81,11 @@ def test_email_otp_routes_and_download_only_frontend_are_present():
     assert "すべてのファイルをZIPでダウンロード" in download_template
     assert "autocomplete=\"one-time-code\"" in template
     assert "name=\"csrf_token\"" in template
+
+
+def test_cached_upload_zip_uses_expiry_worker_compatible_permissions():
+    source = (ROOT / "__init__.py").read_text(encoding="utf-8")
+
+    assert 'os.makedirs(zip_dir, mode=0o750, exist_ok=True)' in source
+    assert 'os.chmod(zip_dir, 0o750)' in source
+    assert 'os.chmod(zip_path, 0o640)' in source

@@ -3290,7 +3290,11 @@ def download_zip_for_upload(uuid):
     base_dir = os.path.join(UPLOAD_BASE_DIR, uuid)
     original_dir = os.path.join(base_dir, "original")
     zip_dir = os.path.join(base_dir, "zip")
-    os.makedirs(zip_dir, exist_ok=True)
+    # Keep cached ZIPs removable by the expiry worker.  Older deployments
+    # occasionally created this directory as root, which left the upload
+    # visible after its expiry date because the mfu worker could not remove it.
+    os.makedirs(zip_dir, mode=0o750, exist_ok=True)
+    os.chmod(zip_dir, 0o750)
 
     # ファイル名（タイトルがあればそれを使う）
     safe_title = (upload["title"] or f"upload_{uuid}")[:60].replace("/", "_").replace("\\", "_")
@@ -3305,6 +3309,7 @@ def download_zip_for_upload(uuid):
                 if os.path.isfile(src):
                     # 画像は既に圧縮済みなのでZIP側では圧縮せず高速化する
                     zf.write(src, arcname=name, compress_type=zipfile.ZIP_STORED)
+        os.chmod(zip_path, 0o640)
 
     history_event_id = None
     if request.method == "GET" and not request.headers.get("Range"):
