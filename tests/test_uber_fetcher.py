@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 from app.records.uber_browser import _access_restriction_reason
 from app.records.uber_fetcher import (
@@ -239,3 +240,13 @@ def test_monthly_statistics_exclude_adjustments_and_zero_delivery_rows():
     assert result["total_sum"] == Decimal("600")
     assert result["net_median"] == Decimal("500")
     assert result["total_median"] == Decimal("600")
+
+
+def test_range_summary_source_uses_expanded_monthly_population_for_delivery_cards():
+    source = (Path(__file__).resolve().parents[1] / "records" / "uber_repository.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'row["net_per_delivery_median"] = unit_stats["net_median"]' in source
+    assert 'row["total_per_delivery_average"] = unit_stats["total_avg"]' in source
+    assert 'row["total_per_delivery_median"] = unit_stats["total_median"]' in source
