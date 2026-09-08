@@ -160,6 +160,7 @@
       <div class="uber-summary-grid uber-summary-grid-seven">
         <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">配達＋クエスト合計</span><strong>¥{{ selected_activity_summary.delivery_quest_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">配達のみ</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
         <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong>¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
