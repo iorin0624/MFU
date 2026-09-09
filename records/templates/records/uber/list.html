@@ -191,6 +191,15 @@
         <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_km|fmt_yen)) if selected_activity_summary.net_yen_per_km is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_km_median|fmt_yen)) if selected_activity_summary.net_per_km_median is not none else '-' }}</small></strong></div>
       </div>
     </div>
+    <form class="d-flex justify-content-end mt-3" method="post" action="{{ url_for('records.uber_discord_summary_test') }}" onsubmit="return confirm('現在表示している集計結果をDiscordへテスト送信しますか？');">
+      <input type="hidden" name="csrf_token" value="{{ uber_browser_csrf }}">
+      <input type="hidden" name="summary_mode" value="{{ activity_summary_mode }}">
+      <input type="hidden" name="summary_from" value="{{ activity_summary_from }}">
+      <input type="hidden" name="summary_to" value="{{ activity_summary_to }}">
+      <input type="hidden" name="activity_from" value="{{ activity_history_from }}">
+      <input type="hidden" name="activity_to" value="{{ activity_history_to }}">
+      <button class="btn btn-sm btn-outline-primary" type="submit">Discordテスト通知</button>
+    </form>
   </div>
 </div>
 
@@ -1262,7 +1271,16 @@
 
       function formatDateTime(value) {
         if (!value) return '-';
-        return String(value).replace('T', ' ').slice(0, 16);
+        const timestamp = new Date(value);
+        if (Number.isNaN(timestamp.getTime())) return '-';
+        const parts = new Intl.DateTimeFormat('ja-JP', {
+          timeZone:'Asia/Tokyo', year:'numeric', month:'numeric', day:'numeric',
+          hour:'2-digit', minute:'2-digit', hour12:false, hourCycle:'h23'
+        }).formatToParts(timestamp).reduce(function (result, part) {
+          result[part.type] = part.value;
+          return result;
+        }, {});
+        return `${parts.year}年${Number(parts.month)}月${Number(parts.day)}日 ${Number(parts.hour)}:${parts.minute}`;
       }
       function renderContinuousState(state) {
         const enabled = Boolean(Number(state.enabled || 0));
@@ -1272,7 +1290,7 @@
         continuousStart.disabled = enabled;
         continuousStop.disabled = !enabled;
         continuousRunNow.disabled = !enabled || status === 'running';
-        document.getElementById('uberContinuousWorkDate').textContent = state.active_work_date || '-';
+        document.getElementById('uberContinuousWorkDate').textContent = formatDateTime(state.active_work_date);
         document.getElementById('uberContinuousLastRun').textContent = formatDateTime(state.last_run_finished_at);
         document.getElementById('uberContinuousNextRun').textContent = formatDateTime(state.next_run_at);
         document.getElementById('uberContinuousCounts').textContent = state.last_run_finished_at

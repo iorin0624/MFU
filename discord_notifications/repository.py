@@ -12,6 +12,7 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("upload_expiry", {"label": "アップロード期限管理", "description": "有効期限前日の案内"}),
         ("layer_reply", {"label": "加工済み写真の折り返し", "description": "加工済み写真、枚数、コメント、詳細URL"}),
         ("etc_accounting", {"label": "ETC利用証明書", "description": "新規明細、料金確定、明細削除、入出IC・時刻・走行時間"}),
+        ("uber_continuous_summary", {"label": "Uber売上途中集計", "description": "継続取得で新規明細を取得した際の途中集計"}),
         ("train_status", {"label": "鉄道運行情報", "description": "運転見合わせ、運転再開、列車遅延、運転状況、掲載終了"}),
         ("rain_alert", {"label": "雨雲解析", "description": "雨雲接近、雨の終了、解析画像"}),
         ("shipment_tracking", {"label": "配送追跡", "description": "荷物の進捗変更、配達完了"}),

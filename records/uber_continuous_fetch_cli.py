@@ -137,6 +137,21 @@ def main() -> int:
             last_error=None,
             **counts,
         )
+    if counts["last_inserted_count"] > 0:
+        try:
+            from .uber_notifications import send_uber_summary_notification
+
+            result["discord_notification_sent"] = bool(
+                send_uber_summary_notification(
+                    work_date,
+                    work_date,
+                    inserted_count=counts["last_inserted_count"],
+                )
+            )
+        except Exception as exc:
+            # Discord must never invalidate or roll back a completed import.
+            result["discord_notification_sent"] = False
+            result["discord_notification_error"] = f"{type(exc).__name__}: {exc}"
     print(json.dumps(result, ensure_ascii=False, default=str))
     return 0 if result_status in {"success", "partial", "auth_required", "blocked", "busy"} else 1
 
