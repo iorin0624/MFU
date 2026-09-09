@@ -247,6 +247,34 @@ def _present_uber_activity_summary(row: dict) -> dict:
     return value
 
 
+def _present_uber_continuous_state(row: dict) -> dict:
+    """Return stable ISO values instead of Flask's RFC/GMT date encoding."""
+    value = dict(row or {})
+    timezone = ZoneInfo("Asia/Tokyo")
+    work_date = value.get("active_work_date")
+    if isinstance(work_date, datetime):
+        work_date = work_date.date()
+    elif isinstance(work_date, str):
+        try:
+            work_date = datetime.strptime(work_date[:10], "%Y-%m-%d").date()
+        except ValueError:
+            work_date = None
+    if isinstance(work_date, date):
+        value["active_work_date"] = datetime.combine(
+            work_date, datetime.min.time().replace(hour=4), tzinfo=timezone
+        ).isoformat()
+
+    for key in ("started_at", "stopped_at", "last_run_started_at", "last_run_finished_at", "next_run_at", "updated_at"):
+        timestamp = value.get(key)
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone)
+            else:
+                timestamp = timestamp.astimezone(timezone)
+            value[key] = timestamp.isoformat()
+    return value
+
+
 def _cleanup_old_uber_ocr_files() -> None:
     now_ts_value = time.time()
     expired_tokens: list[str] = []
@@ -1525,7 +1553,7 @@ def uber_list():
         activity_history_to=history_to,
         uber_import_jobs=list_import_jobs(10),
         active_uber_import_job=get_active_import_job(),
-        uber_continuous_state=get_continuous_fetch_state(),
+        uber_continuous_state=_present_uber_continuous_state(get_continuous_fetch_state()),
         sales_year_options=sales_year_options,
         selected_sales_year=selected_sales_year,
         summary={
@@ -1649,7 +1677,7 @@ def _start_uber_continuous_process(*, force: bool = False) -> None:
 @login_required
 @admin_required
 def uber_continuous_fetch_status():
-    return jsonify({"ok": True, "state": get_continuous_fetch_state()})
+    return jsonify({"ok": True, "state": _present_uber_continuous_state(get_continuous_fetch_state())})
 
 
 @records_bp.post("/uber/continuous-fetch/start")
@@ -1677,7 +1705,7 @@ def uber_continuous_fetch_start():
     except Exception as exc:
         update_continuous_fetch_state(enabled=0, status="error_paused", stopped_at=now, last_error=str(exc))
         return jsonify({"ok": False, "message": str(exc)}), 500
-    return jsonify({"ok": True, "state": state, "message": "継続取得を開始しました。"}), 202
+    return jsonify({"ok": True, "state": _present_uber_continuous_state(state), "message": "継続取得を開始しました。"}), 202
 
 
 @records_bp.post("/uber/continuous-fetch/stop")
@@ -1692,7 +1720,7 @@ def uber_continuous_fetch_stop():
         stopped_at=now,
         next_run_at=None,
     )
-    return jsonify({"ok": True, "state": state, "message": "継続取得を停止しました。"})
+    return jsonify({"ok": True, "state": _present_uber_continuous_state(state), "message": "継続取得を停止しました。"})
 
 
 @records_bp.post("/uber/continuous-fetch/run-now")
@@ -1710,6 +1738,39 @@ def uber_continuous_fetch_run_now():
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc)}), 500
     return jsonify({"ok": True, "message": "増分取得を開始しました。"}), 202
+
+
+@records_bp.post("/uber/discord-summary/test")
+@login_required
+@admin_required
+def uber_discord_summary_test():
+    _require_uber_csrf()
+    summary_mode = str(request.form.get("summary_mode") or "today")
+    try:
+        date_from = datetime.strptime(str(request.form.get("summary_from") or ""), "%Y-%m-%d").date()
+        date_to = datetime.strptime(str(request.form.get("summary_to") or ""), "%Y-%m-%d").date()
+    except ValueError:
+        flash("通知する集計期間が正しくありません。", "danger")
+        return redirect(url_for("records.uber_list", tab="overview"))
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+    try:
+        from .uber_notifications import send_uber_summary_notification
+
+        if not send_uber_summary_notification(date_from, date_to, test=True):
+            raise RuntimeError("通知が無効、またはWebhook URLが未設定です。")
+        flash("現在表示している集計をDiscordへテスト送信しました。", "success")
+    except Exception as exc:
+        flash(f"Discordテスト通知に失敗しました: {exc}", "danger")
+    return redirect(url_for(
+        "records.uber_list",
+        tab="overview",
+        summary_mode=summary_mode,
+        summary_from=date_from.isoformat(),
+        summary_to=date_to.isoformat(),
+        activity_from=request.form.get("activity_from") or date_from.isoformat(),
+        activity_to=request.form.get("activity_to") or date_to.isoformat(),
+    ))
 
 
 def _fetch_uber_daily_rows(
