@@ -21,6 +21,7 @@ DISCORD_COLOR_SUMMARY = 0xFFFFFF
 DISCORD_COLOR_PENDING = 0xF59E0B
 DISCORD_COLOR_FINAL = 0x3498DB
 DISCORD_COLOR_DELETED = 0xEF4444
+DISCORD_COLOR_ERROR = 0xDC2626
 
 
 def get_admin_discord_webhook() -> str:
@@ -185,6 +186,45 @@ def _post_discord(webhook_url: str, payload: dict) -> None:
         detail = (response.text or "").replace("\n", " ")[:300]
         raise RuntimeError(f"Discord通知に失敗しました（HTTP {response.status_code}: {detail}）")
     record_discord_delivery("etc_accounting", success=True)
+
+
+def send_fetch_failure_notification(failures: list[dict], *, scheduled: bool) -> dict:
+    """Send one consolidated alert when an ETC acquisition run cannot complete."""
+    failed = [item for item in failures if str(item.get("status") or "") in {"error", "auth_required"}]
+    if not failed:
+        return {"status": "empty", "count": 0}
+
+    auth_required = any(str(item.get("status") or "") == "auth_required" for item in failed)
+    target_months = [str(item.get("statement_month") or "").strip() for item in failed]
+    target_text = "、".join(month for month in target_months if month) or "対象月不明"
+    reasons = []
+    for item in failed:
+        reason = str(item.get("error") or item.get("message") or "取得処理に失敗しました。")
+        reason = " ".join(reason.split())[:700]
+        if reason not in reasons:
+            reasons.append(reason)
+    payload = {
+        "embeds": [{
+            "title": "🔐 ETCの再ログインが必要です" if auth_required else "⚠️ ETC明細を取得できませんでした",
+            "url": ETC_ACCOUNTING_URL,
+            "description": "\n".join(f"・{reason}" for reason in reasons)[:3500],
+            "color": DISCORD_COLOR_ERROR,
+            "fields": [
+                {"name": "実行方法", "value": "定期取得" if scheduled else "手動取得", "inline": True},
+                {"name": "対象月", "value": target_text[:1024], "inline": True},
+            ],
+            "footer": {"text": "タイトルをクリックしてETC利用証明書の状態を確認してください"},
+            "timestamp": datetime.now().astimezone().isoformat(),
+        }],
+        "allowed_mentions": {"parse": []},
+    }
+    try:
+        _post_discord(get_admin_discord_webhook(), payload)
+    except Exception as exc:
+        record_discord_delivery("etc_accounting", success=False, error=str(exc))
+        raise
+    LOGGER.warning("ETC fetch failure notification sent: count=%s", len(failed))
+    return {"status": "sent", "count": len(failed)}
 
 
 def dispatch_pending_new_record_notifications() -> dict:
