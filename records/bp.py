@@ -1522,6 +1522,7 @@ def uber_list():
         _present_uber_activity_summary(row)
         for row in list_activity_daily_summaries(history_from, history_to)
     ]
+    from .uber_continuous_webhook import active_token_metadata
 
     return render_template(
         "records/uber/list.html",
@@ -1554,6 +1555,7 @@ def uber_list():
         uber_import_jobs=list_import_jobs(10),
         active_uber_import_job=get_active_import_job(),
         uber_continuous_state=_present_uber_continuous_state(get_continuous_fetch_state()),
+        uber_continuous_webhook=active_token_metadata(),
         sales_year_options=sales_year_options,
         selected_sales_year=selected_sales_year,
         summary={
@@ -1673,6 +1675,44 @@ def _start_uber_continuous_process(*, force: bool = False) -> None:
     )
 
 
+def _enable_uber_continuous_fetch() -> tuple[str, str, dict]:
+    state = get_continuous_fetch_state()
+    if state.get("enabled"):
+        return "already_started", "継続取得はすでに開始されています。", state
+
+    now_aware = datetime.now(ZoneInfo("Asia/Tokyo"))
+    now = now_aware.replace(tzinfo=None)
+    work_date = uber_work_date(now_aware)
+    active = get_active_import_job()
+    next_run_at = now
+    if active:
+        next_aware = now_aware.replace(minute=40, second=0, microsecond=0)
+        if next_aware <= now_aware:
+            next_aware += timedelta(hours=1)
+        next_run_at = next_aware.replace(tzinfo=None)
+    state = update_continuous_fetch_state(
+        enabled=1,
+        active_work_date=work_date,
+        status="monitoring",
+        started_at=now,
+        stopped_at=None,
+        next_run_at=next_run_at,
+        consecutive_errors=0,
+        last_error=None,
+    )
+    if active:
+        return "started_deferred", "継続取得を開始しました。実行中の取得完了後、次回予定時刻に取得します。", state
+    try:
+        _start_uber_continuous_process(force=True)
+    except Exception:
+        update_continuous_fetch_state(
+            enabled=0, status="error_paused", stopped_at=now,
+            next_run_at=None, last_error="継続取得プロセスを開始できませんでした。",
+        )
+        raise
+    return "started", "継続取得を開始しました。", state
+
+
 @records_bp.get("/uber/continuous-fetch")
 @login_required
 @admin_required
@@ -1685,27 +1725,14 @@ def uber_continuous_fetch_status():
 @admin_required
 def uber_continuous_fetch_start():
     _require_uber_csrf()
-    active = get_active_import_job()
-    if active:
-        return jsonify({"ok": False, "message": "別のUber取得処理が実行中です。"}), 409
-    now = datetime.now(ZoneInfo("Asia/Tokyo")).replace(tzinfo=None)
-    work_date = uber_work_date(datetime.now(ZoneInfo("Asia/Tokyo")))
-    state = update_continuous_fetch_state(
-        enabled=1,
-        active_work_date=work_date,
-        status="monitoring",
-        started_at=now,
-        stopped_at=None,
-        next_run_at=now,
-        consecutive_errors=0,
-        last_error=None,
-    )
     try:
-        _start_uber_continuous_process(force=True)
+        status, message, state = _enable_uber_continuous_fetch()
     except Exception as exc:
-        update_continuous_fetch_state(enabled=0, status="error_paused", stopped_at=now, last_error=str(exc))
         return jsonify({"ok": False, "message": str(exc)}), 500
-    return jsonify({"ok": True, "state": _present_uber_continuous_state(state), "message": "継続取得を開始しました。"}), 202
+    return jsonify({
+        "ok": True, "status": status,
+        "state": _present_uber_continuous_state(state), "message": message,
+    }), 200 if status == "already_started" else 202
 
 
 @records_bp.post("/uber/continuous-fetch/stop")
@@ -1738,6 +1765,82 @@ def uber_continuous_fetch_run_now():
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc)}), 500
     return jsonify({"ok": True, "message": "増分取得を開始しました。"}), 202
+
+
+@records_bp.post("/uber/continuous-fetch/webhook/issue")
+@login_required
+@admin_required
+def uber_continuous_webhook_issue():
+    _require_uber_csrf()
+    from .uber_continuous_webhook import audit_request, issue_token
+
+    token = issue_token(str(session.get("user") or ""))
+    webhook_url = url_for(
+        "records_api.uber_continuous_fetch_webhook", token=token,
+        _external=True, _scheme="https",
+    )
+    audit_request(
+        "issued", success=True, ip_address=request.remote_addr or "",
+        user_agent=request.user_agent.string or "",
+    )
+    response = jsonify({"ok": True, "url": webhook_url, "message": "ショートカット用URLを発行しました。"})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@records_bp.post("/uber/continuous-fetch/webhook/revoke")
+@login_required
+@admin_required
+def uber_continuous_webhook_revoke():
+    _require_uber_csrf()
+    from .uber_continuous_webhook import audit_request, revoke_active_token
+
+    changed = revoke_active_token()
+    audit_request(
+        "revoked", success=True, ip_address=request.remote_addr or "",
+        user_agent=request.user_agent.string or "",
+        detail="active token revoked" if changed else "no active token",
+    )
+    return jsonify({"ok": True, "active": False, "message": "ショートカット用URLを無効化しました。"})
+
+
+@records_api_bp.post("/api/records/uber/continuous-fetch/start/<token>")
+def uber_continuous_fetch_webhook(token: str):
+    from .uber_continuous_webhook import audit_request, authenticate_token, is_rate_limited
+
+    ip_address = request.remote_addr or ""
+    user_agent = request.user_agent.string or ""
+    if is_rate_limited(ip_address):
+        audit_request("rate_limited", success=False, ip_address=ip_address, user_agent=user_agent)
+        response = jsonify({"ok": False, "status": "rate_limited", "message": "しばらく待ってから再実行してください。"})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 429
+    if not authenticate_token(token, ip_address):
+        audit_request("invalid_token", success=False, ip_address=ip_address, user_agent=user_agent)
+        response = jsonify({"ok": False, "status": "not_found", "message": "利用できないURLです。"})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 404
+    try:
+        status, message, state = _enable_uber_continuous_fetch()
+        presented = _present_uber_continuous_state(state)
+        audit_request(status, success=True, ip_address=ip_address, user_agent=user_agent)
+        response = jsonify({
+            "ok": True,
+            "status": status,
+            "message": message,
+            "workDate": str(state.get("active_work_date") or ""),
+            "state": presented,
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200 if status == "already_started" else 202
+    except Exception as exc:
+        audit_request(
+            "start_error", success=False, ip_address=ip_address,
+            user_agent=user_agent, detail=f"{type(exc).__name__}: {exc}",
+        )
+        response = jsonify({"ok": False, "status": "error", "message": "継続取得を開始できませんでした。"})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 500
 
 
 @records_bp.post("/uber/discord-summary/test")

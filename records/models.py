@@ -163,6 +163,35 @@ def ensure_uber_schema(db=None) -> None:
         VALUES (1, 0, 'stopped', NOW())
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uber_continuous_webhook_tokens (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            created_by VARCHAR(128) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL,
+            last_used_at DATETIME NULL,
+            last_used_ip VARCHAR(64) NULL,
+            revoked_at DATETIME NULL,
+            INDEX idx_uber_webhook_active (revoked_at, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uber_continuous_webhook_audit (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            action VARCHAR(32) NOT NULL,
+            success TINYINT(1) NOT NULL DEFAULT 0,
+            ip_address VARCHAR(64) NOT NULL DEFAULT '',
+            user_agent VARCHAR(255) NOT NULL DEFAULT '',
+            detail VARCHAR(500) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL,
+            INDEX idx_uber_webhook_audit_ip_time (ip_address, created_at),
+            INDEX idx_uber_webhook_audit_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
     db.commit()
     if close_db:
         db.close()
