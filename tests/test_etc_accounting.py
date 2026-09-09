@@ -655,6 +655,7 @@ class ETCAccountingTest(unittest.TestCase):
         with (
             patch("sys.argv", ["fetch_cli"]),
             patch.object(fetch_cli, "scheduled_months", return_value=["202607", "202606"]),
+            patch.object(fetch_cli, "has_provisional_records", return_value=True),
             patch.object(fetch_cli, "ETCTargetPage", return_value=browser),
             patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", return_value={"status": "success"}) as fetch,
@@ -672,6 +673,7 @@ class ETCAccountingTest(unittest.TestCase):
         with (
             patch("sys.argv", ["fetch_cli"]),
             patch.object(fetch_cli, "scheduled_months", return_value=["202607", "202606"]),
+            patch.object(fetch_cli, "has_provisional_records", return_value=True),
             patch.object(fetch_cli, "ETCTargetPage", return_value=MagicMock()),
             patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", return_value={"status": "maintenance"}),
@@ -688,6 +690,7 @@ class ETCAccountingTest(unittest.TestCase):
         with (
             patch("sys.argv", ["fetch_cli"]),
             patch.object(fetch_cli, "scheduled_months", return_value=["202609"]),
+            patch.object(fetch_cli, "has_provisional_records", return_value=False),
             patch.object(fetch_cli, "ETCTargetPage", return_value=MagicMock()),
             patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", side_effect=error),
@@ -714,6 +717,22 @@ class ETCAccountingTest(unittest.TestCase):
             "error",
         )
         self.assertEqual(fetch_cli._failure_status(RuntimeError("PDF取得失敗")), "error")
+
+    def test_scheduled_fetch_includes_previous_month_while_toll_is_provisional(self):
+        with (
+            patch.object(fetch_cli, "scheduled_months", return_value=["202609", "202608"]),
+            patch.object(fetch_cli, "has_provisional_records", return_value=True) as provisional,
+        ):
+            self.assertEqual(fetch_cli._scheduled_fetch_months(), ["202609", "202608"])
+
+        provisional.assert_called_once_with("202608")
+
+    def test_scheduled_fetch_skips_previous_month_after_all_tolls_are_final(self):
+        with (
+            patch.object(fetch_cli, "scheduled_months", return_value=["202609", "202608"]),
+            patch.object(fetch_cli, "has_provisional_records", return_value=False),
+        ):
+            self.assertEqual(fetch_cli._scheduled_fetch_months(), ["202609"])
 
     def test_manual_cli_does_not_change_automation_completion_time(self):
         with (
