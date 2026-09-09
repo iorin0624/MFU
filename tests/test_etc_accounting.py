@@ -32,6 +32,7 @@ from app.etc_accounting.presentation import travel_duration_minutes
 from app.etc_accounting.notifications import (
     _discord_batches,
     dispatch_pending_new_record_notifications,
+    send_fetch_failure_notification,
     send_test_notification,
 )
 from app.etc_accounting.invoice_issuers import INVOICE_ISSUERS, canonical_issuer_name
@@ -675,6 +676,32 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         completed.assert_called_once_with("maintenance")
 
+    def test_scheduled_cli_notifies_discord_when_login_is_required(self):
+        error = ETCAuthenticationRequired("ETC利用明細を取得できません。再ログインが必要です。")
+        with (
+            patch("sys.argv", ["fetch_cli"]),
+            patch.object(fetch_cli, "scheduled_months", return_value=["202609"]),
+            patch.object(fetch_cli, "fetch_month", side_effect=error),
+            patch.object(fetch_cli, "send_fetch_failure_notification", return_value={"status": "sent", "count": 1}) as notify,
+            patch.object(fetch_cli, "dispatch_pending_new_record_notifications", return_value={"status": "empty", "count": 0}),
+            patch.object(fetch_cli, "record_scheduled_fetch_completed") as completed,
+        ):
+            exit_code = fetch_cli.main()
+
+        self.assertEqual(exit_code, 1)
+        failures = notify.call_args.args[0]
+        self.assertEqual(failures[0]["status"], "auth_required")
+        self.assertEqual(failures[0]["statement_month"], "202609")
+        self.assertTrue(notify.call_args.kwargs["scheduled"])
+        completed.assert_called_once_with("error")
+
+    def test_cli_classifies_automatic_login_runtime_errors_as_auth_required(self):
+        self.assertEqual(
+            fetch_cli._failure_status(RuntimeError("ETC自動ログインに失敗しました。")),
+            "auth_required",
+        )
+        self.assertEqual(fetch_cli._failure_status(RuntimeError("PDF取得失敗")), "error")
+
     def test_manual_cli_does_not_change_automation_completion_time(self):
         with (
             patch("sys.argv", ["fetch_cli", "--month", "202507"]),
@@ -917,6 +944,25 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertEqual(payload["embeds"][1]["title"], "🚗 市原 → 姉崎袖ヶ浦")
         self.assertEqual(payload["embeds"][2]["title"], "🚗 袖ヶ浦第二 → 市原")
         self.assertIn("¥1,080", payload["embeds"][0]["description"])
+
+    def test_fetch_failure_notification_uses_etc_accounting_destination(self):
+        failures = [{
+            "status": "auth_required",
+            "statement_month": "202609",
+            "error": "ETC自動ログインに失敗しました。",
+        }]
+        with (
+            patch("app.etc_accounting.notifications.get_admin_discord_webhook", return_value="https://discord.example/webhook") as webhook,
+            patch("app.etc_accounting.notifications._post_discord") as post,
+        ):
+            result = send_fetch_failure_notification(failures, scheduled=True)
+
+        self.assertEqual(result, {"status": "sent", "count": 1})
+        webhook.assert_called_once_with()
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["embeds"][0]["title"], "🔐 ETCの再ログインが必要です")
+        self.assertEqual(payload["embeds"][0]["fields"][0]["value"], "定期取得")
+        self.assertIn("202609", payload["embeds"][0]["fields"][1]["value"])
 
     def test_discord_batch_retry_does_not_resend_completed_cards(self):
         records = [

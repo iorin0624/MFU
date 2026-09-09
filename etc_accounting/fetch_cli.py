@@ -7,9 +7,19 @@ import time
 
 from .fetcher import fetch_month, scheduled_months
 from .manual_jobs import update_manual_fetch_job
-from .notifications import dispatch_pending_new_record_notifications
+from .notifications import dispatch_pending_new_record_notifications, send_fetch_failure_notification
+from .parser import ETCAuthenticationRequired
 from .repository import record_scheduled_fetch_completed
 from app.utils.browser_automation_lock import BrowserAutomationBusy, browser_automation_lock
+
+
+def _failure_status(exc: Exception) -> str:
+    if isinstance(exc, ETCAuthenticationRequired):
+        return "auth_required"
+    message = str(exc)
+    if any(marker in message for marker in ("ログイン", "認証情報", "再認証")):
+        return "auth_required"
+    return "error"
 
 
 def main() -> int:
@@ -35,12 +45,26 @@ def main() -> int:
             for month in months:
                 try:
                     results.append(fetch_month(month, force_record_ids=set(args.force_id)))
+                except ETCAuthenticationRequired as exc:
+                    results.append({"status": "auth_required", "statement_month": month, "error": str(exc)})
+                    exit_code = 1
                 except Exception as exc:
-                    results.append({"status": "error", "statement_month": month, "error": str(exc)})
+                    results.append({"status": _failure_status(exc), "statement_month": month, "error": str(exc)})
                     exit_code = 1
     except BrowserAutomationBusy as exc:
         results.append({"status": "error", "error": str(exc)})
         exit_code = 1
+    fetch_failures = [
+        result for result in results
+        if isinstance(result, dict) and result.get("status") in {"error", "auth_required"}
+    ]
+    failure_notification_error = ""
+    try:
+        failure_notification = send_fetch_failure_notification(fetch_failures, scheduled=scheduled_run)
+    except Exception as exc:
+        failure_notification = {"status": "error", "error": str(exc)}
+        failure_notification_error = str(exc)
+    results.append({"fetch_failure_notification": failure_notification})
     notification_error = ""
     try:
         notification = dispatch_pending_new_record_notifications()
@@ -48,6 +72,8 @@ def main() -> int:
         notification = {"status": "error", "error": str(exc)}
         notification_error = str(exc)
         exit_code = 1
+    if failure_notification_error:
+        notification_error = "; ".join(filter(None, (failure_notification_error, notification_error)))
     results.append({"notification": notification})
     if scheduled_run:
         maintenance = any(
