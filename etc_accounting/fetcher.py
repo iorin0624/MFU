@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import re
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 from .browser_session import ETCMaintenanceError, ETCTargetPage
@@ -95,7 +96,12 @@ def _discard_replaced_pdf(previous_path: str, current_path: Path) -> bool:
     return True
 
 
-def fetch_month(statement_month: str, *, force_record_ids: set[int] | None = None) -> dict:
+def fetch_month(
+    statement_month: str,
+    *,
+    force_record_ids: set[int] | None = None,
+    browser: ETCTargetPage | None = None,
+) -> dict:
     if not re.fullmatch(r"20\d{4}", statement_month or ""):
         raise ValueError("対象月はYYYYMM形式で指定してください。")
     lock_db = acquire_fetch_lock()
@@ -108,14 +114,16 @@ def fetch_month(statement_month: str, *, force_record_ids: set[int] | None = Non
     force_ids = {int(record_id) for record_id in (force_record_ids or set())}
     seen_transaction_keys = set()
     try:
-        with etc_browser_lock(), ETCTargetPage() as browser:
-            browser.open_statement_month(statement_month)
-            first_page = parse_statement_page(browser.html(), statement_month)
+        browser_lock_context = etc_browser_lock() if browser is None else nullcontext()
+        browser_context = ETCTargetPage() if browser is None else nullcontext(browser)
+        with browser_lock_context, browser_context as active_browser:
+            active_browser.open_statement_month(statement_month)
+            first_page = parse_statement_page(active_browser.html(), statement_month)
             page_numbers = first_page.page_numbers
             for page_number in page_numbers:
                 if page_number != 1:
-                    browser.go_to_page(page_number)
-                page = parse_statement_page(browser.html(), statement_month)
+                    active_browser.go_to_page(page_number)
+                page = parse_statement_page(active_browser.html(), statement_month)
                 for record in page.records:
                     seen_transaction_keys.add(str(record.get("transaction_key") or ""))
                     found += 1
@@ -169,7 +177,7 @@ def fetch_month(statement_month: str, *, force_record_ids: set[int] | None = Non
                     ):
                         skipped += 1
                         continue
-                    content = _download_pdf(browser, page.form_token, record)
+                    content = _download_pdf(active_browser, page.form_token, record)
                     path, temporary, digest = _stage_pdf_bytes(record, content)
                     try:
                         metadata = _pdf_metadata(temporary, record)

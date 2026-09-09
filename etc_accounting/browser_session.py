@@ -51,6 +51,12 @@ class ETCMaintenanceError(RuntimeError):
     """Raised when the official ETC service is temporarily under maintenance."""
 
 
+def _navigation_state_error(message: str):
+    from .parser import ETCNavigationStateError
+
+    return ETCNavigationStateError(message)
+
+
 def _pid_path(name: str) -> Path:
     return ETC_BROWSER_STATE_DIR / f"{name}.pid"
 
@@ -654,6 +660,41 @@ class ETCTargetPage:
         self.wait_ready()
         return bool(self.evaluate("document.body && document.body.innerText.includes('ログアウト')"))
 
+    def has_login_form(self) -> bool:
+        self.wait_ready()
+        return bool(self.evaluate(
+            "Boolean(document.querySelector('input[name=\"risLoginId\"]') && "
+            "document.querySelector('input[name=\"risPassword\"]'))"
+        ))
+
+    def has_statement_form(self) -> bool:
+        self.wait_ready()
+        return bool(self.evaluate("Boolean(document.querySelector('input[name=\"hakkoMeisai\"]'))"))
+
+    def recover_statement_page(self) -> bool:
+        """Recover through the site's stateful form instead of direct URL navigation."""
+        self.wait_ready()
+        if self.has_statement_form():
+            return True
+        if not self.is_logged_in():
+            return False
+        marker = uuid.uuid4().hex
+        self.evaluate(f"window.__mfuEtcMarker = {json.dumps(marker)}")
+        submitted = self.evaluate(
+            """
+            (() => {
+              const form = document.querySelector('form[name="frm"]');
+              if (!form || typeof window.submitPage !== 'function') return false;
+              window.submitPage('frm', '/etc/R?funccode=1013000000&nextfunc=1013000000');
+              return true;
+            })()
+            """
+        )
+        if not submitted:
+            return False
+        self.wait_navigation(marker)
+        return self.has_statement_form()
+
     def _raise_if_maintenance_page(self) -> None:
         current_url = str(self.evaluate("location.href") or "")
         if current_url.startswith("chrome-error://"):
@@ -686,7 +727,9 @@ class ETCTargetPage:
         )
         if not submitted:
             _raise_if_official_maintenance()
-            raise RuntimeError("ETCログイン画面の入力欄が見つかりません。")
+            if self.is_logged_in():
+                raise _navigation_state_error("ETCのログイン状態は有効ですが、画面遷移情報が無効です。")
+            raise _navigation_state_error("ETCログイン画面を正しく開けませんでした。")
         self.wait_navigation(marker)
         if not self.is_logged_in():
             try:
@@ -698,10 +741,15 @@ class ETCTargetPage:
             raise RuntimeError("ETC自動ログインに失敗しました。ユーザーIDまたはパスワードを確認してください。")
 
     def ensure_logged_in(self) -> None:
-        self.navigate(ETC_TOP_URL)
+        self.wait_ready()
         self._raise_if_maintenance_page()
         if self.is_logged_in():
             return
+        if not self.has_login_form():
+            self.navigate(ETC_TOP_URL)
+            self._raise_if_maintenance_page()
+            if self.is_logged_in():
+                return
         from .credentials import auto_login_failure, clear_login_failure, load_credentials, record_login_failure
 
         credentials = load_credentials()
@@ -738,12 +786,12 @@ class ETCTargetPage:
             """
         )
         if not submitted:
-            raise RuntimeError("ETC画面の送信フォームが見つかりません。")
+            raise _navigation_state_error("ETC画面の送信フォームが見つかりません。")
         self.wait_navigation(marker)
 
     def open_statement_month(self, statement_month: str) -> None:
         self.ensure_logged_in()
-        has_statement = bool(self.evaluate("document.querySelector('input[name=\"hakkoMeisai\"]')"))
+        has_statement = self.has_statement_form()
         if not has_statement:
             marker = uuid.uuid4().hex
             self.evaluate(f"window.__mfuEtcMarker = {json.dumps(marker)}")
@@ -760,8 +808,17 @@ class ETCTargetPage:
                 """
             )
             if not clicked:
-                raise RuntimeError("ETCの利用明細画面を開けません。トップページからやり直してください。")
+                raise _navigation_state_error("ETCの利用明細画面を開けません。")
             self.wait_navigation(marker)
+        if not self.has_statement_form():
+            if self.is_logged_in() and self.recover_statement_page():
+                pass
+            elif self.has_login_form():
+                from .parser import ETCAuthenticationRequired
+
+                raise ETCAuthenticationRequired("ETCのログイン有効期限が切れました。再ログインが必要です。")
+            else:
+                raise _navigation_state_error("ETC利用明細画面への遷移情報が無効です。")
         self._submit(f"/etc/R?funccode=1013000000&nextfunc=1013200000&taisyoYM={statement_month}")
 
     def go_to_page(self, page_number: int) -> None:

@@ -26,7 +26,7 @@ from app.etc_accounting.freee_sync import (
     register_record,
     update_registered_record,
 )
-from app.etc_accounting.parser import ETCAuthenticationRequired, is_provisional_record, parse_statement_page
+from app.etc_accounting.parser import ETCAuthenticationRequired, ETCNavigationStateError, is_provisional_record, parse_statement_page
 from app.etc_accounting.pdf_metadata import parse_invoice_issuer_name
 from app.etc_accounting.presentation import travel_duration_minutes
 from app.etc_accounting.notifications import (
@@ -650,9 +650,13 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertEqual(options[7], {"value": "202512", "label": "2025年12月"})
 
     def test_scheduled_cli_records_automation_completion(self):
+        browser = MagicMock()
+        browser.__enter__.return_value = browser
         with (
             patch("sys.argv", ["fetch_cli"]),
             patch.object(fetch_cli, "scheduled_months", return_value=["202607", "202606"]),
+            patch.object(fetch_cli, "ETCTargetPage", return_value=browser),
+            patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", return_value={"status": "success"}) as fetch,
             patch.object(fetch_cli, "dispatch_pending_new_record_notifications", return_value={"status": "empty", "count": 0}),
             patch.object(fetch_cli, "record_scheduled_fetch_completed") as completed,
@@ -661,12 +665,15 @@ class ETCAccountingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(fetch.call_count, 2)
+        self.assertTrue(all(call.kwargs["browser"] is browser for call in fetch.call_args_list))
         completed.assert_called_once_with("success")
 
     def test_scheduled_cli_treats_official_maintenance_as_non_error(self):
         with (
             patch("sys.argv", ["fetch_cli"]),
             patch.object(fetch_cli, "scheduled_months", return_value=["202607", "202606"]),
+            patch.object(fetch_cli, "ETCTargetPage", return_value=MagicMock()),
+            patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", return_value={"status": "maintenance"}),
             patch.object(fetch_cli, "dispatch_pending_new_record_notifications", return_value={"status": "empty", "count": 0}),
             patch.object(fetch_cli, "record_scheduled_fetch_completed") as completed,
@@ -681,6 +688,8 @@ class ETCAccountingTest(unittest.TestCase):
         with (
             patch("sys.argv", ["fetch_cli"]),
             patch.object(fetch_cli, "scheduled_months", return_value=["202609"]),
+            patch.object(fetch_cli, "ETCTargetPage", return_value=MagicMock()),
+            patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", side_effect=error),
             patch.object(fetch_cli, "send_fetch_failure_notification", return_value={"status": "sent", "count": 1}) as notify,
             patch.object(fetch_cli, "dispatch_pending_new_record_notifications", return_value={"status": "empty", "count": 0}),
@@ -700,11 +709,17 @@ class ETCAccountingTest(unittest.TestCase):
             fetch_cli._failure_status(RuntimeError("ETC自動ログインに失敗しました。")),
             "auth_required",
         )
+        self.assertEqual(
+            fetch_cli._failure_status(ETCNavigationStateError("ETCのログイン状態は有効ですが画面遷移エラーです。")),
+            "error",
+        )
         self.assertEqual(fetch_cli._failure_status(RuntimeError("PDF取得失敗")), "error")
 
     def test_manual_cli_does_not_change_automation_completion_time(self):
         with (
             patch("sys.argv", ["fetch_cli", "--month", "202507"]),
+            patch.object(fetch_cli, "ETCTargetPage", return_value=MagicMock()),
+            patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
             patch.object(fetch_cli, "fetch_month", return_value={"status": "success"}),
             patch.object(
                 fetch_cli,
@@ -718,6 +733,30 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         dispatch.assert_called_once_with()
         completed.assert_not_called()
+
+    def test_cli_retries_only_navigation_state_failure_once(self):
+        browser = MagicMock()
+        browser.__enter__.return_value = browser
+        browser.recover_statement_page.return_value = True
+        with (
+            patch("sys.argv", ["fetch_cli"]),
+            patch.object(fetch_cli, "scheduled_months", return_value=["202608"]),
+            patch.object(fetch_cli, "ETCTargetPage", return_value=browser),
+            patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
+            patch.object(
+                fetch_cli, "fetch_month",
+                side_effect=[ETCNavigationStateError("画面遷移エラー"), {"status": "success"}],
+            ) as fetch,
+            patch.object(fetch_cli, "send_fetch_failure_notification", return_value={"status": "empty", "count": 0}),
+            patch.object(fetch_cli, "dispatch_pending_new_record_notifications", return_value={"status": "empty", "count": 0}),
+            patch.object(fetch_cli, "record_scheduled_fetch_completed") as completed,
+        ):
+            exit_code = fetch_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fetch.call_count, 2)
+        browser.recover_statement_page.assert_called_once_with()
+        completed.assert_called_once_with("success")
 
     def test_new_etc_records_are_rendered_as_summary_and_record_cards(self):
         batches = _discord_batches([
@@ -1208,6 +1247,17 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertIn("risPassword", login_expression)
         browser.wait_navigation.assert_called_once()
 
+    def test_browser_form_detection_returns_javascript_booleans(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.wait_ready = Mock()
+        browser.evaluate = Mock(return_value=True)
+
+        self.assertTrue(browser.has_login_form())
+        self.assertTrue(browser.has_statement_form())
+
+        expressions = [call.args[0] for call in browser.evaluate.call_args_list]
+        self.assertTrue(all(expression.startswith("Boolean(") for expression in expressions))
+
     def test_official_maintenance_page_is_detected(self):
         response = Mock(
             ok=True,
@@ -1279,6 +1329,14 @@ class ETCAccountingTest(unittest.TestCase):
     def test_parse_statement_requires_login(self):
         with self.assertRaises(ETCAuthenticationRequired):
             parse_statement_page("<html><title>ログイン</title></html>", "202606")
+
+    def test_parse_statement_separates_logged_in_navigation_error(self):
+        html = """<html><title>ETC利用照会サービス</title><body>
+        <form name="frm"><input name="p" value="token"></form>
+        ログアウト 処理が受け付けられませんでした。最初からやり直してください。
+        </body></html>"""
+        with self.assertRaises(ETCNavigationStateError):
+            parse_statement_page(html, "202608")
 
     def test_parse_provisional_route_with_entry_and_exit_timestamps(self):
         html = """
