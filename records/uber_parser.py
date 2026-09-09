@@ -246,6 +246,17 @@ def parse_detail_text(
     }
 
 
+def is_unearned_quest_detail(activity: dict) -> bool:
+    """Return True when Uber explicitly says the displayed quest was not earned."""
+    if str(activity.get("activity_type") or "") != "quest":
+        return False
+    text = re.sub(r"\s+", " ", str(activity.get("raw_text") or "")).strip()
+    return bool(
+        re.search(r"\bQUEST\s+NOT\s+COMPLETED\b", text, re.I)
+        or re.search(r"クエスト.{0,30}(?:未達成|達成していません|達成できませんでした)", text)
+    )
+
+
 def normalize_list_row(row: dict) -> dict:
     occurred_at = parse_activity_datetime(str(row.get("dateText") or ""), str(row.get("timeText") or ""))
     return {

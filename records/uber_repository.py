@@ -311,6 +311,36 @@ def remove_mirrored_quest_duplicates(date_from: date, date_to: date) -> int:
         db.close()
 
 
+def remove_unearned_quest_activities(date_from: date, date_to: date) -> set[date]:
+    """Delete cached quest offer rows whose detail explicitly says it was not completed."""
+    from .uber_parser import is_unearned_quest_detail
+
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT activity_key, work_date, raw_text
+            FROM uber_activities
+            WHERE activity_type='quest' AND work_date BETWEEN %s AND %s
+            """,
+            (date_from, date_to),
+        )
+        rows = cur.fetchall() or []
+        rejected = [row for row in rows if is_unearned_quest_detail({
+            "activity_type": "quest", "raw_text": row.get("raw_text")
+        })]
+        if not rejected:
+            return set()
+        keys = [str(row["activity_key"]) for row in rejected]
+        placeholders = ", ".join(["%s"] * len(keys))
+        cur.execute(f"DELETE FROM uber_activities WHERE activity_key IN ({placeholders})", keys)
+        db.commit()
+        return {row["work_date"] for row in rejected}
+    finally:
+        db.close()
+
+
 def daily_activity_summary(work_date: date) -> dict:
     return activity_range_summary(work_date, work_date)
 

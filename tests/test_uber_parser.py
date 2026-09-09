@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from app.records.uber_parser import (
     activity_key,
+    is_unearned_quest_detail,
     normalize_list_row,
     parse_detail_occurred_at,
     parse_detail_text,
@@ -122,6 +123,35 @@ def test_quest_amount_is_promotion_and_not_delivery_count():
     assert result["activity_type"] == "quest"
     assert result["deliveries"] == 0
     assert result["promo_yen"] == 750
+
+
+def test_incomplete_quest_is_not_earned_income():
+    activity = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/activities/detail?eventType=QUEST&activityFeedUUID=not-completed",
+        occurred_at=datetime(2026, 9, 9, 21, 0),
+        list_amount_yen=520,
+        detail_text="""¥520.00
+Quest
+Sep 9, 9:00 PM
+QUEST NOT COMPLETED
+Completed 2/3 trips
+Get ¥520 extra by completing 3 trips""",
+    )
+    assert is_unearned_quest_detail(activity)
+
+
+def test_completed_quest_remains_earned_income():
+    activity = parse_detail_text(
+        detail_url="https://drivers.uber.com/earnings/activities/detail?eventType=QUEST&activityFeedUUID=completed",
+        occurred_at=datetime(2026, 9, 9, 20, 43),
+        list_amount_yen=430,
+        detail_text="""¥430.00
+Quest
+QUEST COMPLETE
+Completed 3/3 trips
+Get ¥430 extra by completing 3 trips""",
+    )
+    assert not is_unearned_quest_detail(activity)
 
 
 def test_current_uber_layout_extracts_unlabelled_merchant_and_address():

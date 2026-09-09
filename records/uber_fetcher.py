@@ -9,8 +9,8 @@ from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from .uber_browser import UberAccessRestricted, UberAuthenticationRequired, UberPage, read_detail, uber_browser_lock
-from .uber_parser import activity_key, normalize_list_row, parse_detail_text, uber_work_date
-from .uber_repository import get_cached_activities, remove_mirrored_quest_duplicates, sync_activity_day, update_import_job, upsert_activity
+from .uber_parser import activity_key, is_unearned_quest_detail, normalize_list_row, parse_detail_text, uber_work_date
+from .uber_repository import get_cached_activities, remove_mirrored_quest_duplicates, remove_unearned_quest_activities, sync_activity_day, update_import_job, upsert_activity
 
 
 DETAIL_DELAY_MIN_SECONDS = float(os.getenv("UBER_DETAIL_DELAY_MIN_SECONDS", "3"))
@@ -183,6 +183,8 @@ def fetch_uber_activities(
                             occurred_at=occurred_at,
                             list_amount_yen=list_amount_yen,
                         )
+                        if is_unearned_quest_detail(activity):
+                            continue
                         if not (wanted_from <= activity["work_date"] <= wanted_to):
                             continue
                         counters["found_count"] += 1
@@ -198,6 +200,7 @@ def fetch_uber_activities(
                 update_import_job(job_id, processed_days=processed, current_work_date=wanted_to, **counters)
 
         remove_mirrored_quest_duplicates(date_from, date_to)
+        touched_days.update(remove_unearned_quest_activities(date_from, date_to))
         for work_date in sorted(touched_days):
             result = sync_activity_day(work_date)
             if result["status"] == "conflict":
