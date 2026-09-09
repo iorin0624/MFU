@@ -6,9 +6,11 @@ import os
 import time
 
 from .fetcher import fetch_month, scheduled_months
+from .browser_session import ETCTargetPage
+from .credentials import etc_browser_lock
 from .manual_jobs import update_manual_fetch_job
 from .notifications import dispatch_pending_new_record_notifications, send_fetch_failure_notification
-from .parser import ETCAuthenticationRequired
+from .parser import ETCAuthenticationRequired, ETCNavigationStateError
 from .repository import record_scheduled_fetch_completed
 from app.utils.browser_automation_lock import BrowserAutomationBusy, browser_automation_lock
 
@@ -17,7 +19,7 @@ def _failure_status(exc: Exception) -> str:
     if isinstance(exc, ETCAuthenticationRequired):
         return "auth_required"
     message = str(exc)
-    if any(marker in message for marker in ("ログイン", "認証情報", "再認証")):
+    if any(marker in message for marker in ("自動ログインに失敗", "ログイン有効期限", "認証情報", "再認証")):
         return "auth_required"
     return "error"
 
@@ -41,18 +43,34 @@ def main() -> int:
     if args.manual_job_id:
         update_manual_fetch_job(args.manual_job_id, status="running")
     try:
-        with browser_automation_lock("etc", wait_seconds=600):
+        with browser_automation_lock("etc", wait_seconds=600), etc_browser_lock(), ETCTargetPage() as browser:
             for month in months:
-                try:
-                    results.append(fetch_month(month, force_record_ids=set(args.force_id)))
-                except ETCAuthenticationRequired as exc:
-                    results.append({"status": "auth_required", "statement_month": month, "error": str(exc)})
-                    exit_code = 1
-                except Exception as exc:
-                    results.append({"status": _failure_status(exc), "statement_month": month, "error": str(exc)})
-                    exit_code = 1
+                for attempt in range(2):
+                    try:
+                        results.append(fetch_month(month, force_record_ids=set(args.force_id), browser=browser))
+                        break
+                    except ETCNavigationStateError as exc:
+                        if attempt == 0 and browser.recover_statement_page():
+                            continue
+                        results.append({"status": "error", "statement_month": month, "error": str(exc)})
+                        exit_code = 1
+                        break
+                    except ETCAuthenticationRequired as exc:
+                        results.append({"status": "auth_required", "statement_month": month, "error": str(exc)})
+                        exit_code = 1
+                        break
+                    except Exception as exc:
+                        results.append({"status": _failure_status(exc), "statement_month": month, "error": str(exc)})
+                        exit_code = 1
+                        break
     except BrowserAutomationBusy as exc:
         results.append({"status": "error", "error": str(exc)})
+        exit_code = 1
+    except ETCAuthenticationRequired as exc:
+        results.append({"status": "auth_required", "error": str(exc)})
+        exit_code = 1
+    except Exception as exc:
+        results.append({"status": _failure_status(exc), "error": str(exc)})
         exit_code = 1
     fetch_failures = [
         result for result in results

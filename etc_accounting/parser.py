@@ -11,6 +11,12 @@ class ETCAuthenticationRequired(RuntimeError):
     pass
 
 
+class ETCNavigationStateError(RuntimeError):
+    """The ETC session exists, but its one-time form/navigation state is invalid."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class ETCStatementPage:
     records: list[dict]
@@ -115,7 +121,21 @@ def parse_statement_page(html: str, statement_month: str) -> ETCStatementPage:
     if not form or not checkboxes:
         title = _text(soup.title)
         body = _text(soup)[:400]
-        raise ETCAuthenticationRequired(f"ETC利用明細を取得できません。再ログインが必要です。{title or body}")
+        has_login_form = bool(
+            soup.select_one('input[name="risLoginId"]')
+            or soup.select_one('input[name="risPassword"]')
+        )
+        logged_in_navigation = "ログアウト" in body or any(
+            marker in body
+            for marker in ("処理が受け付けられませんでした", "最初からやり直してください")
+        )
+        if logged_in_navigation and not has_login_form:
+            raise ETCNavigationStateError(
+                f"ETC画面の遷移情報が無効になりました。{title or body}"
+            )
+        raise ETCAuthenticationRequired(
+            f"ETC利用明細を取得できません。再ログインが必要です。{title or body}"
+        )
 
     token_node = form.select_one('input[name="p"]')
     form_token = str(token_node.get("value") or "") if token_node else ""
