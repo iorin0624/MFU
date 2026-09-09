@@ -387,6 +387,28 @@ def _remarks_are_provisional(value: object) -> bool:
     return "確認中" in str(value or "").replace(" ", "")
 
 
+def has_provisional_records(statement_month: str) -> bool:
+    """Return whether a visible record for the month is still awaiting a final toll."""
+    ensure_schema()
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT 1
+              FROM etc_freee_records
+             WHERE statement_month=%s
+               AND REPLACE(COALESCE(remarks, ''), ' ', '') LIKE %s
+               AND COALESCE(source_state, 'present') <> 'deleted'
+             LIMIT 1
+            """,
+            (statement_month, "%確認中%"),
+        )
+        return cur.fetchone() is not None
+    finally:
+        db.close()
+
+
 def _queue_record_notification(cur, record_id: int, notification_kind: str, now: datetime) -> None:
     cur.execute(
         """

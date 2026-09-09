@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 
 from .fetcher import fetch_month, scheduled_months
@@ -11,7 +10,7 @@ from .credentials import etc_browser_lock
 from .manual_jobs import update_manual_fetch_job
 from .notifications import dispatch_pending_new_record_notifications, send_fetch_failure_notification
 from .parser import ETCAuthenticationRequired, ETCNavigationStateError
-from .repository import record_scheduled_fetch_completed
+from .repository import has_provisional_records, record_scheduled_fetch_completed
 from app.utils.browser_automation_lock import BrowserAutomationBusy, browser_automation_lock
 
 
@@ -22,6 +21,15 @@ def _failure_status(exc: Exception) -> str:
     if any(marker in message for marker in ("自動ログインに失敗", "ログイン有効期限", "認証情報", "再認証")):
         return "auth_required"
     return "error"
+
+
+def _scheduled_fetch_months() -> list[str]:
+    current_and_previous = scheduled_months(months_back=2)
+    current_month = current_and_previous[0]
+    months = [current_month]
+    if len(current_and_previous) > 1 and has_provisional_records(current_and_previous[1]):
+        months.append(current_and_previous[1])
+    return months
 
 
 def main() -> int:
@@ -37,7 +45,7 @@ def main() -> int:
     parser.add_argument("--manual-job-id", help="画面から開始した手動取得のジョブID")
     args = parser.parse_args()
     scheduled_run = not args.month and not args.force_id
-    months = args.month or scheduled_months(months_back=int(os.environ.get("ETC_FETCH_MONTHS_BACK", "2")))
+    months = args.month or _scheduled_fetch_months()
     results = []
     exit_code = 0
     if args.manual_job_id:
