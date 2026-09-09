@@ -127,6 +127,36 @@
       <div class="col-sm-6 col-lg-3"><span class="text-muted">前回結果：</span><span id="uberContinuousCounts">-</span></div>
     </div>
     <div class="alert alert-warning py-2 mt-2 mb-0 d-none" id="uberContinuousError"></div>
+    <details class="mt-3" id="uberContinuousWebhookSettings">
+      <summary class="fw-semibold">iPhoneショートカット連携</summary>
+      <div class="border rounded p-3 mt-2">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <div>
+            <div class="small">
+              状態：<span class="badge {{ 'text-bg-success' if uber_continuous_webhook else 'text-bg-secondary' }}" id="uberWebhookStatus">{{ '有効' if uber_continuous_webhook else '未発行' }}</span>
+            </div>
+            {% if uber_continuous_webhook %}
+            <div class="text-muted small mt-1" id="uberWebhookMetadata">発行：{{ uber_continuous_webhook.created_at }}{% if uber_continuous_webhook.last_used_at %} ／ 最終使用：{{ uber_continuous_webhook.last_used_at }}{% endif %}</div>
+            {% else %}
+            <div class="text-muted small mt-1" id="uberWebhookMetadata">専用URLへのPOSTだけで継続取得を開始できます。</div>
+            {% endif %}
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="uberWebhookIssue">{{ '再発行' if uber_continuous_webhook else 'URLを発行' }}</button>
+            <button type="button" class="btn btn-sm btn-outline-danger" id="uberWebhookRevoke" {{ '' if uber_continuous_webhook else 'disabled' }}>無効化</button>
+          </div>
+        </div>
+        <div class="alert alert-info mt-3 mb-0 d-none" id="uberWebhookIssued">
+          <div class="small mb-2">このURLは今だけ表示されます。iPhoneショートカットへ保存してください。</div>
+          <div class="input-group">
+            <input class="form-control form-control-sm" id="uberWebhookUrl" type="text" readonly aria-label="ショートカット用Webhook URL">
+            <button class="btn btn-sm btn-primary" id="uberWebhookCopy" type="button">コピー</button>
+          </div>
+        </div>
+        <div class="alert py-2 mt-2 mb-0 d-none" id="uberWebhookMessage"></div>
+        <div class="text-muted small mt-2">ショートカットの「URLの内容を取得」でメソッドをPOSTにします。URLを再発行すると以前のURLは無効になります。</div>
+      </div>
+    </details>
   </div>
 </div>
 
@@ -1264,6 +1294,14 @@
       const continuousStop = document.getElementById('uberContinuousStop');
       const continuousRunNow = document.getElementById('uberContinuousRunNow');
       const continuousError = document.getElementById('uberContinuousError');
+      const webhookIssue = document.getElementById('uberWebhookIssue');
+      const webhookRevoke = document.getElementById('uberWebhookRevoke');
+      const webhookStatus = document.getElementById('uberWebhookStatus');
+      const webhookMetadata = document.getElementById('uberWebhookMetadata');
+      const webhookIssued = document.getElementById('uberWebhookIssued');
+      const webhookUrl = document.getElementById('uberWebhookUrl');
+      const webhookCopy = document.getElementById('uberWebhookCopy');
+      const webhookMessage = document.getElementById('uberWebhookMessage');
       const statusLabels = {
         stopped:'停止中', monitoring:'監視中', running:'取得中',
         auth_required:'再ログインが必要', blocked:'アクセス制限で停止', error_paused:'エラーで停止'
@@ -1317,6 +1355,25 @@
         } catch (error) {
           showMessage(error.message || '操作に失敗しました。', 'danger');
           await loadContinuousState().catch(function () {});
+        }
+      }
+
+      async function webhookAction(url) {
+        webhookIssue.disabled = true;
+        webhookRevoke.disabled = true;
+        try {
+          const response = await fetch(url, {method:'POST', headers:{'X-CSRF-Token':csrf}, cache:'no-store'});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.message || '操作に失敗しました。');
+          webhookMessage.textContent = data.message || '操作しました。';
+          webhookMessage.className = 'alert alert-success py-2 mt-2 mb-0';
+          return data;
+        } catch (error) {
+          webhookMessage.textContent = error.message || '操作に失敗しました。';
+          webhookMessage.className = 'alert alert-danger py-2 mt-2 mb-0';
+          throw error;
+        } finally {
+          webhookIssue.disabled = false;
         }
       }
 
@@ -1416,6 +1473,43 @@
       continuousStart.addEventListener('click', function () { continuousAction('{{ url_for("records.uber_continuous_fetch_start") }}'); });
       continuousStop.addEventListener('click', function () { continuousAction('{{ url_for("records.uber_continuous_fetch_stop") }}'); });
       continuousRunNow.addEventListener('click', function () { continuousAction('{{ url_for("records.uber_continuous_fetch_run_now") }}'); });
+      webhookIssue.addEventListener('click', async function () {
+        if (webhookStatus.textContent.trim() === '有効' && !confirm('URLを再発行すると、以前のURLは利用できなくなります。再発行しますか？')) return;
+        try {
+          const data = await webhookAction('{{ url_for("records.uber_continuous_webhook_issue") }}');
+          webhookUrl.value = data.url || '';
+          webhookIssued.classList.remove('d-none');
+          webhookStatus.textContent = '有効';
+          webhookStatus.className = 'badge text-bg-success';
+          webhookMetadata.textContent = '発行済み（新しいURLはこの画面を離れると再表示できません）';
+          webhookIssue.textContent = '再発行';
+          webhookRevoke.disabled = false;
+        } catch (error) {}
+      });
+      webhookRevoke.addEventListener('click', async function () {
+        if (!confirm('現在のショートカット用URLを無効化しますか？')) return;
+        try {
+          await webhookAction('{{ url_for("records.uber_continuous_webhook_revoke") }}');
+          webhookIssued.classList.add('d-none');
+          webhookUrl.value = '';
+          webhookStatus.textContent = '未発行';
+          webhookStatus.className = 'badge text-bg-secondary';
+          webhookMetadata.textContent = '専用URLへのPOSTだけで継続取得を開始できます。';
+          webhookIssue.textContent = 'URLを発行';
+          webhookRevoke.disabled = true;
+        } catch (error) {}
+      });
+      webhookCopy.addEventListener('click', async function () {
+        if (!webhookUrl.value) return;
+        try {
+          await navigator.clipboard.writeText(webhookUrl.value);
+        } catch (error) {
+          webhookUrl.select();
+          document.execCommand('copy');
+        }
+        webhookCopy.textContent = 'コピー済み';
+        setTimeout(function () { webhookCopy.textContent = 'コピー'; }, 1500);
+      });
       loadContinuousState().catch(function (error) { continuousError.textContent = error.message; continuousError.classList.remove('d-none'); });
       continuousPollTimer = setInterval(function () { loadContinuousState().catch(function () {}); }, 10000);
       if (card.dataset.activeJob) {
