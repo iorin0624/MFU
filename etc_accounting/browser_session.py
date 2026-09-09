@@ -57,6 +57,19 @@ def _navigation_state_error(message: str):
     return ETCNavigationStateError(message)
 
 
+def _credentials_rejected(page_text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(page_text or "")).replace("ＩＤ", "ID")
+    return any(
+        marker in normalized
+        for marker in (
+            "ユーザーIDまたはパスワードが正しくありません",
+            "ユーザーIDまたはパスワードに誤りがあります",
+            "ユーザーID、パスワードを確認してください",
+            "ユーザーIDとパスワードを確認してください",
+        )
+    )
+
+
 def _pid_path(name: str) -> Path:
     return ETC_BROWSER_STATE_DIR / f"{name}.pid"
 
@@ -732,13 +745,16 @@ class ETCTargetPage:
             raise _navigation_state_error("ETCログイン画面を正しく開けませんでした。")
         self.wait_navigation(marker)
         if not self.is_logged_in():
+            page_text = str(self.evaluate("document.body ? document.body.innerText : ''") or "")
             try:
                 self.evaluate(
                     "for (const input of document.querySelectorAll('input[name=\"risLoginId\"], input[name=\"risPassword\"]')) input.value = ''"
                 )
             except Exception:
                 pass
-            raise RuntimeError("ETC自動ログインに失敗しました。ユーザーIDまたはパスワードを確認してください。")
+            if _credentials_rejected(page_text):
+                raise RuntimeError("ETC自動ログインに失敗しました。ユーザーIDまたはパスワードを確認してください。")
+            raise _navigation_state_error("ETC自動ログインを完了できませんでした。一時的な画面遷移エラーとして再試行します。")
 
     def ensure_logged_in(self) -> None:
         self.wait_ready()
@@ -757,12 +773,17 @@ class ETCTargetPage:
             raise RuntimeError("ETC自動ログイン情報が未設定です。管理画面から登録してください。")
         if auto_login_failure():
             raise RuntimeError("ETC自動ログインは前回失敗したため停止中です。管理画面で認証情報を再保存してください。")
-        try:
-            self.login_with_credentials(credentials["login_id"], credentials["password"])
-        except RuntimeError as exc:
-            if "ユーザーIDまたはパスワード" in str(exc):
-                record_login_failure()
-            raise
+        for attempt in range(2):
+            try:
+                self.login_with_credentials(credentials["login_id"], credentials["password"])
+                break
+            except RuntimeError as exc:
+                if "ユーザーIDまたはパスワード" in str(exc):
+                    record_login_failure()
+                    raise
+                if attempt:
+                    raise
+                time.sleep(0.5)
         clear_login_failure()
 
     def html(self) -> str:

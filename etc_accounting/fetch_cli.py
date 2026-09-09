@@ -56,6 +56,18 @@ def main() -> int:
                         exit_code = 1
                         break
                     except ETCAuthenticationRequired as exc:
+                        if attempt == 0:
+                            try:
+                                browser.ensure_logged_in()
+                            except Exception as login_exc:
+                                results.append({
+                                    "status": _failure_status(login_exc),
+                                    "statement_month": month,
+                                    "error": str(login_exc),
+                                })
+                                exit_code = 1
+                                break
+                            continue
                         results.append({"status": "auth_required", "statement_month": month, "error": str(exc)})
                         exit_code = 1
                         break

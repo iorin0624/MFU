@@ -1258,6 +1258,38 @@ class ETCAccountingTest(unittest.TestCase):
         expressions = [call.args[0] for call in browser.evaluate.call_args_list]
         self.assertTrue(all(expression.startswith("Boolean(") for expression in expressions))
 
+    def test_browser_login_only_blames_credentials_for_explicit_rejection(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.navigate = Mock()
+        browser.is_logged_in = Mock(side_effect=[False, False])
+        browser.evaluate = Mock(side_effect=[
+            "https://www2.etc-meisai.jp/etc/R",
+            None,
+            True,
+            "ログイン画面を再表示しました。",
+            None,
+        ])
+        browser.wait_navigation = Mock()
+
+        with self.assertRaises(ETCNavigationStateError):
+            browser.login_with_credentials("TestUser", "SecretPassword123!")
+
+    def test_browser_login_reports_explicit_credential_rejection(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.navigate = Mock()
+        browser.is_logged_in = Mock(side_effect=[False, False])
+        browser.evaluate = Mock(side_effect=[
+            "https://www2.etc-meisai.jp/etc/R",
+            None,
+            True,
+            "ユーザーＩＤまたはパスワードが正しくありません。",
+            None,
+        ])
+        browser.wait_navigation = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "ユーザーIDまたはパスワード"):
+            browser.login_with_credentials("TestUser", "WrongPassword")
+
     def test_official_maintenance_page_is_detected(self):
         response = Mock(
             ok=True,
