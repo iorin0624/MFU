@@ -121,6 +121,7 @@ def fetch_uber_activities(
 ) -> dict:
     counters = {"found_count": 0, "inserted_count": 0, "updated_count": 0, "unchanged_count": 0, "error_count": 0}
     touched_days: set[date] = set()
+    changed_days: set[date] = set()
     conflict_days: list[str] = []
     update_import_job(job_id, status="running", started_at=datetime.now(), error=None)
     try:
@@ -191,6 +192,8 @@ def fetch_uber_activities(
                         outcome = upsert_activity(activity)
                         counters[f"{outcome}_count"] += 1
                         touched_days.add(activity["work_date"])
+                        if outcome in {"inserted", "updated"}:
+                            changed_days.add(activity["work_date"])
                     except UberAuthenticationRequired:
                         raise
                     except Exception:
@@ -199,8 +202,18 @@ def fetch_uber_activities(
                 processed += (wanted_to - wanted_from).days + 1
                 update_import_job(job_id, processed_days=processed, current_work_date=wanted_to, **counters)
 
-        remove_mirrored_quest_duplicates(date_from, date_to)
-        touched_days.update(remove_unearned_quest_activities(date_from, date_to))
+        removed_mirrored_count = remove_mirrored_quest_duplicates(date_from, date_to)
+        if removed_mirrored_count:
+            # The repository helper does not return the individual dates.  Refresh
+            # the requested range because removing a duplicate changes its totals.
+            touched_days.update(
+                date_from + timedelta(days=offset)
+                for offset in range((date_to - date_from).days + 1)
+            )
+            changed_days.update(touched_days)
+        removed_unearned_days = remove_unearned_quest_activities(date_from, date_to)
+        touched_days.update(removed_unearned_days)
+        changed_days.update(removed_unearned_days)
         for work_date in sorted(touched_days):
             result = sync_activity_day(work_date)
             if result["status"] == "conflict":
@@ -216,6 +229,15 @@ def fetch_uber_activities(
             current_work_date=None,
             **counters,
         )
+        if changed_days:
+            from app.utils.realtime import emit_uber_summary_updated
+
+            emit_uber_summary_updated({
+                "changed_dates": [work_date.isoformat() for work_date in sorted(changed_days)],
+                "inserted_count": counters["inserted_count"],
+                "updated_count": counters["updated_count"],
+                "emitted_at": datetime.now().isoformat(),
+            })
         return result
     except UberAuthenticationRequired as exc:
         update_import_job(job_id, status="auth_required", error=str(exc), finished_at=datetime.now(), **counters)

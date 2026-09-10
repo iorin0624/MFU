@@ -275,6 +275,24 @@ def _present_uber_continuous_state(row: dict) -> dict:
     return value
 
 
+def _resolve_uber_activity_summary_range(args) -> tuple[str, date, date, str]:
+    today = uber_work_date(datetime.now(ZoneInfo("Asia/Tokyo")))
+    mode = str(args.get("summary_mode") or "today")
+    if mode == "yesterday":
+        date_from = today - timedelta(days=1)
+        return mode, date_from, date_from, "昨日の集計"
+    if mode == "range":
+        try:
+            date_from = datetime.strptime(args.get("summary_from") or today.isoformat(), "%Y-%m-%d").date()
+            date_to = datetime.strptime(args.get("summary_to") or today.isoformat(), "%Y-%m-%d").date()
+        except ValueError:
+            date_from = date_to = today
+        if date_from > date_to:
+            date_from, date_to = date_to, date_from
+        return mode, date_from, date_to, "期間指定の集計"
+    return "today", today, today, "本日途中集計"
+
+
 def _cleanup_old_uber_ocr_files() -> None:
     now_ts_value = time.time()
     expired_tokens: list[str] = []
@@ -1493,30 +1511,9 @@ def uber_list():
     if history_from > history_to:
         history_from, history_to = history_to, history_from
 
-    summary_mode = str(request.args.get("summary_mode") or "today")
-    if summary_mode == "yesterday":
-        activity_summary_from = today - timedelta(days=1)
-        activity_summary_to = activity_summary_from
-        activity_summary_title = "昨日の集計"
-    elif summary_mode == "range":
-        try:
-            activity_summary_from = datetime.strptime(
-                request.args.get("summary_from") or today.isoformat(), "%Y-%m-%d"
-            ).date()
-            activity_summary_to = datetime.strptime(
-                request.args.get("summary_to") or today.isoformat(), "%Y-%m-%d"
-            ).date()
-        except ValueError:
-            activity_summary_from = today
-            activity_summary_to = today
-        if activity_summary_from > activity_summary_to:
-            activity_summary_from, activity_summary_to = activity_summary_to, activity_summary_from
-        activity_summary_title = "期間指定の集計"
-    else:
-        summary_mode = "today"
-        activity_summary_from = today
-        activity_summary_to = today
-        activity_summary_title = "本日途中集計"
+    summary_mode, activity_summary_from, activity_summary_to, activity_summary_title = (
+        _resolve_uber_activity_summary_range(request.args)
+    )
 
     activity_daily_rows = [
         _present_uber_activity_summary(row)
@@ -1673,6 +1670,24 @@ def _start_uber_continuous_process(*, force: bool = False) -> None:
         start_new_session=True,
         close_fds=True,
     )
+
+
+@records_bp.get("/uber/activity-summary")
+@login_required
+def uber_activity_summary():
+    mode, date_from, date_to, title = _resolve_uber_activity_summary_range(request.args)
+    summary = _present_uber_activity_summary(activity_range_summary(date_from, date_to))
+    last_imported_at = summary.get("last_imported_at")
+    if isinstance(last_imported_at, datetime):
+        summary["last_imported_at"] = last_imported_at.isoformat()
+    return jsonify({
+        "ok": True,
+        "mode": mode,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "title": title,
+        "summary": summary,
+    })
 
 
 def _enable_uber_continuous_fetch() -> tuple[str, str, dict]:
