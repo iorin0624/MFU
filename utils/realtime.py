@@ -27,3 +27,8 @@ def emit_download_event(event: str, payload: dict[str, Any], *, room: str) -> No
     except Exception:
         return
 
+
+def emit_uber_summary_updated(payload: dict[str, Any]) -> None:
+    """Tell open Uber record pages to refresh their server-calculated summary."""
+    emit_admin_event("uber_summary_updated", payload, room="uber-summary")
+

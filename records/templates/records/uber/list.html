@@ -160,12 +160,14 @@
   </div>
 </div>
 
-<div class="card shadow-sm mb-4 uber-tab-panel is-active" data-uber-panel="overview">
+<div class="card shadow-sm mb-4 uber-tab-panel is-active" data-uber-panel="overview" id="uberActivitySummary"
+     data-summary-mode="{{ activity_summary_mode }}" data-summary-from="{{ activity_summary_from }}"
+     data-summary-to="{{ activity_summary_to }}" data-summary-url="{{ url_for('records.uber_activity_summary') }}">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
       <div>
-        <h2 class="h5 mb-1">{{ activity_summary_title }}</h2>
-        <div class="text-muted small">
+        <h2 class="h5 mb-1" id="uberActivitySummaryTitle">{{ activity_summary_title }}</h2>
+        <div class="text-muted small" id="uberActivitySummaryMeta">
           対象：{{ activity_summary_from }}{% if activity_summary_from != activity_summary_to %}～{{ activity_summary_to }}{% endif %}
           ／ 確定前の金額です。最終取得：{{ selected_activity_summary.last_imported_at or '未取得' }}
         </div>
@@ -188,37 +190,37 @@
     </div>
     <div class="uber-summary-section">
       <div class="uber-summary-grid uber-summary-grid-seven">
-        <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong>{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong>¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">配達＋クエスト合計</span><strong>¥{{ selected_activity_summary.delivery_quest_yen|fmt_yen }}</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">配達のみ</span><strong>¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong>¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong>¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">チップ</span><strong>¥{{ selected_activity_summary.tip_yen|fmt_yen }}</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong>¥{{ selected_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">配達件数</span><strong data-uber-summary="deliveries" data-format="count">{{ selected_activity_summary.deliveries|fmt_yen }}件</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">売上合計</span><strong data-uber-summary="total_yen" data-format="yen">¥{{ selected_activity_summary.total_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">配達＋クエスト合計</span><strong data-uber-summary="delivery_quest_yen" data-format="yen">¥{{ selected_activity_summary.delivery_quest_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">配達のみ</span><strong data-uber-summary="net_yen" data-format="yen">¥{{ selected_activity_summary.net_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">クエスト</span><strong data-uber-summary="promo_yen" data-format="yen">¥{{ selected_activity_summary.promo_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">その他・調整金</span><strong data-uber-summary="other_yen" data-format="yen">¥{{ selected_activity_summary.other_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">チップ</span><strong data-uber-summary="tip_yen" data-format="yen">¥{{ selected_activity_summary.tip_yen|fmt_yen }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">現金徴収</span><strong data-uber-summary="cash_collected_yen" data-format="yen">¥{{ selected_activity_summary.cash_collected_yen|fmt_yen }}</strong></div>
       </div>
     </div>
     <div class="uber-summary-section">
       <div class="uber-summary-grid uber-summary-grid-three">
-        <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong>{{ '%.1f'|format(selected_activity_summary.duration_hours) }}時間</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong>{{ '%.1f'|format(selected_activity_summary.distance_km|float) }}km</strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">1時間当たりの件数</span><strong>{{ ('%.1f件'|format(selected_activity_summary.deliveries_per_hour)) if selected_activity_summary.deliveries_per_hour is not none else '-' }}</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">稼働時間</span><strong data-uber-summary="duration_hours" data-format="hours">{{ '%.1f'|format(selected_activity_summary.duration_hours) }}時間</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">距離</span><strong data-uber-summary="distance_km" data-format="km">{{ '%.1f'|format(selected_activity_summary.distance_km|float) }}km</strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1時間当たりの件数</span><strong data-uber-summary="deliveries_per_hour" data-format="hour-count">{{ ('%.1f件'|format(selected_activity_summary.deliveries_per_hour)) if selected_activity_summary.deliveries_per_hour is not none else '-' }}</strong></div>
       </div>
     </div>
     <div class="uber-summary-section">
       <div class="uber-summary-section-title">売上合計（平均値 ／ 中央値）</div>
       <div class="uber-summary-grid uber-summary-grid-three">
-        <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.yen_per_delivery|fmt_yen)) if selected_activity_summary.yen_per_delivery is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.total_per_delivery_median|fmt_yen)) if selected_activity_summary.total_per_delivery_median is not none else '-' }}</small></strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.yen_per_hour|fmt_yen)) if selected_activity_summary.yen_per_hour is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.total_per_hour_median|fmt_yen)) if selected_activity_summary.total_per_hour_median is not none else '-' }}</small></strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.yen_per_km|fmt_yen)) if selected_activity_summary.yen_per_km is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.total_per_km_median|fmt_yen)) if selected_activity_summary.total_per_km_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong class="uber-average-median"><span data-uber-summary="yen_per_delivery" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.yen_per_delivery|fmt_yen)) if selected_activity_summary.yen_per_delivery is not none else '-' }}</span><small data-uber-summary="total_per_delivery_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.total_per_delivery_median|fmt_yen)) if selected_activity_summary.total_per_delivery_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong class="uber-average-median"><span data-uber-summary="yen_per_hour" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.yen_per_hour|fmt_yen)) if selected_activity_summary.yen_per_hour is not none else '-' }}</span><small data-uber-summary="total_per_hour_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.total_per_hour_median|fmt_yen)) if selected_activity_summary.total_per_hour_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span data-uber-summary="yen_per_km" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.yen_per_km|fmt_yen)) if selected_activity_summary.yen_per_km is not none else '-' }}</span><small data-uber-summary="total_per_km_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.total_per_km_median|fmt_yen)) if selected_activity_summary.total_per_km_median is not none else '-' }}</small></strong></div>
       </div>
     </div>
     <div class="uber-summary-section">
       <div class="uber-summary-section-title">配達のみ（平均値 ／ 中央値）</div>
       <div class="uber-summary-grid uber-summary-grid-three">
-        <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_delivery|fmt_yen)) if selected_activity_summary.net_yen_per_delivery is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_delivery_median|fmt_yen)) if selected_activity_summary.net_per_delivery_median is not none else '-' }}</small></strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_hour|fmt_yen)) if selected_activity_summary.net_yen_per_hour is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_hour_median|fmt_yen)) if selected_activity_summary.net_per_hour_median is not none else '-' }}</small></strong></div>
-        <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span>{{ ('¥' ~ (selected_activity_summary.net_yen_per_km|fmt_yen)) if selected_activity_summary.net_yen_per_km is not none else '-' }}</span><small>／ {{ ('¥' ~ (selected_activity_summary.net_per_km_median|fmt_yen)) if selected_activity_summary.net_per_km_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1件当たり</span><strong class="uber-average-median"><span data-uber-summary="net_yen_per_delivery" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.net_yen_per_delivery|fmt_yen)) if selected_activity_summary.net_yen_per_delivery is not none else '-' }}</span><small data-uber-summary="net_per_delivery_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.net_per_delivery_median|fmt_yen)) if selected_activity_summary.net_per_delivery_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1時間当たり</span><strong class="uber-average-median"><span data-uber-summary="net_yen_per_hour" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.net_yen_per_hour|fmt_yen)) if selected_activity_summary.net_yen_per_hour is not none else '-' }}</span><small data-uber-summary="net_per_hour_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.net_per_hour_median|fmt_yen)) if selected_activity_summary.net_per_hour_median is not none else '-' }}</small></strong></div>
+        <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span data-uber-summary="net_yen_per_km" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.net_yen_per_km|fmt_yen)) if selected_activity_summary.net_yen_per_km is not none else '-' }}</span><small data-uber-summary="net_per_km_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.net_per_km_median|fmt_yen)) if selected_activity_summary.net_per_km_median is not none else '-' }}</small></strong></div>
       </div>
     </div>
     <form class="d-flex justify-content-end mt-3" method="post" action="{{ url_for('records.uber_discord_summary_test') }}" onsubmit="return confirm('現在表示している集計結果をDiscordへテスト送信しますか？');">
@@ -1273,6 +1275,110 @@
           analyzeBtn.textContent = originalLabel;
         }
       });
+    });
+  </script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const root = document.getElementById('uberActivitySummary');
+      if (!root) return;
+      let refreshPromise = null;
+      let fallbackTimer = null;
+      let summarySocket = null;
+
+      function queryUrl() {
+        const url = new URL(root.dataset.summaryUrl, window.location.origin);
+        url.searchParams.set('summary_mode', root.dataset.summaryMode || 'today');
+        url.searchParams.set('summary_from', root.dataset.summaryFrom || '');
+        url.searchParams.set('summary_to', root.dataset.summaryTo || '');
+        return url;
+      }
+      function number(value) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      function integer(value) {
+        return Math.round(number(value)).toLocaleString('ja-JP');
+      }
+      function renderValue(value, format) {
+        if ((format === 'optional-yen' || format === 'median-yen' || format === 'hour-count') && (value === null || value === undefined)) {
+          return format === 'median-yen' ? '／ -' : '-';
+        }
+        if (format === 'yen' || format === 'optional-yen') return `¥${integer(value)}`;
+        if (format === 'median-yen') return `／ ¥${integer(value)}`;
+        if (format === 'count') return `${integer(value)}件`;
+        if (format === 'hours') return `${number(value).toFixed(1)}時間`;
+        if (format === 'km') return `${number(value).toFixed(1)}km`;
+        if (format === 'hour-count') return `${number(value).toFixed(1)}件`;
+        return String(value ?? '-');
+      }
+      function formatImportedAt(value) {
+        if (!value) return '未取得';
+        return String(value).replace('T', ' ').replace(/(?:\.\d+)?(?:[+-]\d\d:\d\d|Z)$/, '');
+      }
+      function renderSummary(data) {
+        const summary = data.summary || {};
+        root.dataset.summaryMode = data.mode || root.dataset.summaryMode;
+        root.dataset.summaryFrom = data.date_from || root.dataset.summaryFrom;
+        root.dataset.summaryTo = data.date_to || root.dataset.summaryTo;
+        const title = document.getElementById('uberActivitySummaryTitle');
+        const meta = document.getElementById('uberActivitySummaryMeta');
+        if (title) title.textContent = data.title || '途中集計';
+        if (meta) {
+          const range = data.date_from === data.date_to ? data.date_from : `${data.date_from}～${data.date_to}`;
+          meta.textContent = `対象：${range} ／ 確定前の金額です。最終取得：${formatImportedAt(summary.last_imported_at)}`;
+        }
+        root.querySelectorAll('[data-uber-summary]').forEach(function (element) {
+          element.textContent = renderValue(summary[element.dataset.uberSummary], element.dataset.format || '');
+        });
+        root.querySelectorAll('input[name="summary_mode"]').forEach(function (input) { input.value = data.mode || 'today'; });
+        root.querySelectorAll('input[name="summary_from"]').forEach(function (input) { input.value = data.date_from || ''; });
+        root.querySelectorAll('input[name="summary_to"]').forEach(function (input) { input.value = data.date_to || ''; });
+      }
+      async function refreshSummary() {
+        if (refreshPromise) return refreshPromise;
+        refreshPromise = fetch(queryUrl(), {cache:'no-store', headers:{'Accept':'application/json'}})
+          .then(async function (response) {
+            const data = await response.json();
+            if (!response.ok || !data.ok) throw new Error(data.message || '途中集計を更新できません。');
+            renderSummary(data);
+          })
+          .catch(function () {})
+          .finally(function () { refreshPromise = null; });
+        return refreshPromise;
+      }
+      function startFallbackPolling() {
+        if (fallbackTimer) return;
+        fallbackTimer = window.setInterval(refreshSummary, 30000);
+      }
+      function stopFallbackPolling() {
+        if (!fallbackTimer) return;
+        window.clearInterval(fallbackTimer);
+        fallbackTimer = null;
+      }
+
+      if (window.io && {{ 'true' if is_admin_user else 'false' }}) {
+        try {
+          summarySocket = window.io('/admin-system', {path:'/socket.io', transports:['websocket','polling']});
+          summarySocket.on('connect', function () {
+            summarySocket.emit('uber_summary_subscribe', {}, function (reply) {
+              if (reply && reply.ok) stopFallbackPolling();
+              else startFallbackPolling();
+            });
+            refreshSummary();
+          });
+          summarySocket.on('uber_summary_updated', refreshSummary);
+          summarySocket.on('disconnect', startFallbackPolling);
+          summarySocket.on('connect_error', startFallbackPolling);
+        } catch (_) {
+          startFallbackPolling();
+        }
+      } else {
+        startFallbackPolling();
+      }
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') refreshSummary();
+      });
+      window.addEventListener('pageshow', refreshSummary);
     });
   </script>
   {% if is_admin_user %}

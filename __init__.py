@@ -1149,6 +1149,14 @@ def admin_job_subscribe(data=None):
     return {"ok": True}
 
 
+@socketio.on("uber_summary_subscribe", namespace="/admin-system")
+def admin_uber_summary_subscribe(_data=None):
+    if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+        return {"ok": False, "error": "unauthorized"}
+    join_room("uber-summary")
+    return {"ok": True}
+
+
 @socketio.on("connect", namespace="/download-progress")
 def download_progress_connect(auth=None):
     register_connection(socketio, "/download-progress")
