@@ -128,6 +128,37 @@ def test_mirrored_quest_matches_same_amount_and_goal_outside_two_minutes():
     assert _is_mirrored_quest(misc, quest)
 
 
+def test_mirrored_staged_quest_matches_delayed_misc_payment():
+    misc = {
+        "occurred_at": datetime(2026, 9, 10, 19, 11),
+        "earnings_yen": 520,
+        "raw_text": (
+            "クエスト: 9 回の乗車 (レベル 3) を達成しました。"
+            "お支払い明細に ￥520 が追加されました。"
+        ),
+    }
+    quest = {
+        "occurred_at": datetime(2026, 9, 10, 18, 30),
+        "earnings_yen": 520,
+        "raw_text": "QUEST COMPLETE\nCompleted 3/3 trips",
+    }
+    assert _is_mirrored_quest(misc, quest)
+
+
+def test_unrelated_same_amount_quests_are_not_merged_without_completion_pair():
+    misc = {
+        "occurred_at": datetime(2026, 9, 10, 19, 11),
+        "earnings_yen": 520,
+        "raw_text": "その他の調整金 ￥520",
+    }
+    quest = {
+        "occurred_at": datetime(2026, 9, 10, 18, 30),
+        "earnings_yen": 520,
+        "raw_text": "QUEST COMPLETE\nCompleted 3/3 trips",
+    }
+    assert not _is_mirrored_quest(misc, quest)
+
+
 def test_same_amount_is_not_enough_to_remove_distinct_quest():
     misc = {
         "occurred_at": datetime(2026, 9, 5, 20, 49),
