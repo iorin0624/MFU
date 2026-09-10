@@ -23,6 +23,21 @@ def _failure_status(exc: Exception) -> str:
     return "error"
 
 
+def _failure_result(exc: Exception, statement_month: str | None = None) -> dict:
+    result = {"status": _failure_status(exc), "error": str(exc)}
+    if statement_month:
+        result["statement_month"] = statement_month
+    for source_name, result_name in (
+        ("record_id", "record_id"),
+        ("transaction_key", "transaction_key"),
+        ("error_code", "error_code"),
+    ):
+        value = getattr(exc, source_name, None)
+        if value not in (None, ""):
+            result[result_name] = value
+    return result
+
+
 def _scheduled_fetch_months() -> list[str]:
     current_and_previous = scheduled_months(months_back=2)
     current_month = current_and_previous[0]
@@ -62,22 +77,21 @@ def main() -> int:
             for month in months:
                 for attempt in range(3):
                     try:
-                        results.append(fetch_month(month, force_record_ids=set(args.force_id), browser=browser))
+                        fetch_result = fetch_month(month, force_record_ids=set(args.force_id), browser=browser)
+                        results.append(fetch_result)
+                        if str(fetch_result.get("status") or "") == "partial":
+                            exit_code = 1
                         break
                     except ETCNavigationStateError as exc:
                         if attempt < 2:
                             try:
                                 _recover_fetch_browser(browser)
                             except Exception as recovery_exc:
-                                results.append({
-                                    "status": _failure_status(recovery_exc),
-                                    "statement_month": month,
-                                    "error": str(recovery_exc),
-                                })
+                                results.append(_failure_result(recovery_exc, month))
                                 exit_code = 1
                                 break
                             continue
-                        results.append({"status": "error", "statement_month": month, "error": str(exc)})
+                        results.append(_failure_result(exc, month))
                         exit_code = 1
                         break
                     except ETCAuthenticationRequired as exc:
@@ -85,37 +99,43 @@ def main() -> int:
                             try:
                                 browser.ensure_logged_in()
                             except Exception as login_exc:
-                                results.append({
-                                    "status": _failure_status(login_exc),
-                                    "statement_month": month,
-                                    "error": str(login_exc),
-                                })
+                                results.append(_failure_result(login_exc, month))
                                 exit_code = 1
                                 break
                             continue
-                        results.append({"status": "auth_required", "statement_month": month, "error": str(exc)})
+                        results.append(_failure_result(exc, month))
                         exit_code = 1
                         break
                     except Exception as exc:
-                        results.append({"status": _failure_status(exc), "statement_month": month, "error": str(exc)})
+                        results.append(_failure_result(exc, month))
                         exit_code = 1
                         break
     except BrowserAutomationBusy as exc:
-        results.append({"status": "error", "error": str(exc)})
+        results.append(_failure_result(exc))
         exit_code = 1
     except ETCAuthenticationRequired as exc:
-        results.append({"status": "auth_required", "error": str(exc)})
+        results.append(_failure_result(exc))
         exit_code = 1
     except Exception as exc:
-        results.append({"status": _failure_status(exc), "error": str(exc)})
+        results.append(_failure_result(exc))
         exit_code = 1
-    fetch_failures = [
-        result for result in results
-        if isinstance(result, dict) and result.get("status") in {"error", "auth_required"}
-    ]
+    fetch_failures = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("status") in {"error", "auth_required"}:
+            fetch_failures.append(result)
+        for failure in result.get("failures") or []:
+            failure = dict(failure)
+            failure.setdefault("statement_month", result.get("statement_month"))
+            fetch_failures.append(failure)
     failure_notification_error = ""
     try:
-        failure_notification = send_fetch_failure_notification(fetch_failures, scheduled=scheduled_run)
+        failure_notification = send_fetch_failure_notification(
+            fetch_failures,
+            scheduled=scheduled_run,
+            checked_months=months,
+        )
     except Exception as exc:
         failure_notification = {"status": "error", "error": str(exc)}
         failure_notification_error = str(exc)
