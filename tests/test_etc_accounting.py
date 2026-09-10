@@ -753,7 +753,7 @@ class ETCAccountingTest(unittest.TestCase):
         dispatch.assert_called_once_with()
         completed.assert_not_called()
 
-    def test_cli_retries_only_navigation_state_failure_once(self):
+    def test_cli_recovers_navigation_state_failure_before_retry(self):
         browser = MagicMock()
         browser.__enter__.return_value = browser
         browser.recover_statement_page.return_value = True
@@ -774,8 +774,45 @@ class ETCAccountingTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(fetch.call_count, 2)
-        browser.recover_statement_page.assert_called_once_with()
+        browser.recover_statement_page.assert_called_once_with(force=True)
         completed.assert_called_once_with("success")
+
+    def test_cli_can_recover_two_consecutive_navigation_state_failures(self):
+        browser = MagicMock()
+        browser.__enter__.return_value = browser
+        browser.recover_statement_page.return_value = True
+        with (
+            patch("sys.argv", ["fetch_cli"]),
+            patch.object(fetch_cli, "scheduled_months", return_value=["202609"]),
+            patch.object(fetch_cli, "ETCTargetPage", return_value=browser),
+            patch.object(fetch_cli, "etc_browser_lock", return_value=MagicMock()),
+            patch.object(
+                fetch_cli, "fetch_month",
+                side_effect=[
+                    ETCNavigationStateError("画面遷移エラー1"),
+                    ETCNavigationStateError("画面遷移エラー2"),
+                    {"status": "success"},
+                ],
+            ) as fetch,
+            patch.object(fetch_cli, "send_fetch_failure_notification", return_value={"status": "empty", "count": 0}),
+            patch.object(fetch_cli, "dispatch_pending_new_record_notifications", return_value={"status": "empty", "count": 0}),
+            patch.object(fetch_cli, "record_scheduled_fetch_completed") as completed,
+        ):
+            exit_code = fetch_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(browser.recover_statement_page.call_count, 2)
+        completed.assert_called_once_with("success")
+
+    def test_navigation_recovery_logs_in_when_stateful_refresh_expires_session(self):
+        browser = MagicMock()
+        browser.recover_statement_page.return_value = False
+
+        fetch_cli._recover_fetch_browser(browser)
+
+        browser.recover_statement_page.assert_called_once_with(force=True)
+        browser.ensure_logged_in.assert_called_once_with()
 
     def test_new_etc_records_are_rendered_as_summary_and_record_cards(self):
         batches = _discord_batches([

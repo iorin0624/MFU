@@ -684,10 +684,10 @@ class ETCTargetPage:
         self.wait_ready()
         return bool(self.evaluate("Boolean(document.querySelector('input[name=\"hakkoMeisai\"]'))"))
 
-    def recover_statement_page(self) -> bool:
+    def recover_statement_page(self, *, force: bool = False) -> bool:
         """Recover through the site's stateful form instead of direct URL navigation."""
         self.wait_ready()
-        if self.has_statement_form():
+        if self.has_statement_form() and not force:
             return True
         if not self.is_logged_in():
             return False

@@ -32,6 +32,13 @@ def _scheduled_fetch_months() -> list[str]:
     return months
 
 
+def _recover_fetch_browser(browser: ETCTargetPage) -> None:
+    """Refresh the ETC one-time form state, logging in again if it expired."""
+    if browser.recover_statement_page(force=True):
+        return
+    browser.ensure_logged_in()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ETC利用証明書PDF取得")
     parser.add_argument("--month", action="append", help="対象月 YYYYMM。複数指定可")
@@ -53,18 +60,28 @@ def main() -> int:
     try:
         with browser_automation_lock("etc", wait_seconds=600), etc_browser_lock(), ETCTargetPage() as browser:
             for month in months:
-                for attempt in range(2):
+                for attempt in range(3):
                     try:
                         results.append(fetch_month(month, force_record_ids=set(args.force_id), browser=browser))
                         break
                     except ETCNavigationStateError as exc:
-                        if attempt == 0 and browser.recover_statement_page():
+                        if attempt < 2:
+                            try:
+                                _recover_fetch_browser(browser)
+                            except Exception as recovery_exc:
+                                results.append({
+                                    "status": _failure_status(recovery_exc),
+                                    "statement_month": month,
+                                    "error": str(recovery_exc),
+                                })
+                                exit_code = 1
+                                break
                             continue
                         results.append({"status": "error", "statement_month": month, "error": str(exc)})
                         exit_code = 1
                         break
                     except ETCAuthenticationRequired as exc:
-                        if attempt == 0:
+                        if attempt < 2:
                             try:
                                 browser.ensure_logged_in()
                             except Exception as login_exc:
