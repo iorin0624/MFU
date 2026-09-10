@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}定期経費 | MFU{% endblock %}
+{% block head_extra %}
+<style>
+  .expense-summary {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.75rem}
+  .expense-summary .card-body {padding:.9rem}
+  .expense-card {border-left:5px solid #adb5bd}
+  .expense-card.registered {border-left-color:#198754}
+  .expense-card.error {border-left-color:#dc3545}
+  .expense-card.overdue {border-left-color:#ffc107}
+  .attachment-list {display:flex;flex-wrap:wrap;gap:.4rem}
+  @media(max-width:767px){.expense-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.expense-summary .wide{grid-column:span 2}}
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
+  <div><h1 class="h3 mb-1">毎月の経費チェックリスト</h1><div class="text-muted">定期的な経費と証憑を管理し、freeeへの登録漏れを防ぎます。</div></div>
+  <form method="get" class="d-flex gap-2 align-items-end">
+    <div><label class="form-label mb-1" for="month">対象月</label><input class="form-control" id="month" name="month" type="month" value="{{ selected_month }}"></div>
+    <button class="btn btn-primary">表示</button>
+  </form>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="alert alert-{{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+
+<div class="expense-summary mb-4">
+  <div class="card"><div class="card-body"><div class="text-muted small">対象</div><strong>{{ summary.count }}件</strong></div></div>
+  <div class="card"><div class="card-body"><div class="text-muted small">登録済み</div><strong class="text-success">{{ summary.registered }}件</strong></div></div>
+  <div class="card"><div class="card-body"><div class="text-muted small">未登録</div><strong>{{ summary.pending }}件</strong></div></div>
+  <div class="card"><div class="card-body"><div class="text-muted small">期限超過</div><strong class="text-danger">{{ summary.overdue }}件</strong></div></div>
+  <div class="card wide"><div class="card-body"><div class="text-muted small">入力済み合計</div><strong>¥{{ '{:,}'.format(summary.amount) }}</strong></div></div>
+</div>
+
+<form method="post" action="{{ url_for('recurring_expenses.month_register_batch') }}" id="batchRegisterForm" class="d-flex justify-content-end gap-2 mb-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="month" value="{{ selected_month }}">
+  <button class="btn btn-success" onclick="return confirm('選択した経費を順番に登録しますか？')">選択した項目を一括登録</button>
+</form>
+
+<div class="d-grid gap-3 mb-4">
+{% for item in items %}
+  {% set overdue = item.status not in ['registered','manual','excluded'] and item.issue_date < today %}
+  <article class="card expense-card {{ 'registered' if item.status in ['registered','manual'] else ('error' if item.status == 'error' else ('overdue' if overdue else '')) }}">
+    <div class="card-body">
+      <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+        <div class="d-flex gap-2 align-items-start">{% if item.status not in ['registered','manual','excluded'] %}<input class="form-check-input mt-1" type="checkbox" name="month_ids" value="{{ item.id }}" form="batchRegisterForm" aria-label="{{ item.name }}を一括登録対象にする">{% endif %}<div><h2 class="h5 mb-1">{{ item.name }} {% if item.receipt_required %}<span class="badge text-bg-info">証憑必須</span>{% endif %}</h2><div class="small text-muted">{{ item.notes or 'メモなし' }}</div></div></div>
+        <div>
+          {% if item.status == 'registered' %}<span class="badge text-bg-success">freee登録済み</span>
+          {% elif item.status == 'pending_update' %}<span class="badge text-bg-warning">freee更新あり</span>
+          {% elif item.status == 'manual' %}<span class="badge text-bg-success">手動登録済み</span>
+          {% elif item.status == 'excluded' %}<span class="badge text-bg-secondary">今月は対象外</span>
+          {% elif item.status == 'error' %}<span class="badge text-bg-danger">登録エラー</span>
+          {% elif item.status == 'registering' %}<span class="badge text-bg-warning">登録処理中</span>
+          {% else %}<span class="badge text-bg-warning">未登録</span>{% endif %}
+        </div>
+      </div>
+      {% if item.freee_deal_id %}<div class="alert alert-success py-2">freee取引ID：{{ item.freee_deal_id }}</div>{% endif %}
+      {% if item.freee_error %}<div class="alert alert-danger py-2">{{ item.freee_error }}</div>{% endif %}
+      <form method="post" action="{{ url_for('recurring_expenses.month_update', month_id=item.id) }}" class="row g-2 align-items-end mb-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="col-sm-3"><label class="form-label">発生日・支払日</label><input class="form-control" type="date" name="issue_date" value="{{ item.issue_date }}" required></div>
+        <div class="col-sm-3"><label class="form-label">実際の金額</label><div class="input-group"><span class="input-group-text">¥</span><input class="form-control" type="number" min="0" name="actual_amount" value="{{ item.actual_amount if item.actual_amount is not none else '' }}"></div></div>
+        <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option><option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>今月は対象外</option></select></div>
+        {% if item.registration_mode == 'existing' %}<div class="col-sm-3"><label class="form-label">既存freee取引ID</label><input class="form-control" type="number" min="1" name="existing_deal_id" value="{{ item.existing_deal_id or '' }}" {{ 'disabled' if item.freee_deal_id else '' }}></div>{% endif %}
+        <div class="col-12"><button class="btn btn-outline-primary btn-sm">入力内容を保存</button></div>
+      </form>
+      <div class="mb-3">
+        <div class="fw-semibold mb-2">レシート・請求書</div>
+        <div class="attachment-list mb-2">
+        {% for attachment in item.attachments %}
+          <div class="border rounded px-2 py-1 small">
+            <a href="{{ url_for('recurring_expenses.attachment_view', attachment_id=attachment.id) }}" target="_blank" rel="noopener">{{ attachment.original_name }}</a>
+            {% if attachment.freee_receipt_id %}<span class="badge text-bg-success">freee済</span>{% elif attachment.freee_error %}<span class="badge text-bg-danger" title="{{ attachment.freee_error }}">エラー</span>{% endif %}
+            {% if not attachment.freee_receipt_id %}<form method="post" action="{{ url_for('recurring_expenses.attachment_delete', attachment_id=attachment.id) }}" class="d-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-sm btn-link text-danger p-0 ms-1" onclick="return confirm('添付ファイルを削除しますか？')">削除</button></form>{% endif %}
+          </div>
+        {% else %}<span class="small text-muted">添付なし</span>{% endfor %}
+        </div>
+        <form method="post" enctype="multipart/form-data" action="{{ url_for('recurring_expenses.attachment_upload', month_id=item.id) }}" class="d-flex flex-wrap gap-2"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input class="form-control form-control-sm" style="max-width:520px" type="file" name="receipts" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif" multiple required><button class="btn btn-outline-secondary btn-sm">添付</button></form>
+      </div>
+      {% if item.status not in ['registered','manual','excluded'] %}<form method="post" action="{{ url_for('recurring_expenses.month_register', month_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-success" onclick="return confirm('{{ '手動登録済みにしますか？' if item.registration_mode == 'manual' else ('freeeの取引を更新しますか？' if item.freee_deal_id else 'freeeへ登録しますか？') }}')">{{ '手動登録済みにする' if item.registration_mode == 'manual' else ('freeeを更新' if item.freee_deal_id else 'freeeへ登録') }}</button></form>{% endif %}
+    </div>
+  </article>
+{% else %}<div class="alert alert-info">この月に発生する経費はありません。下の「経費マスター管理」から追加してください。</div>{% endfor %}
+</div>
+
+<details class="card mb-4" id="master" {{ 'open' if manage_masters else '' }}>
+  <summary class="card-header fw-bold">経費マスター管理</summary>
+  <div class="card-body">
+    {% if not manage_masters %}
+    <a class="btn btn-primary mb-3" href="{{ url_for('recurring_expenses.index', month=selected_month, manage=1) }}#master">経費マスターを追加・編集</a>
+    {% else %}
+    {% for warning in master_data.warnings %}<div class="alert alert-warning">{{ warning }}</div>{% endfor %}
+    <form method="post" action="{{ url_for('recurring_expenses.master_save') }}" class="row g-3 mb-4">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="master_id" value="{{ editing.id if editing else '' }}"><input type="hidden" name="return_month" value="{{ selected_month }}">
+      <div class="col-md-6"><label class="form-label">経費名</label><input class="form-control" name="name" value="{{ editing.name if editing else '' }}" required></div>
+      <div class="col-md-3"><label class="form-label">金額</label><select class="form-select" name="amount_mode"><option value="variable" {{ 'selected' if not editing or editing.amount_mode == 'variable' else '' }}>毎月変動</option><option value="fixed" {{ 'selected' if editing and editing.amount_mode == 'fixed' else '' }}>毎月固定</option></select></div>
+      <div class="col-md-3"><label class="form-label">固定金額</label><input class="form-control" type="number" min="0" name="default_amount" value="{{ editing.default_amount if editing and editing.default_amount is not none else '' }}"></div>
+      <div class="col-md-2"><label class="form-label">発生日</label><input class="form-control" type="number" min="1" max="31" name="due_day" value="{{ editing.due_day if editing else 1 }}" required></div>
+      <div class="col-md-2"><label class="form-label">周期</label><select class="form-select" name="frequency_months">{% for value,label in [(1,'毎月'),(2,'隔月'),(3,'3か月'),(6,'半年'),(12,'年払い')] %}<option value="{{ value }}" {{ 'selected' if editing and editing.frequency_months == value else '' }}>{{ label }}</option>{% endfor %}</select></div>
+      <div class="col-md-2"><label class="form-label">開始月</label><input class="form-control" type="month" name="start_month" value="{{ editing.start_month if editing else selected_month }}" required></div>
+      <div class="col-md-2"><label class="form-label">終了月</label><input class="form-control" type="month" name="end_month" value="{{ editing.end_month if editing else '' }}"></div>
+      <div class="col-md-2"><label class="form-label">表示順</label><input class="form-control" type="number" name="order_no" value="{{ editing.order_no if editing else 0 }}"></div>
+      <div class="col-md-2 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="receipt_required" value="1" id="receiptRequired" {{ 'checked' if editing and editing.receipt_required else '' }}><label class="form-check-label" for="receiptRequired">証憑必須</label></div></div>
+      <div class="col-md-4"><label class="form-label">勘定科目</label><select class="form-select" name="account_item_id" required><option value="">選択</option>{% for row in master_data.account_items %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.account_item_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label">税区分</label><select class="form-select" name="tax_code" required><option value="">選択</option>{% for row in master_data.taxes %}{% set code = row.code if row.code is defined else row.tax_code %}<option value="{{ code }}" {{ 'selected' if editing and editing.tax_code == code else '' }}>{{ row.name_ja or row.name }}（{{ code }}）</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label">取引先（任意）</label><select class="form-select" name="partner_id"><option value="">なし</option>{% for row in master_data.partners %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.partner_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label">品目（任意）</label><select class="form-select" name="item_id"><option value="">なし</option>{% for row in master_data['items'] %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.item_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label">決済状態</label><select class="form-select" name="payment_mode"><option value="settled" {{ 'selected' if not editing or editing.payment_mode == 'settled' else '' }}>支払済み</option><option value="unsettled" {{ 'selected' if editing and editing.payment_mode == 'unsettled' else '' }}>未決済</option></select></div>
+      <div class="col-md-4"><label class="form-label">決済口座</label><select class="form-select" id="walletable" onchange="syncWallet()"><option value="">選択</option>{% for row in master_data.walletables %}<option value="{{ row.walletable_type or row.type }}:{{ row.id or row.walletable_id }}" {{ 'selected' if editing and editing.walletable_type == (row.walletable_type or row.type) and editing.walletable_id == (row.id or row.walletable_id) else '' }}>{{ row.name }}</option>{% endfor %}</select><input type="hidden" name="walletable_type" id="walletableType"><input type="hidden" name="walletable_id" id="walletableId"></div>
+      <div class="col-md-4"><label class="form-label">freee登録方法</label><select class="form-select" name="registration_mode"><option value="create" {{ 'selected' if not editing or editing.registration_mode == 'create' else '' }}>APIで新規登録</option><option value="existing" {{ 'selected' if editing and editing.registration_mode == 'existing' else '' }}>既存取引へ紐付け</option><option value="manual" {{ 'selected' if editing and editing.registration_mode == 'manual' else '' }}>手動登録を確認</option></select></div>
+      <div class="col-md-8"><label class="form-label">メモ</label><textarea class="form-control" name="notes" rows="2">{{ editing.notes if editing else '' }}</textarea></div>
+      <div class="col-md-2 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="is_active" value="1" id="isActive" {{ 'checked' if not editing or editing.is_active else '' }}><label class="form-check-label" for="isActive">有効</label></div></div>
+      <div class="col-md-2 d-flex align-items-end gap-2"><button class="btn btn-primary">{{ '更新' if editing else '追加' }}</button>{% if editing %}<a class="btn btn-outline-secondary" href="{{ url_for('recurring_expenses.index', month=selected_month) }}">取消</a>{% endif %}</div>
+    </form>
+    {% endif %}
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>経費名</th><th>周期</th><th>金額</th><th>状態</th><th></th></tr></thead><tbody>{% for master in masters %}<tr><td>{{ master.name }}</td><td>{{ master.frequency_months }}か月ごと</td><td>{{ '¥{:,.0f}'.format(master.default_amount) if master.amount_mode == 'fixed' and master.default_amount is not none else '変動' }}</td><td>{{ '有効' if master.is_active else '停止中' }}</td><td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="{{ url_for('recurring_expenses.index', month=selected_month, edit=master.id) }}#master">編集</a><form method="post" action="{{ url_for('recurring_expenses.master_active', master_id=master.id) }}" class="d-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="month" value="{{ selected_month }}"><input type="hidden" name="active" value="{{ 0 if master.is_active else 1 }}"><button class="btn btn-sm btn-outline-secondary">{{ '停止' if master.is_active else '再開' }}</button></form></td></tr>{% endfor %}</tbody></table></div>
+  </div>
+</details>
+{% endblock %}
+{% block body_extra %}<script>function syncWallet(){const s=document.getElementById('walletable');const [t,id]=(s.value||':').split(':');document.getElementById('walletableType').value=t;document.getElementById('walletableId').value=id}syncWallet();</script>{% endblock %}
