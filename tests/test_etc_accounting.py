@@ -44,6 +44,7 @@ from app.etc_accounting.routes import (
     _parse_filter_date,
     _sort_batch_records,
 )
+from app.etc_accounting import routes as etc_routes
 from app.etc_accounting.tollgate_reference import (
     _reference_lookup,
     normalize_tollgate_name,
@@ -66,6 +67,25 @@ STATEMENT_HTML = """
 
 
 class ETCAccountingTest(unittest.TestCase):
+    def test_browser_status_does_not_duplicate_runtime_error_as_warning(self):
+        with (
+            patch.object(etc_routes, "ETCTargetPage", side_effect=RuntimeError("browser ownership error")),
+            patch.object(etc_routes, "etc_browser_lock", MagicMock()),
+            patch.object(etc_routes, "_credentials_status", return_value={"configured": True}),
+        ):
+            # The route's response shape is tested inside a minimal Flask request
+            # context so the UI receives one error field, rather than rendering the
+            # same text in both the status box and warning alert.
+            from flask import Flask
+
+            flask_app = Flask(__name__)
+            with flask_app.test_request_context("/etc-accounting/browser/status"):
+                response = etc_routes.browser_status.__wrapped__()
+
+        payload = response.get_json()
+        self.assertEqual(payload["error"], "browser ownership error")
+        self.assertNotIn("warning", payload)
+
     def test_completed_pdf_download_ignores_partial_files(self):
         with TemporaryDirectory() as temporary:
             folder = Path(temporary)
