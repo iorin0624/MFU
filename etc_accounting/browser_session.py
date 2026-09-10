@@ -985,6 +985,46 @@ class ETCTargetPage:
         download_dir = ETC_BROWSER_DOWNLOAD_ROOT / uuid.uuid4().hex
         download_dir.mkdir(parents=True, exist_ok=False)
         try:
+            form_payload = self.evaluate(
+                f"""
+                (() => {{
+                  const form = document.querySelector('form[name="frm"]');
+                  if (!form) return null;
+                  for (const checkbox of form.querySelectorAll('input[type="checkbox"][name="hakkoMeisai"]')) {{
+                    checkbox.checked = checkbox.value === {key_json};
+                  }}
+                  for (const hidden of form.querySelectorAll('input[name="hakkoMeisai"]:not([type="checkbox"])')) {{
+                    hidden.disabled = true;
+                  }}
+                  const token = form.querySelector('input[name="p"]');
+                  if (token) token.value = {token_json};
+                  return {{
+                    referer: location.href,
+                    data: [...new FormData(form).entries()].map(
+                      ([name, value]) => [name, String(value)]
+                    ),
+                  }};
+                }})()
+                """
+            )
+            if not isinstance(form_payload, dict) or not form_payload.get("data"):
+                raise RuntimeError("ETC利用証明書の発行フォームを取得できませんでした。")
+
+            # Use the authenticated Chromium session and the exact stateful
+            # form values, but receive the PDF response directly.  This avoids
+            # both popup suppression and Chromium PDF-viewer target races.
+            session = requests_session_from_browser()
+            response = session.post(
+                same_origin_url("/etc/R?funccode=1013000000&nextfunc=1013600000"),
+                data=form_payload["data"],
+                headers={"Referer": str(form_payload.get("referer") or ETC_LIST_URL)},
+                timeout=60,
+            )
+            if response.ok and response.content.startswith(b"%PDF-"):
+                return response.content
+
+            # Compatibility fallback for a future ETC-side response that can
+            # only be handled as a browser download.
             cdp_call(
                 "Browser.setDownloadBehavior",
                 {
@@ -1005,15 +1045,7 @@ class ETCTargetPage:
                 f"""
                 (() => {{
                   const form = document.querySelector('form[name="frm"]');
-                  if (!form) return null;
-                  for (const checkbox of form.querySelectorAll('input[type="checkbox"][name="hakkoMeisai"]')) {{
-                    checkbox.checked = checkbox.value === {key_json};
-                  }}
-                  for (const hidden of form.querySelectorAll('input[name="hakkoMeisai"]:not([type="checkbox"])')) {{
-                    hidden.disabled = true;
-                  }}
-                  const token = form.querySelector('input[name="p"]');
-                  if (token) token.value = {token_json};
+                  if (!form) return false;
                   form.method = 'POST';
                   form.action = '/etc/R?funccode=1013000000&nextfunc=1013600000';
                   form.target = {output_window_json};

@@ -87,6 +87,30 @@ class ETCAccountingTest(unittest.TestCase):
             self.assertEqual(browser.download_pdf("key", "token"), b"%PDF-ok")
         self.assertEqual(browser._download_pdf_once.call_count, 3)
 
+    def test_pdf_download_uses_authenticated_form_post_before_viewer(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.evaluate = MagicMock(return_value={
+            "referer": "https://www2.etc-meisai.jp/etc/list",
+            "data": [["p", "token"], ["hakkoMeisai", "record-key"]],
+        })
+        response = MagicMock(ok=True, content=b"%PDF-direct")
+        session = MagicMock()
+        session.post.return_value = response
+        with (
+            TemporaryDirectory() as temporary,
+            patch("app.etc_accounting.browser_session.ETC_BROWSER_DOWNLOAD_ROOT", Path(temporary)),
+            patch("app.etc_accounting.browser_session._all_targets", return_value=[]),
+            patch("app.etc_accounting.browser_session._page_targets", return_value=[]),
+            patch("app.etc_accounting.browser_session.cdp_call") as cdp,
+            patch("app.etc_accounting.browser_session.requests_session_from_browser", return_value=session),
+        ):
+            content = browser._download_pdf_once("record-key", "token")
+
+        self.assertEqual(content, b"%PDF-direct")
+        session.post.assert_called_once()
+        self.assertEqual(cdp.call_args.args[0], "Browser.setDownloadBehavior")
+        self.assertEqual(cdp.call_args.args[1], {"behavior": "default"})
+
     def test_pdf_download_raises_stable_error_after_three_failures(self):
         browser = object.__new__(ETCTargetPage)
         browser._download_pdf_once = MagicMock(side_effect=RuntimeError("timeout"))
