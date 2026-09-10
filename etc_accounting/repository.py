@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -257,6 +257,25 @@ def ensure_schema() -> None:
                     last_completed_at DATETIME NULL,
                     last_status VARCHAR(32) NULL,
                     updated_at DATETIME NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS etc_fetch_alert_state (
+                    fingerprint CHAR(64) NOT NULL PRIMARY KEY,
+                    statement_month CHAR(6) NOT NULL,
+                    record_key VARCHAR(191) NOT NULL DEFAULT '',
+                    error_code VARCHAR(64) NOT NULL,
+                    error_text VARCHAR(700) NOT NULL DEFAULT '',
+                    occurrence_count INT NOT NULL DEFAULT 1,
+                    suppressed_count INT NOT NULL DEFAULT 0,
+                    first_seen_at DATETIME NOT NULL,
+                    last_seen_at DATETIME NOT NULL,
+                    last_notified_at DATETIME NULL,
+                    resolved_at DATETIME NULL,
+                    INDEX ix_etc_fetch_alert_month (statement_month, resolved_at),
+                    INDEX ix_etc_fetch_alert_notified (last_notified_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
@@ -927,6 +946,132 @@ def get_scheduled_fetch_state() -> dict | None:
         cur = db.cursor(dictionary=True)
         cur.execute("SELECT * FROM etc_fetch_automation_state WHERE id=1")
         return cur.fetchone()
+    finally:
+        db.close()
+
+
+def update_fetch_alert_states(
+    alerts: list[dict],
+    *,
+    checked_months: list[str] | None = None,
+    cooldown_hours: int = 12,
+) -> list[dict]:
+    """Record occurrences and return only alerts whose cooldown has elapsed."""
+    ensure_schema()
+    now = datetime.now()
+    cooldown = timedelta(hours=max(1, int(cooldown_hours)))
+    active_fingerprints = {str(alert["fingerprint"]) for alert in alerts}
+    due_alerts = []
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        db.start_transaction()
+        for alert in alerts:
+            fingerprint = str(alert["fingerprint"])
+            cur.execute(
+                "SELECT * FROM etc_fetch_alert_state WHERE fingerprint=%s FOR UPDATE",
+                (fingerprint,),
+            )
+            current = cur.fetchone()
+            reactivated = bool(current and current.get("resolved_at"))
+            if not current:
+                cur.execute(
+                    """
+                    INSERT INTO etc_fetch_alert_state (
+                        fingerprint, statement_month, record_key, error_code, error_text,
+                        occurrence_count, suppressed_count, first_seen_at, last_seen_at
+                    ) VALUES (%s, %s, %s, %s, %s, 1, 0, %s, %s)
+                    """,
+                    (
+                        fingerprint,
+                        str(alert.get("statement_month") or "")[:6],
+                        str(alert.get("record_key") or "")[:191],
+                        str(alert.get("error_code") or "UNKNOWN")[:64],
+                        str(alert.get("error") or "")[:700],
+                        now,
+                        now,
+                    ),
+                )
+                suppressed_before = 0
+                due = True
+            else:
+                last_notified = current.get("last_notified_at")
+                due = bool(
+                    reactivated
+                    or not last_notified
+                    or now - last_notified >= cooldown
+                )
+                suppressed_before = 0 if reactivated else int(current.get("suppressed_count") or 0)
+                cur.execute(
+                    """
+                    UPDATE etc_fetch_alert_state
+                    SET statement_month=%s, record_key=%s, error_code=%s, error_text=%s,
+                        occurrence_count=CASE WHEN resolved_at IS NULL THEN occurrence_count + 1 ELSE 1 END,
+                        suppressed_count=CASE
+                            WHEN resolved_at IS NOT NULL THEN 0
+                            WHEN %s THEN suppressed_count
+                            ELSE suppressed_count + 1
+                        END,
+                        first_seen_at=CASE WHEN resolved_at IS NULL THEN first_seen_at ELSE %s END,
+                        last_seen_at=%s, resolved_at=NULL
+                    WHERE fingerprint=%s
+                    """,
+                    (
+                        str(alert.get("statement_month") or "")[:6],
+                        str(alert.get("record_key") or "")[:191],
+                        str(alert.get("error_code") or "UNKNOWN")[:64],
+                        str(alert.get("error") or "")[:700],
+                        1 if due else 0,
+                        now,
+                        now,
+                        fingerprint,
+                    ),
+                )
+            if due:
+                due_alert = dict(alert)
+                due_alert["suppressed_count"] = suppressed_before
+                due_alerts.append(due_alert)
+
+        months = [str(month)[:6] for month in (checked_months or []) if str(month)]
+        if months:
+            month_placeholders = ", ".join(["%s"] * len(months))
+            params: list = [now, *months]
+            query = (
+                "UPDATE etc_fetch_alert_state SET resolved_at=%s "
+                f"WHERE resolved_at IS NULL AND statement_month IN ({month_placeholders})"
+            )
+            if active_fingerprints:
+                fingerprint_placeholders = ", ".join(["%s"] * len(active_fingerprints))
+                query += f" AND fingerprint NOT IN ({fingerprint_placeholders})"
+                params.extend(sorted(active_fingerprints))
+            cur.execute(query, tuple(params))
+        db.commit()
+        return due_alerts
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def mark_fetch_alerts_notified(fingerprints: list[str]) -> None:
+    if not fingerprints:
+        return
+    ensure_schema()
+    now = datetime.now()
+    db = get_db()
+    try:
+        cur = db.cursor()
+        placeholders = ", ".join(["%s"] * len(fingerprints))
+        cur.execute(
+            f"""
+            UPDATE etc_fetch_alert_state
+            SET last_notified_at=%s, suppressed_count=0
+            WHERE fingerprint IN ({placeholders})
+            """,
+            (now, *fingerprints),
+        )
+        db.commit()
     finally:
         db.close()
 

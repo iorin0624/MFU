@@ -9,7 +9,7 @@ from flask import render_template
 
 from app.etc_accounting import credentials as etc_credentials
 from app.etc_accounting import browser_session as etc_browser_session
-from app.etc_accounting.browser_session import ETCMaintenanceError, ETCTargetPage
+from app.etc_accounting.browser_session import ETCMaintenanceError, ETCPDFDownloadError, ETCTargetPage
 from app.etc_accounting.batch import registration_eligibility, run_batch_job
 from app.etc_accounting.fetcher import _discard_replaced_pdf, _pdf_metadata, fetch_month, scheduled_months
 from app.etc_accounting import fetch_cli
@@ -31,6 +31,7 @@ from app.etc_accounting.pdf_metadata import parse_invoice_issuer_name
 from app.etc_accounting.presentation import travel_duration_minutes
 from app.etc_accounting.notifications import (
     _discord_batches,
+    _fetch_failure_alert,
     dispatch_pending_new_record_notifications,
     send_fetch_failure_notification,
     send_test_notification,
@@ -65,6 +66,34 @@ STATEMENT_HTML = """
 
 
 class ETCAccountingTest(unittest.TestCase):
+    def test_completed_pdf_download_ignores_partial_files(self):
+        with TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "certificate.pdf.crdownload").write_bytes(b"%PDF-partial")
+            self.assertIsNone(ETCTargetPage._completed_pdf_download(folder))
+            (folder / "certificate.pdf.crdownload").unlink()
+            (folder / "certificate.pdf").write_bytes(b"%PDF-1.7 complete")
+            self.assertEqual(
+                ETCTargetPage._completed_pdf_download(folder),
+                b"%PDF-1.7 complete",
+            )
+
+    def test_pdf_download_retries_three_times(self):
+        browser = object.__new__(ETCTargetPage)
+        browser._download_pdf_once = MagicMock(
+            side_effect=[RuntimeError("first"), RuntimeError("second"), b"%PDF-ok"]
+        )
+        with patch("app.etc_accounting.browser_session.time.sleep"):
+            self.assertEqual(browser.download_pdf("key", "token"), b"%PDF-ok")
+        self.assertEqual(browser._download_pdf_once.call_count, 3)
+
+    def test_pdf_download_raises_stable_error_after_three_failures(self):
+        browser = object.__new__(ETCTargetPage)
+        browser._download_pdf_once = MagicMock(side_effect=RuntimeError("timeout"))
+        with patch("app.etc_accounting.browser_session.time.sleep"):
+            with self.assertRaisesRegex(ETCPDFDownloadError, "3回取得できませんでした"):
+                browser.download_pdf("key", "token")
+
     def test_format_travel_duration(self):
         self.assertEqual(
             _format_travel_duration(
@@ -1049,6 +1078,11 @@ class ETCAccountingTest(unittest.TestCase):
         with (
             patch("app.etc_accounting.notifications.get_admin_discord_webhook", return_value="https://discord.example/webhook") as webhook,
             patch("app.etc_accounting.notifications._post_discord") as post,
+            patch(
+                "app.etc_accounting.notifications.update_fetch_alert_states",
+                side_effect=lambda alerts, **kwargs: alerts,
+            ),
+            patch("app.etc_accounting.notifications.mark_fetch_alerts_notified") as marked,
         ):
             result = send_fetch_failure_notification(failures, scheduled=True)
 
@@ -1058,6 +1092,49 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertEqual(payload["embeds"][0]["title"], "🔐 ETCの再ログインが必要です")
         self.assertEqual(payload["embeds"][0]["fields"][0]["value"], "定期取得")
         self.assertIn("202609", payload["embeds"][0]["fields"][1]["value"])
+        marked.assert_called_once()
+
+    def test_fetch_failure_fingerprint_is_scoped_to_record_and_error_type(self):
+        first = _fetch_failure_alert({
+            "statement_month": "202608",
+            "record_id": 19297,
+            "error_code": "PDF_DOWNLOAD_FAILED",
+            "error": "first wording",
+        })
+        same = _fetch_failure_alert({
+            "statement_month": "202608",
+            "record_id": 19297,
+            "error_code": "PDF_DOWNLOAD_FAILED",
+            "error": "different wording",
+        })
+        other_record = _fetch_failure_alert({
+            "statement_month": "202608",
+            "record_id": 19296,
+            "error_code": "PDF_DOWNLOAD_FAILED",
+            "error": "first wording",
+        })
+        self.assertEqual(first["fingerprint"], same["fingerprint"])
+        self.assertNotEqual(first["fingerprint"], other_record["fingerprint"])
+
+    def test_fetch_failure_notification_is_suppressed_during_cooldown(self):
+        failures = [{
+            "status": "error",
+            "statement_month": "202608",
+            "record_id": 19297,
+            "error": "ETC利用証明書PDFを取得できませんでした。",
+        }]
+        with (
+            patch("app.etc_accounting.notifications.update_fetch_alert_states", return_value=[]),
+            patch("app.etc_accounting.notifications._post_discord") as post,
+        ):
+            result = send_fetch_failure_notification(
+                failures,
+                scheduled=True,
+                checked_months=["202609", "202608"],
+            )
+
+        self.assertEqual(result, {"status": "suppressed", "count": 0, "suppressed": 1})
+        post.assert_not_called()
 
     def test_discord_batch_retry_does_not_resend_completed_cards(self):
         records = [

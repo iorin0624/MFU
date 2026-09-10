@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from datetime import datetime
 
 import requests
@@ -10,7 +11,13 @@ from app.discord_notifications.repository import get_discord_webhook
 from app.discord_notifications.repository import record_discord_delivery
 
 from .presentation import format_travel_duration
-from .repository import claim_pending_record_notifications, finish_record_notifications, list_records
+from .repository import (
+    claim_pending_record_notifications,
+    finish_record_notifications,
+    list_records,
+    mark_fetch_alerts_notified,
+    update_fetch_alert_states,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -188,21 +195,72 @@ def _post_discord(webhook_url: str, payload: dict) -> None:
     record_discord_delivery("etc_accounting", success=True)
 
 
-def send_fetch_failure_notification(failures: list[dict], *, scheduled: bool) -> dict:
+def _fetch_failure_error_code(item: dict) -> str:
+    explicit = str(item.get("error_code") or "").strip()
+    if explicit:
+        return explicit[:64]
+    error = str(item.get("error") or item.get("message") or "")
+    markers = (
+        ("PDF", "PDF_DOWNLOAD_FAILED"),
+        ("自動ログイン", "AUTHENTICATION_FAILED"),
+        ("再ログイン", "AUTHENTICATION_REQUIRED"),
+        ("ログイン有効期限", "AUTHENTICATION_REQUIRED"),
+        ("遷移情報", "NAVIGATION_STATE_INVALID"),
+        ("送信フォーム", "NAVIGATION_STATE_INVALID"),
+        ("メンテナンス", "OFFICIAL_MAINTENANCE"),
+    )
+    return next((code for marker, code in markers if marker in error), "FETCH_FAILED")
+
+
+def _fetch_failure_alert(item: dict) -> dict:
+    statement_month = str(item.get("statement_month") or "")[:6]
+    record_key = str(item.get("transaction_key") or item.get("record_id") or "month")
+    error_code = _fetch_failure_error_code(item)
+    fingerprint = hashlib.sha256(
+        f"{statement_month}|{record_key}|{error_code}".encode("utf-8")
+    ).hexdigest()
+    return {
+        **item,
+        "statement_month": statement_month,
+        "record_key": record_key,
+        "error_code": error_code,
+        "fingerprint": fingerprint,
+    }
+
+
+def send_fetch_failure_notification(
+    failures: list[dict],
+    *,
+    scheduled: bool,
+    checked_months: list[str] | None = None,
+) -> dict:
     """Send one consolidated alert when an ETC acquisition run cannot complete."""
     failed = [item for item in failures if str(item.get("status") or "") in {"error", "auth_required"}]
+    alerts = [_fetch_failure_alert(item) for item in failed]
+    due_alerts = update_fetch_alert_states(
+        alerts,
+        checked_months=checked_months,
+        cooldown_hours=12,
+    )
     if not failed:
         return {"status": "empty", "count": 0}
 
-    auth_required = any(str(item.get("status") or "") == "auth_required" for item in failed)
-    target_months = [str(item.get("statement_month") or "").strip() for item in failed]
+    if not due_alerts:
+        return {"status": "suppressed", "count": 0, "suppressed": len(failed)}
+
+    auth_required = any(str(item.get("status") or "") == "auth_required" for item in due_alerts)
+    target_months = [str(item.get("statement_month") or "").strip() for item in due_alerts]
     target_text = "、".join(month for month in target_months if month) or "対象月不明"
     reasons = []
-    for item in failed:
+    suppressed_total = 0
+    for item in due_alerts:
         reason = str(item.get("error") or item.get("message") or "取得処理に失敗しました。")
         reason = " ".join(reason.split())[:700]
         if reason not in reasons:
             reasons.append(reason)
+        suppressed_total += int(item.get("suppressed_count") or 0)
+    if suppressed_total:
+        reasons.append(f"同一エラーのDiscord通知を直前まで{suppressed_total}回抑制しました。")
     payload = {
         "embeds": [{
             "title": "🔐 ETCの再ログインが必要です" if auth_required else "⚠️ ETC明細を取得できませんでした",
@@ -220,11 +278,12 @@ def send_fetch_failure_notification(failures: list[dict], *, scheduled: bool) ->
     }
     try:
         _post_discord(get_admin_discord_webhook(), payload)
+        mark_fetch_alerts_notified([str(item["fingerprint"]) for item in due_alerts])
     except Exception as exc:
         record_discord_delivery("etc_accounting", success=False, error=str(exc))
         raise
-    LOGGER.warning("ETC fetch failure notification sent: count=%s", len(failed))
-    return {"status": "sent", "count": len(failed)}
+    LOGGER.warning("ETC fetch failure notification sent: count=%s", len(due_alerts))
+    return {"status": "sent", "count": len(due_alerts)}
 
 
 def dispatch_pending_new_record_notifications() -> dict:

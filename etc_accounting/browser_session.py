@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -42,6 +43,9 @@ ETC_MAINTENANCE_MESSAGE = "ETC側メンテナンス中です。公式サイト�
 ETC_BROWSER_START_LOCK_FILE = Path(
     os.environ.get("ETC_BROWSER_START_LOCK_FILE", str(ETC_BROWSER_ROOT / "browser_start.lock"))
 ).expanduser()
+ETC_BROWSER_DOWNLOAD_ROOT = Path(
+    os.environ.get("ETC_BROWSER_DOWNLOAD_ROOT", str(ETC_BROWSER_STATE_DIR / "downloads"))
+).expanduser()
 _browser_start_thread_lock = threading.Lock()
 _maintenance_cache_lock = threading.Lock()
 _maintenance_cache = {"checked_at": 0.0, "active": False, "message": ""}
@@ -49,6 +53,12 @@ _maintenance_cache = {"checked_at": 0.0, "active": False, "message": ""}
 
 class ETCMaintenanceError(RuntimeError):
     """Raised when the official ETC service is temporarily under maintenance."""
+
+
+class ETCPDFDownloadError(RuntimeError):
+    """Raised after all safe PDF download attempts have failed."""
+
+    error_code = "PDF_DOWNLOAD_FAILED"
 
 
 def _navigation_state_error(message: str):
@@ -343,6 +353,24 @@ def _start_etc_browser_locked() -> dict:
     browser_data_dir = ETC_BROWSER_HOME_DIR / ".local" / "share"
     for path in (browser_config_dir, browser_cache_dir, browser_data_dir):
         path.mkdir(parents=True, exist_ok=True)
+    # This Chromium profile is dedicated to ETC acquisition.  Force PDFs to be
+    # downloaded so certificate retrieval does not depend on the built-in PDF
+    # viewer's extension iframe, whose target is intermittently unavailable.
+    preferences_path = ETC_BROWSER_PROFILE_DIR / "Default" / "Preferences"
+    preferences_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        preferences = json.loads(preferences_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        preferences = {}
+    plugins = preferences.setdefault("plugins", {})
+    if plugins.get("always_open_pdf_externally") is not True:
+        plugins["always_open_pdf_externally"] = True
+        temporary_preferences = preferences_path.with_suffix(".tmp")
+        temporary_preferences.write_text(
+            json.dumps(preferences, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary_preferences.replace(preferences_path)
     for path in (ETC_BROWSER_ROOT, ETC_BROWSER_PROFILE_DIR, ETC_BROWSER_HOME_DIR):
         os.chmod(path, 0o700)
 
@@ -855,11 +883,114 @@ class ETCTargetPage:
         )
         self._submit(f"/etc/R?funccode=1013000000&nextfunc=1013100000&pageNo={int(page_number)}")
 
-    def download_pdf(self, transaction_key: str, form_token: str) -> bytes:
+    @staticmethod
+    def _completed_pdf_download(download_dir: Path) -> bytes | None:
+        try:
+            files = [path for path in download_dir.iterdir() if path.is_file()]
+        except OSError:
+            return None
+        if any(path.name.endswith((".crdownload", ".tmp")) for path in files):
+            return None
+        for path in files:
+            try:
+                content = path.read_bytes()
+            except OSError:
+                continue
+            if content.startswith(b"%PDF-"):
+                return content
+        return None
+
+    @staticmethod
+    def _viewer_target(before_targets: dict[str, str]) -> dict | None:
+        candidates = []
+        for row in _all_targets():
+            target_id = str(row.get("id") or "")
+            url = str(row.get("url") or "")
+            if row.get("type") not in {"iframe", "page"}:
+                continue
+            if "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/" not in url:
+                continue
+            if target_id not in before_targets or before_targets.get(target_id) != url:
+                candidates.append(row)
+        return candidates[-1] if candidates else None
+
+    @staticmethod
+    def _read_viewer_pdf(viewer_target: dict) -> bytes:
+        import websocket
+
+        viewer_ws = websocket.create_connection(viewer_target["webSocketDebuggerUrl"], timeout=60)
+        try:
+            viewer_ws.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "Runtime.evaluate",
+                        "params": {
+                            "expression": """
+                            (async () => {
+                              const deadline = Date.now() + 30000;
+                              let viewer = null;
+                              while (Date.now() < deadline) {
+                                viewer = document.querySelector('#viewer');
+                                if (viewer && viewer.currentController && viewer.loadState_ === 'success') break;
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                              }
+                              if (!viewer || !viewer.currentController) {
+                                throw new Error('PDF viewer is not ready');
+                              }
+                              const result = await viewer.currentController.save('EDITED');
+                              if (!result || !result.dataToSave) {
+                                throw new Error('PDF data is unavailable');
+                              }
+                              const bytes = new Uint8Array(result.dataToSave);
+                              let binary = '';
+                              for (let offset = 0; offset < bytes.length; offset += 32768) {
+                                binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+                              }
+                              return btoa(binary);
+                            })()
+                            """,
+                            "returnByValue": True,
+                            "awaitPromise": True,
+                        },
+                    }
+                )
+            )
+            while True:
+                message = json.loads(viewer_ws.recv())
+                if message.get("id") != 1:
+                    continue
+                if message.get("error"):
+                    raise RuntimeError(str(message["error"]))
+                result = message.get("result", {}).get("result", {})
+                if result.get("subtype") == "error":
+                    raise RuntimeError(str(result.get("description") or "PDF viewer error"))
+                encoded = result.get("value")
+                if not encoded:
+                    raise RuntimeError("ETC利用証明書PDFの内容を取得できませんでした。")
+                return base64.b64decode(encoded)
+        finally:
+            viewer_ws.close()
+
+    def _download_pdf_once(self, transaction_key: str, form_token: str) -> bytes:
         key_json = json.dumps(transaction_key)
         token_json = json.dumps(form_token)
-        before_targets = {row.get("id") for row in _all_targets()}
+        before_rows = _all_targets()
+        before_targets = {
+            str(row.get("id") or ""): str(row.get("url") or "")
+            for row in before_rows
+        }
+        download_dir = ETC_BROWSER_DOWNLOAD_ROOT / uuid.uuid4().hex
+        download_dir.mkdir(parents=True, exist_ok=False)
         try:
+            cdp_call(
+                "Browser.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": str(download_dir),
+                    "eventsEnabled": True,
+                },
+            )
             button_rect = self.evaluate(
                 f"""
                 (() => {{
@@ -889,92 +1020,48 @@ class ETCTargetPage:
             self.call("Input.dispatchMouseEvent", {"type": "mousePressed", **click})
             self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **click})
 
-            viewer_target = None
+            # Normal route: the isolated ETC profile downloads PDFs directly.
+            # Keep the viewer route as a compatibility fallback for Chromium
+            # builds that ignore the external-PDF preference.
             deadline = time.time() + 30
             while time.time() < deadline:
-                viewer_target = next(
-                    (
-                        row
-                        for row in _all_targets()
-                        if row.get("id") not in before_targets
-                        and row.get("type") == "iframe"
-                        and "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/" in str(row.get("url") or "")
-                    ),
-                    None,
-                )
+                content = self._completed_pdf_download(download_dir)
+                if content:
+                    return content
+                viewer_target = self._viewer_target(before_targets)
                 if viewer_target:
-                    break
+                    content = self._read_viewer_pdf(viewer_target)
+                    if content.startswith(b"%PDF-"):
+                        return content
                 time.sleep(0.2)
-            if not viewer_target:
-                raise RuntimeError("ETC利用証明書のPDFビューアーが開きませんでした。")
-
-            import websocket
-
-            viewer_ws = websocket.create_connection(viewer_target["webSocketDebuggerUrl"], timeout=60)
-            try:
-                viewer_ws.send(
-                    json.dumps(
-                        {
-                            "id": 1,
-                            "method": "Runtime.evaluate",
-                            "params": {
-                                "expression": """
-                                (async () => {
-                                  const deadline = Date.now() + 30000;
-                                  let viewer = null;
-                                  while (Date.now() < deadline) {
-                                    viewer = document.querySelector('#viewer');
-                                    if (viewer && viewer.currentController && viewer.loadState_ === 'success') break;
-                                    await new Promise(resolve => setTimeout(resolve, 100));
-                                  }
-                                  if (!viewer || !viewer.currentController) {
-                                    throw new Error('PDF viewer is not ready');
-                                  }
-                                  const result = await viewer.currentController.save('EDITED');
-                                  if (!result || !result.dataToSave) {
-                                    throw new Error('PDF data is unavailable');
-                                  }
-                                  const bytes = new Uint8Array(result.dataToSave);
-                                  let binary = '';
-                                  for (let offset = 0; offset < bytes.length; offset += 32768) {
-                                    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-                                  }
-                                  return btoa(binary);
-                                })()
-                                """,
-                                "returnByValue": True,
-                                "awaitPromise": True,
-                            },
-                        }
-                    )
-                )
-                while True:
-                    message = json.loads(viewer_ws.recv())
-                    if message.get("id") != 1:
-                        continue
-                    if message.get("error"):
-                        raise RuntimeError(str(message["error"]))
-                    result = message.get("result", {}).get("result", {})
-                    if result.get("subtype") == "error":
-                        raise RuntimeError(str(result.get("description") or "PDF viewer error"))
-                    encoded = result.get("value")
-                    if not encoded:
-                        raise RuntimeError("ETC利用証明書PDFの内容を取得できませんでした。")
-                    content = base64.b64decode(encoded)
-                    break
-            finally:
-                viewer_ws.close()
-
-            if not content.startswith(b"%PDF-"):
-                raise RuntimeError("取得したETC利用証明書がPDFではありません。")
-            return content
+            raise RuntimeError("ETC利用証明書PDFのダウンロードを確認できませんでした。")
         finally:
+            try:
+                cdp_call("Browser.setDownloadBehavior", {"behavior": "default"})
+            except Exception:
+                pass
             for target in _page_targets():
-                if target.get("id") not in before_targets and target.get("id") != self.target.get("id"):
+                if str(target.get("id") or "") not in before_targets and target.get("id") != self.target.get("id"):
                     try:
                         cdp_call("Target.closeTarget", {"targetId": target.get("id")})
                     except Exception:
                         pass
+            shutil.rmtree(download_dir, ignore_errors=True)
+
+    def download_pdf(self, transaction_key: str, form_token: str) -> bytes:
+        errors = []
+        for attempt in range(3):
+            try:
+                content = self._download_pdf_once(transaction_key, form_token)
+                if not content.startswith(b"%PDF-"):
+                    raise RuntimeError("取得したETC利用証明書がPDFではありません。")
+                return content
+            except Exception as exc:
+                errors.append(str(exc))
+                if attempt < 2:
+                    time.sleep(attempt + 1)
+        detail = next((message for message in reversed(errors) if message), "原因不明")
+        raise ETCPDFDownloadError(f"ETC利用証明書PDFを3回取得できませんでした: {detail}")
 
 
 def requests_session_from_browser() -> requests.Session:

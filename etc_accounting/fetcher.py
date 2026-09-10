@@ -29,6 +29,15 @@ PDF_URL = "/etc/R?funccode=1013000000&nextfunc=1013600000"
 _LOGGER = logging.getLogger(__name__)
 
 
+class ETCRecordPDFFetchError(RuntimeError):
+    error_code = "PDF_DOWNLOAD_FAILED"
+
+    def __init__(self, message: str, *, record_id: int, transaction_key: str):
+        super().__init__(message)
+        self.record_id = int(record_id)
+        self.transaction_key = str(transaction_key or "")
+
+
 def _month_url(statement_month: str) -> str:
     return f"{ETC_LIST_URL}&taisyoYM={statement_month}"
 
@@ -111,6 +120,7 @@ def fetch_month(
     found = downloaded = skipped = 0
     new_count = updated_count = finalized_count = restored_count = 0
     changed_record_ids: set[int] = set()
+    record_failures: list[dict] = []
     force_ids = {int(record_id) for record_id in (force_record_ids or set())}
     seen_transaction_keys = set()
     try:
@@ -177,7 +187,27 @@ def fetch_month(
                     ):
                         skipped += 1
                         continue
-                    content = _download_pdf(active_browser, page.form_token, record)
+                    try:
+                        content = _download_pdf(active_browser, page.form_token, record)
+                    except Exception as exc:
+                        record_error = ETCRecordPDFFetchError(
+                            str(exc),
+                            record_id=record_id,
+                            transaction_key=str(record.get("transaction_key") or ""),
+                        )
+                        record_failures.append({
+                            "status": "error",
+                            "record_id": record_error.record_id,
+                            "transaction_key": record_error.transaction_key,
+                            "error_code": record_error.error_code,
+                            "error": str(record_error),
+                        })
+                        _LOGGER.warning(
+                            "ETC PDF acquisition failed; continuing remaining records: record_id=%s",
+                            record_id,
+                            exc_info=True,
+                        )
+                        continue
                     path, temporary, digest = _stage_pdf_bytes(record, content)
                     try:
                         metadata = _pdf_metadata(temporary, record)
@@ -197,9 +227,18 @@ def fetch_month(
         reconciliation = reconcile_source_records(statement_month, seen_transaction_keys)
         deleted_count = int(reconciliation.get("newly_deleted") or 0)
         change_count = len(changed_record_ids) + deleted_count
-        finish_run(run_id, status="success", found=found, downloaded=downloaded, skipped=skipped)
+        run_status = "partial" if record_failures else "success"
+        error_text = "; ".join(str(item.get("error") or "") for item in record_failures)
+        finish_run(
+            run_id,
+            status=run_status,
+            found=found,
+            downloaded=downloaded,
+            skipped=skipped,
+            error=error_text or None,
+        )
         return {
-            "status": "success",
+            "status": run_status,
             "statement_month": statement_month,
             "found": found,
             "downloaded": downloaded,
@@ -211,6 +250,7 @@ def fetch_month(
             "restored_count": restored_count,
             "change_count": change_count,
             "reconciliation": reconciliation,
+            "failures": record_failures,
         }
     except ETCMaintenanceError as exc:
         finish_run(run_id, status="maintenance", found=found, downloaded=downloaded, skipped=skipped, error=str(exc))
