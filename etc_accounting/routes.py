@@ -351,7 +351,6 @@ def browser_status():
             "loggedIn": False,
             "maintenance": False,
             "autoLoginConfigured": _credentials_status().get("configured", False),
-            "warning": str(exc),
             "error": str(exc),
         })
     except Exception as exc:
