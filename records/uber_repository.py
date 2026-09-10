@@ -43,7 +43,11 @@ def _is_mirrored_quest(misc: dict, quest: dict) -> bool:
         and re.search(r"(?:支払い明細|お支払い明細).*追加", misc_text, re.I | re.S)
         and re.search(r"QUEST\s+COMPLETE", quest_text, re.I)
     )
-    if explicit_completion_pair and seconds <= 30 * 60:
+    # Uber may expose the completed quest card before posting the matching MISC
+    # payment notification.  In practice that delay can exceed 30 minutes (the
+    # 2026-09-10 level-3 reward was posted 41 minutes later), so compare within
+    # the same six-hour window used for goal-count matches.
+    if explicit_completion_pair and seconds <= 6 * 3600:
         return True
     misc_goal = _quest_goal_count(misc.get("raw_text"))
     quest_goal = _quest_goal_count(quest.get("raw_text"))
