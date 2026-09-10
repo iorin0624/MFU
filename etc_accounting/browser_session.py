@@ -327,6 +327,19 @@ def _wait_browser_debug(timeout: float = 20.0) -> None:
     raise RuntimeError(f"ETC用Chromiumを起動できませんでした: {last_error}")
 
 
+def _wait_xvfb_ready(pid: int, timeout: float = 10.0) -> None:
+    display_number = ETC_BROWSER_DISPLAY.removeprefix(":").split(".", 1)[0]
+    socket_path = Path(f"/tmp/.X11-unix/X{display_number}")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _process_alive(pid):
+            break
+        if socket_path.exists():
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"ETC用画面サーバーを起動できませんでした（DISPLAY={ETC_BROWSER_DISPLAY}）")
+
+
 def _vnc_password() -> str:
     try:
         password = ETC_BROWSER_VNC_PASSWORD_FILE.read_text(encoding="utf-8").strip()
@@ -384,6 +397,7 @@ def _start_etc_browser_locked() -> dict:
         "xvfb",
         ["Xvfb", ETC_BROWSER_DISPLAY, "-screen", "0", "1280x900x24", "-nolisten", "tcp"],
     )
+    _wait_xvfb_ready(xvfb_pid)
     env = os.environ.copy()
     env["DISPLAY"] = ETC_BROWSER_DISPLAY
     env["HOME"] = str(ETC_BROWSER_HOME_DIR)

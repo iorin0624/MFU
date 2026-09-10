@@ -41,6 +41,7 @@ def test_etc_browser_start_reuses_existing_debug_browser():
             patch.object(etc_browser, "_browser_debug_ready", return_value=True),
             patch.object(etc_browser, "_running_browser_pid", return_value=202),
             patch.object(etc_browser, "_start_process", side_effect=fake_start),
+            patch.object(etc_browser, "_wait_xvfb_ready"),
             patch.object(etc_browser, "_wait_browser_debug"),
             patch.object(etc_browser, "_remove_duplicate_browser_processes"),
             patch.object(etc_browser, "_write_pid"),
@@ -49,6 +50,18 @@ def test_etc_browser_start_reuses_existing_debug_browser():
 
     assert result["running"] is True
     assert started_names == ["xvfb", "x11vnc", "novnc"]
+
+
+def test_etc_browser_waits_for_xvfb_before_reusing_chromium():
+    expected_pid = 201
+    with (
+        patch.object(etc_browser, "_process_alive", return_value=True),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(etc_browser.time, "sleep") as sleep,
+    ):
+        etc_browser._wait_xvfb_ready(expected_pid)
+
+    sleep.assert_not_called()
 
 
 def test_etc_browser_repairs_stale_component_pid_file():
