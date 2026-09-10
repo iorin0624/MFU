@@ -6473,6 +6473,9 @@ app.register_blueprint(records_api_bp)
 app.register_blueprint(freee_api_bp)
 app.register_blueprint(etc_accounting_bp)
 
+from app.recurring_expenses import recurring_expenses_bp
+app.register_blueprint(recurring_expenses_bp)
+
 try:
     from app.etc_accounting.repository import ensure_nav_item as ensure_etc_accounting_nav_item
     from app.etc_accounting.repository import ensure_schema as ensure_etc_accounting_schema
@@ -6481,6 +6484,15 @@ try:
     ensure_etc_accounting_nav_item()
 except Exception as exc:
     app.logger.warning(f"ETC accounting schema/nav init skipped: {exc}")
+
+try:
+    from app.recurring_expenses.repository import ensure_nav_item as ensure_recurring_expenses_nav_item
+    from app.recurring_expenses.repository import ensure_schema as ensure_recurring_expenses_schema
+
+    ensure_recurring_expenses_schema()
+    ensure_recurring_expenses_nav_item()
+except Exception as exc:
+    app.logger.warning(f"Recurring expenses schema/nav init skipped: {exc}")
 
 from app.invoice import invoice_bp
 app.register_blueprint(invoice_bp)
