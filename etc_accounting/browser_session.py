@@ -975,6 +975,8 @@ class ETCTargetPage:
     def _download_pdf_once(self, transaction_key: str, form_token: str) -> bytes:
         key_json = json.dumps(transaction_key)
         token_json = json.dumps(form_token)
+        output_window_name = f"mfu_etc_pdf_{uuid.uuid4().hex}"
+        output_window_json = json.dumps(output_window_name)
         before_rows = _all_targets()
         before_targets = {
             str(row.get("id") or ""): str(row.get("url") or "")
@@ -991,7 +993,15 @@ class ETCTargetPage:
                     "eventsEnabled": True,
                 },
             )
-            button_rect = self.evaluate(
+            # Create and name the output tab before submitting.  ETC normally
+            # posts to target="_blank", which Chromium may intermittently
+            # suppress as a popup in an automated session.
+            created = cdp_call("Target.createTarget", {"url": "about:blank"})
+            output_target_id = str(created.get("targetId") or "")
+            if not output_target_id:
+                raise RuntimeError("ETC利用証明書の出力タブを作成できませんでした。")
+            set_target_window_name(output_target_id, output_window_name)
+            submitted = self.evaluate(
                 f"""
                 (() => {{
                   const form = document.querySelector('form[name="frm"]');
@@ -1004,21 +1014,16 @@ class ETCTargetPage:
                   }}
                   const token = form.querySelector('input[name="p"]');
                   if (token) token.value = {token_json};
-                  const button = [...document.querySelectorAll('input[type="button"]')].find(
-                    node => node.value === '利用証明書発行'
-                  );
-                  if (!button) return null;
-                  button.scrollIntoView({{block: 'center', inline: 'center'}});
-                  const rect = button.getBoundingClientRect();
-                  return {{x: rect.left + rect.width / 2, y: rect.top + rect.height / 2}};
+                  form.method = 'POST';
+                  form.action = '/etc/R?funccode=1013000000&nextfunc=1013600000';
+                  form.target = {output_window_json};
+                  form.submit();
+                  return true;
                 }})()
                 """
             )
-            if not isinstance(button_rect, dict):
-                raise RuntimeError("ETC利用証明書の発行ボタンが見つかりません。")
-            click = {"x": float(button_rect["x"]), "y": float(button_rect["y"]), "button": "left", "clickCount": 1}
-            self.call("Input.dispatchMouseEvent", {"type": "mousePressed", **click})
-            self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **click})
+            if not submitted:
+                raise RuntimeError("ETC利用証明書の発行フォームを送信できませんでした。")
 
             # Normal route: the isolated ETC profile downloads PDFs directly.
             # Keep the viewer route as a compatibility fallback for Chromium
