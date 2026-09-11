@@ -8,7 +8,7 @@ from PIL import Image
 from app.recurring_expenses import freee_sync
 from app.recurring_expenses import partners
 from app.recurring_expenses.repository import _is_due
-from app.recurring_expenses.routes import _master_draft
+from app.recurring_expenses.routes import _batch_candidate_ids, _master_draft
 from werkzeug.datastructures import MultiDict
 
 
@@ -164,3 +164,17 @@ def test_partner_creation_sends_optional_code_after_confirmation():
         result = partners.create_or_find_partner("株式会社テストー", "T-009", force=True)
     assert result["status"] == "created"
     assert request.call_args_list[1].kwargs["json_body"]["code"] == "T-009"
+
+
+def test_batch_registration_targets_every_unfinished_item():
+    items = [
+        {"id": 1, "status": "pending"},
+        {"id": 2, "status": "waiting_receipt"},
+        {"id": 3, "status": "error"},
+        {"id": 4, "status": "pending_update"},
+        {"id": 5, "status": "registered"},
+        {"id": 6, "status": "manual"},
+        {"id": 7, "status": "excluded"},
+        {"id": 8, "status": "registering"},
+    ]
+    assert _batch_candidate_ids(items) == [1, 2, 3, 4]
