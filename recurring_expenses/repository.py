@@ -443,18 +443,13 @@ def ensure_nav_item() -> None:
             """
             INSERT INTO mfu_features (feature_key, label, description, is_enabled_global)
             VALUES (%s, %s, %s, 1)
-            ON DUPLICATE KEY UPDATE label=VALUES(label), description=VALUES(description), is_enabled_global=1
+            ON DUPLICATE KEY UPDATE feature_key=feature_key
             """,
             ("recurring_expenses_admin", "定期経費", "毎月発生する経費とfreee登録の管理"),
         )
         cur.execute("SELECT id FROM mfu_nav_items WHERE url=%s LIMIT 1", ("/recurring-expenses/",))
         row = cur.fetchone()
-        if row:
-            cur.execute(
-                "UPDATE mfu_nav_items SET label=%s, feature_key=%s, is_enabled=1 WHERE id=%s",
-                ("定期経費", "recurring_expenses_admin", row[0]),
-            )
-        else:
+        if not row:
             cur.execute(
                 """
                 INSERT INTO mfu_nav_items

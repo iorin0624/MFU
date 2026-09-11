@@ -1,4 +1,5 @@
 from datetime import date
+import inspect
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from PIL import Image
 from app.recurring_expenses import freee_sync
 from app.recurring_expenses import partners
 from app.recurring_expenses.repository import _is_due
+from app.recurring_expenses import repository
 from app.recurring_expenses.routes import _batch_candidate_ids, _master_draft
 from werkzeug.datastructures import MultiDict
 
@@ -190,3 +192,9 @@ def test_batch_registration_targets_every_unfinished_item():
         {"id": 8, "status": "registering"},
     ]
     assert _batch_candidate_ids(items) == [1, 2, 3, 4]
+
+
+def test_nav_bootstrap_does_not_overwrite_admin_edits():
+    source = inspect.getsource(repository.ensure_nav_item)
+    assert "UPDATE mfu_nav_items SET label" not in source
+    assert "ON DUPLICATE KEY UPDATE label=VALUES(label)" not in source
