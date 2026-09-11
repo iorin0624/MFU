@@ -102,7 +102,7 @@
       <div class="col-md-2 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="receipt_required" value="1" id="receiptRequired" {{ 'checked' if editing and editing.receipt_required else '' }}><label class="form-check-label" for="receiptRequired">証憑必須</label></div></div>
       <div class="col-md-4"><label class="form-label">勘定科目</label><select class="form-select" name="account_item_id" required><option value="">選択</option>{% for row in master_data.account_items %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.account_item_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
       <div class="col-md-4"><label class="form-label">税区分</label><select class="form-select" name="tax_code" required><option value="">選択</option>{% for row in master_data.taxes %}{% set code = row.code if row.code is defined else row.tax_code %}<option value="{{ code }}" {{ 'selected' if editing and editing.tax_code == code else '' }}>{{ row.name_ja or row.name }}（{{ code }}）</option>{% endfor %}</select></div>
-      <div class="col-md-4"><label class="form-label">取引先（任意）</label><select class="form-select" name="partner_id"><option value="">なし</option>{% for row in master_data.partners %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.partner_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
+      <div class="col-md-4"><label class="form-label" for="partnerId">取引先（任意）</label><div class="input-group"><select class="form-select" id="partnerId" name="partner_id"><option value="">なし</option>{% for row in master_data.partners %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.partner_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select><button class="btn btn-outline-primary" type="button" data-bs-toggle="modal" data-bs-target="#partnerCreateModal">新規作成</button></div></div>
       <div class="col-md-4"><label class="form-label">品目（任意）</label><select class="form-select" name="item_id"><option value="">なし</option>{% for row in master_data['items'] %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.item_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
       <div class="col-md-4"><label class="form-label">決済状態</label><select class="form-select" name="payment_mode"><option value="settled" {{ 'selected' if not editing or editing.payment_mode == 'settled' else '' }}>支払済み</option><option value="unsettled" {{ 'selected' if editing and editing.payment_mode == 'unsettled' else '' }}>未決済</option></select></div>
       <div class="col-md-4"><label class="form-label">決済口座</label><select class="form-select" id="walletable" onchange="syncWallet()"><option value="">選択</option>{% for row in master_data.walletables %}<option value="{{ row.walletable_type or row.type }}:{{ row.id or row.walletable_id }}" {{ 'selected' if editing and editing.walletable_type == (row.walletable_type or row.type) and editing.walletable_id == (row.id or row.walletable_id) else '' }}>{{ row.name }}</option>{% endfor %}</select><input type="hidden" name="walletable_type" id="walletableType"><input type="hidden" name="walletable_id" id="walletableId"></div>
@@ -115,5 +115,53 @@
     <div class="table-responsive"><table class="table align-middle"><thead><tr><th>経費名</th><th>周期</th><th>金額</th><th>状態</th><th></th></tr></thead><tbody>{% for master in masters %}<tr><td>{{ master.name }}</td><td>{{ master.frequency_months }}か月ごと</td><td>{{ '¥{:,.0f}'.format(master.default_amount) if master.amount_mode == 'fixed' and master.default_amount is not none else '変動' }}</td><td>{{ '有効' if master.is_active else '停止中' }}</td><td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="{{ url_for('recurring_expenses.index', month=selected_month, edit=master.id) }}#master">編集</a><form method="post" action="{{ url_for('recurring_expenses.master_active', master_id=master.id) }}" class="d-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="month" value="{{ selected_month }}"><input type="hidden" name="active" value="{{ 0 if master.is_active else 1 }}"><button class="btn btn-sm btn-outline-secondary">{{ '停止' if master.is_active else '再開' }}</button></form></td></tr>{% endfor %}</tbody></table></div>
   </div>
 </details>
+
+{% if manage_masters %}
+<div class="modal fade" id="partnerCreateModal" tabindex="-1" aria-labelledby="partnerCreateModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+    <div class="modal-header"><h2 class="modal-title fs-5" id="partnerCreateModalLabel">freee取引先を新規作成</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button></div>
+    <form id="partnerCreateForm">
+      <div class="modal-body">
+        <div id="partnerCreateMessage" class="alert d-none" role="alert"></div>
+        <div class="mb-3"><label class="form-label" for="partnerName">取引先名</label><input class="form-control" id="partnerName" maxlength="255" required autocomplete="organization"><div class="form-text">同名・類似名の取引先がないかfreee側を確認してから作成します。</div></div>
+        <div><label class="form-label" for="partnerCode">取引先コード（任意）</label><input class="form-control" id="partnerCode" maxlength="191"></div>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">キャンセル</button><button type="submit" class="btn btn-primary" id="partnerCreateSubmit">確認して作成</button></div>
+    </form>
+  </div></div>
+</div>
+{% endif %}
 {% endblock %}
-{% block body_extra %}<script>function syncWallet(){const s=document.getElementById('walletable');const [t,id]=(s.value||':').split(':');document.getElementById('walletableType').value=t;document.getElementById('walletableId').value=id}syncWallet();</script>{% endblock %}
+{% block body_extra %}<script>
+function syncWallet(){const s=document.getElementById('walletable');if(!s)return;const [t,id]=(s.value||':').split(':');document.getElementById('walletableType').value=t;document.getElementById('walletableId').value=id}
+syncWallet();
+const partnerForm=document.getElementById('partnerCreateForm');
+const partnerMessage=document.getElementById('partnerCreateMessage');
+function showPartnerMessage(message,type='danger'){
+  partnerMessage.textContent=message;partnerMessage.className=`alert alert-${type}`;
+}
+async function submitPartner(force=false){
+  const submit=document.getElementById('partnerCreateSubmit');submit.disabled=true;
+  partnerMessage.classList.add('d-none');
+  try{
+    const response=await fetch("{{ url_for('recurring_expenses.partner_create') }}",{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':"{{ csrf_token }}"},body:JSON.stringify({name:document.getElementById('partnerName').value,code:document.getElementById('partnerCode').value,force})});
+    const data=await response.json();
+    if(!response.ok||!data.ok)throw new Error(data.message||'取引先を作成できませんでした。');
+    if(data.status==='confirmation_required'){
+      const names=(data.candidates||[]).map(row=>`・${row.name}${row.code?'（'+row.code+'）':''}`).join('\n');
+      if(confirm(`類似する取引先があります。\n\n${names}\n\n別の取引先として新規作成しますか？`))await submitPartner(true);
+      else showPartnerMessage('作成を中止しました。既存の取引先を選択してください。','warning');
+      return;
+    }
+    const partner=data.partner;const select=document.getElementById('partnerId');
+    let option=Array.from(select.options).find(row=>String(row.value)===String(partner.id));
+    if(!option){option=new Option(partner.name,partner.id);select.add(option)}
+    select.value=String(partner.id);
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('partnerCreateModal')).hide();
+    document.getElementById('partnerName').value='';document.getElementById('partnerCode').value='';
+    alert(data.status==='existing'?'同じ取引先が登録済みのため、既存の取引先を選択しました。':'freeeに取引先を作成し、選択しました。');
+  }catch(error){showPartnerMessage(error.message||'取引先を作成できませんでした。')}
+  finally{submit.disabled=false}
+}
+if(partnerForm)partnerForm.addEventListener('submit',event=>{event.preventDefault();submitPartner(false)});
+</script>{% endblock %}

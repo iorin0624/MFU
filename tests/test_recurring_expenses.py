@@ -6,6 +6,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app.recurring_expenses import freee_sync
+from app.recurring_expenses import partners
 from app.recurring_expenses.repository import _is_due
 from app.recurring_expenses.routes import _master_draft
 from werkzeug.datastructures import MultiDict
@@ -127,3 +128,39 @@ def test_invalid_master_form_is_preserved_as_a_typed_draft():
     assert draft["account_item_id"] == 123
     assert draft["receipt_required"] == 1
     assert draft["is_active"] == 0
+
+
+def test_partner_creation_reuses_exact_existing_partner():
+    with (
+        patch.object(partners.freee_services, "get_freee_common_settings", return_value={"company_id": 1}),
+        patch.object(partners.freee_services, "freee_api_request", return_value={"partners": [{"id": 8, "name": "株式会社テスト"}]}) as request,
+    ):
+        result = partners.create_or_find_partner(" 株式会社テスト ")
+    assert result["status"] == "existing"
+    assert result["partner"]["id"] == 8
+    assert request.call_count == 1
+
+
+def test_partner_creation_requires_confirmation_for_similar_name():
+    with (
+        patch.object(partners.freee_services, "get_freee_common_settings", return_value={"company_id": 1}),
+        patch.object(partners.freee_services, "freee_api_request", return_value={"partners": [{"id": 8, "name": "株式会社テスト"}]}) as request,
+    ):
+        result = partners.create_or_find_partner("株式会社テストー")
+    assert result["status"] == "confirmation_required"
+    assert result["candidates"][0]["id"] == 8
+    assert request.call_count == 1
+
+
+def test_partner_creation_sends_optional_code_after_confirmation():
+    responses = [
+        {"partners": [{"id": 8, "name": "株式会社テスト"}]},
+        {"partner": {"id": 9, "name": "株式会社テストー", "code": "T-009"}},
+    ]
+    with (
+        patch.object(partners.freee_services, "get_freee_common_settings", return_value={"company_id": 1}),
+        patch.object(partners.freee_services, "freee_api_request", side_effect=responses) as request,
+    ):
+        result = partners.create_or_find_partner("株式会社テストー", "T-009", force=True)
+    assert result["status"] == "created"
+    assert request.call_args_list[1].kwargs["json_body"]["code"] == "T-009"
