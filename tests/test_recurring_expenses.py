@@ -7,6 +7,8 @@ from PIL import Image
 
 from app.recurring_expenses import freee_sync
 from app.recurring_expenses.repository import _is_due
+from app.recurring_expenses.routes import _master_draft
+from werkzeug.datastructures import MultiDict
 
 
 def _master(**overrides):
@@ -108,3 +110,20 @@ def test_registration_creates_one_deal_and_persists_ids():
     assert result["deal_id"] == 987
     assert api_request.call_count == 1
     set_registration.assert_called_once_with(7, status="registered", deal_id=987)
+
+
+def test_invalid_master_form_is_preserved_as_a_typed_draft():
+    draft = _master_draft(MultiDict({
+        "name": "携帯電話代",
+        "default_amount": "5500",
+        "frequency_months": "1",
+        "account_item_id": "123",
+        "notes": "入力途中のメモ",
+        "receipt_required": "1",
+        "return_month": "2026-09",
+    }), None)
+    assert draft["name"] == "携帯電話代"
+    assert draft["default_amount"] == "5500"
+    assert draft["account_item_id"] == 123
+    assert draft["receipt_required"] == 1
+    assert draft["is_active"] == 0
