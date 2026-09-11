@@ -551,10 +551,17 @@
     warning.textContent = message || '';
     warning.classList.toggle('d-none', !message);
   }
-  async function refreshStatus() {
+  async function refreshStatus(retryTransient = true) {
     try {
       const response = await fetch({{ url_for('etc_accounting.browser_status')|tojson }});
       const data = await response.json();
+      if (retryTransient && !data.loggedIn && String(data.error || '').includes('画面サーバーを起動できません')) {
+        status.textContent = 'ETC画面サーバーを起動中…';
+        status.className = 'form-control bg-info-subtle';
+        showWarning('');
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        return refreshStatus(false);
+      }
       status.textContent = data.ok
         ? (data.loggedIn ? 'ログイン済み（自動ログイン有効）' : (data.error || '再ログインが必要です'))
         : (data.error || '確認失敗');
