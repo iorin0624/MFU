@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from pathlib import Path
 
-from flask import abort, flash, redirect, render_template, request, send_file, session, url_for
+from flask import abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from PIL import Image
 from werkzeug.utils import secure_filename
 
@@ -14,6 +14,7 @@ from app.freee_api import services as freee_services
 
 from . import recurring_expenses_bp
 from .freee_sync import register_month
+from .partners import create_or_find_partner
 from .repository import (
     add_attachment,
     delete_attachment,
@@ -207,12 +208,30 @@ def master_save():
     except (TypeError, ValueError) as exc:
         session[MASTER_DRAFT_SESSION_KEY] = _master_draft(request.form, master_id)
         flash(str(exc) if str(exc) else "入力内容を確認してください。", "danger")
-        return redirect(url_for(
-            "recurring_expenses.index",
-            month=_month(request.form.get("return_month")),
-            manage=1,
-            edit=master_id,
-        ))
+    return redirect(url_for(
+        "recurring_expenses.index",
+        month=_month(request.form.get("return_month")),
+        manage=1,
+        edit=master_id,
+    ))
+
+
+@recurring_expenses_bp.post("/partners/create")
+def partner_create():
+    _require_csrf()
+    source = request.get_json(silent=True) or request.form
+    try:
+        result = create_or_find_partner(
+            source.get("name", ""),
+            source.get("code"),
+            force=str(source.get("force", "")).lower() in {"1", "true", "yes"},
+        )
+        return jsonify({"ok": True, **result})
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({
+            "ok": False,
+            "message": freee_services.sanitize_freee_error(str(exc)),
+        }), 400
 
 
 @recurring_expenses_bp.post("/masters/<int:master_id>/active")
