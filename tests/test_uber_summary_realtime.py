@@ -40,6 +40,18 @@ class UberSummaryRealtimeTests(unittest.TestCase):
         self.assertIn("document.addEventListener('visibilitychange'", self.template_source)
         self.assertIn("window.addEventListener('pageshow', refreshSummary)", self.template_source)
 
+    def test_realtime_refresh_does_not_overwrite_range_form_mode_or_dates(self):
+        self.assertIn('name="summary_mode" value="range"', self.template_source)
+        self.assertNotIn(
+            "root.querySelectorAll('input[name=\"summary_mode\"]')",
+            self.template_source,
+        )
+        self.assertNotIn(
+            "root.querySelectorAll('input[name=\"summary_from\"]')",
+            self.template_source,
+        )
+        self.assertIn('data-uber-summary-state="mode"', self.template_source)
+
 
 if __name__ == "__main__":
     unittest.main()
