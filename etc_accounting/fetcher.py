@@ -55,6 +55,16 @@ def _safe_pdf_path(record: dict) -> Path:
     return folder / f"etc_{used_at:%Y%m%d_%H%M}_{digest}.pdf"
 
 
+def _stored_pdf_is_readable(path: str | Path) -> bool:
+    if not path:
+        return False
+    try:
+        with Path(path).open("rb") as source:
+            return source.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
 def _download_pdf(browser: ETCTargetPage, form_token: str, record: dict) -> bytes:
     content = browser.download_pdf(record["transaction_key"], form_token)
     if not content.startswith(b"%PDF-"):
@@ -183,7 +193,7 @@ def fetch_month(
                         and not pdf_refresh_required
                         and not final_pdf_incomplete
                         and current_path
-                        and Path(current_path).is_file()
+                        and _stored_pdf_is_readable(current_path)
                     ):
                         skipped += 1
                         continue
