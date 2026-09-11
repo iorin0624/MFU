@@ -225,9 +225,9 @@
     </div>
     <form class="d-flex justify-content-end mt-3" method="post" action="{{ url_for('records.uber_discord_summary_test') }}" onsubmit="return confirm('現在表示している集計結果をDiscordへテスト送信しますか？');">
       <input type="hidden" name="csrf_token" value="{{ uber_browser_csrf }}">
-      <input type="hidden" name="summary_mode" value="{{ activity_summary_mode }}">
-      <input type="hidden" name="summary_from" value="{{ activity_summary_from }}">
-      <input type="hidden" name="summary_to" value="{{ activity_summary_to }}">
+      <input type="hidden" name="summary_mode" value="{{ activity_summary_mode }}" data-uber-summary-state="mode">
+      <input type="hidden" name="summary_from" value="{{ activity_summary_from }}" data-uber-summary-state="from">
+      <input type="hidden" name="summary_to" value="{{ activity_summary_to }}" data-uber-summary-state="to">
       <input type="hidden" name="activity_from" value="{{ activity_history_from }}">
       <input type="hidden" name="activity_to" value="{{ activity_history_to }}">
       <button class="btn btn-sm btn-outline-primary" type="submit">Discordテスト通知</button>
@@ -1330,9 +1330,12 @@
         root.querySelectorAll('[data-uber-summary]').forEach(function (element) {
           element.textContent = renderValue(summary[element.dataset.uberSummary], element.dataset.format || '');
         });
-        root.querySelectorAll('input[name="summary_mode"]').forEach(function (input) { input.value = data.mode || 'today'; });
-        root.querySelectorAll('input[name="summary_from"]').forEach(function (input) { input.value = data.date_from || ''; });
-        root.querySelectorAll('input[name="summary_to"]').forEach(function (input) { input.value = data.date_to || ''; });
+        // Keep the range form's summary_mode fixed to "range" and preserve dates
+        // currently being edited. Only dependent controls (Discord test) follow
+        // the active summary returned by the server.
+        root.querySelectorAll('[data-uber-summary-state="mode"]').forEach(function (input) { input.value = data.mode || 'today'; });
+        root.querySelectorAll('[data-uber-summary-state="from"]').forEach(function (input) { input.value = data.date_from || ''; });
+        root.querySelectorAll('[data-uber-summary-state="to"]').forEach(function (input) { input.value = data.date_to || ''; });
       }
       async function refreshSummary() {
         if (refreshPromise) return refreshPromise;
