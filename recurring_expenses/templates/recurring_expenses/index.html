@@ -74,7 +74,7 @@
           </div>
         {% else %}<span class="small text-muted">添付なし</span>{% endfor %}
         </div>
-        <form method="post" enctype="multipart/form-data" action="{{ url_for('recurring_expenses.attachment_upload', month_id=item.id) }}" class="d-flex flex-wrap gap-2"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input class="form-control form-control-sm" style="max-width:520px" type="file" name="receipts" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif" multiple required><button class="btn btn-outline-secondary btn-sm">添付</button></form>
+        <form method="post" enctype="multipart/form-data" action="{{ url_for('recurring_expenses.attachment_upload', month_id=item.id) }}" class="d-flex flex-wrap gap-2 align-items-center expense-attachment-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input class="form-control form-control-sm expense-attachment-input" style="max-width:520px" type="file" name="receipts" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif" multiple required><button class="btn btn-outline-secondary btn-sm expense-attachment-submit">添付</button><span class="small text-muted expense-attachment-state">ファイル選択後に自動添付</span></form>
       </div>
       {% if item.status not in ['registered','manual','excluded'] %}<form method="post" action="{{ url_for('recurring_expenses.month_register', month_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-success" onclick="return confirm('{{ '手動登録済みにしますか？' if item.registration_mode == 'manual' else ('freeeの取引を更新しますか？' if item.freee_deal_id else 'freeeへ登録しますか？') }}')">{{ '手動登録済みにする' if item.registration_mode == 'manual' else ('freeeを更新' if item.freee_deal_id else 'freeeへ登録') }}</button></form>{% endif %}
     </div>
@@ -167,6 +167,16 @@ document.querySelectorAll('.expense-autosave-form').forEach(form=>{
   form.querySelectorAll('input,select').forEach(field=>{
     field.addEventListener('change',()=>queueExpenseSave(form));
     if(field.name==='actual_amount'||field.name==='existing_deal_id')field.addEventListener('input',()=>queueExpenseSave(form,700));
+  });
+});
+document.querySelectorAll('.expense-attachment-form').forEach(form=>{
+  const input=form.querySelector('.expense-attachment-input');
+  const button=form.querySelector('.expense-attachment-submit');
+  const state=form.querySelector('.expense-attachment-state');
+  input.addEventListener('change',()=>{
+    if(!input.files.length)return;
+    button.disabled=true;input.style.pointerEvents='none';state.textContent='アップロード中…';state.className='small text-primary expense-attachment-state';
+    form.submit();
   });
 });
 const batchRegisterForm=document.getElementById('batchRegisterForm');
