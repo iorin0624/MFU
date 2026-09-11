@@ -33,6 +33,7 @@ STORAGE_ROOT = Path("/mnt/mfu/secure/recurring_expenses")
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".heic", ".heif"}
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 STATUSES = {"pending", "waiting_receipt", "excluded"}
+MASTER_DRAFT_SESSION_KEY = "recurring_expenses_master_draft"
 
 
 def _admin_required():
@@ -94,6 +95,18 @@ def _master_data() -> dict:
         }
 
 
+def _master_draft(form, master_id: int | None) -> dict:
+    draft = form.to_dict(flat=True)
+    draft["id"] = master_id
+    draft["receipt_required"] = 1 if form.get("receipt_required") == "1" else 0
+    draft["is_active"] = 1 if form.get("is_active") == "1" else 0
+    for key in ("frequency_months", "account_item_id", "item_id", "partner_id", "tax_code", "walletable_id"):
+        raw = str(draft.get(key) or "").strip()
+        if raw and raw.lstrip("-").isdigit():
+            draft[key] = int(raw)
+    return draft
+
+
 @recurring_expenses_bp.get("/")
 def index():
     selected_month = _month(request.args.get("month"))
@@ -101,7 +114,11 @@ def index():
     for item in items:
         item["attachments"] = list_attachments(int(item["id"]))
     edit_id = _optional_int(request.args.get("edit"), minimum=1)
-    editing = get_master(edit_id) if edit_id else None
+    draft = session.pop(MASTER_DRAFT_SESSION_KEY, None)
+    if draft and draft.get("return_month") == selected_month:
+        editing = draft
+    else:
+        editing = get_master(edit_id) if edit_id else None
     manage_masters = request.args.get("manage") == "1" or editing is not None
     master_data = _master_data() if manage_masters else {
         "companies": [], "account_items": [], "items": [], "taxes": [],
@@ -184,11 +201,18 @@ def master_save():
         if payment_mode == "settled" and (not values["walletable_type"] or not values["walletable_id"]):
             raise ValueError("支払済みの場合は決済口座を選択してください。")
         save_master(values, master_id)
+        session.pop(MASTER_DRAFT_SESSION_KEY, None)
         flash(f"定期経費「{name}」を保存しました。", "success")
         return redirect(url_for("recurring_expenses.index", month=_month(request.form.get("return_month"))))
     except (TypeError, ValueError) as exc:
+        session[MASTER_DRAFT_SESSION_KEY] = _master_draft(request.form, master_id)
         flash(str(exc) if str(exc) else "入力内容を確認してください。", "danger")
-        return redirect(url_for("recurring_expenses.index", month=_month(request.form.get("return_month")), edit=master_id))
+        return redirect(url_for(
+            "recurring_expenses.index",
+            month=_month(request.form.get("return_month")),
+            manage=1,
+            edit=master_id,
+        ))
 
 
 @recurring_expenses_bp.post("/masters/<int:master_id>/active")
