@@ -53,6 +53,8 @@ def login_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
         if not session.get("user"):
+            if request.accept_mimetypes.best == "application/json":
+                return jsonify({"ok": False, "error": "ログイン期限が切れました。画面を再読み込みしてログインしてください。"}), 401
             flash("ログインが必要です。", "warning")
             return redirect(url_for("login"))
         return view(*args, **kwargs)

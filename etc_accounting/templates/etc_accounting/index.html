@@ -551,10 +551,24 @@
     warning.textContent = message || '';
     warning.classList.toggle('d-none', !message);
   }
+  async function jsonResponse(response, retry) {
+    const contentType = String(response.headers.get('content-type') || '');
+    if (!contentType.includes('application/json')) {
+      if (retry && [502, 503, 504].includes(response.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return null;
+      }
+      if (response.redirected || response.url.includes('/login')) {
+        throw new Error('ログイン期限が切れました。画面を再読み込みしてログインしてください。');
+      }
+      throw new Error(`サーバーからJSON以外の応答が返りました（HTTP ${response.status}）。画面を再読み込みしてください。`);
+    }
+    return response.json();
+  }
   async function refreshStatus(retryTransient = true) {
     try {
-      const response = await fetch({{ url_for('etc_accounting.browser_status')|tojson }});
-      const data = await response.json();
+      const response = await fetch({{ url_for('etc_accounting.browser_status')|tojson }}, {headers:{'Accept':'application/json'}});
+      const data = await jsonResponse(response, false);
       if (retryTransient && !data.loggedIn && String(data.error || '').includes('画面サーバーを起動できません')) {
         status.textContent = 'ETC画面サーバーを起動中…';
         status.className = 'form-control bg-info-subtle';
@@ -580,8 +594,13 @@
     }
     vncWindow.opener = null;
     try {
-      const response = await fetch({{ url_for('etc_accounting.browser_start')|tojson }}, {method:'POST', headers:{'X-CSRF-Token':token}});
-      const data = await response.json();
+      async function requestStart(retry = true) {
+        const response = await fetch({{ url_for('etc_accounting.browser_start')|tojson }}, {method:'POST', headers:{'X-CSRF-Token':token,'Accept':'application/json'}});
+        const data = await jsonResponse(response, retry);
+        if (data === null) return requestStart(false);
+        return data;
+      }
+      const data = await requestStart();
       if (!data.ok) {
         vncWindow.close();
         alert(data.error || 'ETCブラウザーを開始できません。');
