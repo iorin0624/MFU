@@ -35,6 +35,7 @@ ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".heic", ".heif"}
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 STATUSES = {"pending", "waiting_receipt", "excluded"}
 MASTER_DRAFT_SESSION_KEY = "recurring_expenses_master_draft"
+COMPLETED_MONTH_STATUSES = {"registered", "manual", "excluded", "registering"}
 
 
 def _admin_required():
@@ -108,6 +109,14 @@ def _master_draft(form, master_id: int | None) -> dict:
     return draft
 
 
+def _batch_candidate_ids(items: list[dict]) -> list[int]:
+    return [
+        int(item["id"])
+        for item in items
+        if item.get("status") not in COMPLETED_MONTH_STATUSES
+    ]
+
+
 @recurring_expenses_bp.get("/")
 def index():
     selected_month = _month(request.args.get("month"))
@@ -128,7 +137,7 @@ def index():
     summary = {
         "count": len(items),
         "registered": sum(item["status"] in {"registered", "manual"} for item in items),
-        "pending": sum(item["status"] not in {"registered", "manual", "excluded"} for item in items),
+        "pending": len(_batch_candidate_ids(items)),
         "overdue": sum(
             item["status"] not in {"registered", "manual", "excluded"} and item["issue_date"] < date.today()
             for item in items
@@ -397,16 +406,9 @@ def month_register(month_id: int):
 def month_register_batch():
     _require_csrf()
     target_month = _month(request.form.get("month"))
-    month_ids = []
-    for raw in request.form.getlist("month_ids"):
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value > 0 and value not in month_ids:
-            month_ids.append(value)
+    month_ids = _batch_candidate_ids(list_month_items(target_month))
     if not month_ids:
-        flash("一括登録する経費を選択してください。", "warning")
+        flash("一括登録できる未登録項目はありません。", "info")
         return redirect(url_for("recurring_expenses.index", month=target_month))
     if len(month_ids) > 100:
         abort(400, "一括登録は100件までです。")

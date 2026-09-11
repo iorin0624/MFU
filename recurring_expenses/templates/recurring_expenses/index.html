@@ -33,7 +33,7 @@
 
 <form method="post" action="{{ url_for('recurring_expenses.month_register_batch') }}" id="batchRegisterForm" class="d-flex justify-content-end gap-2 mb-3">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="month" value="{{ selected_month }}">
-  <button class="btn btn-success" onclick="return confirm('選択した経費を順番に登録しますか？')">選択した項目を一括登録</button>
+  <button class="btn btn-success" {{ 'disabled' if summary.pending == 0 else '' }} onclick="return confirm('未登録・更新待ちの経費 {{ summary.pending }}件を順番に登録しますか？')">未登録項目を一括登録（{{ summary.pending }}件）</button>
 </form>
 
 <div class="d-grid gap-3 mb-4">
@@ -42,7 +42,7 @@
   <article class="card expense-card {{ 'registered' if item.status in ['registered','manual'] else ('error' if item.status == 'error' else ('overdue' if overdue else '')) }}">
     <div class="card-body">
       <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
-        <div class="d-flex gap-2 align-items-start">{% if item.status not in ['registered','manual','excluded'] %}<input class="form-check-input mt-1" type="checkbox" name="month_ids" value="{{ item.id }}" form="batchRegisterForm" aria-label="{{ item.name }}を一括登録対象にする">{% endif %}<div><h2 class="h5 mb-1">{{ item.name }} {% if item.receipt_required %}<span class="badge text-bg-info">証憑必須</span>{% endif %}</h2><div class="small text-muted">{{ item.notes or 'メモなし' }}</div></div></div>
+        <div><h2 class="h5 mb-1">{{ item.name }} {% if item.receipt_required %}<span class="badge text-bg-info">証憑必須</span>{% endif %}</h2><div class="small text-muted">{{ item.notes or 'メモなし' }}</div></div>
         <div>
           {% if item.status == 'registered' %}<span class="badge text-bg-success">freee登録済み</span>
           {% elif item.status == 'pending_update' %}<span class="badge text-bg-warning">freee更新あり</span>
