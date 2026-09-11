@@ -332,10 +332,10 @@ def _wait_xvfb_ready(pid: int, timeout: float = 10.0) -> None:
     socket_path = Path(f"/tmp/.X11-unix/X{display_number}")
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not _process_alive(pid):
-            break
         if socket_path.exists():
             return
+        if not _process_alive(pid):
+            break
         time.sleep(0.1)
     raise RuntimeError(f"ETC用画面サーバーを起動できませんでした（DISPLAY={ETC_BROWSER_DISPLAY}）")
 
