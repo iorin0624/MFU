@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -24,7 +25,17 @@ def _company_id() -> int:
 
 
 def _ref_number(item: dict) -> str:
+    target_month = str(item["target_month"]).replace("-", "")
+    source = f"{int(item['master_id'])}:{target_month}".encode("utf-8")
+    return f"MR{target_month}{hashlib.sha256(source).hexdigest()[:12]}"
+
+
+def _legacy_ref_number(item: dict) -> str:
     return f"MFU-RECURRING-{int(item['master_id'])}-{item['target_month'].replace('-', '')}"
+
+
+def _ref_numbers(item: dict) -> set[str]:
+    return {_ref_number(item), _legacy_ref_number(item)}
 
 
 def _description(item: dict) -> str:
@@ -142,8 +153,9 @@ def _find_deal(item: dict, company_id: int) -> dict | None:
             "limit": 100,
         },
     )
+    reference_numbers = _ref_numbers(item)
     for deal in data.get("deals") or []:
-        if str(deal.get("ref_number") or "") == _ref_number(item):
+        if str(deal.get("ref_number") or "") in reference_numbers:
             return deal
     return None
 

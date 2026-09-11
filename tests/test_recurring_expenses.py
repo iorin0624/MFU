@@ -52,10 +52,22 @@ def test_monthly_and_annual_due_calculation():
 def test_deal_payload_contains_expense_receipts_and_stable_reference():
     payload = freee_sync._deal_payload(_month_item(), 1, [101, 102])
     assert payload["type"] == "expense"
-    assert payload["ref_number"] == "MFU-RECURRING-3-202609"
+    assert payload["ref_number"] == "MR20260928e596f44fa6"
+    assert len(payload["ref_number"]) == 20
+    assert payload["ref_number"].startswith("MR202609")
     assert payload["receipt_ids"] == [101, 102]
     assert payload["details"][0]["amount"] == 5500
     assert payload["payments"][0]["amount"] == 5500
+
+
+def test_deal_lookup_accepts_legacy_reference_to_prevent_duplicates():
+    legacy = "MFU-RECURRING-3-202609"
+    with patch.object(
+        freee_sync.freee_services,
+        "freee_api_request",
+        return_value={"deals": [{"id": 44, "ref_number": legacy}]},
+    ):
+        assert freee_sync._find_deal(_month_item(), 1)["id"] == 44
 
 
 def test_image_attachment_is_converted_to_pdf_for_freee():
