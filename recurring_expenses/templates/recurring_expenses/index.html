@@ -55,13 +55,13 @@
       </div>
       {% if item.freee_deal_id %}<div class="alert alert-success py-2">freee取引ID：{{ item.freee_deal_id }}</div>{% endif %}
       {% if item.freee_error %}<div class="alert alert-danger py-2">{{ item.freee_error }}</div>{% endif %}
-      <form method="post" action="{{ url_for('recurring_expenses.month_update', month_id=item.id) }}" class="row g-2 align-items-end mb-3">
+      <form method="post" action="{{ url_for('recurring_expenses.month_update', month_id=item.id) }}" class="row g-2 align-items-end mb-3 expense-autosave-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="col-sm-3"><label class="form-label">発生日・支払日</label><input class="form-control" type="date" name="issue_date" value="{{ item.issue_date }}" required></div>
         <div class="col-sm-3"><label class="form-label">実際の金額</label><div class="input-group"><span class="input-group-text">¥</span><input class="form-control" type="number" min="0" name="actual_amount" value="{{ item.actual_amount if item.actual_amount is not none else '' }}"></div></div>
         <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option><option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>今月は対象外</option></select></div>
         {% if item.registration_mode == 'existing' %}<div class="col-sm-3"><label class="form-label">既存freee取引ID</label><input class="form-control" type="number" min="1" name="existing_deal_id" value="{{ item.existing_deal_id or '' }}" {{ 'disabled' if item.freee_deal_id else '' }}></div>{% endif %}
-        <div class="col-12"><button class="btn btn-outline-primary btn-sm">入力内容を保存</button></div>
+        <div class="col-12"><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
       </form>
       <div class="mb-3">
         <div class="fw-semibold mb-2">レシート・請求書</div>
@@ -135,6 +135,50 @@
 {% block body_extra %}<script>
 function syncWallet(){const s=document.getElementById('walletable');if(!s)return;const [t,id]=(s.value||':').split(':');document.getElementById('walletableType').value=t;document.getElementById('walletableId').value=id}
 syncWallet();
+const expenseSaveTimers=new WeakMap();
+const expenseSaveChains=new WeakMap();
+const dirtyExpenseForms=new Set();
+const failedExpenseForms=new Set();
+function expenseSaveState(form,message,type='muted'){
+  const state=form.querySelector('.expense-save-state');
+  state.textContent=message;state.className=`small text-${type} expense-save-state`;
+}
+function saveExpenseForm(form){
+  clearTimeout(expenseSaveTimers.get(form));dirtyExpenseForms.delete(form);
+  const previous=expenseSaveChains.get(form)||Promise.resolve();
+  const current=previous.catch(()=>{}).then(async()=>{
+    expenseSaveState(form,'保存中…','primary');
+    const values=Object.fromEntries(new FormData(form).entries());
+    const response=await fetch(form.action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':values.csrf_token},body:JSON.stringify(values)});
+    const data=await response.json();
+    if(!response.ok||!data.ok)throw new Error(data.message||'自動保存できませんでした。');
+    failedExpenseForms.delete(form);expenseSaveState(form,'保存済み','success');
+  }).catch(error=>{failedExpenseForms.add(form);expenseSaveState(form,error.message||'自動保存できませんでした。','danger');throw error});
+  expenseSaveChains.set(form,current);
+  return current;
+}
+function queueExpenseSave(form,delay=0){
+  dirtyExpenseForms.add(form);clearTimeout(expenseSaveTimers.get(form));
+  expenseSaveState(form,'未保存の変更あり','warning');
+  expenseSaveTimers.set(form,setTimeout(()=>saveExpenseForm(form).catch(()=>{}),delay));
+}
+document.querySelectorAll('.expense-autosave-form').forEach(form=>{
+  form.addEventListener('submit',event=>event.preventDefault());
+  form.querySelectorAll('input,select').forEach(field=>{
+    field.addEventListener('change',()=>queueExpenseSave(form));
+    if(field.name==='actual_amount'||field.name==='existing_deal_id')field.addEventListener('input',()=>queueExpenseSave(form,700));
+  });
+});
+const batchRegisterForm=document.getElementById('batchRegisterForm');
+if(batchRegisterForm)batchRegisterForm.addEventListener('submit',async event=>{
+  event.preventDefault();
+  const dirty=[...dirtyExpenseForms];
+  await Promise.allSettled(dirty.map(saveExpenseForm));
+  const pending=[...document.querySelectorAll('.expense-autosave-form')].map(form=>expenseSaveChains.get(form)).filter(Boolean);
+  await Promise.allSettled(pending);
+  if(failedExpenseForms.size){alert('自動保存できていない項目があります。赤字の内容を確認してください。');return}
+  batchRegisterForm.submit();
+});
 const partnerForm=document.getElementById('partnerCreateForm');
 const partnerMessage=document.getElementById('partnerCreateMessage');
 function showPartnerMessage(message,type='danger'){

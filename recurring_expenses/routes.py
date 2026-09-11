@@ -259,13 +259,15 @@ def month_update(month_id: int):
     item = get_month_item(month_id)
     if not item:
         abort(404)
+    is_json = request.is_json
+    source = request.get_json(silent=True) or request.form
     try:
-        issue_date = datetime.strptime(request.form.get("issue_date", ""), "%Y-%m-%d").date()
-        amount = _optional_int(request.form.get("actual_amount"), minimum=0)
-        status = request.form.get("status") or "pending"
+        issue_date = datetime.strptime(source.get("issue_date", ""), "%Y-%m-%d").date()
+        amount = _optional_int(source.get("actual_amount"), minimum=0)
+        status = source.get("status") or "pending"
         if status not in STATUSES:
             raise ValueError
-        existing_deal_id = _optional_int(request.form.get("existing_deal_id"), minimum=1)
+        existing_deal_id = _optional_int(source.get("existing_deal_id"), minimum=1)
         update_month_item(
             month_id,
             issue_date=issue_date,
@@ -273,8 +275,13 @@ def month_update(month_id: int):
             status=status,
             existing_deal_id=existing_deal_id,
         )
+        if is_json:
+            updated = get_month_item(month_id) or {}
+            return jsonify({"ok": True, "status": updated.get("status")})
         flash(f"「{item['name']}」を更新しました。", "success")
     except (TypeError, ValueError):
+        if is_json:
+            return jsonify({"ok": False, "message": "日付・金額・状態を確認してください。"}), 400
         flash("日付・金額・状態を確認してください。", "danger")
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
 
