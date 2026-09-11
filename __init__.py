@@ -6002,6 +6002,8 @@ NODE_METRICS_TARGETS = (
     {"name": "103.17 (MySQL)", "url": "http://192.168.103.17:5055/metrics"},
     {"name": "103.21 (FreePBX)", "url": "http://192.168.103.21:5055/metrics"},
 )
+NODE_METRICS_REQUEST_TIMEOUT_SECONDS = 8
+NODE_METRICS_REFRESH_INTERVAL_SECONDS = 5
 
 
 def _node_metrics_placeholder(target):
@@ -6017,7 +6019,14 @@ def _node_metrics_placeholder(target):
 def _fetch_node_metrics(target, headers):
     info = _node_metrics_placeholder(target)
     try:
-        response = requests.get(target["url"], headers=headers, timeout=2)
+        # SMART and time-sync probing can take several seconds on the x86 node.
+        # Keep this above the observed collection time so a healthy response is
+        # not discarded immediately before it completes.
+        response = requests.get(
+            target["url"],
+            headers=headers,
+            timeout=NODE_METRICS_REQUEST_TIMEOUT_SECONDS,
+        )
         response.raise_for_status()
         data = response.json() or {}
         data["host"] = data.get("host") or "unknown"
@@ -6113,9 +6122,16 @@ def _admin_nodes_collector():
                 _admin_nodes_emit_snapshot()
                 if redis_lock is not None:
                     redis_lock.extend(15, replace_ttl=True)
-                # A full node snapshot currently takes about 1.5 seconds.  Use a
-                # two-second cadence and never overlap one collection with the next.
-                socketio.sleep(max(0.1, 2.0 - (time.monotonic() - started)))
+                # The x86 node may spend around four seconds probing SMART and
+                # time-sync state.  Do not start another collection before that
+                # work has had time to finish.
+                socketio.sleep(
+                    max(
+                        0.1,
+                        NODE_METRICS_REFRESH_INTERVAL_SECONDS
+                        - (time.monotonic() - started),
+                    )
+                )
         except Exception:
             app.logger.exception("admin nodes collector stopped unexpectedly")
             socketio.sleep(3)
