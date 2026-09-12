@@ -19,6 +19,9 @@ def _literal_assignment(name: str):
 def test_periodic_monitoring_paths_are_excluded_from_access_log_storage():
     assert "/api/speedtest/" in _literal_assignment("SKIP_PREFIXES")
     assert "/admin/nodes/chrony/data" in _literal_assignment("SKIP_PATHS")
+    assert "/records/uber/import-jobs/" in _literal_assignment("SKIP_PREFIXES")
+    assert "/records/uber/activity-summary" in _literal_assignment("SKIP_PATHS")
+    assert "/records/uber/continuous-fetch" in _literal_assignment("SKIP_PATHS")
 
 
 def test_visible_pages_remain_loggable():
@@ -26,3 +29,8 @@ def test_visible_pages_remain_loggable():
     paths = _literal_assignment("SKIP_PATHS")
     assert not any("/speedtest".startswith(prefix) for prefix in prefixes)
     assert "/admin/nodes/chrony" not in paths
+    assert "/records/uber" not in paths
+    assert "/records/uber/import-jobs" not in paths
+    assert "/records/uber/continuous-fetch/start" not in paths
+    assert "/records/uber/continuous-fetch/stop" not in paths
+    assert "/records/uber/continuous-fetch/run-now" not in paths
