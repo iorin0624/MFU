@@ -133,6 +133,9 @@ SKIP_PREFIXES = [
     "/tickets/api/zip/",
     "/tickets/api/files/",
     "/admin/nodes/data",
+    # Uberの取得ジョブ実行中だけ1.5秒間隔で確認する内部API。
+    # ジョブ開始操作（POST /records/uber/import-jobs）は引き続き記録する。
+    "/records/uber/import-jobs/",
     "/api/speedtest/",  # ping/upload/resultは測定中に大量発生するためDBへ記録しない
     "/api/timer/status",
     "/apple-touch-icon",  # ← これを追加（*.png / *-120x120 など全部まとめて対象）
@@ -148,6 +151,8 @@ SKIP_PATHS = [
     "/api_vcgencmd",
     "/api/zip-progress",  # ZIP進捗ポーリングを除外
     "/admin/nodes/chrony/data",  # Chrony監視画面の定期ポーリングを除外
+    "/records/uber/activity-summary",  # 途中集計のWebSocket補助・復帰時更新を除外
+    "/records/uber/continuous-fetch",  # 継続取得状態の10秒ポーリングを除外
 ]
 
 SKIP_ENDPOINTS = {
