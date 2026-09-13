@@ -26,6 +26,8 @@ STORE_ROOT = Path(
 ORIGINAL_ROOT = STORE_ROOT / "originals"
 THUMBNAIL_ROOT = STORE_ROOT / "thumbnails"
 ROOT_FOLDER_ID = 1
+MIN_NUMBERING_DIGITS = 1
+MAX_NUMBERING_DIGITS = 8
 
 
 # A sliding-window request should only slice an already ordered catalogue.  Re-reading
@@ -82,7 +84,8 @@ def _normalise_virtual_path(value: str) -> str:
 
 def _folder_maps(cursor) -> tuple[dict[int, dict], dict[str, int]]:
     cursor.execute(
-        "SELECT id, folder_uuid, parent_id, folder_name, status "
+        "SELECT id, folder_uuid, parent_id, folder_name, status, "
+        "numbering_enabled, numbering_digits "
         "FROM image_viewer_folders ORDER BY id"
     )
     rows = {int(row["id"]): row for row in _rows(cursor)}
@@ -122,6 +125,61 @@ def _folder_id(cursor, folder_path: str) -> int:
         return by_path[normalised]
     except KeyError as exc:
         raise CatalogNotFound(f"Folder not found: {normalised}") from exc
+
+
+def _normalise_numbering_digits(value: object) -> int:
+    try:
+        digits = int(value)
+    except (TypeError, ValueError):
+        digits = 1
+    return min(MAX_NUMBERING_DIGITS, max(MIN_NUMBERING_DIGITS, digits))
+
+
+def _folder_settings_row(row: dict | None) -> dict:
+    row = row or {}
+    return {
+        "numbering": bool(int(row.get("numbering_enabled", 1) or 0)),
+        "digits": _normalise_numbering_digits(row.get("numbering_digits", 1)),
+    }
+
+
+def folder_settings(folder_path: str) -> dict:
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        rows, by_path = _folder_maps(cursor)
+        normalised = _normalise_virtual_path(folder_path)
+        try:
+            folder_id = by_path[normalised]
+        except KeyError as exc:
+            raise CatalogNotFound(f"Folder not found: {normalised}") from exc
+        return _folder_settings_row(rows.get(folder_id))
+    finally:
+        conn.close()
+
+
+def update_folder_settings(folder_path: str, numbering: bool, digits: object) -> dict:
+    normalised = _normalise_virtual_path(folder_path)
+    normalised_digits = _normalise_numbering_digits(digits)
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        folder_id = _folder_id(cursor, normalised)
+        cursor.execute(
+            "UPDATE image_viewer_folders "
+            "SET numbering_enabled=%s, numbering_digits=%s WHERE id=%s AND status='active'",
+            (1 if numbering else 0, normalised_digits, folder_id),
+        )
+        conn.commit()
+        return {"folder": normalised, **_folder_settings_row({
+            "numbering_enabled": numbering,
+            "numbering_digits": normalised_digits,
+        })}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _record(row: dict, folder_path: str) -> dict:
@@ -294,10 +352,11 @@ def list_payload(
     conn = get_db()
     try:
         cursor = conn.cursor(dictionary=True)
-        _, by_path = _folder_maps(cursor)
+        rows, by_path = _folder_maps(cursor)
         path_by_id = {folder_id: path for path, folder_id in by_path.items()}
         normalised_folder = _normalise_virtual_path(folder)
         folder_id = _folder_id(cursor, normalised_folder)
+        settings = _folder_settings_row(rows.get(folder_id))
         revision = _catalog_revision(cursor, folder_id)
         ordered_rows, groups = _ordered_file_rows(
             cursor, folder_id, direction, revision, group_by, group_unit,
@@ -331,6 +390,7 @@ def list_payload(
             "folders": folders,
             "images": images,
             "folder": normalised_folder,
+            "folderSettings": settings,
             "version": revision,
             "groups": groups,
             "pagination": {
@@ -382,11 +442,22 @@ def create_folder(parent_path: str, name: str) -> str:
     try:
         cursor = conn.cursor(dictionary=True)
         parent_id = _folder_id(cursor, parent_path)
+        cursor.execute(
+            "SELECT numbering_enabled, numbering_digits "
+            "FROM image_viewer_folders WHERE id=%s AND status='active'",
+            (parent_id,),
+        )
+        parent_settings = _folder_settings_row(cursor.fetchone())
         try:
             cursor.execute(
                 "INSERT INTO image_viewer_folders "
-                "(folder_uuid, parent_id, folder_name) VALUES (%s, %s, %s)",
-                (str(uuid.uuid4()), parent_id, name),
+                "(folder_uuid, parent_id, folder_name, numbering_enabled, numbering_digits) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (
+                    str(uuid.uuid4()), parent_id, name,
+                    1 if parent_settings["numbering"] else 0,
+                    parent_settings["digits"],
+                ),
             )
             conn.commit()
         except Exception as exc:
@@ -431,7 +502,7 @@ def resolve_thumbnail(file_uuid: str) -> Path:
     return path
 
 
-def _next_display_name(cursor, folder_id: int, suffix: str) -> str:
+def _next_display_name(cursor, folder_id: int, suffix: str, digits: int = 1) -> str:
     cursor.execute(
         "SELECT display_name FROM image_viewer_files "
         "WHERE folder_id = %s AND status <> 'trash'",
@@ -442,7 +513,9 @@ def _next_display_name(cursor, folder_id: int, suffix: str) -> str:
         stem = Path(row["display_name"]).stem
         if stem.isdigit():
             highest = max(highest, int(stem))
-    return f"{highest + 1}{suffix}"
+    number = highest + 1
+    width = max(_normalise_numbering_digits(digits), len(str(number)))
+    return f"{number:0{width}d}{suffix}"
 
 
 def _parse_capture_datetime(value: object) -> datetime | None:
@@ -523,6 +596,8 @@ def store_file(
     checksum: bytes | None = None,
     ensure_unique_display_name: bool = False,
     source_url: str | None = None,
+    allow_duplicate: bool = False,
+    numbering_digits: int = 1,
 ) -> dict:
     source = Path(source)
     if not source.is_file():
@@ -533,6 +608,7 @@ def store_file(
         raise CatalogError("Source URL is too long")
     suffix = source.suffix.lower()
     media_type = "video" if suffix in {".mp4", ".webm", ".mov", ".m4v"} else "image"
+    allow_duplicate = bool(allow_duplicate and media_type == "image")
     captured_at = capture_datetime(source, media_type)
     file_uuid = str(uuid.uuid4())
     storage_relpath = f"{file_uuid[:2]}/{file_uuid}{suffix}"
@@ -577,7 +653,7 @@ def store_file(
                 )
                 conn.commit()
                 existing = None
-        if existing:
+        if existing and not allow_duplicate:
             if source_url and not existing.get("source_url"):
                 cursor.execute(
                     "UPDATE image_viewer_files SET source_url = %s WHERE id = %s",
@@ -599,7 +675,9 @@ def store_file(
             if ensure_unique_display_name:
                 display_name = _unique_display_name(cursor, folder_id, display_name)
         else:
-            display_name = _next_display_name(cursor, folder_id, suffix)
+            display_name = _next_display_name(
+                cursor, folder_id, suffix, numbering_digits,
+            )
         if "/" in display_name or "\\" in display_name:
             raise CatalogError("Invalid file name")
         cursor.execute(
@@ -1138,7 +1216,12 @@ def next_number(folder_path: str) -> dict:
     conn = get_db()
     try:
         cursor = conn.cursor(dictionary=True)
-        folder_id = _folder_id(cursor, folder_path)
+        rows, by_path = _folder_maps(cursor)
+        normalised = _normalise_virtual_path(folder_path)
+        try:
+            folder_id = by_path[normalised]
+        except KeyError as exc:
+            raise CatalogNotFound(f"Folder not found: {normalised}") from exc
         cursor.execute(
             "SELECT display_name FROM image_viewer_files "
             "WHERE folder_id = %s AND status = 'active'",
@@ -1149,7 +1232,11 @@ def next_number(folder_path: str) -> dict:
             stem = Path(row["display_name"]).stem
             if stem.isdigit():
                 highest = max(highest, int(stem))
-        return {"nextNumber": highest + 1, "digits": max(3, len(str(highest + 1)))}
+        configured_digits = _folder_settings_row(rows.get(folder_id))["digits"]
+        return {
+            "nextNumber": highest + 1,
+            "digits": max(configured_digits, len(str(highest + 1))),
+        }
     finally:
         conn.close()
 

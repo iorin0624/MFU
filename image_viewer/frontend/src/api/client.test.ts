@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const config = {
   imagesUrl: '/image_viewer/api/images',
   imagesVersionUrl: '/image_viewer/api/images/version', createFolderUrl: '/image_viewer/api/folders',
+  folderSettingsUrl: '/image_viewer/api/folders/settings',
   propertiesUrl: '/image_viewer/api/entries/properties', renameUrl: '/image_viewer/api/entries/rename',
   appendSequenceUrl: '/image_viewer/api/entries/append-sequence', deleteUrl: '/image_viewer/api/entries/delete',
   moveUrl: '/image_viewer/api/entries/move', copyUrl: '/image_viewer/api/entries/copy',
@@ -37,5 +38,24 @@ describe('image viewer API client', () => {
     })));
     const { imageViewerApi } = await import('./client');
     await expect(imageViewerApi.list('', 'asc')).rejects.toThrow('HTTP 500');
+  });
+
+  it('sends folder numbering and one-shot duplicate settings with uploads', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true, saved: [], skipped: [], duplicates: [], errors: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { imageViewerApi } = await import('./client');
+    await imageViewerApi.upload(
+      [new File(['image'], 'photo.jpg', { type: 'image/jpeg' })],
+      '撮影',
+      { numbering: true, digits: 4 },
+      true,
+    );
+    const [, request] = fetchMock.mock.calls[0];
+    const form = request.body as FormData;
+    expect(form.get('numbering')).toBe('1');
+    expect(form.get('numbering_digits')).toBe('4');
+    expect(form.get('allow_duplicate_images')).toBe('1');
   });
 });

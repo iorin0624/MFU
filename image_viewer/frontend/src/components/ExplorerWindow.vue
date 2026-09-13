@@ -66,6 +66,8 @@ async function load(reset = false) {
     await explorer.load(
       model.value.folder, model.value.sort, reset, model.value.groupBy, model.value.groupUnit,
     );
+    model.value.numbering = folderData.value.folderSettings.numbering;
+    model.value.numberingDigits = folderData.value.folderSettings.digits;
     props.win.title = `エクスプローラー - ${currentLabel.value}`;
   } catch (error) {
     notice.show(errorMessage(error, '画像一覧を読み込めませんでした。'), true);
@@ -82,6 +84,7 @@ async function changeFolder(folder: string) {
   model.value.selectedPaths = [];
   model.value.anchorPath = '';
   model.value.appendSources = [];
+  model.value.allowDuplicateImages = false;
   await nextTick();
   fileGrid.value?.scrollToTop();
   await load(true);
@@ -102,6 +105,31 @@ function setSize(size: ViewSize) {
     values[model.value.folder] = size;
     localStorage.setItem('mfu.imageViewer.vue.size', JSON.stringify(values));
   } catch { /* storage is optional */ }
+}
+
+async function saveNumberingSettings(numbering: boolean, digits: number) {
+  const previous = {
+    numbering: model.value.numbering,
+    digits: model.value.numberingDigits,
+  };
+  const normalizedDigits = Math.min(8, Math.max(1, Number(digits) || 1));
+  model.value.numbering = numbering;
+  model.value.numberingDigits = normalizedDigits;
+  try {
+    const result = await imageViewerApi.updateFolderSettings(
+      model.value.folder, numbering, normalizedDigits,
+    );
+    model.value.numbering = result.numbering;
+    model.value.numberingDigits = result.digits;
+    folderData.value.folderSettings = {
+      numbering: result.numbering,
+      digits: result.digits,
+    };
+  } catch (error) {
+    model.value.numbering = previous.numbering;
+    model.value.numberingDigits = previous.digits;
+    notice.show(errorMessage(error, '連番設定を保存できませんでした。'), true);
+  }
 }
 
 function collapsedStorageKey() {
@@ -490,13 +518,37 @@ function uploadBatches(files: File[]) {
 
 async function uploadFiles(files: File[], paste = false) {
   if (!files.length) return;
+  const allowDuplicateImages = model.value.allowDuplicateImages;
+  let savedCount = 0;
+  let duplicateCount = 0;
+  let errorCount = 0;
   try {
     for (const batch of uploadBatches(files)) {
-      await imageViewerApi.upload(batch, model.value.folder, model.value.numbering, paste);
+      const result = await imageViewerApi.upload(
+        batch,
+        model.value.folder,
+        { numbering: model.value.numbering, digits: model.value.numberingDigits },
+        allowDuplicateImages,
+        paste,
+      );
+      savedCount += result.saved?.length || 0;
+      duplicateCount += result.duplicates?.length || 0;
+      errorCount += result.errors?.length || 0;
     }
     await load(true);
-    notice.show(`${files.length}件を追加しました。`);
-  } catch (error) { notice.show(errorMessage(error, 'アップロードに失敗しました。'), true); }
+    const details = [
+      `${savedCount}件を追加しました。`,
+      duplicateCount ? `重複のため未追加 ${duplicateCount}件` : '',
+      errorCount ? `失敗 ${errorCount}件` : '',
+    ].filter(Boolean).join(' ');
+    notice.show(details, duplicateCount > 0 || errorCount > 0);
+  } catch (error) {
+    notice.show(errorMessage(error, 'アップロードに失敗しました。'), true);
+  } finally {
+    // Duplicate allowance is deliberately one-shot and never persisted.
+    model.value.allowDuplicateImages = false;
+    if (uploadInput.value) uploadInput.value.value = '';
+  }
 }
 
 function pasteHandler(event: ClipboardEvent) {
@@ -766,7 +818,19 @@ onBeforeUnmount(() => {
       <div class="explorer-actions">
         <button type="button" @click="createFolder">新規フォルダー</button>
         <button type="button" @click="uploadInput?.click()">追加</button>
-        <button type="button" :class="{pressed: model.numbering}" @click="model.numbering = !model.numbering">連番 {{ model.numbering ? 'ON' : 'OFF' }}</button>
+        <button type="button" :class="{pressed: model.numbering}" @click="saveNumberingSettings(!model.numbering, model.numberingDigits)">連番 {{ model.numbering ? 'ON' : 'OFF' }}</button>
+        <label class="toolbar-select">桁数
+          <select :value="model.numberingDigits" :disabled="!model.numbering" @change="saveNumberingSettings(model.numbering, Number(($event.target as HTMLSelectElement).value))">
+            <option v-for="digits in 8" :key="digits" :value="digits">{{ digits }}</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          class="temporary-warning"
+          :class="{pressed: model.allowDuplicateImages}"
+          :title="model.allowDuplicateImages ? '次の追加・貼付だけ重複画像を保存します' : '重複画像を次の1回だけ保存可能にします'"
+          @click="model.allowDuplicateImages = !model.allowDuplicateImages"
+        >重複一時許可 {{ model.allowDuplicateImages ? 'ON' : 'OFF' }}</button>
         <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
         <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
         <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>

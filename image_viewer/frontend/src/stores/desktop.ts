@@ -70,7 +70,8 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
       z: ++topZ, minimized: false, maximized: false,
       explorer: {
         folder, sort: savedSort(folder), viewSize: savedSize(folder),
-        selectedPaths: [], anchorPath: '', numbering: true, appendSources: [],
+        selectedPaths: [], anchorPath: '', numbering: true, numberingDigits: 1,
+        allowDuplicateImages: false, appendSources: [],
         groupBy: grouping.groupBy, groupUnit: grouping.groupUnit,
       },
     });
