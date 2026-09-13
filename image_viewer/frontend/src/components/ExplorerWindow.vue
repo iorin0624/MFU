@@ -545,8 +545,6 @@ async function uploadFiles(files: File[], paste = false) {
   } catch (error) {
     notice.show(errorMessage(error, 'アップロードに失敗しました。'), true);
   } finally {
-    // Duplicate allowance is deliberately one-shot and never persisted.
-    model.value.allowDuplicateImages = false;
     if (uploadInput.value) uploadInput.value.value = '';
   }
 }
@@ -828,7 +826,7 @@ onBeforeUnmount(() => {
           type="button"
           class="temporary-warning"
           :class="{pressed: model.allowDuplicateImages}"
-          :title="model.allowDuplicateImages ? '次の追加・貼付だけ重複画像を保存します' : '重複画像を次の1回だけ保存可能にします'"
+          :title="model.allowDuplicateImages ? 'このフォルダーを開いている間、重複画像を保存します' : 'フォルダー移動または再読み込みまで重複画像を保存可能にします'"
           @click="model.allowDuplicateImages = !model.allowDuplicateImages"
         >重複一時許可 {{ model.allowDuplicateImages ? 'ON' : 'OFF' }}</button>
         <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
