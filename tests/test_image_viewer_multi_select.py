@@ -83,6 +83,19 @@ class ImageViewerMultiSelectTest(unittest.TestCase):
             self.assertIn(expected, source)
         self.assertIn("emit('marquee'", grid)
 
+    def test_file_delete_does_not_require_passkey_but_folder_delete_still_does(self):
+        backend = function_source(
+            ROOT / "image_viewer" / "routes.py", "delete_entry"
+        )
+        client = (
+            ROOT / "image_viewer" / "frontend" / "src" / "api" / "client.ts"
+        ).read_text(encoding="utf-8-sig")
+
+        self.assertNotIn('require_admin_passkey("image_delete")', backend)
+        self.assertIn('require_admin_passkey("image_folder_delete")', backend)
+        self.assertNotIn("}, 'image_delete');", client)
+        self.assertIn("}, 'image_folder_delete');", client)
+
 
 if __name__ == "__main__":
     unittest.main()

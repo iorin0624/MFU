@@ -5036,9 +5036,10 @@ def delete_entry():
     )
     if contains_folder and session.get("user") != "admin":
         return jsonify({"ok": False, "error": "フォルダー削除は管理者のみ実行できます。"}), 403
-    guard = require_admin_passkey("image_folder_delete" if contains_folder else "image_delete")
-    if guard:
-        return guard
+    if contains_folder:
+        guard = require_admin_passkey("image_folder_delete")
+        if guard:
+            return guard
     batch = _batch_entry_response(data, _delete_entry_operation)
     if batch is not None:
         return jsonify(batch)

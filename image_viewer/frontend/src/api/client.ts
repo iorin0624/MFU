@@ -125,7 +125,7 @@ export const imageViewerApi = {
     return requestJson<Record<string, unknown>>(runtimeConfig.deleteUrl, {
       method: 'POST',
       body: JSON.stringify({ entries: paths.map((path) => ({ path, type: 'file' })) }),
-    }, 'image_delete');
+    });
   },
   deleteFolder(path: string) {
     return requestJson<Record<string, unknown>>(runtimeConfig.deleteUrl, {
