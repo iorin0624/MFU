@@ -1,5 +1,5 @@
 import { runtimeConfig } from '@/config';
-import type { ApiErrorPayload, GroupBy, GroupUnit, ImageListPayload } from '@/types';
+import type { ApiErrorPayload, FolderSettings, GroupBy, GroupUnit, ImageListPayload } from '@/types';
 
 export class ApiError extends Error {
   constructor(
@@ -97,6 +97,12 @@ export const imageViewerApi = {
       method: 'POST', body: JSON.stringify({ parent, name }),
     });
   },
+  updateFolderSettings(folder: string, numbering: boolean, digits: number) {
+    return requestJson<{ok: true; folder: string; numbering: boolean; digits: number}>(
+      runtimeConfig.folderSettingsUrl,
+      { method: 'POST', body: JSON.stringify({ folder, numbering, digits }) },
+    );
+  },
   properties(path: string) {
     return requestJson<Record<string, unknown>>(queryUrl(runtimeConfig.propertiesUrl, { path }));
   },
@@ -148,12 +154,20 @@ export const imageViewerApi = {
       method: 'POST', body: JSON.stringify({ sources, target }),
     });
   },
-  upload(files: File[], folder: string, numbering: boolean, paste = false) {
+  upload(
+    files: File[], folder: string, settings: FolderSettings,
+    allowDuplicateImages = false, paste = false,
+  ) {
     const form = new FormData();
     form.set('folder', folder);
-    form.set('numbering', numbering ? '1' : '0');
+    form.set('numbering', settings.numbering ? '1' : '0');
+    form.set('numbering_digits', String(settings.digits));
+    form.set('allow_duplicate_images', allowDuplicateImages ? '1' : '0');
     files.forEach((file) => form.append('files', file, file.name));
-    return requestJson<{ok: boolean; saved: unknown[]; skipped: string[]; errors: unknown[]}>(
+    return requestJson<{
+      ok: boolean; saved: unknown[]; skipped: string[];
+      duplicates: unknown[]; errors: unknown[];
+    }>(
       paste ? runtimeConfig.pasteUrl : runtimeConfig.uploadUrl,
       { method: 'POST', body: form },
     );

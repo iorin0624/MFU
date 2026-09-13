@@ -21,6 +21,9 @@ describe('desktop store', () => {
     expect(store.windows).toHaveLength(2);
     expect(store.windows[0].explorer?.folder).toBe('');
     expect(store.windows[1].explorer?.folder).toBe('12000-14000');
+    expect(store.windows[0].explorer?.numbering).toBe(true);
+    expect(store.windows[0].explorer?.numberingDigits).toBe(1);
+    expect(store.windows[0].explorer?.allowDuplicateImages).toBe(false);
   });
 
   it('stores the file-name sort direction separately for each folder', () => {

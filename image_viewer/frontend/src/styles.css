@@ -146,6 +146,12 @@ button:active:not(:disabled), button.pressed { background: #c9dcf5; box-shadow: 
 button:focus-visible { outline: 1px dotted #111; outline-offset: -4px; }
 button:disabled { color: #939393; opacity: .72; }
 button.danger { color: #a41515; }
+button.temporary-warning.pressed {
+  border-color: #c97a00;
+  color: #5c3500;
+  background: #ffd66b;
+  box-shadow: inset 1px 1px 2px #9b6200;
+}
 .path-box { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px inset #aaa; background: #fff; color: #17233b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .explorer-actions { min-height: 35px; padding-left: 8px; }
 .append-banner { padding: 6px 10px; color: #633e00; background: #fff0b3; border-bottom: 1px solid #ddb847; font-weight: 700; }

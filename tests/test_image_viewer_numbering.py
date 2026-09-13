@@ -32,6 +32,7 @@ def catalog_function(name: str):
     namespace = {
         "Path": Path,
         "_rows": lambda cursor: list(cursor.fetchall() or []),
+        "_normalise_numbering_digits": lambda value: min(8, max(1, int(value))),
     }
     exec(function_source(ROOT / "image_viewer" / "catalog.py", name), namespace)
     return namespace[name]
@@ -43,6 +44,18 @@ class ImageViewerNumberingTest(unittest.TestCase):
         cursor = FakeCursor(["9.jpg", "11.png", "10.gif", "photo.webp"])
 
         self.assertEqual(next_display_name(cursor, 12, ".webp"), "12.webp")
+
+    def test_next_number_uses_configured_zero_padding(self):
+        next_display_name = catalog_function("_next_display_name")
+        cursor = FakeCursor(["8.jpg", "009.png", "photo.webp"])
+
+        self.assertEqual(next_display_name(cursor, 12, ".jpg", 4), "0010.jpg")
+
+    def test_numbering_expands_past_configured_digits(self):
+        next_display_name = catalog_function("_next_display_name")
+        cursor = FakeCursor(["999.jpg"])
+
+        self.assertEqual(next_display_name(cursor, 12, ".jpg", 2), "1000.jpg")
 
     def test_original_name_gets_three_digit_collision_suffix(self):
         unique_display_name = catalog_function("_unique_display_name")
@@ -68,6 +81,18 @@ class ImageViewerNumberingTest(unittest.TestCase):
 
         self.assertIn("_upload_numbering_enabled()", source)
         self.assertIn("ensure_unique_display_name=not numbering", source)
+        self.assertIn("allow_duplicate=allow_duplicate_images", source)
+        self.assertIn("numbering_digits=numbering_digits", source)
+
+    def test_folder_settings_are_server_persisted_and_duplicates_are_not(self):
+        migration = (
+            ROOT / "migrations" / "20260913_image_viewer_folder_numbering.sql"
+        ).read_text(encoding="utf-8")
+        catalog_source = (ROOT / "image_viewer" / "catalog.py").read_text(encoding="utf-8")
+        self.assertIn("numbering_enabled", migration)
+        self.assertIn("numbering_digits", migration)
+        self.assertIn("def update_folder_settings(", catalog_source)
+        self.assertNotIn("allow_duplicate", migration)
 
 
 if __name__ == "__main__":

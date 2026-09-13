@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, reactive, ref } from 'vue';
 import { imageViewerApi } from '@/api/client';
-import type { DateGroup, GroupBy, GroupUnit, ImageListPayload, MediaItem, SortDirection } from '@/types';
+import type { DateGroup, FolderSettings, GroupBy, GroupUnit, ImageListPayload, MediaItem, SortDirection } from '@/types';
 
 interface FolderData {
   items: MediaItem[];
@@ -16,11 +16,13 @@ interface FolderData {
   groups: DateGroup[];
   groupBy: GroupBy;
   groupUnit: GroupUnit;
+  folderSettings: FolderSettings;
 }
 
 const emptyData = (): FolderData => ({
   items: [], page: 0, pages: 1, total: 0, hasMore: false, loading: false, version: '', offset: 0, center: 0,
   groups: [], groupBy: 'none', groupUnit: 'day',
+  folderSettings: { numbering: true, digits: 1 },
 });
 const naturalCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 
@@ -86,6 +88,12 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
     target.offset = Number(pagination?.offset || 0);
     target.center = Number(pagination?.center ?? (target.offset + Math.floor(target.items.length / 2)));
     target.groups = payload.groups || [];
+    if (payload.folderSettings) {
+      target.folderSettings = {
+        numbering: Boolean(payload.folderSettings.numbering),
+        digits: Math.min(8, Math.max(1, Number(payload.folderSettings.digits) || 1)),
+      };
+    }
   }
 
   function rememberWindow(key: string, payload: ImageListPayload) {

@@ -47,6 +47,12 @@ export interface ImageListPayload {
   version?: string;
   pagination?: Pagination;
   groups?: DateGroup[];
+  folderSettings?: FolderSettings;
+}
+
+export interface FolderSettings {
+  numbering: boolean;
+  digits: number;
 }
 
 export interface DateGroup {
@@ -60,6 +66,7 @@ export interface RuntimeConfig {
   imagesUrl: string;
   imagesVersionUrl: string;
   createFolderUrl: string;
+  folderSettingsUrl: string;
   propertiesUrl: string;
   renameUrl: string;
   appendSequenceUrl: string;
@@ -111,6 +118,8 @@ export interface ExplorerWindowState {
   selectedPaths: string[];
   anchorPath: string;
   numbering: boolean;
+  numberingDigits: number;
+  allowDuplicateImages: boolean;
   appendSources: string[];
   groupBy: GroupBy;
   groupUnit: GroupUnit;

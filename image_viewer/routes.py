@@ -3688,6 +3688,19 @@ def _upload_numbering_enabled() -> bool:
     return value not in {"0", "false", "off", "no"}
 
 
+def _upload_numbering_digits(default: int = 1) -> int:
+    try:
+        digits = int(request.form.get("numbering_digits", default) or default)
+    except (TypeError, ValueError):
+        digits = default
+    return min(8, max(1, digits))
+
+
+def _temporary_duplicate_images_allowed() -> bool:
+    value = str(request.form.get("allow_duplicate_images", "0") or "0").strip().lower()
+    return value in {"1", "true", "on", "yes"}
+
+
 def _upload_display_name(filename: str, suffix: str) -> str:
     safe_name = re.sub(r'[\\/:*?"<>|]+', "_", str(filename or "image")).strip(" .")
     stem = Path(safe_name).stem or "image"
@@ -3712,7 +3725,7 @@ def _next_number_for_folder(folder_value: str) -> dict:
     return {"nextNumber": max_number + 1, "maxNumber": max_number, "matched": matched}
 
 
-def _next_numbered_file_path(target_dir: Path, suffix: str) -> Path:
+def _next_numbered_file_path(target_dir: Path, suffix: str, digits: int = 1) -> Path:
     max_number = 0
     if target_dir.is_dir():
         for path in target_dir.iterdir():
@@ -3721,9 +3734,10 @@ def _next_numbered_file_path(target_dir: Path, suffix: str) -> Path:
             match = re.search(r"(\d+)(?!.*\d)", path.stem)
             if match:
                 max_number = max(max_number, int(match.group(1)))
-    width = 4 if max_number < 9999 else len(str(max_number + 1))
     while True:
-        candidate = target_dir / f"{max_number + 1:0{width}d}{suffix}"
+        number = max_number + 1
+        width = max(min(8, max(1, int(digits))), len(str(number)))
+        candidate = target_dir / f"{number:0{width}d}{suffix}"
         if not candidate.exists():
             return candidate
         max_number += 1
@@ -4310,6 +4324,7 @@ def index():
         "imagesUrl": url_for("image_viewer.image_list"),
         "imagesVersionUrl": url_for("image_viewer.image_list_version"),
         "createFolderUrl": url_for("image_viewer.create_folder"),
+        "folderSettingsUrl": url_for("image_viewer.update_folder_settings"),
         "propertiesUrl": url_for("image_viewer.entry_properties"),
         "renameUrl": url_for("image_viewer.rename_entry"),
         "appendSequenceUrl": url_for("image_viewer.append_sequence_entries"),
@@ -4605,6 +4620,28 @@ def create_folder():
     target.mkdir(parents=False, exist_ok=False)
     _invalidate_image_list_cache()
     return jsonify({"ok": True, "folder": target.relative_to(UPLOAD_ROOT).as_posix()})
+
+
+@image_viewer_bp.post("/api/folders/settings")
+@login_required
+def update_folder_settings():
+    if not catalog.CATALOG_ENABLED:
+        return jsonify({"ok": False, "error": "フォルダー設定を保存できません。"}), 409
+    data = request.get_json(silent=True) or {}
+    numbering_value = data.get("numbering", True)
+    if isinstance(numbering_value, str):
+        numbering = numbering_value.strip().lower() not in {"0", "false", "off", "no"}
+    else:
+        numbering = bool(numbering_value)
+    try:
+        settings = catalog.update_folder_settings(
+            str(data.get("folder") or ""), numbering, data.get("digits", 1),
+        )
+        return jsonify({"ok": True, **settings})
+    except catalog.CatalogNotFound as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except catalog.CatalogError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @image_viewer_bp.route("/api/entries/properties", methods=["GET", "POST"])
@@ -5033,7 +5070,14 @@ def copy_entry():
 
 def _catalog_upload_response(*, image_only: bool = False):
     folder = request.form.get("folder") or ""
-    numbering = _upload_numbering_enabled()
+    settings = catalog.folder_settings(folder)
+    numbering = (
+        _upload_numbering_enabled()
+        if "numbering" in request.form
+        else settings["numbering"]
+    )
+    numbering_digits = _upload_numbering_digits(settings["digits"])
+    allow_duplicate_images = _temporary_duplicate_images_allowed()
     files = request.files.getlist("files")
     saved = []
     skipped = []
@@ -5067,6 +5111,8 @@ def _catalog_upload_response(*, image_only: bool = False):
                 display_name=display_name,
                 move_source=True,
                 ensure_unique_display_name=not numbering,
+                allow_duplicate=allow_duplicate_images,
+                numbering_digits=numbering_digits,
             )
             record["thumbCreated"] = catalog.generate_thumbnail(record["uuid"])
             if record["thumbCreated"]:
@@ -5106,6 +5152,7 @@ def upload_images():
         return jsonify({"ok": False, "error": "アップロード先フォルダーを確認してください。"}), 400
     target_dir.mkdir(parents=True, exist_ok=True)
     numbering = _upload_numbering_enabled()
+    numbering_digits = _upload_numbering_digits(1)
 
     files = request.files.getlist("files")
     saved = []
@@ -5120,7 +5167,7 @@ def upload_images():
             continue
         try:
             target = (
-                _next_numbered_file_path(target_dir, suffix)
+                _next_numbered_file_path(target_dir, suffix, numbering_digits)
                 if numbering
                 else _unique_file_path(target_dir, _upload_display_name(upload.filename, suffix))
             )
@@ -5153,6 +5200,7 @@ def paste_images():
         return jsonify({"ok": False, "error": "保存先フォルダーを確認してください。"}), 400
     target_dir.mkdir(parents=True, exist_ok=True)
     numbering = _upload_numbering_enabled()
+    numbering_digits = _upload_numbering_digits(1)
 
     files = request.files.getlist("files")
     saved = []
@@ -5177,7 +5225,7 @@ def paste_images():
             continue
         try:
             target = (
-                _next_numbered_file_path(target_dir, suffix)
+                _next_numbered_file_path(target_dir, suffix, numbering_digits)
                 if numbering
                 else _unique_file_path(target_dir, _upload_display_name(upload.filename, suffix))
             )
