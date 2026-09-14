@@ -220,11 +220,11 @@ def delete_registered_month(month_id: int) -> dict:
     return {"status": "deleted", "deal_id": deal_id}
 
 
-def register_month(month_id: int) -> dict:
+def register_month(month_id: int, *, force_update: bool = False) -> dict:
     item = get_month_item(month_id)
     if not item:
         raise LookupError("定期経費が見つかりません。")
-    if item.get("freee_deal_id") and item.get("status") != "pending_update":
+    if item.get("freee_deal_id") and item.get("status") != "pending_update" and not force_update:
         return {"status": "already_registered", "deal_id": int(item["freee_deal_id"])}
     if item.get("status") == "excluded":
         raise RuntimeError("今月は対象外に設定されています。")
@@ -236,7 +236,7 @@ def register_month(month_id: int) -> dict:
     if item.get("registration_mode") == "manual":
         set_registration(month_id, status="manual")
         return {"status": "manual"}
-    if not claim_registration(month_id):
+    if not claim_registration(month_id, force=force_update):
         raise RuntimeError("この経費は登録処理中か、すでに処理済みです。")
     try:
         company_id = _company_id()

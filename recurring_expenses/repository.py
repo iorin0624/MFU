@@ -443,7 +443,7 @@ def clear_registration(month_id: int) -> None:
         db.close()
 
 
-def claim_registration(month_id: int) -> bool:
+def claim_registration(month_id: int, *, force: bool = False) -> bool:
     ensure_schema()
     db = get_db()
     try:
@@ -453,10 +453,10 @@ def claim_registration(month_id: int) -> bool:
             UPDATE recurring_expense_months
             SET status='registering', freee_error=NULL, updated_at=%s
             WHERE id=%s
-              AND (freee_deal_id IS NULL OR status='pending_update')
+              AND (%s=1 OR freee_deal_id IS NULL OR status='pending_update')
               AND status NOT IN ('registering','excluded','manual')
             """,
-            (datetime.now(), month_id),
+            (datetime.now(), month_id, 1 if force else 0),
         )
         claimed = cur.rowcount == 1
         db.commit()

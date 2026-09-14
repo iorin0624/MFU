@@ -129,6 +129,32 @@ def test_registration_creates_one_deal_and_persists_ids():
     set_registration.assert_called_once_with(7, status="registered", deal_id=987)
 
 
+def test_force_update_refreshes_an_already_registered_freee_deal():
+    item = _month_item(
+        receipt_required=0,
+        freee_deal_id=987,
+        status="registered",
+        registration_mode="create",
+    )
+    deal = {"id": 987, "type": "expense", "details": [{"id": 321}], "receipt_ids": []}
+    with (
+        patch.object(freee_sync, "get_month_item", return_value=item),
+        patch.object(freee_sync, "list_attachments", return_value=[]),
+        patch.object(freee_sync, "claim_registration", return_value=True) as claim,
+        patch.object(freee_sync, "_company_id", return_value=1),
+        patch.object(freee_sync, "_receipt_ids", return_value=[]),
+        patch.object(freee_sync, "_deal_by_id", return_value=deal),
+        patch.object(freee_sync, "_attach_to_existing", return_value=987) as update_deal,
+        patch.object(freee_sync, "set_registration") as set_registration,
+    ):
+        result = freee_sync.register_month(7, force_update=True)
+
+    assert result["deal_id"] == 987
+    claim.assert_called_once_with(7, force=True)
+    update_deal.assert_called_once_with(item, deal, 1, [])
+    set_registration.assert_called_once_with(7, status="registered", deal_id=987)
+
+
 def test_registered_month_delete_verifies_reference_and_clears_local_link():
     item = _month_item(
         freee_deal_id=987,
@@ -286,7 +312,11 @@ def test_skip_and_cancellation_controls_are_master_driven():
     assert "localStorage.setItem" in template
     assert 'id="emailReceiptMessageId"' in template
     assert "message_id:document.getElementById('emailReceiptMessageId').value" in template
-    assert 'expense-update-button' in template
+    assert 'expense-update-button' not in template
+    assert '>入力内容を保存</button>' not in template
+    assert "month_freee_update" in template
+    assert "if(expenseForm)await saveExpenseForm(expenseForm)" in template
+    assert template.index("freee取引を更新</button>") < template.index("freee取引を削除</button>")
     assert "saveExpenseForm(form).catch" in template
     assert 'name="freee_memo"' in template
     assert "この月のfreee取引の摘要へ追加" in template

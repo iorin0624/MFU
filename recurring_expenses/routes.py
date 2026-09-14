@@ -598,6 +598,23 @@ def month_register(month_id: int):
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
 
 
+@recurring_expenses_bp.post("/months/<int:month_id>/freee-update")
+def month_freee_update(month_id: int):
+    _require_csrf()
+    item = get_month_item(month_id)
+    if not item:
+        abort(404)
+    if not item.get("freee_deal_id"):
+        flash("更新できるfreee取引がありません。", "warning")
+        return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
+    try:
+        result = register_month(month_id, force_update=True)
+        flash(f"「{item['name']}」のfreee取引を更新しました（取引ID: {result['deal_id']}）。", "success")
+    except Exception as exc:
+        flash(f"freee取引を更新できませんでした: {freee_services.sanitize_freee_error(str(exc))}", "danger")
+    return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
+
+
 @recurring_expenses_bp.post("/months/<int:month_id>/freee-delete")
 def month_freee_delete(month_id: int):
     _require_csrf()

@@ -62,7 +62,7 @@
         <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option>{% if item.allow_skip or item.status == 'excluded' %}<option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>発生なし（スキップ）</option>{% endif %}</select></div>
         {% if item.registration_mode == 'existing' %}<div class="col-sm-3"><label class="form-label">既存freee取引ID</label><input class="form-control" type="number" min="1" name="existing_deal_id" value="{{ item.existing_deal_id or '' }}" {{ 'disabled' if item.freee_deal_id else '' }}></div>{% endif %}
         <div class="col-12"><label class="form-label">freeeメモ（任意）</label><input class="form-control" name="freee_memo" maxlength="255" placeholder="この月のfreee取引の摘要へ追加" value="{{ item.freee_memo or '' }}"></div>
-        <div class="col-12 d-flex align-items-center gap-2"><button class="btn btn-outline-primary btn-sm expense-update-button" type="submit">更新</button><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
+        <div class="col-12"><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
       </form>
       <div class="mb-3">
         <div class="fw-semibold mb-2">レシート・請求書</div>
@@ -80,7 +80,8 @@
         {% if item.email_receipt_enabled %}<button type="button" class="btn btn-outline-primary btn-sm mt-2 email-receipt-open" data-month-id="{{ item.id }}" data-month="{{ item.target_month }}" data-expense-name="{{ item.name }}" data-search-url="{{ url_for('recurring_expenses.email_search', month_id=item.id) }}">メールから証憑を選択</button>{% endif %}
       </div>
       <div class="d-flex flex-wrap gap-2">
-        {% if item.status not in ['registered','manual','excluded'] %}<form method="post" action="{{ url_for('recurring_expenses.month_register', month_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-success" onclick="return confirm('{{ '手動登録済みにしますか？' if item.registration_mode == 'manual' else ('freeeの取引を更新しますか？' if item.freee_deal_id else 'freeeへ登録しますか？') }}')">{{ '手動登録済みにする' if item.registration_mode == 'manual' else ('freeeを更新' if item.freee_deal_id else 'freeeへ登録') }}</button></form>{% endif %}
+        {% if not item.freee_deal_id and item.status not in ['registered','manual','excluded','registering'] %}<form method="post" action="{{ url_for('recurring_expenses.month_register', month_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-success" onclick="return confirm('{{ '手動登録済みにしますか？' if item.registration_mode == 'manual' else 'freeeへ登録しますか？' }}')">{{ '手動登録済みにする' if item.registration_mode == 'manual' else 'freeeへ登録' }}</button></form>{% endif %}
+        {% if item.freee_deal_id and item.registration_mode != 'manual' and item.status != 'registering' %}<form method="post" action="{{ url_for('recurring_expenses.month_freee_update', month_id=item.id) }}" class="freee-update-form" data-confirm="入力内容をfreee取引ID {{ item.freee_deal_id }} へ反映します。よろしいですか？"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-outline-primary">freee取引を更新</button></form>{% endif %}
         {% if item.freee_deal_id and item.registration_mode == 'create' and item.status != 'registering' %}<form method="post" action="{{ url_for('recurring_expenses.month_freee_delete', month_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-outline-danger" onclick="return confirm('freee取引ID {{ item.freee_deal_id }} をfreeeから削除し、この項目を未登録へ戻します。よろしいですか？')">freee取引を削除</button></form>{% endif %}
       </div>
     </div>
@@ -199,6 +200,15 @@ document.querySelectorAll('.expense-autosave-form').forEach(form=>{
     if(['actual_amount','existing_deal_id','freee_memo'].includes(field.name))field.addEventListener('input',()=>queueExpenseSave(form,700));
   });
 });
+document.querySelectorAll('.freee-update-form').forEach(form=>form.addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(!confirm(form.dataset.confirm||'freee取引を更新しますか？'))return;
+  const expenseForm=form.closest('article')?.querySelector('.expense-autosave-form');
+  try{
+    if(expenseForm)await saveExpenseForm(expenseForm);
+    form.submit();
+  }catch(error){alert(error.message||'入力内容を保存できなかったため、freee取引を更新していません。');}
+}));
 document.querySelectorAll('.expense-attachment-form').forEach(form=>{
   const input=form.querySelector('.expense-attachment-input');
   const button=form.querySelector('.expense-attachment-submit');
