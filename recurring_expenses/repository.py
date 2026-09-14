@@ -27,6 +27,8 @@ def ensure_schema() -> None:
                     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(191) NOT NULL,
                     link_url VARCHAR(2048) NULL,
+                    freee_memo VARCHAR(255) NULL,
+                    allow_skip TINYINT(1) NOT NULL DEFAULT 0,
                     amount_mode VARCHAR(16) NOT NULL DEFAULT 'variable',
                     default_amount INT NULL,
                     due_day TINYINT UNSIGNED NOT NULL DEFAULT 1,
@@ -81,6 +83,15 @@ def ensure_schema() -> None:
                     "ALTER TABLE recurring_expense_masters "
                     "ADD COLUMN link_url VARCHAR(2048) NULL AFTER name"
                 )
+            for column_name, definition in (
+                ("freee_memo", "VARCHAR(255) NULL AFTER link_url"),
+                ("allow_skip", "TINYINT(1) NOT NULL DEFAULT 0 AFTER freee_memo"),
+            ):
+                cur.execute(f"SHOW COLUMNS FROM recurring_expense_masters LIKE '{column_name}'")
+                if not cur.fetchone():
+                    cur.execute(
+                        f"ALTER TABLE recurring_expense_masters ADD COLUMN {column_name} {definition}"
+                    )
             for column_name, definition in (
                 ("freee_synced_amount", "INT NULL AFTER freee_deal_id"),
                 ("freee_synced_issue_date", "DATE NULL AFTER freee_synced_amount"),
@@ -197,7 +208,7 @@ def save_master(values: dict, master_id: int | None = None) -> int:
         cur = db.cursor()
         now = datetime.now()
         columns = (
-            "name", "link_url", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
+            "name", "link_url", "freee_memo", "allow_skip", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
             "end_month", "account_item_id", "item_id", "partner_id", "tax_code", "payment_mode",
             "walletable_type", "walletable_id", "registration_mode", "receipt_required", "notes",
             "order_no", "is_active",
@@ -224,6 +235,27 @@ def save_master(values: dict, master_id: int | None = None) -> int:
                 """,
                 (master_id, values["start_month"]),
             )
+            if values.get("end_month"):
+                cur.execute(
+                    """
+                    DELETE m FROM recurring_expense_months m
+                    LEFT JOIN recurring_expense_attachments a ON a.month_id=m.id
+                    WHERE m.master_id=%s AND m.target_month > %s
+                      AND m.freee_deal_id IS NULL
+                      AND m.status NOT IN ('registered','manual','registering')
+                      AND a.id IS NULL
+                    """,
+                    (master_id, values["end_month"]),
+                )
+            if not values.get("allow_skip"):
+                cur.execute(
+                    """
+                    UPDATE recurring_expense_months
+                    SET status='pending', updated_at=%s
+                    WHERE master_id=%s AND status='excluded' AND freee_deal_id IS NULL
+                    """,
+                    (now, master_id),
+                )
             result = master_id
         else:
             placeholders = ", ".join(["%s"] * len(columns))
@@ -259,7 +291,8 @@ def list_month_items(target_month: str) -> list[dict]:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.link_url, x.amount_mode, x.default_amount, x.receipt_required,
+            SELECT m.*, x.name, x.link_url, x.freee_memo, x.allow_skip,
+                   x.amount_mode, x.default_amount, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id, x.tax_code,
                    x.payment_mode, x.walletable_type, x.walletable_id,
                    x.registration_mode, x.notes, x.start_month, x.end_month,
@@ -287,7 +320,8 @@ def get_month_item(month_id: int) -> dict | None:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.receipt_required, x.account_item_id, x.item_id, x.partner_id,
+            SELECT m.*, x.name, x.freee_memo, x.allow_skip, x.receipt_required,
+                   x.account_item_id, x.item_id, x.partner_id,
                    x.tax_code, x.payment_mode, x.walletable_type, x.walletable_id,
                    x.registration_mode, x.notes
             FROM recurring_expense_months m

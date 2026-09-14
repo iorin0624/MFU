@@ -242,6 +242,25 @@ def test_expense_name_link_is_stored_and_rendered_safely():
     assert 'rel="noopener noreferrer"' in template
 
 
+def test_freee_memo_is_appended_to_deal_description():
+    assert freee_sync._description(_month_item(freee_memo=None)) == "携帯電話代（2026-09）"
+    assert freee_sync._description(_month_item(freee_memo="請求番号 A-123")) == "携帯電話代（2026-09） / 請求番号 A-123"
+
+
+def test_skip_and_cancellation_controls_are_master_driven():
+    repository_source = inspect.getsource(repository.save_master)
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "recurring_expenses/templates/recurring_expenses/index.html"
+    ).read_text(encoding="utf-8")
+
+    assert '"freee_memo", "allow_skip"' in repository_source
+    assert "m.target_month > %s" in repository_source
+    assert 'name="allow_skip"' in template
+    assert "発生なし（スキップ）" in template
+    assert "この月まで表示" in template
+
+
 def test_partner_creation_reuses_exact_existing_partner():
     with (
         patch.object(partners.freee_services, "get_freee_common_settings", return_value={"company_id": 1}),

@@ -202,6 +202,8 @@ def master_save():
         values = {
             "name": name,
             "link_url": _optional_link_url(request.form.get("link_url")),
+            "freee_memo": request.form.get("freee_memo", "").strip()[:255] or None,
+            "allow_skip": 1 if request.form.get("allow_skip") == "1" else 0,
             "amount_mode": amount_mode,
             "default_amount": default_amount,
             "due_day": due_day,
@@ -282,6 +284,8 @@ def month_update(month_id: int):
         status = source.get("status") or "pending"
         if status not in STATUSES:
             raise ValueError
+        if status == "excluded" and not item.get("allow_skip"):
+            raise ValueError("この経費はマスターで「発生なしを許可」がOFFです。")
         existing_deal_id = _optional_int(source.get("existing_deal_id"), minimum=1)
         update_month_item(
             month_id,
