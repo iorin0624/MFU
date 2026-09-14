@@ -455,6 +455,38 @@ def _fetch_message(mailbox: str, folder_value: Any, uid_value: Any) -> dict[str,
     }
 
 
+def _search_message_id(mailbox: str, value: Any) -> list[dict[str, Any]]:
+    message_id = unicodedata.normalize("NFC", str(value or "").strip()).replace("\\@", "@")
+    if (
+        len(message_id) > 998
+        or not re.fullmatch(r"<[^<>\s]{1,990}>", message_id)
+        or "@" not in message_id
+    ):
+        raise AgentError("Message-IDの形式が不正です")
+    rows = _doveadm_json(
+        [
+            "fetch", "-u", mailbox,
+            "uid mailbox date.received hdr.from hdr.subject hdr.message-id",
+            "mailbox", "*", "header", "Message-ID", message_id,
+        ],
+        timeout=120,
+    )
+    result = []
+    for row in rows:
+        actual = _decode_header_text(row.get("hdr.message-id") or "").strip()
+        if actual.casefold() != message_id.casefold():
+            continue
+        result.append({
+            "uid": int(row.get("uid") or 0),
+            "mailbox": str(row.get("mailbox") or ""),
+            "received_at": str(row.get("date.received") or ""),
+            "from": _decode_header_text(row.get("hdr.from") or "")[:300],
+            "subject": _decode_header_text(row.get("hdr.subject") or "（件名なし）")[:500],
+        })
+    result.sort(key=lambda item: (item["received_at"], item["uid"]), reverse=True)
+    return result[:100]
+
+
 def _message_body(row: dict[str, Any]) -> str:
     raw = row.get("text")
     if raw is None:
@@ -896,6 +928,8 @@ def _handle(payload: dict[str, Any]) -> dict[str, Any]:
         })
     if action == "message_fetch":
         return {"ok": True, **_fetch_message(mailbox, payload.get("folder"), payload.get("uid"))}
+    if action == "message_id_search":
+        return {"ok": True, "items": _search_message_id(mailbox, payload.get("message_id"))}
     raise AgentError("未対応の操作です")
 
 

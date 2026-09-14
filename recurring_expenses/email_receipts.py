@@ -15,7 +15,7 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
-from app.mail_filters.service import fetch_message, get_mailbox, list_mailboxes, preview_rule
+from app.mail_filters.service import fetch_message, get_mailbox, list_mailboxes, preview_rule, search_message_id
 
 
 MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
@@ -80,6 +80,10 @@ def search_messages(
         },
     )
     return list(result.get("items") or [])
+
+
+def find_message_id(*, mailbox: str, message_id: str) -> list[dict[str, Any]]:
+    return search_message_id(mailbox, message_id)
 
 
 def load_message(mailbox: str, folder: str, uid: int) -> bytes:

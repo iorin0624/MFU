@@ -177,3 +177,15 @@ def fetch_message(mailbox: str, folder: str, uid: int) -> bytes:
     if not raw or len(raw) > 30 * 1024 * 1024:
         raise MailFilterAgentError("メール本文が空か、取込上限（30MB）を超えています")
     return raw
+
+
+def search_message_id(mailbox: str, message_id: str) -> list[dict[str, Any]]:
+    response = call_agent(
+        {
+            "action": "message_id_search",
+            "mailbox": normalize_mailbox(mailbox),
+            "message_id": str(message_id or "").strip(),
+        },
+        timeout=120,
+    )
+    return list(response.get("items") or [])
