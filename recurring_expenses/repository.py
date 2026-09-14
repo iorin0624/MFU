@@ -26,6 +26,7 @@ def ensure_schema() -> None:
                 CREATE TABLE IF NOT EXISTS recurring_expense_masters (
                     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(191) NOT NULL,
+                    link_url VARCHAR(2048) NULL,
                     amount_mode VARCHAR(16) NOT NULL DEFAULT 'variable',
                     default_amount INT NULL,
                     due_day TINYINT UNSIGNED NOT NULL DEFAULT 1,
@@ -74,6 +75,12 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cur.execute("SHOW COLUMNS FROM recurring_expense_masters LIKE 'link_url'")
+            if not cur.fetchone():
+                cur.execute(
+                    "ALTER TABLE recurring_expense_masters "
+                    "ADD COLUMN link_url VARCHAR(2048) NULL AFTER name"
+                )
             for column_name, definition in (
                 ("freee_synced_amount", "INT NULL AFTER freee_deal_id"),
                 ("freee_synced_issue_date", "DATE NULL AFTER freee_synced_amount"),
@@ -190,7 +197,7 @@ def save_master(values: dict, master_id: int | None = None) -> int:
         cur = db.cursor()
         now = datetime.now()
         columns = (
-            "name", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
+            "name", "link_url", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
             "end_month", "account_item_id", "item_id", "partner_id", "tax_code", "payment_mode",
             "walletable_type", "walletable_id", "registration_mode", "receipt_required", "notes",
             "order_no", "is_active",
@@ -252,7 +259,7 @@ def list_month_items(target_month: str) -> list[dict]:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.amount_mode, x.default_amount, x.receipt_required,
+            SELECT m.*, x.name, x.link_url, x.amount_mode, x.default_amount, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id, x.tax_code,
                    x.payment_mode, x.walletable_type, x.walletable_id,
                    x.registration_mode, x.notes, x.start_month, x.end_month,
