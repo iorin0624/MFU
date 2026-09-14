@@ -169,6 +169,12 @@ def test_mail_message_fetch_decodes_agent_payload():
     assert call.call_args.args[0]["action"] == "message_fetch"
 
 
+def test_message_id_search_uses_dedicated_agent_action():
+    with patch.object(service, "call_agent", return_value={"ok": True, "items": [{"uid": 42}]}) as call:
+        assert service.search_message_id("test@example.jp", "<x@example.jp>")[0]["uid"] == 42
+    assert call.call_args.args[0]["action"] == "message_id_search"
+
+
 def test_mail_filter_route_is_csrf_protected_and_registered():
     app_init = (Path(__file__).resolve().parents[1] / "__init__.py").read_text(
         encoding="utf-8"

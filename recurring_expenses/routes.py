@@ -17,7 +17,7 @@ from app.freee_api import services as freee_services
 
 from . import recurring_expenses_bp
 from .freee_sync import delete_registered_month, register_month
-from .email_receipts import extract_artifacts, folder_options, load_message, mailbox_options, search_messages
+from .email_receipts import extract_artifacts, find_message_id, folder_options, load_message, mailbox_options, search_messages
 from .partners import create_or_find_partner
 from .repository import (
     add_attachment,
@@ -458,24 +458,29 @@ def email_search(month_id: int):
     try:
         mailbox = str(source.get("mailbox") or "")
         folder = str(source.get("folder") or "INBOX")
-        date_from = datetime.strptime(str(source.get("date_from") or ""), "%Y-%m-%d").date()
-        date_to = datetime.strptime(str(source.get("date_to") or ""), "%Y-%m-%d").date()
-        if date_from > date_to or (date_to - date_from).days > 366:
-            raise ValueError("検索期間は1年以内で指定してください。")
-        rows = search_messages(
-            mailbox=mailbox, folder=folder, date_from=date_from, date_to=date_to,
-            sender=str(source.get("sender") or "")[:200], subject=str(source.get("subject") or "")[:200],
-        )
+        message_id = str(source.get("message_id") or "").strip()
+        if message_id:
+            rows = find_message_id(mailbox=mailbox, message_id=message_id)
+        else:
+            date_from = datetime.strptime(str(source.get("date_from") or ""), "%Y-%m-%d").date()
+            date_to = datetime.strptime(str(source.get("date_to") or ""), "%Y-%m-%d").date()
+            if date_from > date_to or (date_to - date_from).days > 366:
+                raise ValueError("検索期間は1年以内で指定してください。")
+            rows = search_messages(
+                mailbox=mailbox, folder=folder, date_from=date_from, date_to=date_to,
+                sender=str(source.get("sender") or "")[:200], subject=str(source.get("subject") or "")[:200],
+            )
         serializer = _mail_token_serializer()
         result = []
         for row in rows:
             uid = int(row.get("uid") or 0)
+            result_folder = str(row.get("mailbox") or folder)
             result.append({
                 "uid": uid,
                 "received_at": str(row.get("received_at") or ""),
                 "from": str(row.get("from") or ""),
                 "subject": str(row.get("subject") or "（件名なし）"),
-                "token": serializer.dumps({"month_id": month_id, "mailbox": mailbox, "folder": folder, "uid": uid}),
+                "token": serializer.dumps({"month_id": month_id, "mailbox": mailbox, "folder": result_folder, "uid": uid}),
             })
         current_app.logger.info("RECURRING_EXPENSE_EMAIL_SEARCH month_id=%s mailbox=%s folder=%s count=%s", month_id, mailbox, folder, len(result))
         return jsonify({"ok": True, "items": result, "expense": item["name"]})
