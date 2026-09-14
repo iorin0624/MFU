@@ -13,7 +13,7 @@ from werkzeug.utils import secure_filename
 from app.freee_api import services as freee_services
 
 from . import recurring_expenses_bp
-from .freee_sync import register_month
+from .freee_sync import delete_registered_month, register_month
 from .partners import create_or_find_partner
 from .repository import (
     add_attachment,
@@ -406,6 +406,23 @@ def month_register(month_id: int):
             flash(f"「{item['name']}」をfreeeへ登録しました（取引ID: {result['deal_id']}）。", "success")
     except Exception as exc:
         flash(f"freee登録に失敗しました: {freee_services.sanitize_freee_error(str(exc))}", "danger")
+    return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
+
+
+@recurring_expenses_bp.post("/months/<int:month_id>/freee-delete")
+def month_freee_delete(month_id: int):
+    _require_csrf()
+    item = get_month_item(month_id)
+    if not item:
+        abort(404)
+    try:
+        result = delete_registered_month(month_id)
+        if result["status"] == "already_deleted":
+            flash(f"「{item['name']}」のfreee取引は既に削除済みでした。登録状態を解除しました。", "success")
+        else:
+            flash(f"「{item['name']}」のfreee取引（ID: {result['deal_id']}）を削除しました。", "success")
+    except Exception as exc:
+        flash(f"freee取引を削除できませんでした: {freee_services.sanitize_freee_error(str(exc))}", "danger")
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
 
 
