@@ -237,7 +237,7 @@ def test_expense_name_link_is_stored_and_rendered_safely():
         / "recurring_expenses/templates/recurring_expenses/index.html"
     ).read_text(encoding="utf-8")
 
-    assert '"name", "link_url", "amount_mode"' in repository_source
+    assert '"name", "link_url", "allow_skip", "amount_mode"' in repository_source
     assert 'href="{{ item.link_url }}"' in template
     assert 'rel="noopener noreferrer"' in template
 
@@ -249,14 +249,18 @@ def test_freee_memo_is_appended_to_deal_description():
 
 def test_skip_and_cancellation_controls_are_master_driven():
     repository_source = inspect.getsource(repository.save_master)
+    month_update_source = inspect.getsource(repository.update_month_item)
     template = (
         Path(__file__).resolve().parents[1]
         / "recurring_expenses/templates/recurring_expenses/index.html"
     ).read_text(encoding="utf-8")
 
-    assert '"freee_memo", "allow_skip"' in repository_source
+    assert '"freee_memo"' not in repository_source
+    assert "freee_memo" in month_update_source
     assert "m.target_month > %s" in repository_source
     assert 'name="allow_skip"' in template
+    assert 'name="freee_memo"' in template
+    assert "この月のfreee取引の摘要へ追加" in template
     assert "発生なし（スキップ）" in template
     assert "この月まで表示" in template
 

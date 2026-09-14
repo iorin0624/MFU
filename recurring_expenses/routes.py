@@ -202,7 +202,6 @@ def master_save():
         values = {
             "name": name,
             "link_url": _optional_link_url(request.form.get("link_url")),
-            "freee_memo": request.form.get("freee_memo", "").strip()[:255] or None,
             "allow_skip": 1 if request.form.get("allow_skip") == "1" else 0,
             "amount_mode": amount_mode,
             "default_amount": default_amount,
@@ -281,6 +280,9 @@ def month_update(month_id: int):
     try:
         issue_date = datetime.strptime(source.get("issue_date", ""), "%Y-%m-%d").date()
         amount = _optional_int(source.get("actual_amount"), minimum=0)
+        freee_memo = str(source.get("freee_memo") or "").strip()
+        if len(freee_memo) > 255:
+            raise ValueError("freeeメモは255文字以内で入力してください。")
         status = source.get("status") or "pending"
         if status not in STATUSES:
             raise ValueError
@@ -291,6 +293,7 @@ def month_update(month_id: int):
             month_id,
             issue_date=issue_date,
             actual_amount=amount,
+            freee_memo=freee_memo or None,
             status=status,
             existing_deal_id=existing_deal_id,
         )
@@ -298,10 +301,11 @@ def month_update(month_id: int):
             updated = get_month_item(month_id) or {}
             return jsonify({"ok": True, "status": updated.get("status")})
         flash(f"「{item['name']}」を更新しました。", "success")
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        message = str(exc) or "日付・金額・状態を確認してください。"
         if is_json:
-            return jsonify({"ok": False, "message": "日付・金額・状態を確認してください。"}), 400
-        flash("日付・金額・状態を確認してください。", "danger")
+            return jsonify({"ok": False, "message": message}), 400
+        flash(message, "danger")
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
 
 
