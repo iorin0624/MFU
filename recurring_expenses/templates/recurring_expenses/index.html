@@ -62,7 +62,7 @@
         <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option>{% if item.allow_skip or item.status == 'excluded' %}<option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>発生なし（スキップ）</option>{% endif %}</select></div>
         {% if item.registration_mode == 'existing' %}<div class="col-sm-3"><label class="form-label">既存freee取引ID</label><input class="form-control" type="number" min="1" name="existing_deal_id" value="{{ item.existing_deal_id or '' }}" {{ 'disabled' if item.freee_deal_id else '' }}></div>{% endif %}
         <div class="col-12"><label class="form-label">freeeメモ（任意）</label><input class="form-control" name="freee_memo" maxlength="255" placeholder="この月のfreee取引の摘要へ追加" value="{{ item.freee_memo or '' }}"></div>
-        <div class="col-12"><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
+        <div class="col-12 d-flex align-items-center gap-2"><button class="btn btn-outline-primary btn-sm expense-update-button" type="submit">更新</button><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
       </form>
       <div class="mb-3">
         <div class="fw-semibold mb-2">レシート・請求書</div>
@@ -193,7 +193,7 @@ function queueExpenseSave(form,delay=0){
   expenseSaveTimers.set(form,setTimeout(()=>saveExpenseForm(form).catch(()=>{}),delay));
 }
 document.querySelectorAll('.expense-autosave-form').forEach(form=>{
-  form.addEventListener('submit',event=>event.preventDefault());
+  form.addEventListener('submit',event=>{event.preventDefault();saveExpenseForm(form).catch(()=>{});});
   form.querySelectorAll('input,select').forEach(field=>{
     field.addEventListener('change',()=>queueExpenseSave(form));
     if(['actual_amount','existing_deal_id','freee_memo'].includes(field.name))field.addEventListener('input',()=>queueExpenseSave(form,700));
