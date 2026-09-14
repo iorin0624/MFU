@@ -10,7 +10,7 @@ from app.recurring_expenses import freee_sync
 from app.recurring_expenses import partners
 from app.recurring_expenses.repository import _is_due
 from app.recurring_expenses import repository
-from app.recurring_expenses.routes import _batch_candidate_ids, _master_draft
+from app.recurring_expenses.routes import _batch_candidate_ids, _master_draft, _optional_link_url
 from werkzeug.datastructures import MultiDict
 
 
@@ -216,6 +216,30 @@ def test_invalid_master_form_is_preserved_as_a_typed_draft():
     assert draft["account_item_id"] == 123
     assert draft["receipt_required"] == 1
     assert draft["is_active"] == 0
+
+
+def test_expense_link_accepts_only_http_urls():
+    assert _optional_link_url("") is None
+    assert _optional_link_url(" https://example.com/billing ") == "https://example.com/billing"
+    for invalid in ("example.com", "javascript:alert(1)", "ftp://example.com/file"):
+        try:
+            _optional_link_url(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Unsafe expense URL was accepted: {invalid}")
+
+
+def test_expense_name_link_is_stored_and_rendered_safely():
+    repository_source = inspect.getsource(repository.save_master)
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "recurring_expenses/templates/recurring_expenses/index.html"
+    ).read_text(encoding="utf-8")
+
+    assert '"name", "link_url", "amount_mode"' in repository_source
+    assert 'href="{{ item.link_url }}"' in template
+    assert 'rel="noopener noreferrer"' in template
 
 
 def test_partner_creation_reuses_exact_existing_partner():

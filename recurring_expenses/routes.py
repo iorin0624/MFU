@@ -5,6 +5,7 @@ import secrets
 import uuid
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from PIL import Image
@@ -85,6 +86,18 @@ def _optional_int(value, *, minimum: int | None = None) -> int | None:
     if minimum is not None and result < minimum:
         raise ValueError
     return result
+
+
+def _optional_link_url(value) -> str | None:
+    url = str(value or "").strip()
+    if not url:
+        return None
+    if len(url) > 2048:
+        raise ValueError("リンクURLは2048文字以内で入力してください。")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("リンクURLはhttp://またはhttps://から入力してください。")
+    return url
 
 
 def _master_data() -> dict:
@@ -188,6 +201,7 @@ def master_save():
             raise ValueError("freee登録方法が不正です。")
         values = {
             "name": name,
+            "link_url": _optional_link_url(request.form.get("link_url")),
             "amount_mode": amount_mode,
             "default_amount": default_amount,
             "due_day": due_day,
