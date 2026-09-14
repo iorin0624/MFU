@@ -61,6 +61,7 @@
         <div class="col-sm-3"><label class="form-label">実際の金額</label><div class="input-group"><span class="input-group-text">¥</span><input class="form-control" type="number" min="0" name="actual_amount" value="{{ item.actual_amount if item.actual_amount is not none else '' }}"></div></div>
         <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option>{% if item.allow_skip or item.status == 'excluded' %}<option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>発生なし（スキップ）</option>{% endif %}</select></div>
         {% if item.registration_mode == 'existing' %}<div class="col-sm-3"><label class="form-label">既存freee取引ID</label><input class="form-control" type="number" min="1" name="existing_deal_id" value="{{ item.existing_deal_id or '' }}" {{ 'disabled' if item.freee_deal_id else '' }}></div>{% endif %}
+        <div class="col-12"><label class="form-label">freeeメモ（任意）</label><input class="form-control" name="freee_memo" maxlength="255" placeholder="この月のfreee取引の摘要へ追加" value="{{ item.freee_memo or '' }}"></div>
         <div class="col-12"><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
       </form>
       <div class="mb-3">
@@ -96,7 +97,6 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="master_id" value="{{ editing.id if editing and editing.id else '' }}"><input type="hidden" name="return_month" value="{{ selected_month }}">
       <div class="col-md-6"><label class="form-label">経費名</label><input class="form-control" name="name" value="{{ editing.name if editing else '' }}" required></div>
       <div class="col-md-6"><label class="form-label">リンクURL（任意）</label><input class="form-control" type="url" name="link_url" maxlength="2048" placeholder="https://example.com/" value="{{ editing.link_url if editing and editing.link_url else '' }}"></div>
-      <div class="col-md-8"><label class="form-label">freeeメモ（任意）</label><input class="form-control" name="freee_memo" maxlength="255" placeholder="freee取引の摘要へ追加" value="{{ editing.freee_memo if editing and editing.freee_memo else '' }}"></div>
       <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="allow_skip" value="1" id="allowSkip" {{ 'checked' if editing and editing.allow_skip else '' }}><label class="form-check-label" for="allowSkip">発生なし（スキップ）を許可</label></div></div>
       <div class="col-md-3"><label class="form-label">金額</label><select class="form-select" name="amount_mode"><option value="variable" {{ 'selected' if not editing or editing.amount_mode == 'variable' else '' }}>毎月変動</option><option value="fixed" {{ 'selected' if editing and editing.amount_mode == 'fixed' else '' }}>毎月固定</option></select></div>
       <div class="col-md-3"><label class="form-label">固定金額</label><input class="form-control" type="number" min="0" name="default_amount" value="{{ editing.default_amount if editing and editing.default_amount is not none else '' }}"></div>
@@ -172,7 +172,7 @@ document.querySelectorAll('.expense-autosave-form').forEach(form=>{
   form.addEventListener('submit',event=>event.preventDefault());
   form.querySelectorAll('input,select').forEach(field=>{
     field.addEventListener('change',()=>queueExpenseSave(form));
-    if(field.name==='actual_amount'||field.name==='existing_deal_id')field.addEventListener('input',()=>queueExpenseSave(form,700));
+    if(['actual_amount','existing_deal_id','freee_memo'].includes(field.name))field.addEventListener('input',()=>queueExpenseSave(form,700));
   });
 });
 document.querySelectorAll('.expense-attachment-form').forEach(form=>{

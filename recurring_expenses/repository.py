@@ -61,11 +61,13 @@ def ensure_schema() -> None:
                     target_month CHAR(7) NOT NULL,
                     issue_date DATE NOT NULL,
                     actual_amount INT NULL,
+                    freee_memo VARCHAR(255) NULL,
                     status VARCHAR(24) NOT NULL DEFAULT 'pending',
                     existing_deal_id BIGINT NULL,
                     freee_deal_id BIGINT NULL,
                     freee_synced_amount INT NULL,
                     freee_synced_issue_date DATE NULL,
+                    freee_synced_memo VARCHAR(255) NULL,
                     freee_error TEXT NULL,
                     registered_at DATETIME NULL,
                     created_at DATETIME NOT NULL,
@@ -95,6 +97,8 @@ def ensure_schema() -> None:
             for column_name, definition in (
                 ("freee_synced_amount", "INT NULL AFTER freee_deal_id"),
                 ("freee_synced_issue_date", "DATE NULL AFTER freee_synced_amount"),
+                ("freee_memo", "VARCHAR(255) NULL AFTER actual_amount"),
+                ("freee_synced_memo", "VARCHAR(255) NULL AFTER freee_synced_issue_date"),
             ):
                 cur.execute(f"SHOW COLUMNS FROM recurring_expense_months LIKE '{column_name}'")
                 if not cur.fetchone():
@@ -208,7 +212,7 @@ def save_master(values: dict, master_id: int | None = None) -> int:
         cur = db.cursor()
         now = datetime.now()
         columns = (
-            "name", "link_url", "freee_memo", "allow_skip", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
+            "name", "link_url", "allow_skip", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
             "end_month", "account_item_id", "item_id", "partner_id", "tax_code", "payment_mode",
             "walletable_type", "walletable_id", "registration_mode", "receipt_required", "notes",
             "order_no", "is_active",
@@ -291,7 +295,7 @@ def list_month_items(target_month: str) -> list[dict]:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.link_url, x.freee_memo, x.allow_skip,
+            SELECT m.*, x.name, x.link_url, x.allow_skip,
                    x.amount_mode, x.default_amount, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id, x.tax_code,
                    x.payment_mode, x.walletable_type, x.walletable_id,
@@ -320,7 +324,7 @@ def get_month_item(month_id: int) -> dict | None:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.freee_memo, x.allow_skip, x.receipt_required,
+            SELECT m.*, x.name, x.allow_skip, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id,
                    x.tax_code, x.payment_mode, x.walletable_type, x.walletable_id,
                    x.registration_mode, x.notes
@@ -335,7 +339,15 @@ def get_month_item(month_id: int) -> dict | None:
         db.close()
 
 
-def update_month_item(month_id: int, *, issue_date: date, actual_amount: int | None, status: str, existing_deal_id: int | None) -> None:
+def update_month_item(
+    month_id: int,
+    *,
+    issue_date: date,
+    actual_amount: int | None,
+    freee_memo: str | None,
+    status: str,
+    existing_deal_id: int | None,
+) -> None:
     ensure_schema()
     db = get_db()
     try:
@@ -343,10 +355,12 @@ def update_month_item(month_id: int, *, issue_date: date, actual_amount: int | N
         cur.execute(
             """
             UPDATE recurring_expense_months
-            SET issue_date=%s, actual_amount=%s,
+            SET issue_date=%s, actual_amount=%s, freee_memo=%s,
                 status=CASE
                     WHEN freee_deal_id IS NOT NULL
-                         AND (NOT (freee_synced_amount <=> %s) OR NOT (freee_synced_issue_date <=> %s))
+                         AND (NOT (freee_synced_amount <=> %s)
+                              OR NOT (freee_synced_issue_date <=> %s)
+                              OR NOT (freee_synced_memo <=> %s))
                       THEN 'pending_update'
                     WHEN freee_deal_id IS NOT NULL THEN 'registered'
                     ELSE %s
@@ -355,7 +369,11 @@ def update_month_item(month_id: int, *, issue_date: date, actual_amount: int | N
                 freee_error=NULL, updated_at=%s
             WHERE id=%s
             """,
-            (issue_date, actual_amount, actual_amount, issue_date, status, existing_deal_id, datetime.now(), month_id),
+            (
+                issue_date, actual_amount, freee_memo,
+                actual_amount, issue_date, freee_memo,
+                status, existing_deal_id, datetime.now(), month_id,
+            ),
         )
         db.commit()
     finally:
@@ -373,11 +391,12 @@ def set_registration(month_id: int, *, status: str, deal_id: int | None = None, 
             SET status=%s, freee_deal_id=COALESCE(%s, freee_deal_id), freee_error=%s,
                 freee_synced_amount=CASE WHEN %s='registered' THEN actual_amount ELSE freee_synced_amount END,
                 freee_synced_issue_date=CASE WHEN %s='registered' THEN issue_date ELSE freee_synced_issue_date END,
+                freee_synced_memo=CASE WHEN %s='registered' THEN freee_memo ELSE freee_synced_memo END,
                 registered_at=CASE WHEN %s IN ('registered','manual') THEN %s ELSE registered_at END,
                 updated_at=%s
             WHERE id=%s
             """,
-            (status, deal_id, error, status, status, status, datetime.now(), datetime.now(), month_id),
+            (status, deal_id, error, status, status, status, status, datetime.now(), datetime.now(), month_id),
         )
         db.commit()
     finally:
@@ -395,6 +414,7 @@ def clear_registration(month_id: int) -> None:
             UPDATE recurring_expense_months
             SET status='pending', freee_deal_id=NULL,
                 freee_synced_amount=NULL, freee_synced_issue_date=NULL,
+                freee_synced_memo=NULL,
                 freee_error=NULL, registered_at=NULL, updated_at=%s
             WHERE id=%s
             """,
