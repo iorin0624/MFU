@@ -209,6 +209,7 @@ document.querySelectorAll('.expense-attachment-form').forEach(form=>{
   });
 });
 const emailReceiptState={monthId:null,month:'',searchUrl:'',tokens:new Map()};
+const emailReceiptPreferenceKey='mfu.recurringExpenses.emailReceiptPreference';
 const emailReceiptModalElement=document.getElementById('emailReceiptModal');
 let emailReceiptModal=null;
 const emailReceiptMessage=document.getElementById('emailReceiptMessage');
@@ -216,14 +217,20 @@ function emailReceiptAlert(message,type='danger'){
   emailReceiptMessage.textContent=message;emailReceiptMessage.className=`alert alert-${type}`;
 }
 function emailReceiptEscape(value){const node=document.createElement('div');node.textContent=value??'';return node.innerHTML;}
+function readEmailReceiptPreference(){try{return JSON.parse(localStorage.getItem(emailReceiptPreferenceKey)||'{}')||{};}catch(_error){return {};}}
+function saveEmailReceiptPreference(){
+  try{localStorage.setItem(emailReceiptPreferenceKey,JSON.stringify({mailbox:document.getElementById('emailReceiptMailbox').value,folder:document.getElementById('emailReceiptFolder').value}));}catch(_error){}
+}
 async function emailReceiptJson(url,options={}){
   const response=await fetch(url,options);let data={};try{data=await response.json();}catch(_error){throw new Error(`サーバー応答を読み取れません（HTTP ${response.status}）`);}
   if(!response.ok||!data.ok)throw new Error(data.message||'メールを処理できませんでした。');return data;
 }
-async function loadEmailReceiptFolders(){
+async function loadEmailReceiptFolders(preferredFolder=''){
   const mailbox=document.getElementById('emailReceiptMailbox').value;
   const data=await emailReceiptJson(`{{ url_for('recurring_expenses.email_folders') }}?mailbox=${encodeURIComponent(mailbox)}`);
   const select=document.getElementById('emailReceiptFolder');select.innerHTML=(data.folders||[]).map(folder=>`<option value="${emailReceiptEscape(folder)}">${emailReceiptEscape(folder)}</option>`).join('');
+  const candidate=Array.from(select.options).some(option=>option.value===preferredFolder)?preferredFolder:(Array.from(select.options).some(option=>option.value==='INBOX')?'INBOX':select.value);
+  if(candidate)select.value=candidate;saveEmailReceiptPreference();
 }
 document.querySelectorAll('.email-receipt-open').forEach(button=>button.addEventListener('click',async()=>{
   if(!window.bootstrap||!emailReceiptModalElement){alert('画面の初期化が完了していません。再読み込みしてください。');return;}
@@ -232,9 +239,10 @@ document.querySelectorAll('.email-receipt-open').forEach(button=>button.addEvent
   document.getElementById('emailReceiptModalLabel').textContent=`${button.dataset.expenseName}：メールから証憑を選択`;
   const [year,month]=emailReceiptState.month.split('-').map(Number);document.getElementById('emailReceiptFromDate').value=`${year}-${String(month).padStart(2,'0')}-01`;document.getElementById('emailReceiptToDate').value=new Date(year,month,0).toLocaleDateString('sv-SE');
   document.getElementById('emailReceiptResults').innerHTML='<tr><td colspan="4" class="text-muted">条件を指定して検索してください。</td></tr>';document.getElementById('emailReceiptImport').disabled=true;document.getElementById('emailReceiptPreview').disabled=true;emailReceiptMessage.className='alert d-none';emailReceiptModal.show();
-  try{const data=await emailReceiptJson("{{ url_for('recurring_expenses.email_options') }}");const select=document.getElementById('emailReceiptMailbox');select.innerHTML=(data.mailboxes||[]).map(row=>`<option value="${emailReceiptEscape(row.mailbox)}">${emailReceiptEscape(row.mailbox)}</option>`).join('');if(!select.value)throw new Error('利用できるメールボックスがありません。');await loadEmailReceiptFolders();}catch(error){emailReceiptAlert(error.message);}
+  try{const data=await emailReceiptJson("{{ url_for('recurring_expenses.email_options') }}");const select=document.getElementById('emailReceiptMailbox');select.innerHTML=(data.mailboxes||[]).map(row=>`<option value="${emailReceiptEscape(row.mailbox)}">${emailReceiptEscape(row.mailbox)}</option>`).join('');if(!select.value)throw new Error('利用できるメールボックスがありません。');const preference=readEmailReceiptPreference();if(Array.from(select.options).some(option=>option.value===preference.mailbox))select.value=preference.mailbox;await loadEmailReceiptFolders(select.value===preference.mailbox?preference.folder:'');}catch(error){emailReceiptAlert(error.message);}
 }));
 document.getElementById('emailReceiptMailbox')?.addEventListener('change',()=>loadEmailReceiptFolders().catch(error=>emailReceiptAlert(error.message)));
+document.getElementById('emailReceiptFolder')?.addEventListener('change',saveEmailReceiptPreference);
 document.getElementById('emailReceiptSearch')?.addEventListener('click',async()=>{
   const button=document.getElementById('emailReceiptSearch');button.disabled=true;emailReceiptAlert('検索中…','info');
   try{const data=await emailReceiptJson(emailReceiptState.searchUrl,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token }}'},body:JSON.stringify({mailbox:document.getElementById('emailReceiptMailbox').value,folder:document.getElementById('emailReceiptFolder').value,date_from:document.getElementById('emailReceiptFromDate').value,date_to:document.getElementById('emailReceiptToDate').value,sender:document.getElementById('emailReceiptSender').value,subject:document.getElementById('emailReceiptSubject').value})});emailReceiptState.tokens.clear();for(const item of data.items||[])emailReceiptState.tokens.set(String(item.uid),item.token);const body=document.getElementById('emailReceiptResults');body.innerHTML=(data.items||[]).length?(data.items||[]).map(item=>`<tr><td><input class="form-check-input email-receipt-choice" type="radio" name="emailReceiptChoice" value="${item.uid}"></td><td>${emailReceiptEscape(item.received_at)}</td><td>${emailReceiptEscape(item.from)}</td><td>${emailReceiptEscape(item.subject)}</td></tr>`).join(''):'<tr><td colspan="4" class="text-muted">該当するメールはありません。</td></tr>';body.querySelectorAll('.email-receipt-choice').forEach(choice=>choice.addEventListener('change',()=>{document.getElementById('emailReceiptImport').disabled=false;document.getElementById('emailReceiptPreview').disabled=false;}));emailReceiptAlert(`${(data.items||[]).length}件見つかりました。`,'success');}catch(error){emailReceiptAlert(error.message);}finally{button.disabled=false;}

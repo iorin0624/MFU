@@ -282,6 +282,8 @@ def test_skip_and_cancellation_controls_are_master_driven():
     assert 'name="email_receipt_enabled"' in template
     assert "メールから証憑を選択" in template
     assert "bootstrap.Modal.getOrCreateInstance(emailReceiptModalElement)" in template
+    assert "emailReceiptPreferenceKey" in template
+    assert "localStorage.setItem" in template
     assert 'name="freee_memo"' in template
     assert "この月のfreee取引の摘要へ追加" in template
     assert "発生なし（スキップ）" in template
