@@ -70,12 +70,14 @@
         {% for attachment in item.attachments %}
           <div class="border rounded px-2 py-1 small">
             <a href="{{ url_for('recurring_expenses.attachment_view', attachment_id=attachment.id) }}" target="_blank" rel="noopener">{{ attachment.original_name }}</a>
+            {% if attachment.source_kind == 'email' %}<span class="badge text-bg-info">メール</span>{% endif %}
             {% if attachment.freee_receipt_id %}<span class="badge text-bg-success">freee済</span>{% elif attachment.freee_error %}<span class="badge text-bg-danger" title="{{ attachment.freee_error }}">エラー</span>{% endif %}
             <form method="post" action="{{ url_for('recurring_expenses.attachment_delete', attachment_id=attachment.id) }}" class="d-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-sm btn-link text-danger p-0 ms-1" onclick="return confirm('MFU側の添付ファイルを削除しますか？')">削除</button></form>
           </div>
         {% else %}<span class="small text-muted">添付なし</span>{% endfor %}
         </div>
         <form method="post" enctype="multipart/form-data" action="{{ url_for('recurring_expenses.attachment_upload', month_id=item.id) }}" class="d-flex flex-wrap gap-2 align-items-center expense-attachment-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input class="form-control form-control-sm expense-attachment-input" style="max-width:520px" type="file" name="receipts" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif" multiple required><button class="btn btn-outline-secondary btn-sm expense-attachment-submit">添付</button><span class="small text-muted expense-attachment-state">ファイル選択後に自動添付</span></form>
+        {% if item.email_receipt_enabled %}<button type="button" class="btn btn-outline-primary btn-sm mt-2 email-receipt-open" data-month-id="{{ item.id }}" data-month="{{ item.target_month }}" data-expense-name="{{ item.name }}" data-search-url="{{ url_for('recurring_expenses.email_search', month_id=item.id) }}">メールから証憑を選択</button>{% endif %}
       </div>
       <div class="d-flex flex-wrap gap-2">
         {% if item.status not in ['registered','manual','excluded'] %}<form method="post" action="{{ url_for('recurring_expenses.month_register', month_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-success" onclick="return confirm('{{ '手動登録済みにしますか？' if item.registration_mode == 'manual' else ('freeeの取引を更新しますか？' if item.freee_deal_id else 'freeeへ登録しますか？') }}')">{{ '手動登録済みにする' if item.registration_mode == 'manual' else ('freeeを更新' if item.freee_deal_id else 'freeeへ登録') }}</button></form>{% endif %}
@@ -98,6 +100,7 @@
       <div class="col-md-6"><label class="form-label">経費名</label><input class="form-control" name="name" value="{{ editing.name if editing else '' }}" required></div>
       <div class="col-md-6"><label class="form-label">リンクURL（任意）</label><input class="form-control" type="url" name="link_url" maxlength="2048" placeholder="https://example.com/" value="{{ editing.link_url if editing and editing.link_url else '' }}"></div>
       <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="allow_skip" value="1" id="allowSkip" {{ 'checked' if editing and editing.allow_skip else '' }}><label class="form-check-label" for="allowSkip">発生なし（スキップ）を許可</label></div></div>
+      <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="email_receipt_enabled" value="1" id="emailReceiptEnabled" {{ 'checked' if editing and editing.email_receipt_enabled else '' }}><label class="form-check-label" for="emailReceiptEnabled">メールから証憑を選択</label></div></div>
       <div class="col-md-3"><label class="form-label">金額</label><select class="form-select" name="amount_mode"><option value="variable" {{ 'selected' if not editing or editing.amount_mode == 'variable' else '' }}>毎月変動</option><option value="fixed" {{ 'selected' if editing and editing.amount_mode == 'fixed' else '' }}>毎月固定</option></select></div>
       <div class="col-md-3"><label class="form-label">固定金額</label><input class="form-control" type="number" min="0" name="default_amount" value="{{ editing.default_amount if editing and editing.default_amount is not none else '' }}"></div>
       <div class="col-md-2"><label class="form-label">発生日</label><input class="form-control" type="number" min="1" max="31" name="due_day" value="{{ editing.due_day if editing else 1 }}" required></div>
@@ -137,6 +140,26 @@
   </div></div>
 </div>
 {% endif %}
+
+<div class="modal fade" id="emailReceiptModal" tabindex="-1" aria-labelledby="emailReceiptModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
+    <div class="modal-header"><h2 class="modal-title fs-5" id="emailReceiptModalLabel">メールから証憑を選択</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button></div>
+    <div class="modal-body">
+      <div id="emailReceiptMessage" class="alert d-none" role="alert"></div>
+      <div class="row g-2 mb-3">
+        <div class="col-md-4"><label class="form-label" for="emailReceiptMailbox">メールボックス</label><select class="form-select" id="emailReceiptMailbox"></select></div>
+        <div class="col-md-3"><label class="form-label" for="emailReceiptFolder">フォルダー</label><select class="form-select" id="emailReceiptFolder"></select></div>
+        <div class="col-6 col-md-2"><label class="form-label" for="emailReceiptFromDate">開始日</label><input class="form-control" type="date" id="emailReceiptFromDate"></div>
+        <div class="col-6 col-md-2"><label class="form-label" for="emailReceiptToDate">終了日</label><input class="form-control" type="date" id="emailReceiptToDate"></div>
+        <div class="col-md-5"><label class="form-label" for="emailReceiptSender">差出人を含む</label><input class="form-control" id="emailReceiptSender" maxlength="200"></div>
+        <div class="col-md-5"><label class="form-label" for="emailReceiptSubject">件名を含む</label><input class="form-control" id="emailReceiptSubject" maxlength="200"></div>
+        <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100" type="button" id="emailReceiptSearch">検索</button></div>
+      </div>
+      <div class="table-responsive"><table class="table table-hover align-middle"><thead><tr><th></th><th>受信日時</th><th>差出人</th><th>件名</th></tr></thead><tbody id="emailReceiptResults"><tr><td colspan="4" class="text-muted">条件を指定して検索してください。</td></tr></tbody></table></div>
+    </div>
+    <div class="modal-footer justify-content-between"><div class="form-check"><input class="form-check-input" type="checkbox" id="emailReceiptSyncFreee" checked><label class="form-check-label" for="emailReceiptSyncFreee">取込後にfreeeへ登録・更新</label></div><div class="d-flex gap-2"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">キャンセル</button><button type="button" class="btn btn-outline-primary" id="emailReceiptPreview" disabled>PDFプレビュー</button><button type="button" class="btn btn-success" id="emailReceiptImport" disabled>選択したメールを取り込む</button></div></div>
+  </div></div>
+</div>
 {% endblock %}
 {% block body_extra %}<script>
 function syncWallet(){const s=document.getElementById('walletable');if(!s)return;const [t,id]=(s.value||':').split(':');document.getElementById('walletableType').value=t;document.getElementById('walletableId').value=id}
@@ -184,6 +207,43 @@ document.querySelectorAll('.expense-attachment-form').forEach(form=>{
     button.disabled=true;input.style.pointerEvents='none';state.textContent='アップロード中…';state.className='small text-primary expense-attachment-state';
     form.submit();
   });
+});
+const emailReceiptState={monthId:null,month:'',searchUrl:'',tokens:new Map()};
+const emailReceiptModalElement=document.getElementById('emailReceiptModal');
+const emailReceiptModal=emailReceiptModalElement&&window.bootstrap?new bootstrap.Modal(emailReceiptModalElement):null;
+const emailReceiptMessage=document.getElementById('emailReceiptMessage');
+function emailReceiptAlert(message,type='danger'){
+  emailReceiptMessage.textContent=message;emailReceiptMessage.className=`alert alert-${type}`;
+}
+function emailReceiptEscape(value){const node=document.createElement('div');node.textContent=value??'';return node.innerHTML;}
+async function emailReceiptJson(url,options={}){
+  const response=await fetch(url,options);let data={};try{data=await response.json();}catch(_error){throw new Error(`サーバー応答を読み取れません（HTTP ${response.status}）`);}
+  if(!response.ok||!data.ok)throw new Error(data.message||'メールを処理できませんでした。');return data;
+}
+async function loadEmailReceiptFolders(){
+  const mailbox=document.getElementById('emailReceiptMailbox').value;
+  const data=await emailReceiptJson(`{{ url_for('recurring_expenses.email_folders') }}?mailbox=${encodeURIComponent(mailbox)}`);
+  const select=document.getElementById('emailReceiptFolder');select.innerHTML=(data.folders||[]).map(folder=>`<option value="${emailReceiptEscape(folder)}">${emailReceiptEscape(folder)}</option>`).join('');
+}
+document.querySelectorAll('.email-receipt-open').forEach(button=>button.addEventListener('click',async()=>{
+  emailReceiptState.monthId=Number(button.dataset.monthId);emailReceiptState.month=button.dataset.month;emailReceiptState.searchUrl=button.dataset.searchUrl;emailReceiptState.tokens.clear();
+  document.getElementById('emailReceiptModalLabel').textContent=`${button.dataset.expenseName}：メールから証憑を選択`;
+  const [year,month]=emailReceiptState.month.split('-').map(Number);document.getElementById('emailReceiptFromDate').value=`${year}-${String(month).padStart(2,'0')}-01`;document.getElementById('emailReceiptToDate').value=new Date(year,month,0).toLocaleDateString('sv-SE');
+  document.getElementById('emailReceiptResults').innerHTML='<tr><td colspan="4" class="text-muted">条件を指定して検索してください。</td></tr>';document.getElementById('emailReceiptImport').disabled=true;document.getElementById('emailReceiptPreview').disabled=true;emailReceiptMessage.className='alert d-none';emailReceiptModal.show();
+  try{const data=await emailReceiptJson("{{ url_for('recurring_expenses.email_options') }}");const select=document.getElementById('emailReceiptMailbox');select.innerHTML=(data.mailboxes||[]).map(row=>`<option value="${emailReceiptEscape(row.mailbox)}">${emailReceiptEscape(row.mailbox)}</option>`).join('');if(!select.value)throw new Error('利用できるメールボックスがありません。');await loadEmailReceiptFolders();}catch(error){emailReceiptAlert(error.message);}
+}));
+document.getElementById('emailReceiptMailbox')?.addEventListener('change',()=>loadEmailReceiptFolders().catch(error=>emailReceiptAlert(error.message)));
+document.getElementById('emailReceiptSearch')?.addEventListener('click',async()=>{
+  const button=document.getElementById('emailReceiptSearch');button.disabled=true;emailReceiptAlert('検索中…','info');
+  try{const data=await emailReceiptJson(emailReceiptState.searchUrl,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token }}'},body:JSON.stringify({mailbox:document.getElementById('emailReceiptMailbox').value,folder:document.getElementById('emailReceiptFolder').value,date_from:document.getElementById('emailReceiptFromDate').value,date_to:document.getElementById('emailReceiptToDate').value,sender:document.getElementById('emailReceiptSender').value,subject:document.getElementById('emailReceiptSubject').value})});emailReceiptState.tokens.clear();for(const item of data.items||[])emailReceiptState.tokens.set(String(item.uid),item.token);const body=document.getElementById('emailReceiptResults');body.innerHTML=(data.items||[]).length?(data.items||[]).map(item=>`<tr><td><input class="form-check-input email-receipt-choice" type="radio" name="emailReceiptChoice" value="${item.uid}"></td><td>${emailReceiptEscape(item.received_at)}</td><td>${emailReceiptEscape(item.from)}</td><td>${emailReceiptEscape(item.subject)}</td></tr>`).join(''):'<tr><td colspan="4" class="text-muted">該当するメールはありません。</td></tr>';body.querySelectorAll('.email-receipt-choice').forEach(choice=>choice.addEventListener('change',()=>{document.getElementById('emailReceiptImport').disabled=false;document.getElementById('emailReceiptPreview').disabled=false;}));emailReceiptAlert(`${(data.items||[]).length}件見つかりました。`,'success');}catch(error){emailReceiptAlert(error.message);}finally{button.disabled=false;}
+});
+document.getElementById('emailReceiptPreview')?.addEventListener('click',async()=>{
+  const choice=document.querySelector('.email-receipt-choice:checked');if(!choice)return;const button=document.getElementById('emailReceiptPreview');const previewWindow=window.open('','_blank');button.disabled=true;emailReceiptAlert('PDFプレビューを作成しています…','info');
+  try{if(!previewWindow)throw new Error('ポップアップを許可して、もう一度お試しください。');const response=await fetch(`/recurring-expenses/months/${emailReceiptState.monthId}/mail/preview`,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token }}'},body:JSON.stringify({token:emailReceiptState.tokens.get(choice.value)})});if(!response.ok){let message='PDFプレビューを作成できませんでした。';try{message=(await response.json()).message||message;}catch(_error){}throw new Error(message);}const blob=await response.blob();const url=URL.createObjectURL(blob);previewWindow.location.href=url;setTimeout(()=>URL.revokeObjectURL(url),60000);emailReceiptAlert('PDFプレビューを開きました。','success');}catch(error){if(previewWindow)previewWindow.close();emailReceiptAlert(error.message);}finally{button.disabled=false;}
+});
+document.getElementById('emailReceiptImport')?.addEventListener('click',async()=>{
+  const choice=document.querySelector('.email-receipt-choice:checked');if(!choice)return;const button=document.getElementById('emailReceiptImport');button.disabled=true;emailReceiptAlert('メールを取得してPDFへ変換しています…','info');
+  try{const data=await emailReceiptJson(`/recurring-expenses/months/${emailReceiptState.monthId}/mail/import`,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token }}'},body:JSON.stringify({token:emailReceiptState.tokens.get(choice.value),sync_freee:document.getElementById('emailReceiptSyncFreee').checked})});emailReceiptAlert(data.message,'success');setTimeout(()=>location.reload(),900);}catch(error){emailReceiptAlert(error.message);button.disabled=false;}
 });
 const batchRegisterForm=document.getElementById('batchRegisterForm');
 if(batchRegisterForm)batchRegisterForm.addEventListener('submit',async event=>{

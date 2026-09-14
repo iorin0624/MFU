@@ -29,6 +29,7 @@ def ensure_schema() -> None:
                     link_url VARCHAR(2048) NULL,
                     freee_memo VARCHAR(255) NULL,
                     allow_skip TINYINT(1) NOT NULL DEFAULT 0,
+                    email_receipt_enabled TINYINT(1) NOT NULL DEFAULT 0,
                     amount_mode VARCHAR(16) NOT NULL DEFAULT 'variable',
                     default_amount INT NULL,
                     due_day TINYINT UNSIGNED NOT NULL DEFAULT 1,
@@ -88,6 +89,7 @@ def ensure_schema() -> None:
             for column_name, definition in (
                 ("freee_memo", "VARCHAR(255) NULL AFTER link_url"),
                 ("allow_skip", "TINYINT(1) NOT NULL DEFAULT 0 AFTER freee_memo"),
+                ("email_receipt_enabled", "TINYINT(1) NOT NULL DEFAULT 0 AFTER allow_skip"),
             ):
                 cur.execute(f"SHOW COLUMNS FROM recurring_expense_masters LIKE '{column_name}'")
                 if not cur.fetchone():
@@ -114,11 +116,14 @@ def ensure_schema() -> None:
                     mime_type VARCHAR(96) NOT NULL,
                     file_size BIGINT NOT NULL,
                     sha256 CHAR(64) NOT NULL,
+                    source_kind VARCHAR(16) NOT NULL DEFAULT 'upload',
+                    source_key CHAR(64) NULL,
                     freee_receipt_id BIGINT NULL,
                     freee_error TEXT NULL,
                     created_at DATETIME NOT NULL,
                     updated_at DATETIME NOT NULL,
                     UNIQUE KEY uq_recurring_expense_attachment (month_id, sha256),
+                    UNIQUE KEY uq_recurring_expense_attachment_source (month_id, source_key),
                     INDEX ix_recurring_expense_attachment_month (month_id, id),
                     CONSTRAINT fk_recurring_expense_attachment_month
                       FOREIGN KEY (month_id) REFERENCES recurring_expense_months(id)
@@ -126,6 +131,19 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            for column_name, definition in (
+                ("source_kind", "VARCHAR(16) NOT NULL DEFAULT 'upload' AFTER sha256"),
+                ("source_key", "CHAR(64) NULL AFTER source_kind"),
+            ):
+                cur.execute(f"SHOW COLUMNS FROM recurring_expense_attachments LIKE '{column_name}'")
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE recurring_expense_attachments ADD COLUMN {column_name} {definition}")
+            cur.execute("SHOW INDEX FROM recurring_expense_attachments WHERE Key_name='uq_recurring_expense_attachment_source'")
+            if not cur.fetchone():
+                cur.execute(
+                    "ALTER TABLE recurring_expense_attachments "
+                    "ADD UNIQUE KEY uq_recurring_expense_attachment_source (month_id, source_key)"
+                )
             db.commit()
             _SCHEMA_READY = True
         finally:
@@ -212,7 +230,7 @@ def save_master(values: dict, master_id: int | None = None) -> int:
         cur = db.cursor()
         now = datetime.now()
         columns = (
-            "name", "link_url", "allow_skip", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
+            "name", "link_url", "allow_skip", "email_receipt_enabled", "amount_mode", "default_amount", "due_day", "frequency_months", "start_month",
             "end_month", "account_item_id", "item_id", "partner_id", "tax_code", "payment_mode",
             "walletable_type", "walletable_id", "registration_mode", "receipt_required", "notes",
             "order_no", "is_active",
@@ -295,7 +313,7 @@ def list_month_items(target_month: str) -> list[dict]:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.link_url, x.allow_skip,
+            SELECT m.*, x.name, x.link_url, x.allow_skip, x.email_receipt_enabled,
                    x.amount_mode, x.default_amount, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id, x.tax_code,
                    x.payment_mode, x.walletable_type, x.walletable_id,
@@ -324,7 +342,7 @@ def get_month_item(month_id: int) -> dict | None:
         cur = db.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT m.*, x.name, x.allow_skip, x.receipt_required,
+            SELECT m.*, x.name, x.allow_skip, x.email_receipt_enabled, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id,
                    x.tax_code, x.payment_mode, x.walletable_type, x.walletable_id,
                    x.registration_mode, x.notes
@@ -478,10 +496,15 @@ def add_attachment(month_id: int, values: dict) -> int:
         cur.execute(
             """
             INSERT INTO recurring_expense_attachments
-                (month_id, original_name, stored_name, file_path, mime_type, file_size, sha256, created_at, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                (month_id, original_name, stored_name, file_path, mime_type, file_size, sha256,
+                 source_kind, source_key, created_at, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
-            (month_id, values["original_name"], values["stored_name"], values["file_path"], values["mime_type"], values["file_size"], values["sha256"], now, now),
+            (
+                month_id, values["original_name"], values["stored_name"], values["file_path"],
+                values["mime_type"], values["file_size"], values["sha256"],
+                values.get("source_kind") or "upload", values.get("source_key"), now, now,
+            ),
         )
         attachment_id = int(cur.lastrowid)
         cur.execute(

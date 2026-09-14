@@ -1,4 +1,5 @@
 from datetime import date
+from email.message import EmailMessage
 import inspect
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,6 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app.recurring_expenses import freee_sync
+from app.recurring_expenses import email_receipts
 from app.recurring_expenses import partners
 from app.recurring_expenses.repository import _is_due
 from app.recurring_expenses import repository
@@ -237,7 +239,7 @@ def test_expense_name_link_is_stored_and_rendered_safely():
         / "recurring_expenses/templates/recurring_expenses/index.html"
     ).read_text(encoding="utf-8")
 
-    assert '"name", "link_url", "allow_skip", "amount_mode"' in repository_source
+    assert '"name", "link_url", "allow_skip", "email_receipt_enabled", "amount_mode"' in repository_source
     assert 'href="{{ item.link_url }}"' in template
     assert 'rel="noopener noreferrer"' in template
 
@@ -245,6 +247,24 @@ def test_expense_name_link_is_stored_and_rendered_safely():
 def test_freee_memo_is_appended_to_deal_description():
     assert freee_sync._description(_month_item(freee_memo=None)) == "携帯電話代（2026-09）"
     assert freee_sync._description(_month_item(freee_memo="請求番号 A-123")) == "携帯電話代（2026-09） / 請求番号 A-123"
+
+
+def test_pdf_attachment_is_extracted_from_selected_email():
+    message = EmailMessage()
+    message["From"] = "billing@example.com"
+    message["To"] = "admin@example.com"
+    message["Subject"] = "9月ご利用分"
+    message["Message-ID"] = "<receipt-202609@example.com>"
+    message.set_content("請求書を添付します。")
+    message.add_attachment(b"%PDF-1.4\nmock", maintype="application", subtype="pdf", filename="invoice.pdf")
+
+    metadata, artifacts = email_receipts.extract_artifacts(message.as_bytes(), mailbox="admin@example.com")
+
+    assert metadata["subject"] == "9月ご利用分"
+    assert len(artifacts) == 1
+    assert artifacts[0].filename == "invoice.pdf"
+    assert artifacts[0].content.startswith(b"%PDF-")
+    assert len(artifacts[0].source_key) == 64
 
 
 def test_skip_and_cancellation_controls_are_master_driven():
@@ -259,6 +279,8 @@ def test_skip_and_cancellation_controls_are_master_driven():
     assert "freee_memo" in month_update_source
     assert "m.target_month > %s" in repository_source
     assert 'name="allow_skip"' in template
+    assert 'name="email_receipt_enabled"' in template
+    assert "メールから証憑を選択" in template
     assert 'name="freee_memo"' in template
     assert "この月のfreee取引の摘要へ追加" in template
     assert "発生なし（スキップ）" in template

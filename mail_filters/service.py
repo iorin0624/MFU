@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import unicodedata
+import base64
 from typing import Any
 
 
@@ -157,3 +158,22 @@ def execute_rule(
         },
         timeout=300,
     )
+
+
+def fetch_message(mailbox: str, folder: str, uid: int) -> bytes:
+    response = call_agent(
+        {
+            "action": "message_fetch",
+            "mailbox": normalize_mailbox(mailbox),
+            "folder": str(folder or ""),
+            "uid": int(uid),
+        },
+        timeout=120,
+    )
+    try:
+        raw = base64.b64decode(str(response.get("raw_base64") or ""), validate=True)
+    except Exception as exc:
+        raise MailFilterAgentError("メールサーバーから受信した本文を復元できませんでした") from exc
+    if not raw or len(raw) > 30 * 1024 * 1024:
+        raise MailFilterAgentError("メール本文が空か、取込上限（30MB）を超えています")
+    return raw
