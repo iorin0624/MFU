@@ -210,7 +210,7 @@ document.querySelectorAll('.expense-attachment-form').forEach(form=>{
 });
 const emailReceiptState={monthId:null,month:'',searchUrl:'',tokens:new Map()};
 const emailReceiptModalElement=document.getElementById('emailReceiptModal');
-const emailReceiptModal=emailReceiptModalElement&&window.bootstrap?new bootstrap.Modal(emailReceiptModalElement):null;
+let emailReceiptModal=null;
 const emailReceiptMessage=document.getElementById('emailReceiptMessage');
 function emailReceiptAlert(message,type='danger'){
   emailReceiptMessage.textContent=message;emailReceiptMessage.className=`alert alert-${type}`;
@@ -226,6 +226,8 @@ async function loadEmailReceiptFolders(){
   const select=document.getElementById('emailReceiptFolder');select.innerHTML=(data.folders||[]).map(folder=>`<option value="${emailReceiptEscape(folder)}">${emailReceiptEscape(folder)}</option>`).join('');
 }
 document.querySelectorAll('.email-receipt-open').forEach(button=>button.addEventListener('click',async()=>{
+  if(!window.bootstrap||!emailReceiptModalElement){alert('画面の初期化が完了していません。再読み込みしてください。');return;}
+  emailReceiptModal=bootstrap.Modal.getOrCreateInstance(emailReceiptModalElement);
   emailReceiptState.monthId=Number(button.dataset.monthId);emailReceiptState.month=button.dataset.month;emailReceiptState.searchUrl=button.dataset.searchUrl;emailReceiptState.tokens.clear();
   document.getElementById('emailReceiptModalLabel').textContent=`${button.dataset.expenseName}：メールから証憑を選択`;
   const [year,month]=emailReceiptState.month.split('-').map(Number);document.getElementById('emailReceiptFromDate').value=`${year}-${String(month).padStart(2,'0')}-01`;document.getElementById('emailReceiptToDate').value=new Date(year,month,0).toLocaleDateString('sv-SE');
