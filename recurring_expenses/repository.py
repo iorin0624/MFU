@@ -457,14 +457,52 @@ def delete_attachment(attachment_id: int) -> dict | None:
     db = get_db()
     try:
         cur = db.cursor(dictionary=True)
-        cur.execute("SELECT * FROM recurring_expense_attachments WHERE id=%s FOR UPDATE", (attachment_id,))
+        cur.execute(
+            """
+            SELECT a.*, m.freee_deal_id
+            FROM recurring_expense_attachments a
+            JOIN recurring_expense_months m ON m.id=a.month_id
+            WHERE a.id=%s FOR UPDATE
+            """,
+            (attachment_id,),
+        )
         row = cur.fetchone()
-        if row and not row.get("freee_receipt_id"):
+        if row and (not row.get("freee_receipt_id") or not row.get("freee_deal_id")):
             cur.execute("DELETE FROM recurring_expense_attachments WHERE id=%s", (attachment_id,))
             db.commit()
             return row
         db.rollback()
         return None
+    finally:
+        db.close()
+
+
+def delete_month_attachments(month_id: int) -> list[dict]:
+    """Delete MFU-side attachments after the linked freee deal is gone."""
+    ensure_schema()
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            "SELECT freee_deal_id FROM recurring_expense_months WHERE id=%s FOR UPDATE",
+            (month_id,),
+        )
+        month = cur.fetchone()
+        if not month or month.get("freee_deal_id"):
+            db.rollback()
+            return []
+        cur.execute(
+            "SELECT * FROM recurring_expense_attachments WHERE month_id=%s FOR UPDATE",
+            (month_id,),
+        )
+        rows = cur.fetchall()
+        if rows:
+            cur.execute(
+                "DELETE FROM recurring_expense_attachments WHERE month_id=%s",
+                (month_id,),
+            )
+        db.commit()
+        return rows
     finally:
         db.close()
 

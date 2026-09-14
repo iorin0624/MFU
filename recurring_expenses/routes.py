@@ -18,6 +18,7 @@ from .partners import create_or_find_partner
 from .repository import (
     add_attachment,
     delete_attachment,
+    delete_month_attachments,
     get_attachment,
     get_master,
     get_month_item,
@@ -388,7 +389,7 @@ def attachment_delete(attachment_id: int):
         Path(deleted["file_path"]).unlink(missing_ok=True)
         flash("添付ファイルを削除しました。", "success")
     else:
-        flash("freee登録済みの証憑はこの画面から削除できません。", "warning")
+        flash("freee取引にひも付いている証憑です。先にfreee取引を削除してください。", "warning")
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
 
 
@@ -417,10 +418,13 @@ def month_freee_delete(month_id: int):
         abort(404)
     try:
         result = delete_registered_month(month_id)
+        deleted_attachments = delete_month_attachments(month_id)
+        for attachment in deleted_attachments:
+            Path(attachment["file_path"]).unlink(missing_ok=True)
         if result["status"] == "already_deleted":
-            flash(f"「{item['name']}」のfreee取引は既に削除済みでした。登録状態を解除しました。", "success")
+            flash(f"「{item['name']}」のfreee取引は既に削除済みでした。登録状態を解除し、MFU側の添付を{len(deleted_attachments)}件削除しました。", "success")
         else:
-            flash(f"「{item['name']}」のfreee取引（ID: {result['deal_id']}）を削除しました。", "success")
+            flash(f"「{item['name']}」のfreee取引（ID: {result['deal_id']}）とMFU側の添付{len(deleted_attachments)}件を削除しました。", "success")
     except Exception as exc:
         flash(f"freee取引を削除できませんでした: {freee_services.sanitize_freee_error(str(exc))}", "danger")
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))

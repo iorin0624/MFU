@@ -184,6 +184,23 @@ def test_master_schedule_change_hides_and_prunes_old_generated_months():
     assert "_is_due(row, target_month)" in list_source
 
 
+def test_freee_delete_route_removes_mfu_attachments_and_manual_delete_allows_orphans():
+    route_source = inspect.getsource(
+        __import__("app.recurring_expenses.routes", fromlist=["month_freee_delete"]).month_freee_delete
+    )
+    delete_source = inspect.getsource(repository.delete_attachment)
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "recurring_expenses/templates/recurring_expenses/index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "delete_month_attachments(month_id)" in route_source
+    assert 'Path(attachment["file_path"]).unlink(missing_ok=True)' in route_source
+    assert 'not row.get("freee_deal_id")' in delete_source
+    assert "recurring_expenses.attachment_delete" in template
+    assert "MFU側の添付ファイルを削除しますか？" in template
+
+
 def test_invalid_master_form_is_preserved_as_a_typed_draft():
     draft = _master_draft(MultiDict({
         "name": "携帯電話代",
