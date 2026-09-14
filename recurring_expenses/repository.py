@@ -202,6 +202,21 @@ def save_master(values: dict, master_id: int | None = None) -> int:
                 f"UPDATE recurring_expense_masters SET {assignments}, updated_at=%s WHERE id=%s",
                 (*params, now, master_id),
             )
+            # Month rows are generated ahead of time.  When the start month is
+            # moved forward, remove only untouched rows; registered/manual rows
+            # and rows with attachments remain in the audit trail but are hidden
+            # by list_month_items once they are outside the current schedule.
+            cur.execute(
+                """
+                DELETE m FROM recurring_expense_months m
+                LEFT JOIN recurring_expense_attachments a ON a.month_id=m.id
+                WHERE m.master_id=%s AND m.target_month < %s
+                  AND m.freee_deal_id IS NULL
+                  AND m.status NOT IN ('registered','manual','registering')
+                  AND a.id IS NULL
+                """,
+                (master_id, values["start_month"]),
+            )
             result = master_id
         else:
             placeholders = ", ".join(["%s"] * len(columns))
@@ -240,7 +255,8 @@ def list_month_items(target_month: str) -> list[dict]:
             SELECT m.*, x.name, x.amount_mode, x.default_amount, x.receipt_required,
                    x.account_item_id, x.item_id, x.partner_id, x.tax_code,
                    x.payment_mode, x.walletable_type, x.walletable_id,
-                   x.registration_mode, x.notes,
+                   x.registration_mode, x.notes, x.start_month, x.end_month,
+                   x.frequency_months,
                    COUNT(a.id) AS attachment_count,
                    SUM(CASE WHEN a.freee_receipt_id IS NOT NULL THEN 1 ELSE 0 END) AS uploaded_attachment_count
             FROM recurring_expense_months m
@@ -252,7 +268,7 @@ def list_month_items(target_month: str) -> list[dict]:
             """,
             (target_month,),
         )
-        return cur.fetchall()
+        return [row for row in cur.fetchall() if _is_due(row, target_month)]
     finally:
         db.close()
 
@@ -321,6 +337,27 @@ def set_registration(month_id: int, *, status: str, deal_id: int | None = None, 
             WHERE id=%s
             """,
             (status, deal_id, error, status, status, status, datetime.now(), datetime.now(), month_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def clear_registration(month_id: int) -> None:
+    """Return a deleted freee registration to the local pending state."""
+    ensure_schema()
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            """
+            UPDATE recurring_expense_months
+            SET status='pending', freee_deal_id=NULL,
+                freee_synced_amount=NULL, freee_synced_issue_date=NULL,
+                freee_error=NULL, registered_at=NULL, updated_at=%s
+            WHERE id=%s
+            """,
+            (datetime.now(), month_id),
         )
         db.commit()
     finally:

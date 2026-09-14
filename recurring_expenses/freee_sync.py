@@ -10,6 +10,7 @@ from app.freee_api import services as freee_services
 
 from .repository import (
     claim_registration,
+    clear_registration,
     get_month_item,
     list_attachments,
     set_registration,
@@ -185,6 +186,36 @@ def _attach_to_existing(item: dict, deal: dict, company_id: int, receipt_ids: li
     deal_id = int(deal["id"])
     freee_services.freee_api_request("PUT", f"/api/1/deals/{deal_id}", json_body=payload)
     return deal_id
+
+
+def delete_registered_month(month_id: int) -> dict:
+    item = get_month_item(month_id)
+    if not item:
+        raise LookupError("定期経費が見つかりません。")
+    deal_id = int(item.get("freee_deal_id") or 0)
+    if not deal_id:
+        raise RuntimeError("削除できるfreee取引がありません。")
+    if item.get("registration_mode") != "create":
+        raise RuntimeError("既存取引へ紐付けた項目は、誤削除防止のためfreee側で確認してください。")
+    if item.get("status") == "registering":
+        raise RuntimeError("freee登録処理中のため削除できません。")
+
+    company_id = _company_id()
+    try:
+        deal = _deal_by_id(deal_id, company_id)
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        clear_registration(month_id)
+        return {"status": "already_deleted", "deal_id": deal_id}
+
+    if str(deal.get("ref_number") or "") not in _ref_numbers(item):
+        raise RuntimeError("freee取引の管理番号が一致しないため、安全のため削除を中止しました。")
+    freee_services.freee_api_request(
+        "DELETE", f"/api/1/deals/{deal_id}", params={"company_id": company_id}
+    )
+    clear_registration(month_id)
+    return {"status": "deleted", "deal_id": deal_id}
 
 
 def register_month(month_id: int) -> dict:

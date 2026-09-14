@@ -127,6 +127,63 @@ def test_registration_creates_one_deal_and_persists_ids():
     set_registration.assert_called_once_with(7, status="registered", deal_id=987)
 
 
+def test_registered_month_delete_verifies_reference_and_clears_local_link():
+    item = _month_item(
+        freee_deal_id=987,
+        status="registered",
+        registration_mode="create",
+    )
+    deal = {"id": 987, "ref_number": freee_sync._ref_number(item)}
+    with (
+        patch.object(freee_sync, "get_month_item", return_value=item),
+        patch.object(freee_sync, "_company_id", return_value=1),
+        patch.object(freee_sync, "_deal_by_id", return_value=deal),
+        patch.object(freee_sync.freee_services, "freee_api_request", return_value={}) as request,
+        patch.object(freee_sync, "clear_registration") as clear,
+    ):
+        result = freee_sync.delete_registered_month(7)
+
+    assert result == {"status": "deleted", "deal_id": 987}
+    request.assert_called_once_with(
+        "DELETE", "/api/1/deals/987", params={"company_id": 1}
+    )
+    clear.assert_called_once_with(7)
+
+
+def test_registered_month_delete_refuses_unrelated_freee_deal():
+    item = _month_item(
+        freee_deal_id=987,
+        status="registered",
+        registration_mode="create",
+    )
+    with (
+        patch.object(freee_sync, "get_month_item", return_value=item),
+        patch.object(freee_sync, "_company_id", return_value=1),
+        patch.object(freee_sync, "_deal_by_id", return_value={"id": 987, "ref_number": "OTHER"}),
+        patch.object(freee_sync.freee_services, "freee_api_request") as request,
+        patch.object(freee_sync, "clear_registration") as clear,
+    ):
+        try:
+            freee_sync.delete_registered_month(7)
+        except RuntimeError as exc:
+            assert "管理番号が一致しない" in str(exc)
+        else:
+            raise AssertionError("An unrelated freee deal was deleted")
+
+    request.assert_not_called()
+    clear.assert_not_called()
+
+
+def test_master_schedule_change_hides_and_prunes_old_generated_months():
+    source = inspect.getsource(repository.save_master)
+    list_source = inspect.getsource(repository.list_month_items)
+
+    assert "m.target_month < %s" in source
+    assert "m.freee_deal_id IS NULL" in source
+    assert "a.id IS NULL" in source
+    assert "_is_due(row, target_month)" in list_source
+
+
 def test_invalid_master_form_is_preserved_as_a_typed_draft():
     draft = _master_draft(MultiDict({
         "name": "携帯電話代",
