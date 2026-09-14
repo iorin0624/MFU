@@ -40,7 +40,9 @@ def _ref_numbers(item: dict) -> set[str]:
 
 
 def _description(item: dict) -> str:
-    return f"{item['name']}（{item['target_month']}）"
+    base = f"{item['name']}（{item['target_month']}）"
+    memo = str(item.get("freee_memo") or "").strip()
+    return f"{base} / {memo}"[:255] if memo else base
 
 
 def _attachment_pdf(attachment: dict) -> tuple[str, io.BufferedReader | io.BytesIO]:

@@ -47,7 +47,7 @@
           {% if item.status == 'registered' %}<span class="badge text-bg-success">freee登録済み</span>
           {% elif item.status == 'pending_update' %}<span class="badge text-bg-warning">freee更新あり</span>
           {% elif item.status == 'manual' %}<span class="badge text-bg-success">手動登録済み</span>
-          {% elif item.status == 'excluded' %}<span class="badge text-bg-secondary">今月は対象外</span>
+          {% elif item.status == 'excluded' %}<span class="badge text-bg-secondary">発生なし</span>
           {% elif item.status == 'error' %}<span class="badge text-bg-danger">登録エラー</span>
           {% elif item.status == 'registering' %}<span class="badge text-bg-warning">登録処理中</span>
           {% else %}<span class="badge text-bg-warning">未登録</span>{% endif %}
@@ -59,7 +59,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="col-sm-3"><label class="form-label">発生日・支払日</label><input class="form-control" type="date" name="issue_date" value="{{ item.issue_date }}" required></div>
         <div class="col-sm-3"><label class="form-label">実際の金額</label><div class="input-group"><span class="input-group-text">¥</span><input class="form-control" type="number" min="0" name="actual_amount" value="{{ item.actual_amount if item.actual_amount is not none else '' }}"></div></div>
-        <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option><option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>今月は対象外</option></select></div>
+        <div class="col-sm-3"><label class="form-label">状態</label><select class="form-select" name="status"><option value="pending" {{ 'selected' if item.status not in ['waiting_receipt','excluded'] else '' }}>freee登録待ち</option><option value="waiting_receipt" {{ 'selected' if item.status == 'waiting_receipt' else '' }}>金額・証憑待ち</option>{% if item.allow_skip or item.status == 'excluded' %}<option value="excluded" {{ 'selected' if item.status == 'excluded' else '' }} {{ 'disabled' if item.freee_deal_id else '' }}>発生なし（スキップ）</option>{% endif %}</select></div>
         {% if item.registration_mode == 'existing' %}<div class="col-sm-3"><label class="form-label">既存freee取引ID</label><input class="form-control" type="number" min="1" name="existing_deal_id" value="{{ item.existing_deal_id or '' }}" {{ 'disabled' if item.freee_deal_id else '' }}></div>{% endif %}
         <div class="col-12"><span class="small text-muted expense-save-state" aria-live="polite">変更時に自動保存</span></div>
       </form>
@@ -96,12 +96,14 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="master_id" value="{{ editing.id if editing and editing.id else '' }}"><input type="hidden" name="return_month" value="{{ selected_month }}">
       <div class="col-md-6"><label class="form-label">経費名</label><input class="form-control" name="name" value="{{ editing.name if editing else '' }}" required></div>
       <div class="col-md-6"><label class="form-label">リンクURL（任意）</label><input class="form-control" type="url" name="link_url" maxlength="2048" placeholder="https://example.com/" value="{{ editing.link_url if editing and editing.link_url else '' }}"></div>
+      <div class="col-md-8"><label class="form-label">freeeメモ（任意）</label><input class="form-control" name="freee_memo" maxlength="255" placeholder="freee取引の摘要へ追加" value="{{ editing.freee_memo if editing and editing.freee_memo else '' }}"></div>
+      <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="allow_skip" value="1" id="allowSkip" {{ 'checked' if editing and editing.allow_skip else '' }}><label class="form-check-label" for="allowSkip">発生なし（スキップ）を許可</label></div></div>
       <div class="col-md-3"><label class="form-label">金額</label><select class="form-select" name="amount_mode"><option value="variable" {{ 'selected' if not editing or editing.amount_mode == 'variable' else '' }}>毎月変動</option><option value="fixed" {{ 'selected' if editing and editing.amount_mode == 'fixed' else '' }}>毎月固定</option></select></div>
       <div class="col-md-3"><label class="form-label">固定金額</label><input class="form-control" type="number" min="0" name="default_amount" value="{{ editing.default_amount if editing and editing.default_amount is not none else '' }}"></div>
       <div class="col-md-2"><label class="form-label">発生日</label><input class="form-control" type="number" min="1" max="31" name="due_day" value="{{ editing.due_day if editing else 1 }}" required></div>
       <div class="col-md-2"><label class="form-label">周期</label><select class="form-select" name="frequency_months">{% for value,label in [(1,'毎月'),(2,'隔月'),(3,'3か月'),(6,'半年'),(12,'年払い')] %}<option value="{{ value }}" {{ 'selected' if editing and editing.frequency_months == value else '' }}>{{ label }}</option>{% endfor %}</select></div>
       <div class="col-md-2"><label class="form-label">開始月</label><input class="form-control" type="month" name="start_month" value="{{ editing.start_month if editing else selected_month }}" required></div>
-      <div class="col-md-2"><label class="form-label">終了月</label><input class="form-control" type="month" name="end_month" value="{{ editing.end_month if editing else '' }}"></div>
+      <div class="col-md-2"><label class="form-label">解約月</label><input class="form-control" type="month" name="end_month" value="{{ editing.end_month if editing else '' }}"><div class="form-text">この月まで表示</div></div>
       <div class="col-md-2"><label class="form-label">表示順</label><input class="form-control" type="number" name="order_no" value="{{ editing.order_no if editing else 0 }}"></div>
       <div class="col-md-2 d-flex align-items-end"><div class="form-check mb-2"><input class="form-check-input" type="checkbox" name="receipt_required" value="1" id="receiptRequired" {{ 'checked' if editing and editing.receipt_required else '' }}><label class="form-check-label" for="receiptRequired">証憑必須</label></div></div>
       <div class="col-md-4"><label class="form-label">勘定科目</label><select class="form-select" name="account_item_id" required><option value="">選択</option>{% for row in master_data.account_items %}<option value="{{ row.id }}" {{ 'selected' if editing and editing.account_item_id == row.id else '' }}>{{ row.name }}</option>{% endfor %}</select></div>
