@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import fnmatch
+import base64
 import hashlib
 import hmac
 import json
@@ -49,6 +50,7 @@ MAX_MANUAL_BODY_SCAN = 10000
 MAX_MANUAL_MATCHES = 999
 MAX_FULL_EXECUTE_MATCHES = 10000
 MAX_PREVIEW_ITEMS = 100
+MAX_FETCH_MESSAGE_BYTES = 30 * 1024 * 1024
 PREVIEW_TOKEN_TTL = 10 * 60
 MAILBOX_RE = re.compile(r"^[^@\s/\\\x00-\x1f\x7f]+@[^@\s/\\\x00-\x1f\x7f]+$")
 FORBIDDEN_SIEVE_RE = re.compile(
@@ -421,6 +423,36 @@ def _fetch_manual_messages(mailbox: str, rule: dict[str, Any], scope: dict[str, 
     # already returned the complete date range here, so discarding rows at an
     # arbitrary scan limit would make a long-period preview incomplete.
     return rows, False
+
+
+def _fetch_message(mailbox: str, folder_value: Any, uid_value: Any) -> dict[str, Any]:
+    folders = _folder_list(mailbox)
+    folder = unicodedata.normalize("NFC", str(folder_value or "").strip())
+    if folder not in folders:
+        raise AgentError("対象フォルダーが存在しません")
+    try:
+        uid = int(uid_value)
+    except (TypeError, ValueError) as exc:
+        raise AgentError("メールUIDが不正です") from exc
+    if not 1 <= uid <= 4294967295:
+        raise AgentError("メールUIDが不正です")
+    rows = _doveadm_json(
+        ["fetch", "-u", mailbox, "uid mailbox text", "mailbox", folder, "uid", str(uid)],
+        timeout=120,
+    )
+    if len(rows) != 1 or int(rows[0].get("uid") or 0) != uid:
+        raise AgentError("指定したメールが見つかりません")
+    raw = str(rows[0].get("text") or "").encode("utf-8", "surrogatepass")
+    if not raw or len(raw) > MAX_FETCH_MESSAGE_BYTES:
+        raise AgentError("メール本文が空か、取込上限（30MB）を超えています")
+    return {
+        "mailbox": mailbox,
+        "folder": folder,
+        "uid": uid,
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "raw_base64": base64.b64encode(raw).decode("ascii"),
+    }
 
 
 def _message_body(row: dict[str, Any]) -> str:
@@ -862,6 +894,8 @@ def _handle(payload: dict[str, Any]) -> dict[str, Any]:
                 allow_discard=bool(payload.get("allow_discard")),
             ),
         })
+    if action == "message_fetch":
+        return {"ok": True, **_fetch_message(mailbox, payload.get("folder"), payload.get("uid"))}
     raise AgentError("未対応の操作です")
 
 

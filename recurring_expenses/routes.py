@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import secrets
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from PIL import Image
 from werkzeug.utils import secure_filename
 
@@ -15,6 +17,7 @@ from app.freee_api import services as freee_services
 
 from . import recurring_expenses_bp
 from .freee_sync import delete_registered_month, register_month
+from .email_receipts import extract_artifacts, folder_options, load_message, mailbox_options, search_messages
 from .partners import create_or_find_partner
 from .repository import (
     add_attachment,
@@ -115,6 +118,8 @@ def _master_draft(form, master_id: int | None) -> dict:
     draft = form.to_dict(flat=True)
     draft["id"] = master_id
     draft["receipt_required"] = 1 if form.get("receipt_required") == "1" else 0
+    draft["allow_skip"] = 1 if form.get("allow_skip") == "1" else 0
+    draft["email_receipt_enabled"] = 1 if form.get("email_receipt_enabled") == "1" else 0
     draft["is_active"] = 1 if form.get("is_active") == "1" else 0
     for key in ("frequency_months", "account_item_id", "item_id", "partner_id", "tax_code", "walletable_id"):
         raw = str(draft.get(key) or "").strip()
@@ -203,6 +208,7 @@ def master_save():
             "name": name,
             "link_url": _optional_link_url(request.form.get("link_url")),
             "allow_skip": 1 if request.form.get("allow_skip") == "1" else 0,
+            "email_receipt_enabled": 1 if request.form.get("email_receipt_enabled") == "1" else 0,
             "amount_mode": amount_mode,
             "default_amount": default_amount,
             "due_day": due_day,
@@ -337,6 +343,43 @@ def _validate_upload(upload) -> tuple[bytes, str, str]:
     return content, original_name, mime_type
 
 
+def _store_attachment_content(
+    month_id: int,
+    target_month: str,
+    *,
+    content: bytes,
+    original_name: str,
+    mime_type: str,
+    source_kind: str = "upload",
+    source_key: str | None = None,
+) -> int:
+    if not content or len(content) > MAX_ATTACHMENT_BYTES:
+        raise ValueError("ファイルは1件25MB以下にしてください。")
+    month_folder = STORAGE_ROOT / target_month
+    folder = month_folder / str(month_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    for private_folder in (STORAGE_ROOT, month_folder, folder):
+        private_folder.chmod(0o700)
+    stored_name = f"{uuid.uuid4().hex}{Path(original_name).suffix.lower()}"
+    target = folder / secure_filename(stored_name)
+    try:
+        target.write_bytes(content)
+        target.chmod(0o600)
+        return add_attachment(month_id, {
+            "original_name": Path(original_name).name[:255],
+            "stored_name": stored_name,
+            "file_path": str(target),
+            "mime_type": mime_type,
+            "file_size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "source_kind": source_kind,
+            "source_key": source_key,
+        })
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+
+
 @recurring_expenses_bp.post("/months/<int:month_id>/attachments")
 def attachment_upload(month_id: int):
     _require_csrf()
@@ -349,40 +392,158 @@ def attachment_upload(month_id: int):
         return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
     saved = 0
     for upload in uploads:
-        target = None
         try:
             content, original_name, mime_type = _validate_upload(upload)
-            digest = hashlib.sha256(content).hexdigest()
-            month_folder = STORAGE_ROOT / item["target_month"]
-            folder = month_folder / str(month_id)
-            folder.mkdir(parents=True, exist_ok=True)
-            for private_folder in (STORAGE_ROOT, month_folder, folder):
-                private_folder.chmod(0o700)
-            stored_name = f"{uuid.uuid4().hex}{Path(original_name).suffix.lower()}"
-            target = folder / secure_filename(stored_name)
-            target.write_bytes(content)
-            target.chmod(0o600)
-            add_attachment(month_id, {
-                "original_name": original_name[:255],
-                "stored_name": stored_name,
-                "file_path": str(target),
-                "mime_type": mime_type,
-                "file_size": len(content),
-                "sha256": digest,
-            })
+            _store_attachment_content(
+                month_id, item["target_month"], content=content,
+                original_name=original_name, mime_type=mime_type,
+            )
             saved += 1
         except ValueError as exc:
-            if target:
-                target.unlink(missing_ok=True)
             flash(f"{Path(upload.filename or 'ファイル').name}: {exc}", "danger")
         except Exception as exc:
-            if target:
-                target.unlink(missing_ok=True)
             message = "同じ内容のファイルはすでに添付されています。" if "Duplicate entry" in str(exc) else "添付ファイルを保存できませんでした。"
             flash(f"{Path(upload.filename or 'ファイル').name}: {message}", "danger")
     if saved:
         flash(f"証憑を{saved}件添付しました。", "success")
     return redirect(url_for("recurring_expenses.index", month=item["target_month"]))
+
+
+def _mail_token_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(current_app.secret_key, salt="recurring-expense-email-receipt")
+
+
+def _email_enabled_item(month_id: int) -> dict:
+    item = get_month_item(month_id)
+    if not item:
+        abort(404)
+    if not item.get("email_receipt_enabled"):
+        abort(403, "この経費ではメール証憑の取込みが無効です。")
+    return item
+
+
+def _load_selected_email(month_id: int, token: str) -> tuple[dict, str, dict, list]:
+    item = _email_enabled_item(month_id)
+    payload = _mail_token_serializer().loads(str(token or ""), max_age=15 * 60)
+    if int(payload.get("month_id") or 0) != month_id:
+        raise BadSignature("対象経費が一致しません")
+    mailbox = str(payload["mailbox"])
+    raw = load_message(mailbox, str(payload["folder"]), int(payload["uid"]))
+    metadata, artifacts = extract_artifacts(raw, mailbox=mailbox)
+    return item, mailbox, metadata, artifacts
+
+
+@recurring_expenses_bp.get("/mail/options")
+def email_options():
+    try:
+        return jsonify({"ok": True, "mailboxes": mailbox_options()})
+    except Exception as exc:
+        current_app.logger.warning("recurring expense mailbox list failed: %s", exc)
+        return jsonify({"ok": False, "message": str(exc)}), 502
+
+
+@recurring_expenses_bp.get("/mail/folders")
+def email_folders():
+    try:
+        return jsonify({"ok": True, "folders": folder_options(request.args.get("mailbox", ""))})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+
+@recurring_expenses_bp.post("/months/<int:month_id>/mail/search")
+def email_search(month_id: int):
+    _require_csrf()
+    item = _email_enabled_item(month_id)
+    source = request.get_json(silent=True) or {}
+    try:
+        mailbox = str(source.get("mailbox") or "")
+        folder = str(source.get("folder") or "INBOX")
+        date_from = datetime.strptime(str(source.get("date_from") or ""), "%Y-%m-%d").date()
+        date_to = datetime.strptime(str(source.get("date_to") or ""), "%Y-%m-%d").date()
+        if date_from > date_to or (date_to - date_from).days > 366:
+            raise ValueError("検索期間は1年以内で指定してください。")
+        rows = search_messages(
+            mailbox=mailbox, folder=folder, date_from=date_from, date_to=date_to,
+            sender=str(source.get("sender") or "")[:200], subject=str(source.get("subject") or "")[:200],
+        )
+        serializer = _mail_token_serializer()
+        result = []
+        for row in rows:
+            uid = int(row.get("uid") or 0)
+            result.append({
+                "uid": uid,
+                "received_at": str(row.get("received_at") or ""),
+                "from": str(row.get("from") or ""),
+                "subject": str(row.get("subject") or "（件名なし）"),
+                "token": serializer.dumps({"month_id": month_id, "mailbox": mailbox, "folder": folder, "uid": uid}),
+            })
+        current_app.logger.info("RECURRING_EXPENSE_EMAIL_SEARCH month_id=%s mailbox=%s folder=%s count=%s", month_id, mailbox, folder, len(result))
+        return jsonify({"ok": True, "items": result, "expense": item["name"]})
+    except Exception as exc:
+        current_app.logger.warning("recurring expense email search failed month_id=%s: %s", month_id, exc)
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+
+@recurring_expenses_bp.post("/months/<int:month_id>/mail/import")
+def email_import(month_id: int):
+    _require_csrf()
+    source = request.get_json(silent=True) or {}
+    try:
+        item, mailbox, metadata, artifacts = _load_selected_email(month_id, str(source.get("token") or ""))
+        saved = 0
+        duplicates = 0
+        for artifact in artifacts:
+            try:
+                _store_attachment_content(
+                    month_id, item["target_month"], content=artifact.content,
+                    original_name=artifact.filename, mime_type="application/pdf",
+                    source_kind="email", source_key=artifact.source_key,
+                )
+                saved += 1
+            except Exception as exc:
+                if "Duplicate entry" in str(exc):
+                    duplicates += 1
+                    continue
+                raise
+        freee_message = ""
+        if saved and bool(source.get("sync_freee")) and item.get("registration_mode") != "manual":
+            try:
+                result = register_month(month_id)
+                freee_message = f" freee取引ID {result.get('deal_id')} へ反映しました。"
+            except Exception as exc:
+                freee_message = f" 証憑は保存しましたが、freee反映に失敗しました: {freee_services.sanitize_freee_error(str(exc))}"
+        current_app.logger.info(
+            "RECURRING_EXPENSE_EMAIL_IMPORT month_id=%s mailbox=%s uid=%s saved=%s duplicate=%s subject=%s",
+            month_id, mailbox, "selected", saved, duplicates, metadata.get("subject"),
+        )
+        if not saved and duplicates:
+            return jsonify({"ok": True, "message": "このメールの証憑はすでに取り込まれています。"})
+        return jsonify({"ok": True, "message": f"メールから証憑を{saved}件取り込みました。{freee_message}".strip()})
+    except SignatureExpired:
+        return jsonify({"ok": False, "message": "検索結果の有効期限が切れました。もう一度検索してください。"}), 400
+    except BadSignature:
+        return jsonify({"ok": False, "message": "メール選択情報が不正です。もう一度検索してください。"}), 400
+    except Exception as exc:
+        current_app.logger.exception("recurring expense email import failed month_id=%s", month_id)
+        return jsonify({"ok": False, "message": str(exc)}), 400
+
+
+@recurring_expenses_bp.post("/months/<int:month_id>/mail/preview")
+def email_preview(month_id: int):
+    _require_csrf()
+    source = request.get_json(silent=True) or {}
+    try:
+        _item, _mailbox, _metadata, artifacts = _load_selected_email(month_id, str(source.get("token") or ""))
+        artifact = artifacts[0]
+        return send_file(
+            io.BytesIO(artifact.content), mimetype="application/pdf",
+            download_name=artifact.filename, as_attachment=False,
+        )
+    except (SignatureExpired, BadSignature) as exc:
+        return jsonify({"ok": False, "message": "検索結果の有効期限が切れたか、選択情報が不正です。もう一度検索してください。"}), 400
+    except Exception as exc:
+        current_app.logger.warning("recurring expense email preview failed month_id=%s: %s", month_id, exc)
+        return jsonify({"ok": False, "message": str(exc)}), 400
 
 
 @recurring_expenses_bp.get("/attachments/<int:attachment_id>")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -155,6 +156,17 @@ def test_ssh_agent_accepts_last_json_line_and_preserves_japanese():
     assert result["folders"][1] == "INBOX.予約受付"
     sent = json.loads(run.call_args.kwargs["input"])
     assert sent["mailbox"] == "test@example.jp"
+
+
+def test_mail_message_fetch_decodes_agent_payload():
+    raw = b"From: billing@example.com\r\nSubject: receipt\r\n\r\nbody"
+    with patch.object(
+        service,
+        "call_agent",
+        return_value={"ok": True, "raw_base64": base64.b64encode(raw).decode("ascii")},
+    ) as call:
+        assert service.fetch_message("test@example.jp", "INBOX", 42) == raw
+    assert call.call_args.args[0]["action"] == "message_fetch"
 
 
 def test_mail_filter_route_is_csrf_protected_and_registered():
