@@ -70,7 +70,7 @@
           <div class="border rounded px-2 py-1 small">
             <a href="{{ url_for('recurring_expenses.attachment_view', attachment_id=attachment.id) }}" target="_blank" rel="noopener">{{ attachment.original_name }}</a>
             {% if attachment.freee_receipt_id %}<span class="badge text-bg-success">freee済</span>{% elif attachment.freee_error %}<span class="badge text-bg-danger" title="{{ attachment.freee_error }}">エラー</span>{% endif %}
-            {% if not attachment.freee_receipt_id %}<form method="post" action="{{ url_for('recurring_expenses.attachment_delete', attachment_id=attachment.id) }}" class="d-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-sm btn-link text-danger p-0 ms-1" onclick="return confirm('添付ファイルを削除しますか？')">削除</button></form>{% endif %}
+            <form method="post" action="{{ url_for('recurring_expenses.attachment_delete', attachment_id=attachment.id) }}" class="d-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-sm btn-link text-danger p-0 ms-1" onclick="return confirm('MFU側の添付ファイルを削除しますか？')">削除</button></form>
           </div>
         {% else %}<span class="small text-muted">添付なし</span>{% endfor %}
         </div>
