@@ -21,6 +21,7 @@ from app.utils.upload_security import (
     can_access_upload_record_from_session,
     current_upload_visibility_version,
     fetch_upload_access_record,
+    fetch_layer_reply_access_record,
     fetch_upload_file_record,
     fetch_upload_thumbnail_source,
     has_layer_reply_view_auth,
@@ -572,7 +573,13 @@ def _job_access_allowed(progress: Optional[dict]) -> bool:
         return bool(username and (username == "admin" or username == owner))
     if access_type == "layer_reply_public":
         upload = fetch_upload_access_record(str(access.get("upload_uuid") or ""))
-        if upload and can_access_upload_record_from_session(upload):
+        if not upload:
+            upload = fetch_layer_reply_access_record(str(access.get("upload_uuid") or ""))
+        if (
+            upload
+            and not upload.get("upload_deleted_at")
+            and can_access_upload_record_from_session(upload)
+        ):
             return True
         return has_layer_reply_view_auth(
             str(access.get("upload_uuid") or ""),

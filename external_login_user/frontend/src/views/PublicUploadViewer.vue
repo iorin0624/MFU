@@ -146,7 +146,11 @@ async function load() {
     selected.value = selected.value.filter((id) => payload.files.some((file) => file.id === id && !file.hidden));
     await nextTick();
     const targetId = window.location.hash.replace(/^#/, '');
-    if (targetId) document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (targetId) {
+      const target = document.getElementById(targetId);
+      if (target instanceof HTMLDetailsElement) target.open = true;
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '表示情報を取得できませんでした。';
   } finally {
@@ -467,10 +471,10 @@ onUnmounted(() => {
         </details>
       </section>
 
-      <section v-if="data.reply.enabled" id="reply" class="reply-upload-panel">
-        <div class="reply-section-heading">
-          <div><h2>折り返し</h2><p>加工済みの写真を選択して送信できます。</p></div>
-        </div>
+      <details v-if="data.reply.enabled" id="reply" class="reply-upload-panel reply-collapsible">
+        <summary class="reply-section-heading">
+          <div><h2>折り返し</h2><p>加工済みの写真を選択して送信できます。</p></div><span aria-hidden="true">⌄</span>
+        </summary>
         <form class="reply-upload-form" @submit.prevent="submitReply">
           <label class="reply-drop-zone" @dragover.prevent @drop.prevent="dropReplyFiles">
             <input type="file" accept="image/*,.heic,.heif" multiple :disabled="replyBusy" @change="chooseReplyFiles">
@@ -484,21 +488,23 @@ onUnmounted(() => {
           <div v-if="replyProgress !== null" class="reply-progress"><span :style="{width:`${replyProgress}%`}"></span><small>{{ replyProgress }}%</small></div>
           <div class="reply-submit-row"><span>{{ replyFiles.length }}枚選択中</span><button type="submit" class="primary-button" :disabled="replyBusy || !replyFiles.length">{{ replyBusy ? '送信中…' : '折り返しを送信' }}</button></div>
         </form>
-      </section>
+      </details>
 
-      <section v-if="data.reply.canList" id="replies" class="reply-list-panel">
-        <div class="reply-section-heading"><div><h2>折り返し一覧</h2><p>アップロード日時ごとに表示します。</p></div></div>
-        <div v-if="!data.reply.groups.length" class="empty-state">折り返しはまだありません。</div>
-        <details v-for="group in data.reply.groups" :key="group.replyUuid" class="reply-group">
-          <summary><time>{{ formatDateTime(group.postedAt) }}</time><strong>{{ group.count }}枚</strong><span aria-hidden="true">⌄</span></summary>
-          <div class="reply-group-body">
-            <div class="reply-image-grid">
-              <button v-for="(image,index) in group.images" :key="image.name" type="button" @click="openReplyLightbox(group,index)"><img :src="image.url" alt="折り返し画像" loading="lazy"></button>
+      <details v-if="data.reply.canList" id="replies" class="reply-list-panel reply-collapsible">
+        <summary class="reply-section-heading"><div><h2>折り返し一覧</h2><p>アップロード日時ごとに表示します。</p></div><span aria-hidden="true">⌄</span></summary>
+        <div class="reply-list-body">
+          <div v-if="!data.reply.groups.length" class="empty-state">折り返しはまだありません。</div>
+          <details v-for="group in data.reply.groups" :key="group.replyUuid" class="reply-group">
+            <summary><time>{{ formatDateTime(group.postedAt) }}</time><strong>{{ group.count }}枚</strong><span aria-hidden="true">⌄</span></summary>
+            <div class="reply-group-body">
+              <div class="reply-image-grid">
+                <button v-for="(image,index) in group.images" :key="image.name" type="button" @click="openReplyLightbox(group,index)"><img :src="image.url" alt="折り返し画像" loading="lazy"></button>
+              </div>
+              <button type="button" class="outline-button reply-zip-button" :disabled="busy" @click="replyZipDownload(group)">この回をZIPでDL</button>
             </div>
-            <button type="button" class="outline-button reply-zip-button" :disabled="busy" @click="replyZipDownload(group)">この回をZIPでDL</button>
-          </div>
-        </details>
-      </section>
+          </details>
+        </div>
+      </details>
 
       <section v-if="!data.replyOnly" class="album-panel">
         <div class="album-toolbar">

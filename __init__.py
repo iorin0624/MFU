@@ -68,6 +68,7 @@ from app.utils.upload_security import (
     fetch_upload_file_record,
     fetch_upload_thumbnail_source,
     fetch_upload_access_record,
+    fetch_layer_reply_access_record,
     grant_view_auth,
     has_layer_reply_upload_auth,
     layer_reply_view_grants,
@@ -405,6 +406,10 @@ def _ensure_upload_security_schema_once():
 
 def _get_upload_access_record(uuid):
     return fetch_upload_access_record(uuid)
+
+
+def _get_layer_reply_access_record(uuid):
+    return fetch_layer_reply_access_record(uuid)
 
 
 def _can_access_upload_record(upload):
@@ -2682,6 +2687,11 @@ def view_upload_otp_verify(uuid):
 @app.route("/view/<uuid>", methods=["GET", "POST"])
 def view_upload(uuid):
     upload = _get_upload_access_record(uuid)
+    reply_scoped_session = (
+        has_layer_reply_upload_auth(uuid) or bool(layer_reply_view_grants(uuid))
+    )
+    if not upload and reply_scoped_session:
+        upload = _get_layer_reply_access_record(uuid)
     if not upload:
         return "指定されたデータが存在しません", 404
 
@@ -2692,9 +2702,9 @@ def view_upload(uuid):
     if _can_access_upload_record(upload):
         _grant_view_auth(upload)
 
-    reply_only_access = (
-        has_layer_reply_upload_auth(uuid) or bool(layer_reply_view_grants(uuid))
-    ) and not _has_view_auth(upload)
+    reply_only_access = reply_scoped_session and (
+        bool(upload.get("upload_deleted_at")) or not _has_view_auth(upload)
+    )
 
     if reply_only_access:
         return render_template(
@@ -2882,10 +2892,13 @@ def view_upload(uuid):
 @app.get("/view/<uuid>/api")
 def public_upload_view_api(uuid):
     upload = _get_upload_access_record(uuid)
+    receipt_reply_grants = layer_reply_view_grants(uuid)
+    reply_scoped_session = has_layer_reply_upload_auth(uuid) or bool(receipt_reply_grants)
+    if not upload and reply_scoped_session:
+        upload = _get_layer_reply_access_record(uuid)
     if not upload:
         return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
-    full_access = _can_access_upload_record(upload)
-    receipt_reply_grants = layer_reply_view_grants(uuid)
+    full_access = not bool(upload.get("upload_deleted_at")) and _can_access_upload_record(upload)
     reply_only_access = (
         has_layer_reply_upload_auth(uuid) or bool(receipt_reply_grants)
     ) and not full_access
