@@ -179,6 +179,11 @@
   const dropArea = document.getElementById("drop-area");
   const fileInput = document.getElementById("fileElem");
   const preview = document.getElementById("preview");
+  const filenameCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
+
+  function filesByName(files) {
+    return Array.from(files || []).sort((left, right) => filenameCollator.compare(left.name, right.name));
+  }
 
   dropArea.addEventListener("click", () => fileInput.click());
   dropArea.addEventListener("dragover", (e) => {
@@ -199,7 +204,7 @@
     preview.innerHTML = "";
     const list = document.createElement("ul");
     list.className = "list-unstyled";
-    for (const file of files) {
+    for (const file of filesByName(files)) {
       const item = document.createElement("li");
       item.textContent = file.name;
       list.appendChild(item);
@@ -277,7 +282,7 @@
   async function uploadFiles() {
     const form = document.getElementById('upload-form');
     if (!form.reportValidity()) return;
-    const files = Array.from(fileInput.files || []);
+    const files = filesByName(fileInput.files);
     if (!files.length) {
       alert("ファイルが選択されていません");
       return;
