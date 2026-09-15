@@ -55,7 +55,7 @@ h2 { margin:0; font-size:1.15rem; }
 .reply-group summary::-webkit-details-marker { display:none; }.reply-group summary span { color:#60708a; transition:transform .18s; }.reply-group[open] summary span { transform:rotate(180deg); }
 .reply-group summary time { font-weight:800; }.reply-group summary strong { color:#2866e8; }
 .reply-group-body { padding:0 17px 17px; border-top:1px solid #e3e9f2; }
-.reply-image-grid { padding-top:17px; }.reply-zip-button { display:block; margin:16px 0 0 auto; }
+.reply-image-grid { padding-top:17px; }
 .primary-button,.outline-button,.shortcut-button,.dark-button,.toolbar-actions button,.selection-bar button,.state-card button { border:1px solid #ccd8e9; border-radius:12px; padding:10px 16px; background:#fff; text-decoration:none; font-weight:800; cursor:pointer; white-space:nowrap; }
 .primary-button { background:#2866e8!important; border-color:#2866e8!important; color:#fff!important; }
 .shortcut-button { background:#7255d9!important; border-color:#7255d9!important; color:#fff!important; }

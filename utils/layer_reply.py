@@ -14,7 +14,6 @@ from app.utils.layer_reply_store import (
     create_layer_reply,
     get_layer_reply,
     layer_reply_file_exists,
-    list_layer_reply_groups,
 )
 from app.utils.mail import send_mail
 from app.utils.upload_notifications import (
@@ -29,7 +28,6 @@ from app.utils.upload_security import (
     has_layer_reply_upload_auth,
     has_layer_reply_view_auth,
 )
-from app.utils.zip_stream import start_zip_entries_job
 
 
 layer_reply_bp = Blueprint("layer_reply", __name__)
@@ -228,44 +226,6 @@ def public_reply_image(uuid, reply_uuid, filename):
     if not target:
         abort(404)
     return send_file(target, conditional=True)
-
-
-@layer_reply_bp.post("/view/<uuid>/replies/<reply_uuid>/zip/prepare")
-def public_reply_zip_prepare(uuid, reply_uuid):
-    upload, _ = _fetch_layer_upload(uuid)
-    if not upload:
-        return jsonify(ok=False, error="対象のアップロードが見つかりません。"), 404
-    if not (
-        can_access_upload_record_from_session(upload)
-        or has_layer_reply_view_auth(uuid, reply_uuid)
-    ):
-        return jsonify(ok=False, error="閲覧権限がありません。"), 403
-    groups = [
-        group for group in list_layer_reply_groups(int(upload["id"]))
-        if str(group.get("reply_uuid") or "") == reply_uuid
-    ]
-    if not groups:
-        return jsonify(ok=False, error="対象の折り返しが見つかりません。"), 404
-    entries: list[tuple[str, str]] = []
-    for filename in groups[0].get("images") or []:
-        target = _safe_reply_image(uuid, reply_uuid, filename)
-        if target:
-            entries.append((filename, str(target)))
-    if not entries:
-        return jsonify(ok=False, error="対象画像がありません。"), 404
-
-    key = f"layer-public-{uuidlib.uuid4().hex}"
-    start_zip_entries_job(
-        entries,
-        key=key,
-        download_name=f"{reply_uuid}.zip",
-        access={"type": "layer_reply_public", "upload_uuid": uuid, "reply_uuid": reply_uuid},
-    )
-    return jsonify(
-        ok=True, key=key, file_count=len(entries),
-        progress_url=f"/api/zip-progress?key={key}",
-        download_url=f"/api/zip-download/{key}",
-    ), 202
 
 
 @layer_reply_bp.get("/layer_reply/<reply_uuid>")

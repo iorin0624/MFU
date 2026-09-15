@@ -20,7 +20,6 @@ type ReplyGroup = {
   postedAt: string;
   count: number;
   images: ReplyImage[];
-  zipPrepareUrl: string;
 };
 
 type ViewerPayload = {
@@ -414,31 +413,6 @@ function moveReplyLightbox(delta: number) {
   replyLightboxIndex.value = (replyLightboxIndex.value + delta + replyLightboxImages.value.length) % replyLightboxImages.value.length;
 }
 
-async function replyZipDownload(group: ReplyGroup) {
-  if (busy.value) return;
-  busy.value = true;
-  try {
-    const response = await fetch(group.zipPrepareUrl, {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-      body: '{}',
-    });
-    const payload = await response.json().catch(() => null) as { error?: string; progress_url?: string; download_url?: string } | null;
-    if (!response.ok || !payload?.progress_url || !payload.download_url) throw new Error(payload?.error || 'ZIPを準備できませんでした。');
-    for (;;) {
-      await new Promise((resolve) => window.setTimeout(resolve, 500));
-      const progressResponse = await fetch(payload.progress_url, { credentials: 'same-origin', cache: 'no-store' });
-      const status = await progressResponse.json().catch(() => null) as { status?: string; error?: string } | null;
-      if (!progressResponse.ok) throw new Error(status?.error || 'ZIPの進捗を取得できませんでした。');
-      if (status?.status === 'error') throw new Error(status.error || 'ZIPの生成に失敗しました。');
-      if (status?.status === 'done') break;
-    }
-    window.location.assign(payload.download_url);
-  } catch (reason) {
-    showToast(reason instanceof Error ? reason.message : 'ZIPの生成に失敗しました。');
-  } finally { busy.value = false; }
-}
-
 onMounted(() => {
   window.addEventListener('keydown', keydown);
   void load();
@@ -504,7 +478,6 @@ onUnmounted(() => {
                 <div class="reply-image-grid">
                   <button v-for="(image,index) in group.images" :key="image.name" type="button" @click="openReplyLightbox(group,index)"><img :src="image.url" alt="折り返し画像" loading="lazy"></button>
                 </div>
-                <button type="button" class="outline-button reply-zip-button" :disabled="busy" @click="replyZipDownload(group)">この回をZIPでDL</button>
               </div>
             </details>
           </div>
