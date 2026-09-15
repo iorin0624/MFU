@@ -10,6 +10,7 @@ type PublicFile = {
   thumbnailUrl: string | null;
   relativePath: string;
   mobileDownload: boolean;
+  capturedAt: string | null;
 };
 
 type ViewerPayload = {
@@ -52,6 +53,7 @@ declare global {
 const configElement = document.getElementById('public-upload-config');
 const config = JSON.parse(configElement?.textContent || '{}') as { uuid?: string };
 const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+const filenameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 const data = ref<ViewerPayload | null>(null);
 const loading = ref(true);
 const error = ref('');
@@ -84,16 +86,27 @@ function formatDate(value: string) {
   return match ? `${match[1]}年${match[2]}月${match[3]}日` : value;
 }
 
+function sortFilesByCaptureTime(files: PublicFile[]) {
+  return [...files].sort((left, right) => (
+    Number(!left.capturedAt) - Number(!right.capturedAt)
+    || String(left.capturedAt || '').localeCompare(String(right.capturedAt || ''))
+    || filenameCollator.compare(left.name, right.name)
+    || left.id - right.id
+  ));
+}
+
 async function load() {
   loading.value = true;
   error.value = '';
   try {
     const response = await fetch(`/view/${encodeURIComponent(config.uuid || '')}/api`, {
       credentials: 'same-origin',
+      cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
     const payload = await response.json().catch(() => null) as ViewerPayload | null;
     if (!response.ok || !payload?.ok) throw new Error((payload as { message?: string } | null)?.message || '表示情報を取得できませんでした。');
+    payload.files = sortFilesByCaptureTime(payload.files);
     data.value = payload;
     selected.value = selected.value.filter((id) => payload.files.some((file) => file.id === id && !file.hidden));
   } catch (reason) {
