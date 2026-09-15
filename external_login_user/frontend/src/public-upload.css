@@ -35,6 +35,7 @@ h2 { margin:0; font-size:1.15rem; }
 .reply-collapsible[open] > summary { margin-bottom:18px; }
 .reply-collapsible[open] > summary > span { transform:rotate(180deg); }
 .reply-list-body { display:block; }
+.reply-list-embedded { margin-top:24px; padding-top:20px; border-top:1px solid #dfe7f2; }
 .reply-upload-form { display:grid; gap:16px; }
 .reply-drop-zone { display:flex; min-height:120px; flex-direction:column; align-items:center; justify-content:center; gap:7px; padding:20px; border:2px dashed #aac1e8; border-radius:16px; background:#f5f8fe; color:#52617a; cursor:pointer; text-align:center; }
 .reply-drop-zone input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }

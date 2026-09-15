@@ -36,6 +36,8 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert 'id="replies"' in component
     assert '<details v-if="data.reply.enabled" id="reply"' in component
     assert '<details v-if="data.reply.canList" id="replies"' in component
+    assert 'class="reply-list-embedded reply-collapsible"' in component
+    assert component.index('id="reply"') < component.index('id="replies"') < component.index('<section v-if="!data.replyOnly"')
     assert "target instanceof HTMLDetailsElement" in component
     assert "アップロード日時ごとに表示します。" in component
     assert "{{ group.count }}枚" in component
@@ -75,7 +77,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20260916-expired-replies1" in template
+    assert "public-upload-viewer.js') }}?v=20260916-direct-replies1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():

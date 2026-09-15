@@ -412,6 +412,10 @@ def _get_layer_reply_access_record(uuid):
     return fetch_layer_reply_access_record(uuid)
 
 
+def _get_upload_or_layer_reply_access_record(uuid):
+    return _get_upload_access_record(uuid) or _get_layer_reply_access_record(uuid)
+
+
 def _can_access_upload_record(upload):
     return can_access_upload_record(upload, has_view_auth_func=_has_view_auth)
 
@@ -2563,7 +2567,7 @@ def _render_upload_access_token(upload, *, error=None, status=200):
 
 @app.get("/view/<uuid>/access")
 def view_upload_access_token(uuid):
-    upload = _get_upload_access_record(uuid)
+    upload = _get_upload_or_layer_reply_access_record(uuid)
     if not upload:
         abort(404)
     if upload_auth_method(upload) != AUTH_ACCESS_TOKEN:
@@ -2575,7 +2579,7 @@ def view_upload_access_token(uuid):
 
 @app.post("/view/<uuid>/access/verify")
 def view_upload_access_token_verify(uuid):
-    upload = _get_upload_access_record(uuid)
+    upload = _get_upload_or_layer_reply_access_record(uuid)
     if not upload:
         abort(404)
     if upload_auth_method(upload) != AUTH_ACCESS_TOKEN:
@@ -2614,7 +2618,7 @@ def _render_upload_email_otp(upload, *, error=None, sent=False, status=200):
 
 @app.post("/view/<uuid>/otp/send")
 def view_upload_otp_send(uuid):
-    upload = _get_upload_access_record(uuid)
+    upload = _get_upload_or_layer_reply_access_record(uuid)
     if not upload:
         abort(404)
     if upload_auth_method(upload) != AUTH_EMAIL_OTP:
@@ -2652,7 +2656,7 @@ def view_upload_otp_send(uuid):
 
 @app.post("/view/<uuid>/otp/verify")
 def view_upload_otp_verify(uuid):
-    upload = _get_upload_access_record(uuid)
+    upload = _get_upload_or_layer_reply_access_record(uuid)
     if not upload:
         abort(404)
     if upload_auth_method(upload) != AUTH_EMAIL_OTP:
@@ -2686,12 +2690,10 @@ def view_upload_otp_verify(uuid):
 
 @app.route("/view/<uuid>", methods=["GET", "POST"])
 def view_upload(uuid):
-    upload = _get_upload_access_record(uuid)
+    upload = _get_upload_or_layer_reply_access_record(uuid)
     reply_scoped_session = (
         has_layer_reply_upload_auth(uuid) or bool(layer_reply_view_grants(uuid))
     )
-    if not upload and reply_scoped_session:
-        upload = _get_layer_reply_access_record(uuid)
     if not upload:
         return "指定されたデータが存在しません", 404
 
@@ -2702,11 +2704,9 @@ def view_upload(uuid):
     if _can_access_upload_record(upload):
         _grant_view_auth(upload)
 
-    reply_only_access = reply_scoped_session and (
+    if reply_scoped_session and (
         bool(upload.get("upload_deleted_at")) or not _has_view_auth(upload)
-    )
-
-    if reply_only_access:
+    ):
         return render_template(
             "public_upload_vue.html",
             uuid=uuid,
@@ -2730,6 +2730,13 @@ def view_upload(uuid):
 
     if not _has_view_auth(upload):
         return render_template("view_password.html", uuid=uuid)
+
+    if upload.get("upload_deleted_at"):
+        return render_template(
+            "public_upload_vue.html",
+            uuid=uuid,
+            reply_only=True,
+        )
 
     owner_management = is_upload_owner(upload)
 
@@ -2891,18 +2898,17 @@ def view_upload(uuid):
 
 @app.get("/view/<uuid>/api")
 def public_upload_view_api(uuid):
-    upload = _get_upload_access_record(uuid)
+    upload = _get_upload_or_layer_reply_access_record(uuid)
     receipt_reply_grants = layer_reply_view_grants(uuid)
     reply_scoped_session = has_layer_reply_upload_auth(uuid) or bool(receipt_reply_grants)
-    if not upload and reply_scoped_session:
-        upload = _get_layer_reply_access_record(uuid)
     if not upload:
         return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
-    full_access = not bool(upload.get("upload_deleted_at")) and _can_access_upload_record(upload)
-    reply_only_access = (
-        has_layer_reply_upload_auth(uuid) or bool(receipt_reply_grants)
-    ) and not full_access
-    if not full_access and not reply_only_access:
+    view_access = _can_access_upload_record(upload)
+    full_access = not bool(upload.get("upload_deleted_at")) and view_access
+    reply_only_access = bool(upload.get("upload_deleted_at")) or (
+        reply_scoped_session and not full_access
+    )
+    if not full_access and not (reply_only_access and (view_access or reply_scoped_session)):
         return jsonify({"ok": False, "message": "閲覧認証が必要です。"}), 401
 
     owner_management = full_access and is_upload_owner(upload)
@@ -2994,11 +3000,11 @@ def public_upload_view_api(uuid):
         and mode_row.get("enable_layer_upload_url")
     )
     reply_groups = []
-    if (full_access or receipt_reply_grants) and reply_enabled:
+    if (view_access or receipt_reply_grants) and reply_enabled:
         for group in list_layer_reply_groups(int(upload["id"])):
             posted_at = group.get("posted_at")
             reply_uuid = str(group.get("reply_uuid") or "")
-            if not full_access and reply_uuid not in receipt_reply_grants:
+            if not view_access and reply_uuid not in receipt_reply_grants:
                 continue
             reply_groups.append(
                 {
@@ -3043,7 +3049,7 @@ def public_upload_view_api(uuid):
             "reply": {
                 "enabled": reply_enabled,
                 "uploadUrl": url_for("layer_reply.public_replies", uuid=uuid),
-                "canList": bool((full_access or receipt_reply_grants) and reply_enabled),
+                "canList": bool((view_access or receipt_reply_grants) and reply_enabled),
                 "groups": reply_groups,
             },
             "replyOnly": reply_only_access,
