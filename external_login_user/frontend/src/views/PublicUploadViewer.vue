@@ -38,6 +38,7 @@ declare global {
         paths: string[];
         csrfToken: string;
         key: string;
+        sequenceRename?: boolean;
         onProgress: (data: Record<string, number>) => void;
       }): Promise<{ download_url: string }>;
       startDownload(url: string): void;
@@ -208,10 +209,6 @@ async function shortcutDownload() {
 async function zipDownload() {
   if (busy.value || !data.value || !selectedFiles.value.length) return;
   const paths = selectedFiles.value.map((file) => file.relativePath);
-  if (paths.length === selectableFiles.value.length) {
-    window.location.href = data.value.download.zipUrl;
-    return;
-  }
   if (!window.MFUZipDownload) return showToast('ZIPダウンロードを開始できませんでした。');
   busy.value = true;
   progress.value = 0;
@@ -221,6 +218,7 @@ async function zipDownload() {
       paths,
       csrfToken,
       key: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      sequenceRename: true,
       onProgress: (status) => {
         progress.value = Number(status.percent || 0);
         const done = Number(status.processed_files || 0);

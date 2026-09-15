@@ -22,6 +22,9 @@ _CAPTURE_TAGS = (
     "QuickTime:TrackCreateDate",
 )
 
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v"}
+
 
 def natural_filename_sort_key(value: str) -> tuple:
     """Return a stable, case-insensitive key with numeric filename ordering."""
@@ -163,3 +166,41 @@ def sort_upload_file_rows(
             int(row.get("id") or 0),
         ),
     )
+
+
+def build_sequential_download_entries(paths: Iterable[str]) -> list[tuple[str, str, bool]]:
+    """Build capture-ordered archive entries without changing source files.
+
+    The boolean marks non-JPEG photos that must be converted before being stored
+    under their ``.jpg`` download name. Photos and videos share one sequence.
+    """
+    unique_paths: list[Path] = []
+    seen: set[str] = set()
+    for raw_path in paths:
+        path = Path(str(raw_path or ""))
+        key = os.path.normcase(str(path))
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        unique_paths.append(path)
+    if not unique_paths:
+        return []
+
+    # Public-upload selections always belong to one original directory. Refuse
+    # capture-order metadata lookup across unrelated locations.
+    parent = unique_paths[0].parent
+    if any(path.parent != parent for path in unique_paths):
+        return []
+    rows = sort_upload_file_rows(
+        ({"id": index, "filename": path.name, "path": str(path)} for index, path in enumerate(unique_paths)),
+        original_dir=parent,
+    )
+    entries: list[tuple[str, str, bool]] = []
+    for index, row in enumerate(rows, start=1):
+        path = Path(str(row["path"]))
+        suffix = path.suffix.lower()
+        if suffix in PHOTO_EXTENSIONS:
+            entries.append((f"{index:05d}.jpg", str(path), suffix not in {".jpg", ".jpeg"}))
+        else:
+            entries.append((f"{index:05d}{suffix}", str(path), False))
+    return entries

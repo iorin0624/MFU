@@ -294,7 +294,7 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
-    <script src="{{ url_for('static', filename='js/mfu_zip_download.js', v='20260824-ws1') }}"></script>
+    <script src="{{ url_for('static', filename='js/mfu_zip_download.js', v='20260915-sequence1') }}"></script>
     <script src="{{ url_for('static', filename='js/mfu_shortcut_download.js', v='20260824-ws1') }}"></script>
 
     <script>
@@ -442,8 +442,6 @@
           if (inflight) return;
           const paths = $$('.pick-file:checked').map(el => el.dataset.path).filter(Boolean);
           if (!paths.length) { alert('ファイルを選択してください'); return; }
-          const totalSelectable = $$('.pick-file').length;
-
           inflight = true;
           [btnZip, btnApp, btnAll, btnNone].forEach(b=>{ if(b){ b.disabled = true; } });
           if (btnZip) btnZip.classList.add('btn-busy');
@@ -455,18 +453,11 @@
           const hideAfterMs = 1200;
 
           try {
-            if (paths.length === totalSelectable) {
-              hideProgress();
-              location.href = FULL_ZIP_URL;
-              setBtnText('ダウンロードを開始しました');
-              scheduleReset(5000);
-              return;
-            }
-
             const data = await MFUZipDownload.prepare({
               paths,
               csrfToken: CSRF_TOKEN,
               key: idKey,
+              sequenceRename: true,
               onProgress: (d) => {
                 const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
                 const totalF=d.total_files||0, doneF=d.processed_files||0;
