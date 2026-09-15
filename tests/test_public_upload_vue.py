@@ -42,6 +42,9 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert "アップロード日時ごとに表示します。" in component
     assert "{{ group.count }}枚" in component
     assert "submitReply" in component
+    assert "この回をZIPでDL" not in component
+    assert "replyZipDownload" not in component
+    assert "zipPrepareUrl" not in component
     assert "お知らせをコピー" not in component
     assert "notice-card" in component
     assert "FILE UPLOAD" in component
@@ -77,7 +80,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20260916-direct-replies1" in template
+    assert "public-upload-viewer.js') }}?v=20260916-no-reply-zip1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():

@@ -3024,11 +3024,6 @@ def public_upload_view_api(uuid):
                         }
                         for filename in (group.get("images") or [])
                     ],
-                    "zipPrepareUrl": url_for(
-                        "layer_reply.public_reply_zip_prepare",
-                        uuid=uuid,
-                        reply_uuid=reply_uuid,
-                    ),
                 }
             )
 
