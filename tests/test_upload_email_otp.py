@@ -8,6 +8,7 @@ from app.utils.upload_security import (
     AUTH_PASSWORD,
     DEFAULT_ALLOWED_EXTENSIONS,
     can_access_upload_record,
+    can_access_upload_record_from_session,
     detect_mime_from_bytes,
     grant_view_auth,
     has_view_auth,
@@ -51,6 +52,23 @@ def test_email_otp_upload_needs_a_grant_but_owner_and_admin_keep_management_acce
     with app.test_request_context("/"):
         session["user"] = "photographer"
         assert can_access_upload_record(upload, has_view_auth_func=lambda _upload: False) is True
+
+
+def test_session_upload_access_uses_uuid_and_auth_version_from_record():
+    app = Flask(__name__)
+    app.secret_key = "upload-session-access-test"
+    upload = {
+        "uuid": "c" * 32,
+        "username": "photographer",
+        "auth_method": "access_token",
+        "auth_version": 7,
+    }
+
+    with app.test_request_context("/"):
+        grant_view_auth(upload["uuid"], auth_version=7)
+        assert can_access_upload_record_from_session(upload) is True
+        upload["auth_version"] = 8
+        assert can_access_upload_record_from_session(upload) is False
 
     with app.test_request_context("/"):
         session["user"] = "admin"

@@ -452,6 +452,17 @@ def can_access_upload_record(upload: dict | None, *, has_view_auth_func=None) ->
     return upload_auth_method(upload) == AUTH_NONE
 
 
+def can_access_upload_record_from_session(upload: dict | None) -> bool:
+    """Check an upload against the current session's UUID-scoped view grant."""
+    return can_access_upload_record(
+        upload,
+        has_view_auth_func=lambda item: has_view_auth(
+            str((item or {}).get("uuid") or ""),
+            int((item or {}).get("auth_version") or 0),
+        ),
+    )
+
+
 def is_upload_owner(upload: dict | None) -> bool:
     """The uploader is the signed-in MFU account recorded on the upload."""
     if not upload:

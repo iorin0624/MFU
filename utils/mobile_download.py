@@ -32,10 +32,9 @@ from flask import (
 
 from app.utils.db import get_db
 from app.utils.upload_security import (
-    can_access_upload_record,
+    can_access_upload_record_from_session,
     fetch_upload_access_record,
     fetch_upload_file_record,
-    has_view_auth,
     resolve_upload_subpath,
     upload_file_is_hidden,
 )
@@ -630,7 +629,7 @@ def create_job():
             upload = fetch_upload_access_record(upload_uuid)
             if not upload:
                 return jsonify({"ok": False, "error": "upload_not_found"}), 404
-            if not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
+            if not can_access_upload_record_from_session(upload):
                 return jsonify({"ok": False, "error": "upload_forbidden"}), 403
             files = _selected_upload_photos(upload, data.get("paths") or [])
             title = str(upload.get("title") or "")[:255]

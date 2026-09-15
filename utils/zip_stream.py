@@ -18,12 +18,11 @@ from flask import (
     Blueprint, current_app, request, jsonify, send_file, after_this_request, session
 )
 from app.utils.upload_security import (
-    can_access_upload_record,
+    can_access_upload_record_from_session,
     current_upload_visibility_version,
     fetch_upload_access_record,
     fetch_upload_file_record,
     fetch_upload_thumbnail_source,
-    has_view_auth,
     resolve_upload_subpath,
     upload_file_is_hidden,
 )
@@ -551,7 +550,7 @@ def _job_access_allowed(progress: Optional[dict]) -> bool:
         visibility_versions = access.get("visibility_versions") or {}
         for upload_id in access.get("upload_ids") or []:
             upload = fetch_upload_access_record(str(upload_id))
-            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
+            if not upload or not can_access_upload_record_from_session(upload):
                 return False
             current_version = current_upload_visibility_version(upload)
             expected_version = visibility_versions.get(str(upload_id))
@@ -585,7 +584,7 @@ def _resolve_zip_request_paths(relpaths: list) -> tuple[list[str], list[str], di
         upload_ref = resolve_upload_subpath(rel_value, allow_zip=True)
         if upload_ref:
             upload = fetch_upload_access_record(upload_ref["uuid"])
-            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
+            if not upload or not can_access_upload_record_from_session(upload):
                 raise PermissionError(str(rel))
             if upload_ref["kind"] == "original":
                 file_row = fetch_upload_file_record(upload["id"], upload_ref["filename"])
