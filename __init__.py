@@ -69,6 +69,8 @@ from app.utils.upload_security import (
     fetch_upload_thumbnail_source,
     fetch_upload_access_record,
     grant_view_auth,
+    has_layer_reply_upload_auth,
+    layer_reply_view_grants,
     has_view_auth,
     hash_upload_password,
     is_upload_owner,
@@ -93,6 +95,7 @@ from app.utils.upload_email_otp import (
     verify_upload_otp,
 )
 from app.utils.image import save_as_jpeg
+from app.utils.layer_reply_store import list_layer_reply_groups
 from app.utils.logs import (
     get_fw_404_settings,
     list_fw_auto_permanent_bans,
@@ -2689,6 +2692,17 @@ def view_upload(uuid):
     if _can_access_upload_record(upload):
         _grant_view_auth(upload)
 
+    reply_only_access = (
+        has_layer_reply_upload_auth(uuid) or bool(layer_reply_view_grants(uuid))
+    ) and not _has_view_auth(upload)
+
+    if reply_only_access:
+        return render_template(
+            "public_upload_vue.html",
+            uuid=uuid,
+            reply_only=True,
+        )
+
     generate_thumbnails = bool(upload.get("generate_thumbnails"))
 
     # パス未認証ならパス画面へ
@@ -2717,6 +2731,7 @@ def view_upload(uuid):
         return render_template(
             "public_upload_vue.html",
             uuid=uuid,
+            reply_only=False,
         )
 
     # 一般閲覧者には公開中だけ、アップロード者には管理用として全件を返す。
@@ -2869,10 +2884,15 @@ def public_upload_view_api(uuid):
     upload = _get_upload_access_record(uuid)
     if not upload:
         return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
-    if not _can_access_upload_record(upload):
+    full_access = _can_access_upload_record(upload)
+    receipt_reply_grants = layer_reply_view_grants(uuid)
+    reply_only_access = (
+        has_layer_reply_upload_auth(uuid) or bool(receipt_reply_grants)
+    ) and not full_access
+    if not full_access and not reply_only_access:
         return jsonify({"ok": False, "message": "閲覧認証が必要です。"}), 401
 
-    owner_management = is_upload_owner(upload)
+    owner_management = full_access and is_upload_owner(upload)
     generate_thumbnails = bool(upload.get("generate_thumbnails"))
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -2887,8 +2907,9 @@ def public_upload_view_api(uuid):
             """,
             (upload["id"], 1 if owner_management else 0),
         )
-        file_rows = sort_upload_file_rows(
-            cursor.fetchall(),
+        fetched_file_rows = cursor.fetchall()
+        file_rows = [] if reply_only_access else sort_upload_file_rows(
+            fetched_file_rows,
             original_dir=Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR)) / uuid / "original",
         )
         cursor.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uuid,))
@@ -2955,6 +2976,43 @@ def public_upload_view_api(uuid):
 
     public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
     hidden_count = sum(1 for row in file_rows if row.get("is_hidden"))
+    reply_enabled = bool(
+        upload.get("mode") == "layer"
+        and mode_row.get("enable_layer_upload_url")
+    )
+    reply_groups = []
+    if (full_access or receipt_reply_grants) and reply_enabled:
+        for group in list_layer_reply_groups(int(upload["id"])):
+            posted_at = group.get("posted_at")
+            reply_uuid = str(group.get("reply_uuid") or "")
+            if not full_access and reply_uuid not in receipt_reply_grants:
+                continue
+            reply_groups.append(
+                {
+                    "id": int(group.get("reply_id") or 0),
+                    "replyUuid": reply_uuid,
+                    "postedAt": posted_at.isoformat() if hasattr(posted_at, "isoformat") else str(posted_at or ""),
+                    "count": len(group.get("images") or []),
+                    "images": [
+                        {
+                            "name": filename,
+                            "url": url_for(
+                                "layer_reply.public_reply_image",
+                                uuid=uuid,
+                                reply_uuid=reply_uuid,
+                                filename=filename,
+                            ),
+                        }
+                        for filename in (group.get("images") or [])
+                    ],
+                    "zipPrepareUrl": url_for(
+                        "layer_reply.public_reply_zip_prepare",
+                        uuid=uuid,
+                        reply_uuid=reply_uuid,
+                    ),
+                }
+            )
+
     response = jsonify(
         {
             "ok": True,
@@ -2968,14 +3026,14 @@ def public_upload_view_api(uuid):
             },
             "permissions": {"manageVisibility": owner_management},
             "counts": {"public": public_count, "hidden": hidden_count, "total": len(file_rows)},
-            "notice": str(message_row.get("message") or "").strip(),
+            "notice": "" if reply_only_access else str(message_row.get("message") or "").strip(),
             "reply": {
-                "enabled": bool(
-                    upload.get("mode") == "layer"
-                    and mode_row.get("enable_layer_upload_url")
-                ),
-                "url": url_for("layer_reply.layer_upload", uuid=uuid),
+                "enabled": reply_enabled,
+                "uploadUrl": url_for("layer_reply.public_replies", uuid=uuid),
+                "canList": bool((full_access or receipt_reply_grants) and reply_enabled),
+                "groups": reply_groups,
             },
+            "replyOnly": reply_only_access,
             "download": {
                 "zipUrl": url_for("download_zip_for_upload", uuid=uuid),
                 "historyUrl": url_for("view_upload_download_history", uuid=uuid) if owner_management else None,

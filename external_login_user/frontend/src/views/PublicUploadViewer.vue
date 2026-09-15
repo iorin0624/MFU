@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 type PublicFile = {
   id: number;
@@ -11,6 +11,16 @@ type PublicFile = {
   relativePath: string;
   mobileDownload: boolean;
   capturedAt: string | null;
+};
+
+type ReplyImage = { name: string; url: string };
+type ReplyGroup = {
+  id: number;
+  replyUuid: string;
+  postedAt: string;
+  count: number;
+  images: ReplyImage[];
+  zipPrepareUrl: string;
 };
 
 type ViewerPayload = {
@@ -26,7 +36,13 @@ type ViewerPayload = {
   permissions: { manageVisibility: boolean };
   counts: { public: number; hidden: number; total: number };
   notice: string;
-  reply: { enabled: boolean; url: string };
+  reply: {
+    enabled: boolean;
+    uploadUrl: string;
+    canList: boolean;
+    groups: ReplyGroup[];
+  };
+  replyOnly: boolean;
   download: { zipUrl: string; historyUrl: string | null; mobileEnabled: boolean };
   files: PublicFile[];
 };
@@ -52,7 +68,7 @@ declare global {
 }
 
 const configElement = document.getElementById('public-upload-config');
-const config = JSON.parse(configElement?.textContent || '{}') as { uuid?: string };
+const config = JSON.parse(configElement?.textContent || '{}') as { uuid?: string; replyOnly?: boolean };
 const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
 const filenameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 const data = ref<ViewerPayload | null>(null);
@@ -67,6 +83,14 @@ const toast = ref('');
 const progress = ref<number | null>(null);
 const progressText = ref('');
 const lightboxIndex = ref(-1);
+const replyFiles = ref<File[]>([]);
+const replyComment = ref('');
+const replyPreviewUrls = ref<string[]>([]);
+const replyBusy = ref(false);
+const replyProgress = ref<number | null>(null);
+const replyError = ref('');
+const replyLightboxImages = ref<ReplyImage[]>([]);
+const replyLightboxIndex = ref(-1);
 let lightboxTouchStart: { x: number; y: number; at: number } | null = null;
 
 const filteredFiles = computed(() => {
@@ -79,12 +103,22 @@ const selectableFiles = computed(() => (data.value?.files || []).filter((file) =
 const selectedFiles = computed(() => (data.value?.files || []).filter((file) => selected.value.includes(file.id)));
 const lightboxFiles = computed(() => displayedFiles.value.filter((file) => file.kind === 'image' || file.kind === 'video'));
 const lightboxFile = computed(() => lightboxFiles.value[lightboxIndex.value] || null);
+const replyLightboxImage = computed(() => replyLightboxImages.value[replyLightboxIndex.value] || null);
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 function formatDate(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value || '');
   return match ? `${match[1]}年${match[2]}月${match[3]}日` : value;
+}
+
+function formatDateTime(value: string) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat('ja-JP', {
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(parsed);
 }
 
 function sortFilesByCaptureTime(files: PublicFile[]) {
@@ -110,6 +144,9 @@ async function load() {
     payload.files = sortFilesByCaptureTime(payload.files);
     data.value = payload;
     selected.value = selected.value.filter((id) => payload.files.some((file) => file.id === id && !file.hidden));
+    await nextTick();
+    const targetId = window.location.hash.replace(/^#/, '');
+    if (targetId) document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '表示情報を取得できませんでした。';
   } finally {
@@ -148,6 +185,12 @@ function moveLightbox(delta: number) {
 }
 
 function keydown(event: KeyboardEvent) {
+  if (replyLightboxIndex.value >= 0) {
+    if (event.key === 'Escape') closeReplyLightbox();
+    if (event.key === 'ArrowLeft') moveReplyLightbox(-1);
+    if (event.key === 'ArrowRight') moveReplyLightbox(1);
+    return;
+  }
   if (lightboxIndex.value < 0) return;
   if (event.key === 'Escape') closeLightbox();
   if (event.key === 'ArrowLeft') moveLightbox(-1);
@@ -293,11 +336,107 @@ function stopManaging() {
   clearSelection();
 }
 
+function setReplyFiles(files: File[]) {
+  replyPreviewUrls.value.forEach((url) => URL.revokeObjectURL(url));
+  replyFiles.value = files.filter((file) => file.type.startsWith('image/') || /\.(heic|heif)$/i.test(file.name));
+  replyPreviewUrls.value = replyFiles.value.map((file) => URL.createObjectURL(file));
+  replyError.value = '';
+}
+
+function chooseReplyFiles(event: Event) {
+  const input = event.target as HTMLInputElement;
+  setReplyFiles(Array.from(input.files || []));
+  input.value = '';
+}
+
+function dropReplyFiles(event: DragEvent) {
+  setReplyFiles(Array.from(event.dataTransfer?.files || []));
+}
+
+async function submitReply() {
+  if (replyBusy.value || !data.value?.reply.enabled) return;
+  if (!replyFiles.value.length) {
+    replyError.value = '写真を選択してください。';
+    return;
+  }
+  replyBusy.value = true;
+  replyError.value = '';
+  replyProgress.value = 0;
+  const form = new FormData();
+  replyFiles.value.forEach((file) => form.append('photos', file, file.name));
+  form.append('comment', replyComment.value);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', data.value!.reply.uploadUrl);
+      xhr.responseType = 'json';
+      xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) replyProgress.value = Math.round((event.loaded / event.total) * 100);
+      };
+      xhr.onload = () => {
+        const payload = xhr.response as { message?: string } | null;
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error(payload?.message || '折り返しを送信できませんでした。'));
+      };
+      xhr.onerror = () => reject(new Error('通信に失敗しました。'));
+      xhr.send(form);
+    });
+    setReplyFiles([]);
+    replyComment.value = '';
+    await load();
+    showToast('折り返しを送信しました。');
+  } catch (reason) {
+    replyError.value = reason instanceof Error ? reason.message : '折り返しを送信できませんでした。';
+  } finally {
+    replyBusy.value = false;
+    window.setTimeout(() => { replyProgress.value = null; }, 800);
+  }
+}
+
+function openReplyLightbox(group: ReplyGroup, index: number) {
+  replyLightboxImages.value = group.images;
+  replyLightboxIndex.value = index;
+}
+function closeReplyLightbox() { replyLightboxIndex.value = -1; replyLightboxImages.value = []; }
+function moveReplyLightbox(delta: number) {
+  if (!replyLightboxImages.value.length) return;
+  replyLightboxIndex.value = (replyLightboxIndex.value + delta + replyLightboxImages.value.length) % replyLightboxImages.value.length;
+}
+
+async function replyZipDownload(group: ReplyGroup) {
+  if (busy.value) return;
+  busy.value = true;
+  try {
+    const response = await fetch(group.zipPrepareUrl, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      body: '{}',
+    });
+    const payload = await response.json().catch(() => null) as { error?: string; progress_url?: string; download_url?: string } | null;
+    if (!response.ok || !payload?.progress_url || !payload.download_url) throw new Error(payload?.error || 'ZIPを準備できませんでした。');
+    for (;;) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      const progressResponse = await fetch(payload.progress_url, { credentials: 'same-origin', cache: 'no-store' });
+      const status = await progressResponse.json().catch(() => null) as { status?: string; error?: string } | null;
+      if (!progressResponse.ok) throw new Error(status?.error || 'ZIPの進捗を取得できませんでした。');
+      if (status?.status === 'error') throw new Error(status.error || 'ZIPの生成に失敗しました。');
+      if (status?.status === 'done') break;
+    }
+    window.location.assign(payload.download_url);
+  } catch (reason) {
+    showToast(reason instanceof Error ? reason.message : 'ZIPの生成に失敗しました。');
+  } finally { busy.value = false; }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', keydown);
   void load();
 });
-onUnmounted(() => window.removeEventListener('keydown', keydown));
+onUnmounted(() => {
+  window.removeEventListener('keydown', keydown);
+  replyPreviewUrls.value.forEach((url) => URL.revokeObjectURL(url));
+});
 </script>
 
 <template>
@@ -321,18 +460,47 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
         <a v-if="data.download.historyUrl" class="outline-button" :href="data.download.historyUrl">ダウンロード履歴</a>
       </header>
 
-      <section v-if="data.notice || data.reply.enabled" class="notice-grid">
+      <section v-if="data.notice" class="notice-grid">
         <details v-if="data.notice" class="notice-card">
           <summary><h2 class="notice-alert-title">⚠️お知らせ⚠️</h2><span aria-hidden="true">⌄</span></summary>
           <p>{{ data.notice }}</p>
         </details>
-        <article v-if="data.reply.enabled" class="reply-card">
-          <div><h2>折り返し</h2><p>加工済みの写真はこちらから送信できます。</p></div>
-          <a class="primary-button" :href="data.reply.url">折り返し</a>
-        </article>
       </section>
 
-      <section class="album-panel">
+      <section v-if="data.reply.enabled" id="reply" class="reply-upload-panel">
+        <div class="reply-section-heading">
+          <div><h2>折り返し</h2><p>加工済みの写真を選択して送信できます。</p></div>
+        </div>
+        <form class="reply-upload-form" @submit.prevent="submitReply">
+          <label class="reply-drop-zone" @dragover.prevent @drop.prevent="dropReplyFiles">
+            <input type="file" accept="image/*,.heic,.heif" multiple :disabled="replyBusy" @change="chooseReplyFiles">
+            <strong>写真を選択</strong><span>または、ここへドラッグ＆ドロップ</span>
+          </label>
+          <div v-if="replyPreviewUrls.length" class="reply-preview-grid">
+            <img v-for="(url,index) in replyPreviewUrls" :key="url" :src="url" :alt="`${index+1}枚目のプレビュー`">
+          </div>
+          <label class="reply-comment"><span>コメント（任意）</span><textarea v-model="replyComment" rows="3" :disabled="replyBusy" placeholder="コメントを入力"></textarea></label>
+          <p v-if="replyError" class="reply-error">{{ replyError }}</p>
+          <div v-if="replyProgress !== null" class="reply-progress"><span :style="{width:`${replyProgress}%`}"></span><small>{{ replyProgress }}%</small></div>
+          <div class="reply-submit-row"><span>{{ replyFiles.length }}枚選択中</span><button type="submit" class="primary-button" :disabled="replyBusy || !replyFiles.length">{{ replyBusy ? '送信中…' : '折り返しを送信' }}</button></div>
+        </form>
+      </section>
+
+      <section v-if="data.reply.canList" id="replies" class="reply-list-panel">
+        <div class="reply-section-heading"><div><h2>折り返し一覧</h2><p>アップロード日時ごとに表示します。</p></div></div>
+        <div v-if="!data.reply.groups.length" class="empty-state">折り返しはまだありません。</div>
+        <details v-for="group in data.reply.groups" :key="group.replyUuid" class="reply-group">
+          <summary><time>{{ formatDateTime(group.postedAt) }}</time><strong>{{ group.count }}枚</strong><span aria-hidden="true">⌄</span></summary>
+          <div class="reply-group-body">
+            <div class="reply-image-grid">
+              <button v-for="(image,index) in group.images" :key="image.name" type="button" @click="openReplyLightbox(group,index)"><img :src="image.url" alt="折り返し画像" loading="lazy"></button>
+            </div>
+            <button type="button" class="outline-button reply-zip-button" :disabled="busy" @click="replyZipDownload(group)">この回をZIPでDL</button>
+          </div>
+        </details>
+      </section>
+
+      <section v-if="!data.replyOnly" class="album-panel">
         <div class="album-toolbar">
           <div>
             <h2>写真・動画</h2>
@@ -367,8 +535,8 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
         <button v-if="visibleLimit < filteredFiles.length" class="load-more" type="button" @click="visibleLimit += 80">続きを表示</button>
       </section>
 
-      <div class="bottom-spacer"></div>
-      <div class="selection-bar">
+      <div v-if="!data.replyOnly" class="bottom-spacer"></div>
+      <div v-if="!data.replyOnly" class="selection-bar">
         <button type="button" @click="selectAll">全選択</button>
         <button type="button" :disabled="!selected.length" @click="clearSelection">全解除</button>
         <strong>{{ selected.length }}件選択中</strong>
@@ -408,6 +576,12 @@ onUnmounted(() => window.removeEventListener('keydown', keydown));
             @click="changeLightboxVisibility(lightboxFile)"
           >{{ lightboxFile.hidden ? '公開に戻す' : '非公開にする' }}</button>
         </div>
+      </div>
+      <div v-if="replyLightboxImage" class="lightbox" role="dialog" aria-modal="true" @click.self="closeReplyLightbox">
+        <button class="lightbox-close" type="button" aria-label="閉じる" @click="closeReplyLightbox">×</button>
+        <button class="lightbox-nav previous" type="button" aria-label="前へ" @click="moveReplyLightbox(-1)" @dblclick.prevent>‹</button>
+        <img :src="replyLightboxImage.url" alt="折り返し画像">
+        <button class="lightbox-nav next" type="button" aria-label="次へ" @click="moveReplyLightbox(1)" @dblclick.prevent>›</button>
       </div>
       <div v-if="toast" class="viewer-toast" aria-live="polite">{{ toast }}</div>
     </template>
