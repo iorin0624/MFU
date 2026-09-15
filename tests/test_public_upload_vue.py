@@ -9,11 +9,13 @@ def test_public_upload_viewer_keeps_legacy_rollback_and_access_control():
 
     assert 'request.args.get("legacy") != "1"' in source
     assert '@app.get("/view/<uuid>/api")' in source
-    assert "full_access = _can_access_upload_record(upload)" in source
+    assert 'full_access = not bool(upload.get("upload_deleted_at"))' in source
     assert "has_layer_reply_upload_auth(uuid)" in source
     assert '"notice": "" if reply_only_access else str(message_row.get("message") or "").strip()' in source
     assert 'upload.get("mode") == "layer"' in source
     assert 'mode_row.get("enable_layer_upload_url")' in source
+    assert "fetch_layer_reply_access_record" in source
+    assert 'bool(upload.get("upload_deleted_at"))' in source
 
 
 def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button():
@@ -32,6 +34,9 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert "<h2>折り返し</h2>" in component
     assert 'id="reply"' in component
     assert 'id="replies"' in component
+    assert '<details v-if="data.reply.enabled" id="reply"' in component
+    assert '<details v-if="data.reply.canList" id="replies"' in component
+    assert "target instanceof HTMLDetailsElement" in component
     assert "アップロード日時ごとに表示します。" in component
     assert "{{ group.count }}枚" in component
     assert "submitReply" in component
@@ -70,7 +75,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20260916-replies2" in template
+    assert "public-upload-viewer.js') }}?v=20260916-expired-replies1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():

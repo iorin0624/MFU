@@ -27,8 +27,14 @@ h2 { margin:0; font-size:1.15rem; }
 .reply-card { display:flex; align-items:center; justify-content:space-between; gap:20px; background:linear-gradient(135deg,#f1f6ff,#fff); }
 .reply-card p { margin:8px 0 0; color:#697892; }
 .reply-upload-panel,.reply-list-panel { margin-top:20px; padding:24px 28px; }
-.reply-section-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:18px; }
+.reply-section-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:0; }
 .reply-section-heading p { margin:6px 0 0; color:#697892; }
+.reply-collapsible > summary { cursor:pointer; list-style:none; }
+.reply-collapsible > summary::-webkit-details-marker { display:none; }
+.reply-collapsible > summary > span { color:#60708a; font-size:1.35rem; transition:transform .18s ease; }
+.reply-collapsible[open] > summary { margin-bottom:18px; }
+.reply-collapsible[open] > summary > span { transform:rotate(180deg); }
+.reply-list-body { display:block; }
 .reply-upload-form { display:grid; gap:16px; }
 .reply-drop-zone { display:flex; min-height:120px; flex-direction:column; align-items:center; justify-content:center; gap:7px; padding:20px; border:2px dashed #aac1e8; border-radius:16px; background:#f5f8fe; color:#52617a; cursor:pointer; text-align:center; }
 .reply-drop-zone input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
