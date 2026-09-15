@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from app.utils.upload_sort import natural_filename_sort_key, sort_upload_file_rows
+from app.utils import upload_sort
+from app.utils.upload_sort import (
+    build_sequential_download_entries,
+    natural_filename_sort_key,
+    sort_upload_file_rows,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,3 +51,27 @@ def test_upload_page_previews_and_sends_files_in_name_order():
     assert "for (const file of filesByName(files))" in template
     assert "const files = filesByName(fileInput.files);" in template
     assert app_source.count("sort_upload_file_rows(cursor.fetchall())") >= 2
+
+
+def test_sequential_download_entries_share_capture_order_and_numbering(tmp_path, monkeypatch):
+    for name in ("late.png", "early.jpeg", "middle.mov"):
+        (tmp_path / name).write_bytes(b"data")
+    monkeypatch.setattr(
+        upload_sort,
+        "capture_times_for_files",
+        lambda _directory, _names: {
+            "early.jpeg": "2026-09-15T10:00:01.000000",
+            "middle.mov": "2026-09-15T10:00:02.000000",
+            "late.png": "2026-09-15T10:00:03.000000",
+        },
+    )
+
+    entries = build_sequential_download_entries(
+        [tmp_path / "late.png", tmp_path / "middle.mov", tmp_path / "early.jpeg"]
+    )
+
+    assert [(name, Path(path).name, convert) for name, path, convert in entries] == [
+        ("00001.jpg", "early.jpeg", False),
+        ("00002.mov", "middle.mov", False),
+        ("00003.jpg", "late.png", True),
+    ]

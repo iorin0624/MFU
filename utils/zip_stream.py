@@ -3,6 +3,8 @@
 import os
 import re
 import json
+import shutil
+import subprocess
 import uuid
 import time
 import zipfile
@@ -31,6 +33,7 @@ from app.utils.upload_download_history import (
     track_upload_download_response,
 )
 from app.utils.realtime import emit_download_event
+from app.utils.upload_sort import build_sequential_download_entries
 
 # ------------------------------------------------------------
 # Blueprint（他モジュールで使っていればそのまま生かす）
@@ -335,11 +338,13 @@ def _safe_archive_name(value: str) -> str:
     return "/".join(parts) or "file"
 
 
-def _unique_archive_entries(entries: Sequence[Tuple[str, str]]) -> List[Tuple[str, str, int]]:
+def _unique_archive_entries(entries: Sequence[tuple]) -> List[Tuple[str, str, int, bool]]:
     """存在するファイルだけを残し、ZIP内の重複名を解消する。"""
-    out: List[Tuple[str, str, int]] = []
+    out: List[Tuple[str, str, int, bool]] = []
     used: set[str] = set()
-    for arcname, path in entries:
+    for entry in entries:
+        arcname, path = entry[:2]
+        convert_to_jpeg = bool(entry[2]) if len(entry) > 2 else False
         try:
             if not os.path.isfile(path):
                 continue
@@ -357,12 +362,27 @@ def _unique_archive_entries(entries: Sequence[Tuple[str, str]]) -> List[Tuple[st
             renamed = f"{stem}_{suffix}{ext}"
             candidate = f"{directory}/{renamed}" if directory else renamed
         used.add(candidate.casefold())
-        out.append((candidate, path, size))
+        out.append((candidate, path, size, convert_to_jpeg))
     return out
 
 
+def _jpeg_bytes(path: str) -> bytes:
+    magick = shutil.which("magick") or shutil.which("convert")
+    if not magick:
+        raise RuntimeError("JPEG変換機能を利用できません")
+    try:
+        return subprocess.run(
+            [magick, path, "-auto-orient", "-background", "white", "-alpha", "remove", "jpg:-"],
+            check=True,
+            capture_output=True,
+            timeout=180,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"JPEG変換に失敗しました: {os.path.basename(path)}") from exc
+
+
 def _make_zip_entries_internal(
-    entries: Sequence[Tuple[str, str]],
+    entries: Sequence[tuple],
     key: str,
     *,
     download_name: Optional[str] = None,
@@ -371,7 +391,7 @@ def _make_zip_entries_internal(
     """(ZIP内パス, 絶対パス) の一覧から共通形式のZIPと進捗を作成する。"""
     files = _unique_archive_entries(entries)
     total = len(files)
-    total_bytes = sum(size for _, _, size in files)
+    total_bytes = sum(size for _, _, size, _ in files)
     common_progress = {
         "download_name": _safe_archive_name(download_name or f"{key}.zip").replace("/", "／"),
         "access": access or {"type": "bearer"},
@@ -418,10 +438,13 @@ def _make_zip_entries_internal(
 
     try:
         with zipfile.ZipFile(out_path, "w", allowZip64=True) as zf:
-            for arcname, src, sz in files:
+            for arcname, src, sz, convert_to_jpeg in files:
                 extension = os.path.splitext(src)[1].lower()
                 compression = zipfile.ZIP_STORED if extension in _STORED_EXTENSIONS else zipfile.ZIP_DEFLATED
-                zf.write(src, arcname=arcname, compress_type=compression)
+                if convert_to_jpeg:
+                    zf.writestr(arcname, _jpeg_bytes(src), compress_type=zipfile.ZIP_STORED)
+                else:
+                    zf.write(src, arcname=arcname, compress_type=compression)
 
                 processed_files += 1
                 processed_bytes += sz
@@ -628,7 +651,7 @@ def make_zip_file(abs_paths: Iterable[str], key: str):
     return _make_zip_file_internal(abs_paths, key)
 
 def make_zip_entries(
-    entries: Sequence[Tuple[str, str]],
+    entries: Sequence[tuple],
     key: str,
     *,
     download_name: Optional[str] = None,
@@ -644,7 +667,7 @@ def make_zip_entries(
 
 
 def start_zip_entries_job(
-    entries: Sequence[Tuple[str, str]],
+    entries: Sequence[tuple],
     *,
     key: Optional[str] = None,
     download_name: Optional[str] = None,
@@ -655,7 +678,10 @@ def start_zip_entries_job(
     if not _acquire_lock(job_key):
         raise FileExistsError(job_key)
     app = current_app._get_current_object()
-    frozen_entries = [(str(arcname), str(path)) for arcname, path in entries]
+    frozen_entries = [
+        (str(entry[0]), str(entry[1]), bool(entry[2]) if len(entry) > 2 else False)
+        for entry in entries
+    ]
     progress_base = {
         "status": "queued",
         "total_files": len(frozen_entries),
@@ -724,7 +750,14 @@ def api_zip_stream():
         prog = _progress_read(key)
         return jsonify({"ok": False, "error": "already_in_progress", "progress": prog}), 409
 
-    entries = [(os.path.basename(path), path) for path in abs_list]
+    entries = (
+        build_sequential_download_entries(abs_list)
+        if data.get("sequence_rename") and access.get("type") == "upload" and len(access.get("upload_ids") or []) == 1
+        else [(os.path.basename(path), path) for path in abs_list]
+    )
+    if not entries:
+        _unlock_only(key)
+        return jsonify({"ok": False, "error": "invalid_sequence_selection"}), 400
     path = _make_zip_entries_internal(entries, key, access=access)
     if not path:
         _unlock_only(key)  # 失敗時もロック解除
@@ -778,7 +811,14 @@ def api_zip_prepare():
         prog = _progress_read(key)
         return jsonify({"ok": False, "error": "already_in_progress", "progress": prog}), 409
 
-    entries = [(os.path.basename(path), path) for path in abs_list]
+    entries = (
+        build_sequential_download_entries(abs_list)
+        if data.get("sequence_rename") and access.get("type") == "upload" and len(access.get("upload_ids") or []) == 1
+        else [(os.path.basename(path), path) for path in abs_list]
+    )
+    if not entries:
+        _unlock_only(key)
+        return jsonify({"ok": False, "error": "invalid_sequence_selection"}), 400
     path = _make_zip_entries_internal(entries, key, access=access)
     _unlock_only(key)
     if not path:

@@ -45,6 +45,7 @@ from app.utils.upload_download_history import (
     request_ip as download_request_ip,
 )
 from app.utils.realtime import emit_download_event
+from app.utils.upload_sort import build_sequential_download_entries
 
 
 mobile_download_bp = Blueprint("mobile_download", __name__)
@@ -332,7 +333,7 @@ def _selected_upload_photos(upload: dict, paths: list) -> list[dict]:
     finally:
         db.close()
 
-    selected = []
+    selected_by_name = {}
     seen = set()
     upload_uuid = str(upload["uuid"])
     for raw_path in paths:
@@ -346,15 +347,23 @@ def _selected_upload_photos(upload: dict, paths: list) -> list[dict]:
         if filename in seen or not target.is_file():
             continue
         seen.add(filename)
-        selected.append(
-            {
-                "id": _image_id(upload_uuid, filename),
-                "file_id": allowed_names[filename],
-                "name": filename,
-                "output_name": _output_name(filename),
-                "size": target.stat().st_size,
-            }
-        )
+        selected_by_name[filename] = {
+            "id": _image_id(upload_uuid, filename),
+            "file_id": allowed_names[filename],
+            "name": filename,
+            "size": target.stat().st_size,
+            "source_path": str(target),
+        }
+
+    sequence = build_sequential_download_entries(
+        item["source_path"] for item in selected_by_name.values()
+    )
+    selected = []
+    for index, (_, source_path, _) in enumerate(sequence, start=1):
+        item = selected_by_name[Path(source_path).name]
+        item.pop("source_path", None)
+        item["output_name"] = f"{index:05d}.jpg"
+        selected.append(item)
     return selected
 
 

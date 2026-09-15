@@ -70,7 +70,7 @@
     };
   }
 
-  async function prepare({ paths, csrfToken = '', key = createKey(), onProgress = null }) {
+  async function prepare({ paths, csrfToken = '', key = createKey(), onProgress = null, sequenceRename = false }) {
     const poller = startProgressPolling(key, onProgress);
     try {
       const response = await fetch('/api/zip-prepare', {
@@ -81,7 +81,7 @@
           'X-CSRF-Token': csrfToken,
           'X-Idempotency-Key': key,
         },
-        body: JSON.stringify({ paths }),
+        body: JSON.stringify({ paths, sequence_rename: sequenceRename }),
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok || !data.download_url) {

@@ -84,7 +84,7 @@ from app.utils.upload_security import (
     AUTH_EMAIL_OTP,
     AUTH_PASSWORD,
 )
-from app.utils.upload_sort import sort_upload_file_rows
+from app.utils.upload_sort import build_sequential_download_entries, sort_upload_file_rows
 from app.utils.upload_email_otp import (
     UploadOtpError,
     mask_email as mask_upload_otp_email,
@@ -3318,17 +3318,22 @@ def download_zip_for_upload(uuid):
 
     # ファイル名（タイトルがあればそれを使う）
     safe_title = (upload["title"] or f"upload_{uuid}")[:60].replace("/", "_").replace("\\", "_")
-    zip_path = os.path.join(zip_dir, f"{safe_title}.zip")
+    zip_path = os.path.join(zip_dir, f"{safe_title}-capture-order-v1.zip")
 
     # 既存ZIPがあれば再利用（写真はアップロード後に基本不変のためキャッシュする）
     if not os.path.exists(zip_path):
         import zipfile
+        from app.utils.zip_stream import _jpeg_bytes
+        entries = build_sequential_download_entries(
+            os.path.join(original_dir, name) for name in filenames
+        )
         with zipfile.ZipFile(zip_path, "w", allowZip64=True) as zf:
-            for name in filenames:
-                src = os.path.join(original_dir, name)
-                if os.path.isfile(src):
-                    # 画像は既に圧縮済みなのでZIP側では圧縮せず高速化する
-                    zf.write(src, arcname=name, compress_type=zipfile.ZIP_STORED)
+            for archive_name, src, convert_to_jpeg in entries:
+                if convert_to_jpeg:
+                    zf.writestr(archive_name, _jpeg_bytes(src), compress_type=zipfile.ZIP_STORED)
+                else:
+                    # 画像・動画は既に圧縮済みなのでZIP側では再圧縮しない。
+                    zf.write(src, arcname=archive_name, compress_type=zipfile.ZIP_STORED)
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             shutil.chown(zip_path, user="mfu", group="mfu")
         os.chmod(zip_path, 0o640)
