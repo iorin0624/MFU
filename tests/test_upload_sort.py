@@ -21,6 +21,23 @@ def test_upload_file_rows_use_natural_case_insensitive_name_order():
     assert natural_filename_sort_key("photo2.jpg") < natural_filename_sort_key("photo10.jpg")
 
 
+def test_upload_file_rows_prefer_embedded_capture_time_then_filename():
+    rows = [
+        {"id": 1, "filename": "IMG_10.jpg"},
+        {"id": 2, "filename": "IMG_2.jpg"},
+        {"id": 3, "filename": "no-date.jpg"},
+    ]
+    capture_times = {
+        "IMG_10.jpg": "2026-09-15T10:00:02.000000",
+        "IMG_2.jpg": "2026-09-15T10:00:01.000000",
+    }
+
+    sorted_rows = sort_upload_file_rows(rows, capture_times=capture_times)
+
+    assert [row["filename"] for row in sorted_rows] == ["IMG_2.jpg", "IMG_10.jpg", "no-date.jpg"]
+    assert sorted_rows[0]["captured_at"] == "2026-09-15T10:00:01.000000"
+
+
 def test_upload_page_previews_and_sends_files_in_name_order():
     template = (ROOT / "templates" / "upload.html").read_text(encoding="utf-8")
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")

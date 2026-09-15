@@ -2732,7 +2732,10 @@ def view_upload(uuid):
         """,
         (upload["id"], 1 if owner_management else 0),
     )
-    file_rows = sort_upload_file_rows(cursor.fetchall())
+    file_rows = sort_upload_file_rows(
+        cursor.fetchall(),
+        original_dir=Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR)) / uuid / "original",
+    )
     db.close()
     files = [row["filename"] for row in file_rows]
     public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
@@ -2884,7 +2887,10 @@ def public_upload_view_api(uuid):
             """,
             (upload["id"], 1 if owner_management else 0),
         )
-        file_rows = sort_upload_file_rows(cursor.fetchall())
+        file_rows = sort_upload_file_rows(
+            cursor.fetchall(),
+            original_dir=Path(current_app.config.get("STORAGE_ROOT", UPLOAD_BASE_DIR)) / uuid / "original",
+        )
         cursor.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uuid,))
         message_row = cursor.fetchone() or {}
         cursor.execute(
@@ -2936,6 +2942,7 @@ def public_upload_view_api(uuid):
                 "thumbnailUrl": thumbnail_url,
                 "relativePath": f"{uuid}/original/{filename}",
                 "mobileDownload": suffix in mobile_extensions,
+                "capturedAt": row.get("captured_at"),
             }
         )
 
@@ -2948,7 +2955,7 @@ def public_upload_view_api(uuid):
 
     public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
     hidden_count = sum(1 for row in file_rows if row.get("is_hidden"))
-    return jsonify(
+    response = jsonify(
         {
             "ok": True,
             "upload": {
@@ -2977,6 +2984,8 @@ def public_upload_view_api(uuid):
             "files": files,
         }
     )
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    return response
 
 
 @app.get("/view/<uuid>/download-history")
