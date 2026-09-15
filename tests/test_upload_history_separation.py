@@ -31,7 +31,7 @@ class UploadHistorySeparationTest(unittest.TestCase):
         self.assertNotIn("upload_deleted_at", source)
 
     def test_layer_reception_ignores_normal_deletion(self):
-        source = function_source(ROOT / "utils" / "layer_reply.py", "layer_upload")
+        source = function_source(ROOT / "utils" / "layer_reply.py", "_fetch_layer_upload")
         self.assertIn("layer_deleted_at IS NULL", source)
         self.assertNotIn("upload_deleted_at", source)
 

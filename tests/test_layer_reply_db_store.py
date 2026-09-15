@@ -15,6 +15,9 @@ def test_active_layer_reply_routes_have_no_json_dependency():
     assert "create_zip" not in source
     assert "zip_path" not in source
     assert source.index("create_layer_reply(") < source.index("send_discord_upload_notification(")
+    assert '@layer_reply_bp.post("/view/<uuid>/replies")' in source
+    assert '@layer_reply_bp.get("/view/<uuid>/replies/<reply_uuid>/images/<filename>")' in source
+    assert 'url_for("view_upload", uuid=info["upload_uuid"], section="replies")' in source
 
 
 def test_layer_reply_schema_is_normalized_and_cascades():

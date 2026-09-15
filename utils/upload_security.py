@@ -257,6 +257,62 @@ def has_view_auth(uuid: str, auth_version: int | None = None) -> bool:
     return False
 
 
+LAYER_REPLY_UPLOAD_SESSION_KEY = "layer_reply_upload_auth"
+LAYER_REPLY_UPLOAD_MAX_ITEMS = 20
+LAYER_REPLY_VIEW_SESSION_KEY = "layer_reply_view_auth"
+
+
+def grant_layer_reply_upload_auth(uuid: str) -> None:
+    """Grant upload-only access for a legacy layer-upload URL.
+
+    This grant deliberately does not confer access to the original gallery or
+    to existing replies.  It only allows the integrated Vue screen to expose
+    the reply form for the referenced upload.
+    """
+    value = str(uuid or "").strip()
+    if not value:
+        return
+    allowed = [
+        str(item).strip()
+        for item in (session.get(LAYER_REPLY_UPLOAD_SESSION_KEY) or [])
+        if str(item).strip() and str(item).strip() != value
+    ]
+    session[LAYER_REPLY_UPLOAD_SESSION_KEY] = (allowed + [value])[-LAYER_REPLY_UPLOAD_MAX_ITEMS:]
+
+
+def has_layer_reply_upload_auth(uuid: str) -> bool:
+    value = str(uuid or "").strip()
+    return bool(value and value in (session.get(LAYER_REPLY_UPLOAD_SESSION_KEY) or []))
+
+
+def grant_layer_reply_view_auth(uuid: str, reply_uuid: str) -> None:
+    upload_value = str(uuid or "").strip()
+    reply_value = str(reply_uuid or "").strip()
+    if not upload_value or not reply_value:
+        return
+    grants = dict(session.get(LAYER_REPLY_VIEW_SESSION_KEY) or {})
+    replies = [
+        str(item).strip()
+        for item in (grants.get(upload_value) or [])
+        if str(item).strip() and str(item).strip() != reply_value
+    ]
+    grants[upload_value] = (replies + [reply_value])[-LAYER_REPLY_UPLOAD_MAX_ITEMS:]
+    session[LAYER_REPLY_VIEW_SESSION_KEY] = dict(list(grants.items())[-LAYER_REPLY_UPLOAD_MAX_ITEMS:])
+
+
+def layer_reply_view_grants(uuid: str) -> set[str]:
+    grants = session.get(LAYER_REPLY_VIEW_SESSION_KEY) or {}
+    return {
+        str(item).strip()
+        for item in (grants.get(str(uuid or "").strip()) or [])
+        if str(item).strip()
+    }
+
+
+def has_layer_reply_view_auth(uuid: str, reply_uuid: str) -> bool:
+    return str(reply_uuid or "").strip() in layer_reply_view_grants(uuid)
+
+
 def hash_upload_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
