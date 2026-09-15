@@ -650,8 +650,8 @@ def fetch_layer_reply_access_record(uuid: str) -> Optional[dict]:
 
     Normal expiry removes the original gallery and marks upload_deleted_at,
     while the independent layer reply intake remains active until
-    layer_deleted_at is set.  This record is only used after a reply-scoped
-    session grant has already been established.
+    layer_deleted_at is set.  The record is returned only while the configured
+    reply intake remains enabled; the original gallery stays unavailable.
     """
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -669,7 +669,8 @@ def fetch_layer_reply_access_record(uuid: str) -> Optional[dict]:
             return None
         cur.execute(
             """
-            SELECT require_password, auth_method, generate_thumbnails
+            SELECT require_password, auth_method, generate_thumbnails,
+                   enable_layer_upload_url
               FROM upload_modes
              WHERE username=%s AND mode=%s
              LIMIT 1
@@ -677,6 +678,8 @@ def fetch_layer_reply_access_record(uuid: str) -> Optional[dict]:
             (upload["username"], upload["mode"]),
         )
         mode_row = cur.fetchone() or {}
+        if not mode_row.get("enable_layer_upload_url"):
+            return None
         upload["require_password"] = mode_row.get("require_password")
         if not upload.get("auth_method"):
             upload["auth_method"] = normalize_upload_auth_method(

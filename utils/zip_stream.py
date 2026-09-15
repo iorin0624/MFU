@@ -575,11 +575,7 @@ def _job_access_allowed(progress: Optional[dict]) -> bool:
         upload = fetch_upload_access_record(str(access.get("upload_uuid") or ""))
         if not upload:
             upload = fetch_layer_reply_access_record(str(access.get("upload_uuid") or ""))
-        if (
-            upload
-            and not upload.get("upload_deleted_at")
-            and can_access_upload_record_from_session(upload)
-        ):
+        if upload and can_access_upload_record_from_session(upload):
             return True
         return has_layer_reply_view_auth(
             str(access.get("upload_uuid") or ""),

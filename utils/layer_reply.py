@@ -76,10 +76,7 @@ def _fetch_layer_upload(uuid: str) -> tuple[dict | None, dict | None]:
 
 
 def _reply_access(upload: dict) -> tuple[bool, bool]:
-    full_access = (
-        not upload.get("upload_deleted_at")
-        and can_access_upload_record_from_session(upload)
-    )
+    full_access = can_access_upload_record_from_session(upload)
     upload_only = has_layer_reply_upload_auth(str(upload.get("uuid") or ""))
     return full_access, upload_only
 
@@ -221,10 +218,7 @@ def public_reply_image(uuid, reply_uuid, filename):
     if not upload:
         abort(404)
     if not (
-        (
-            not upload.get("upload_deleted_at")
-            and can_access_upload_record_from_session(upload)
-        )
+        can_access_upload_record_from_session(upload)
         or has_layer_reply_view_auth(uuid, reply_uuid)
     ):
         abort(403)
@@ -242,10 +236,7 @@ def public_reply_zip_prepare(uuid, reply_uuid):
     if not upload:
         return jsonify(ok=False, error="対象のアップロードが見つかりません。"), 404
     if not (
-        (
-            not upload.get("upload_deleted_at")
-            and can_access_upload_record_from_session(upload)
-        )
+        can_access_upload_record_from_session(upload)
         or has_layer_reply_view_auth(uuid, reply_uuid)
     ):
         return jsonify(ok=False, error="閲覧権限がありません。"), 403
