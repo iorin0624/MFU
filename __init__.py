@@ -84,6 +84,7 @@ from app.utils.upload_security import (
     AUTH_EMAIL_OTP,
     AUTH_PASSWORD,
 )
+from app.utils.upload_sort import sort_upload_file_rows
 from app.utils.upload_email_otp import (
     UploadOtpError,
     mask_email as mask_upload_otp_email,
@@ -2731,7 +2732,7 @@ def view_upload(uuid):
         """,
         (upload["id"], 1 if owner_management else 0),
     )
-    file_rows = cursor.fetchall()
+    file_rows = sort_upload_file_rows(cursor.fetchall())
     db.close()
     files = [row["filename"] for row in file_rows]
     public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
@@ -2883,7 +2884,7 @@ def public_upload_view_api(uuid):
             """,
             (upload["id"], 1 if owner_management else 0),
         )
-        file_rows = cursor.fetchall()
+        file_rows = sort_upload_file_rows(cursor.fetchall())
         cursor.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uuid,))
         message_row = cursor.fetchone() or {}
         cursor.execute(
