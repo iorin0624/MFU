@@ -128,6 +128,8 @@ def _ensure_schema() -> None:
               client_platform VARCHAR(32) NULL,
               shortcut_version SMALLINT UNSIGNED NULL,
               shortcut_version_checked_at DATETIME NULL,
+              shortcut_rejected_at DATETIME NULL,
+              shortcut_rejection_reason VARCHAR(64) NULL,
               PRIMARY KEY (id),
               UNIQUE KEY uq_mobile_download_launch (launch_token_hash),
               UNIQUE KEY uq_mobile_download_access (access_token_hash),
@@ -183,6 +185,14 @@ def _ensure_schema() -> None:
         if "shortcut_version_checked_at" not in columns:
             cur.execute(
                 "ALTER TABLE mobile_download_jobs ADD COLUMN shortcut_version_checked_at DATETIME NULL AFTER shortcut_version"
+            )
+        if "shortcut_rejected_at" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN shortcut_rejected_at DATETIME NULL AFTER shortcut_version_checked_at"
+            )
+        if "shortcut_rejection_reason" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN shortcut_rejection_reason VARCHAR(64) NULL AFTER shortcut_rejected_at"
             )
         cur.execute(
             """
@@ -794,7 +804,9 @@ def read_shortcut_launch_state(launch_token: str) -> dict:
     try:
         cur.execute(
             """
-            SELECT exchanged_at, completed_at, revoked_at, launch_expires_at
+            SELECT exchanged_at, completed_at, revoked_at, launch_expires_at,
+                   shortcut_version, shortcut_rejected_at,
+                   shortcut_rejection_reason
               FROM mobile_download_jobs
              WHERE launch_token_hash=%s
              LIMIT 1
@@ -812,12 +824,28 @@ def read_shortcut_launch_state(launch_token: str) -> dict:
         or not row.get("launch_expires_at")
         or row.get("launch_expires_at") <= now
     )
-    return {
+    result = {
         "ok": True,
         "started": bool(row.get("exchanged_at")),
         "completed": bool(row.get("completed_at")),
         "expired": expired,
+        "rejected": bool(row.get("shortcut_rejected_at")),
     }
+    if result["rejected"]:
+        settings = _get_shortcut_settings()
+        result.update(
+            {
+                "rejection_reason": str(row.get("shortcut_rejection_reason") or ""),
+                "message": str(settings.get("version_rejection_message") or ""),
+                "client_version": row.get("shortcut_version"),
+                "current_version": int(settings.get("current_version") or 1),
+                "minimum_supported_version": int(
+                    settings.get("minimum_supported_version") or 0
+                ),
+                "download_url": str(settings.get("download_url") or ""),
+            }
+        )
+    return result
 
 
 @mobile_download_bp.get(
@@ -1034,10 +1062,6 @@ def exchange_token():
         minimum_supported_version=settings["minimum_supported_version"],
         allow_unversioned=settings["allow_unversioned"],
     )
-    if not version_result["ok"]:
-        return _shortcut_version_rejection(settings, version_result)
-    shortcut_version = int(version_result.get("client_version") or 0)
-
     access_token = ACCESS_TOKEN_PREFIX + secrets.token_urlsafe(32)
     session_expires_at = datetime.utcnow() + timedelta(hours=SESSION_TOKEN_HOURS)
     platform = str(data.get("platform") or "unknown")[:32]
@@ -1065,6 +1089,51 @@ def exchange_token():
             db.rollback()
             return jsonify({"ok": False, "error": "launch_token_used"}), 410
 
+        if not version_result["ok"]:
+            rejected_version = version_result.get("client_version")
+            if not isinstance(rejected_version, int) or not 0 <= rejected_version <= 65535:
+                rejected_version = None
+            cur.execute(
+                """
+                UPDATE mobile_download_jobs
+                   SET client_platform=%s,
+                       shortcut_version=%s,
+                       shortcut_version_checked_at=UTC_TIMESTAMP(),
+                       shortcut_rejected_at=UTC_TIMESTAMP(),
+                       shortcut_rejection_reason=%s,
+                       last_accessed_at=UTC_TIMESTAMP()
+                 WHERE id=%s
+                """,
+                (
+                    platform,
+                    rejected_version,
+                    str(version_result.get("reason") or "")[:64],
+                    job["id"],
+                ),
+            )
+            db.commit()
+            rejection_state = {
+                "launch_token": launch_token,
+                "started": False,
+                "completed": False,
+                "expired": False,
+                "rejected": True,
+                "rejection_reason": version_result.get("reason"),
+                "message": settings.get("version_rejection_message"),
+                "client_version": rejected_version,
+                "current_version": settings["current_version"],
+                "minimum_supported_version": settings["minimum_supported_version"],
+                "download_url": settings.get("download_url"),
+            }
+            emit_download_event(
+                "shortcut_progress_update",
+                rejection_state,
+                room=f"shortcut:{_hash_token(launch_token)}",
+            )
+            return _shortcut_version_rejection(settings, version_result)
+
+        shortcut_version = int(version_result.get("client_version") or 0)
+
         cur.execute(
             """
             UPDATE mobile_download_jobs
@@ -1074,6 +1143,8 @@ def exchange_token():
                    client_platform=%s,
                    shortcut_version=%s,
                    shortcut_version_checked_at=UTC_TIMESTAMP(),
+                   shortcut_rejected_at=NULL,
+                   shortcut_rejection_reason=NULL,
                    last_accessed_at=UTC_TIMESTAMP()
              WHERE id=%s
             """,

@@ -74,6 +74,16 @@
             <button type="button" class="mfu-sc-btn close" data-close>閉じる</button>
           </div>
         </section>
+        <section data-state="upgrade" hidden>
+          <h2 class="mfu-sc-title">MFU写真保存ショートカットのアップデートが必要です</h2>
+          <p class="mfu-sc-copy" data-upgrade-body></p>
+          <div class="mfu-sc-steps" data-upgrade-versions></div>
+          <p class="mfu-sc-url-warning" data-upgrade-url-warning hidden>最新版の配布URLが設定されていません。管理者へお問い合わせください。</p>
+          <div class="mfu-sc-actions">
+            <a class="mfu-sc-btn" data-upgrade-link>最新版へアップデート</a>
+            <button type="button" class="mfu-sc-btn close" data-close>閉じる</button>
+          </div>
+        </section>
       </div>`;
     overlay.querySelector('[data-title]').textContent = config.popup_title || 'ショートカットが必要です';
     overlay.querySelector('[data-body]').textContent = config.popup_body || '';
@@ -87,6 +97,15 @@
       installLink.setAttribute('aria-disabled', 'true');
       installLink.addEventListener('click', event => event.preventDefault());
       overlay.querySelector('[data-url-warning]').hidden = false;
+    }
+    const upgradeLink = overlay.querySelector('[data-upgrade-link]');
+    if (config.download_url) {
+      upgradeLink.href = config.download_url;
+    } else {
+      upgradeLink.removeAttribute('href');
+      upgradeLink.setAttribute('aria-disabled', 'true');
+      upgradeLink.addEventListener('click', event => event.preventDefault());
+      overlay.querySelector('[data-upgrade-url-warning]').hidden = false;
     }
     overlay.querySelectorAll('[data-close]').forEach(button => {
       button.addEventListener('click', () => overlay.remove());
@@ -121,11 +140,37 @@
     const dialog = buildDialog(config);
     const launching = dialog.querySelector('[data-state="launching"]');
     const install = dialog.querySelector('[data-state="install"]');
+    const upgrade = dialog.querySelector('[data-state="upgrade"]');
     let attemptId = 0;
 
     const showInstall = () => {
       launching.hidden = true;
       install.hidden = false;
+      upgrade.hidden = true;
+    };
+
+    const showUpgrade = status => {
+      launching.hidden = true;
+      install.hidden = true;
+      upgrade.hidden = false;
+      dialog.querySelector('[data-upgrade-body]').textContent =
+        status?.message || config.version_rejection_message ||
+        '現在のショートカットは利用できません。最新版へ更新してください。';
+      const clientVersion = status?.client_version;
+      const clientLabel = clientVersion === null || clientVersion === undefined
+        ? '旧版（バージョン未送信）'
+        : `v${clientVersion}`;
+      const minimumVersion = Number(status?.minimum_supported_version ?? config.minimum_supported_version ?? 0);
+      const currentVersion = Number(status?.current_version ?? config.current_version ?? 1);
+      dialog.querySelector('[data-upgrade-versions]').textContent =
+        `検出したバージョン：${clientLabel}\n最低対応バージョン：v${minimumVersion}\n現行バージョン：v${currentVersion}`;
+      const upgradeLink = dialog.querySelector('[data-upgrade-link]');
+      const downloadUrl = status?.download_url || config.download_url || '';
+      if (downloadUrl) {
+        upgradeLink.href = downloadUrl;
+        upgradeLink.removeAttribute('aria-disabled');
+        dialog.querySelector('[data-upgrade-url-warning]').hidden = true;
+      }
     };
 
     const runAttempt = () => {
@@ -133,6 +178,7 @@
       const currentAttempt = attemptId;
       launching.hidden = false;
       install.hidden = true;
+      upgrade.hidden = true;
       const deadline = Date.now() + Number(config.detection_timeout_seconds || 10) * 1000;
       const launchToken = decodeURIComponent(String(jobData.shortcut_status_url || '').split('/').pop() || '');
       let progressSocket = null;
@@ -142,21 +188,32 @@
         dialog.remove();
       };
 
+      const finishRejected = status => {
+        progressSocket?.disconnect();
+        showUpgrade(status);
+      };
+
       if (launchToken && typeof window.io === 'function') {
         progressSocket = window.io('/download-progress', {transports:['websocket','polling']});
         progressSocket.on('connect', () => {
           progressSocket.emit('shortcut_progress_subscribe', {launch_token: launchToken}, (state) => {
-            if (state?.started) finishStarted();
+            if (state?.rejected) finishRejected(state);
+            else if (state?.started) finishStarted();
           });
         });
         progressSocket.on('shortcut_progress_update', (state) => {
-          if (state?.started) finishStarted();
+          if (state?.rejected) finishRejected(state);
+          else if (state?.started) finishStarted();
         });
       }
 
       const check = async () => {
         if (currentAttempt !== attemptId || !dialog.isConnected) return;
         const status = await readStatus(jobData.shortcut_status_url);
+        if (status?.rejected) {
+          finishRejected(status);
+          return;
+        }
         if (status?.started) {
           finishStarted();
           return;

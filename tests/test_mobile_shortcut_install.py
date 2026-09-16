@@ -18,6 +18,10 @@ def test_shortcut_button_is_ios_only_and_shared_by_all_download_views():
     assert "position:sticky" in javascript
     assert "/mobile-download/api/shortcut-config" in javascript
     assert "shortcut_status_url" in javascript
+    assert "data-state=\"upgrade\"" in javascript
+    assert "MFU写真保存ショートカットのアップデートが必要です" in javascript
+    assert "status?.rejected" in javascript
+    assert "最低対応バージョン" in javascript
 
     for relative_path in (
         "templates/view.html",
@@ -41,6 +45,8 @@ def test_shortcut_detection_and_admin_settings_are_server_backed():
     assert "@login_required" not in source
     assert '"shortcut_status_url"' in source
     assert "bool(row.get(\"exchanged_at\"))" in source
+    assert '"rejected": bool(row.get("shortcut_rejected_at"))' in source
+    assert 'shortcut_rejection_reason VARCHAR(64) NULL' in source
 
 
 def test_shortcut_admin_template_parses():
