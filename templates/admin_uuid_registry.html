@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}セントラルUUID台帳{% endblock %}
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <div><h2 class="mb-1">セントラルUUID台帳</h2><div class="text-muted">元データ削除後も追跡情報と名称履歴を保持します。</div></div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('admin_logs') }}">アクセスログ</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('admin_uuid_registry_export') }}">CSV</a>
+      <a class="btn btn-primary" href="{{ url_for('admin_uuid_registry', sync=1) }}">既存データを同期</a>
+    </div>
+  </div>
+  <form method="get" class="row g-2 mb-3">
+    <div class="col-md-6"><input class="form-control" name="q" value="{{ query }}" placeholder="タイトル・UUID・元IDで検索"></div>
+    <div class="col-md-2"><select class="form-select" name="type"><option value="">全種別</option>{% for type in types %}<option value="{{ type }}" {% if type == selected_type %}selected{% endif %}>{{ type }}</option>{% endfor %}</select></div>
+    <div class="col-md-2"><select class="form-select" name="status"><option value="">全状態</option>{% for value in ['active','expired','deleted'] %}<option value="{{ value }}" {% if value == selected_status %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></div>
+    <div class="col-md-2"><button class="btn btn-outline-primary w-100">検索</button></div>
+  </form>
+  <div class="mb-2 text-muted">{{ total }}件</div>
+  <div class="table-responsive"><table class="table table-sm table-striped align-middle">
+    <thead><tr><th>種別・状態</th><th>タイトル</th><th>UUID</th><th>元データ</th><th>確認日時</th><th>操作</th></tr></thead>
+    <tbody>{% for row in rows %}<tr>
+      <td><span class="badge text-bg-primary">{{ row.resource_type }}</span><br><span class="badge text-bg-{{ 'secondary' if row.status == 'active' else 'warning' }}">{{ row.status }}</span></td>
+      <td><strong>{{ row.title_current or '名称未設定' }}</strong>{% if row.title_initial != row.title_current %}<br><small class="text-muted">初期: {{ row.title_initial }}</small>{% endif %}{% if histories.get(row.id)|length > 1 %}<details><summary class="small">名称履歴</summary>{% for item in histories.get(row.id, []) %}<div class="small">{{ item.recorded_at }} {{ item.title }}</div>{% endfor %}</details>{% endif %}</td>
+      <td class="font-monospace small text-break">{{ row.uuid_value }}{% if row.parent_uuid %}<br><span class="text-muted">親: {{ row.parent_uuid }}</span>{% endif %}</td>
+      <td class="small">{{ row.source_table }} / {{ row.source_pk }}</td>
+      <td class="small">初回 {{ row.first_seen_at }}<br>最終 {{ row.last_seen_at }}{% if row.deleted_at %}<br>削除 {{ row.deleted_at }}{% endif %}</td>
+      <td><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_logs', search_keyword=row.uuid_value) }}">ログ</a>{% if row.canonical_path and row.status == 'active' %} <a class="btn btn-sm btn-outline-primary" href="{{ row.canonical_path }}" target="_blank">開く</a>{% endif %}</td>
+    </tr>{% else %}<tr><td colspan="6" class="text-center text-muted">該当データはありません。</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% if total_pages > 1 %}<nav><ul class="pagination justify-content-center"><li class="page-item {% if page <= 1 %}disabled{% endif %}"><a class="page-link" href="{{ url_for('admin_uuid_registry', q=query or None, type=selected_type or None, status=selected_status or None, page=page-1) }}">前へ</a></li><li class="page-item disabled"><span class="page-link">{{ page }} / {{ total_pages }}</span></li><li class="page-item {% if page >= total_pages %}disabled{% endif %}"><a class="page-link" href="{{ url_for('admin_uuid_registry', q=query or None, type=selected_type or None, status=selected_status or None, page=page+1) }}">次へ</a></li></ul></nav>{% endif %}
+</div>
+{% endblock %}

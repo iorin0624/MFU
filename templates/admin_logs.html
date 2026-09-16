@@ -8,6 +8,7 @@
     <a class="btn btn-sm btn-outline-danger" href="{{ url_for('admin_logs_404_ban_settings') }}">
       404アクセスBAN判定を編集
     </a>
+    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('admin_uuid_registry') }}">UUID台帳</a>
   </div>
 
   {# 今日・昨日のクイックリンク #}
@@ -478,6 +479,14 @@
               </small>
             </td>
             <td class="text-break">
+              {% if log.resource_uuid %}
+                <div class="uuid-log-target mb-1 p-2 border rounded bg-light">
+                  <span class="badge text-bg-primary">{{ log.resource_type }}</span>
+                  <strong>{{ log.resource_title or '名称未設定' }}</strong>
+                  <span class="badge text-bg-{{ 'secondary' if log.resource_status == 'active' else 'warning' }}">{{ log.resource_status }}</span><br>
+                  <a class="small mono" href="{{ url_for('admin_uuid_registry', q=log.resource_uuid) }}">{{ log.resource_uuid }}</a>
+                </div>
+              {% endif %}
               <!-- 原文：常に保持 -->
               <code class="log-raw mono log-text">{{ log.log_text }}</code>
               <!-- 見やすい表示：JSで生成して挿入 -->
