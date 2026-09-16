@@ -67,6 +67,10 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert "new Intl.Collator('ja', { numeric: true, sensitivity: 'base' })" in component
     assert "payload.files = sortFilesByCaptureTime(payload.files)" in component
     assert "cache: 'no-store'" in component
+    assert "controller.abort(), 20_000" in component
+    assert "通信が時間内に完了しませんでした。再読み込みしてください。" in component
+    assert "続きを表示" not in component
+    assert "visibleLimit" not in component
     assert "&& !lightboxFile.value.hidden" not in component
     assert "@dblclick.prevent" in component
     styles = (
@@ -80,7 +84,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20260916-no-reply-zip1" in template
+    assert "public-upload-viewer.js') }}?v=20260916-viewer-load-timeout1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():

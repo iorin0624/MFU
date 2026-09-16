@@ -78,7 +78,6 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .play-mark { left:50%; top:50%; translate:-50% -50%; display:grid; place-items:center; width:48px; height:48px; border-radius:50%; background:rgba(0,0,0,.65); color:#fff; }
 .file-card { display:flex; height:100%; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:18px; color:#24334e; text-decoration:none; text-align:center; }
 .file-card span { font-size:2.5rem; }.file-card small { overflow-wrap:anywhere; }
-.load-more { display:block; margin:24px auto 0; padding:11px 24px; border:1px solid #ccd8e9; border-radius:999px; background:#fff; font-weight:800; cursor:pointer; }
 .empty-state,.state-card { padding:48px 24px; text-align:center; color:#697892; }
 .state-card { margin-top:10vh; display:flex; flex-direction:column; align-items:center; gap:14px; }
 .error-state strong { color:#b42318; }

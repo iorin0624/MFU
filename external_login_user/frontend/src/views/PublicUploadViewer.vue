@@ -74,7 +74,6 @@ const data = ref<ViewerPayload | null>(null);
 const loading = ref(true);
 const error = ref('');
 const selected = ref<number[]>([]);
-const visibleLimit = ref(80);
 const filter = ref<'all' | 'public' | 'hidden'>('all');
 const managing = ref(false);
 const busy = ref(false);
@@ -91,13 +90,15 @@ const replyError = ref('');
 const replyLightboxImages = ref<ReplyImage[]>([]);
 const replyLightboxIndex = ref(-1);
 let lightboxTouchStart: { x: number; y: number; at: number } | null = null;
+let activeLoadController: AbortController | null = null;
+let loadSequence = 0;
 
 const filteredFiles = computed(() => {
   const files = data.value?.files || [];
   if (!managing.value || filter.value === 'all') return files;
   return files.filter((file) => filter.value === 'hidden' ? file.hidden : !file.hidden);
 });
-const displayedFiles = computed(() => filteredFiles.value.slice(0, visibleLimit.value));
+const displayedFiles = computed(() => filteredFiles.value);
 const selectableFiles = computed(() => (data.value?.files || []).filter((file) => !file.hidden));
 const selectedFiles = computed(() => (data.value?.files || []).filter((file) => selected.value.includes(file.id)));
 const lightboxFiles = computed(() => displayedFiles.value.filter((file) => file.kind === 'image' || file.kind === 'video'));
@@ -130,6 +131,11 @@ function sortFilesByCaptureTime(files: PublicFile[]) {
 }
 
 async function load() {
+  const sequence = ++loadSequence;
+  activeLoadController?.abort();
+  const controller = new AbortController();
+  activeLoadController = controller;
+  const timeout = window.setTimeout(() => controller.abort(), 20_000);
   loading.value = true;
   error.value = '';
   try {
@@ -137,6 +143,7 @@ async function load() {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { Accept: 'application/json' },
+      signal: controller.signal,
     });
     const payload = await response.json().catch(() => null) as ViewerPayload | null;
     if (!response.ok || !payload?.ok) throw new Error((payload as { message?: string } | null)?.message || '表示情報を取得できませんでした。');
@@ -157,9 +164,16 @@ async function load() {
       target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '表示情報を取得できませんでした。';
+    if (sequence !== loadSequence) return;
+    error.value = reason instanceof DOMException && reason.name === 'AbortError'
+      ? '通信が時間内に完了しませんでした。再読み込みしてください。'
+      : reason instanceof Error ? reason.message : '表示情報を取得できませんでした。';
   } finally {
-    loading.value = false;
+    window.clearTimeout(timeout);
+    if (sequence === loadSequence) {
+      loading.value = false;
+      activeLoadController = null;
+    }
   }
 }
 
@@ -418,6 +432,7 @@ onMounted(() => {
   void load();
 });
 onUnmounted(() => {
+  activeLoadController?.abort();
   window.removeEventListener('keydown', keydown);
   replyPreviewUrls.value.forEach((url) => URL.revokeObjectURL(url));
 });
@@ -492,7 +507,7 @@ onUnmounted(() => {
           </div>
           <div class="toolbar-actions">
             <template v-if="managing">
-              <button v-for="item in (['all', 'public', 'hidden'] as const)" :key="item" type="button" :class="{active:filter===item}" @click="filter=item; visibleLimit=80; clearSelection()">
+              <button v-for="item in (['all', 'public', 'hidden'] as const)" :key="item" type="button" :class="{active:filter===item}" @click="filter=item; clearSelection()">
                 {{ item === 'all' ? 'すべて' : item === 'public' ? '公開中' : '非公開' }}
               </button>
               <button type="button" @click="stopManaging">管理終了</button>
@@ -516,7 +531,6 @@ onUnmounted(() => {
             <a v-else class="file-card" :href="file.url" download><span>📄</span><small>{{ file.name }}</small></a>
           </article>
         </div>
-        <button v-if="visibleLimit < filteredFiles.length" class="load-more" type="button" @click="visibleLimit += 80">続きを表示</button>
       </section>
 
       <div v-if="!data.replyOnly" class="bottom-spacer"></div>
