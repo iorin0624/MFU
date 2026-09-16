@@ -27,6 +27,7 @@ h2 { margin:0; font-size:1.15rem; }
 @keyframes notice-alert-blink { 0%,66.666% { opacity:1; } 66.667%,100% { opacity:0; } }
 @media(prefers-reduced-motion:reduce) { .notice-alert-title { animation:none; } }
 .notice-card p { margin:14px 0 0; white-space:pre-wrap; line-height:1.75; overflow-wrap:anywhere; }
+.notice-card p a { color:#1769e0; text-decoration:underline; text-underline-offset:3px; overflow-wrap:anywhere; }
 .notice-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:10px; margin-top:20px; padding-top:16px; border-top:1px solid #e3eaf4; }
 .notice-actions button { min-width:120px; padding:10px 18px; border:1px solid #bdcbe0; border-radius:12px; background:#fff; color:#33425d; font-weight:800; cursor:pointer; }
 .notice-actions .notice-remember-button { border-color:#2866e8; background:#2866e8; color:#fff; }

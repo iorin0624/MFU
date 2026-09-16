@@ -14,6 +14,7 @@ type PublicFile = {
 };
 
 type ReplyImage = { name: string; url: string };
+type NoticePart = { kind: 'text' | 'link'; value: string };
 type ReplyGroup = {
   id: number;
   replyUuid: string;
@@ -106,6 +107,25 @@ const selectedFiles = computed(() => (data.value?.files || []).filter((file) => 
 const lightboxFiles = computed(() => displayedFiles.value.filter((file) => file.kind === 'image' || file.kind === 'video'));
 const lightboxFile = computed(() => lightboxFiles.value[lightboxIndex.value] || null);
 const replyLightboxImage = computed(() => replyLightboxImages.value[replyLightboxIndex.value] || null);
+const noticeParts = computed<NoticePart[]>(() => {
+  const notice = data.value?.notice || '';
+  const parts: NoticePart[] = [];
+  const urlPattern = /https?:\/\/[^\s<>"']+/giu;
+  let cursor = 0;
+  for (const match of notice.matchAll(urlPattern)) {
+    const index = match.index ?? cursor;
+    if (index > cursor) parts.push({ kind: 'text', value: notice.slice(cursor, index) });
+
+    const matchedValue = match[0];
+    const trailing = matchedValue.match(/[.,!?;:。、，．！？；：）」』】〕〉》]+$/u)?.[0] || '';
+    const url = trailing ? matchedValue.slice(0, -trailing.length) : matchedValue;
+    if (url) parts.push({ kind: 'link', value: url });
+    if (trailing) parts.push({ kind: 'text', value: trailing });
+    cursor = index + matchedValue.length;
+  }
+  if (cursor < notice.length) parts.push({ kind: 'text', value: notice.slice(cursor) });
+  return parts;
+});
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -502,7 +522,7 @@ onUnmounted(() => {
       <section v-if="data.notice" class="notice-grid">
         <details v-if="data.notice" class="notice-card" :open="noticeOpen" @toggle="noticeOpen=($event.currentTarget as HTMLDetailsElement).open">
           <summary><div class="notice-summary-copy"><h2 class="notice-alert-title">⚠️お知らせ⚠️</h2><small>必ずお読みください</small></div><span aria-hidden="true">⌄</span></summary>
-          <p>{{ data.notice }}</p>
+          <p><template v-for="(part, index) in noticeParts" :key="`${index}-${part.value}`"><a v-if="part.kind === 'link'" :href="part.value" target="_blank" rel="noopener noreferrer">{{ part.value }}</a><template v-else>{{ part.value }}</template></template></p>
           <div class="notice-actions">
             <button type="button" @click="closeNotice">閉じる</button>
             <button type="button" class="notice-remember-button" @click="keepNoticeCollapsed">以後折りたたむ</button>
