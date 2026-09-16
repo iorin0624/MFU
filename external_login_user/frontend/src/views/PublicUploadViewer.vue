@@ -80,6 +80,7 @@ const error = ref('');
 const selected = ref<number[]>([]);
 const noticeOpen = ref(true);
 const replyDetails = ref<HTMLDetailsElement | null>(null);
+const albumPanel = ref<HTMLElement | null>(null);
 const filter = ref<'all' | 'public' | 'hidden'>('all');
 const managing = ref(false);
 const busy = ref(false);
@@ -180,8 +181,18 @@ function applyNoticeInitialState(notice: string) {
   }
 }
 
+async function scrollToAlbumStart() {
+  await nextTick();
+  const target = albumPanel.value;
+  if (!target) return;
+  window.requestAnimationFrame(() => {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
 function closeNotice() {
   noticeOpen.value = false;
+  void scrollToAlbumStart();
 }
 
 function keepNoticeCollapsed() {
@@ -191,6 +202,7 @@ function keepNoticeCollapsed() {
     // Storage can be unavailable in private browsing; closing still works.
   }
   noticeOpen.value = false;
+  void scrollToAlbumStart();
 }
 
 async function focusRequestedSection() {
@@ -575,7 +587,7 @@ onUnmounted(() => {
         </details>
       </details>
 
-      <section v-if="!data.replyOnly" class="album-panel">
+      <section v-if="!data.replyOnly" ref="albumPanel" class="album-panel">
         <div class="album-toolbar">
           <div>
             <h2>写真・動画</h2>
