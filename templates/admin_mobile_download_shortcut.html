@@ -79,6 +79,36 @@
         <div class="form-text">3～30秒。初期値は10秒です。</div>
       </div>
 
+      <hr class="my-4">
+      <h2 class="h5 mb-3">ショートカット バージョン管理</h2>
+      <div class="alert alert-info small">
+        新版ショートカットは交換APIへバージョン番号を送信します。現在配布済みで番号を送らない版は「v0」として扱います。
+      </div>
+
+      <div class="row g-3 mb-3">
+        <div class="col-sm-6">
+          <label class="form-label fw-semibold" for="current_version">現行バージョン</label>
+          <input class="form-control" type="number" id="current_version" name="current_version" min="1" max="65535" required value="{{ settings.current_version }}">
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label fw-semibold" for="minimum_supported_version">最低対応バージョン</label>
+          <input class="form-control" type="number" id="minimum_supported_version" name="minimum_supported_version" min="0" max="65535" required value="{{ settings.minimum_supported_version }}">
+          <div class="form-text">この番号未満はHTTP 426で拒否します。</div>
+        </div>
+      </div>
+
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" role="switch" id="allow_unversioned" name="allow_unversioned" value="1" {% if settings.allow_unversioned %}checked{% endif %}>
+        <label class="form-check-label fw-bold" for="allow_unversioned">バージョン未送信の旧ショートカット（v0）を許可する</label>
+        <div class="form-text">OFFにすると、現在利用者の端末に入っている旧版も次回実行時から拒否できます。</div>
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label fw-semibold" for="version_rejection_message">非対応時のメッセージ</label>
+        <textarea class="form-control" id="version_rejection_message" name="version_rejection_message" rows="3" required>{{ settings.version_rejection_message }}</textarea>
+        <div class="form-text">API応答には、この文面と上記のショートカット配布URLを含めます。</div>
+      </div>
+
       <button class="btn btn-primary px-4" type="submit">保存して公開</button>
     </div>
   </form>

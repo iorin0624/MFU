@@ -45,6 +45,7 @@ from app.utils.upload_download_history import (
 )
 from app.utils.realtime import emit_download_event
 from app.utils.upload_sort import build_sequential_download_entries
+from app.utils.shortcut_version import evaluate_shortcut_version
 
 
 mobile_download_bp = Blueprint("mobile_download", __name__)
@@ -71,6 +72,10 @@ DEFAULT_SHORTCUT_SETTINGS = {
     "download_button_label": "ショートカットを入手",
     "download_url": "",
     "detection_timeout_seconds": 10,
+    "current_version": 1,
+    "minimum_supported_version": 0,
+    "allow_unversioned": True,
+    "version_rejection_message": "このショートカットは現在のサーバーに対応していません。最新版へ更新してください。",
 }
 
 
@@ -121,6 +126,8 @@ def _ensure_schema() -> None:
               completed_at DATETIME NULL,
               revoked_at DATETIME NULL,
               client_platform VARCHAR(32) NULL,
+              shortcut_version SMALLINT UNSIGNED NULL,
+              shortcut_version_checked_at DATETIME NULL,
               PRIMARY KEY (id),
               UNIQUE KEY uq_mobile_download_launch (launch_token_hash),
               UNIQUE KEY uq_mobile_download_access (access_token_hash),
@@ -169,6 +176,14 @@ def _ensure_schema() -> None:
             cur.execute(
                 "ALTER TABLE mobile_download_jobs MODIFY upload_uuid CHAR(36) NULL"
             )
+        if "shortcut_version" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN shortcut_version SMALLINT UNSIGNED NULL AFTER client_platform"
+            )
+        if "shortcut_version_checked_at" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN shortcut_version_checked_at DATETIME NULL AFTER shortcut_version"
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS mobile_download_shortcut_settings (
@@ -181,12 +196,32 @@ def _ensure_schema() -> None:
               download_button_label VARCHAR(128) NOT NULL DEFAULT 'ショートカットを入手',
               download_url VARCHAR(2048) NOT NULL DEFAULT '',
               detection_timeout_seconds SMALLINT UNSIGNED NOT NULL DEFAULT 10,
+              current_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+              minimum_supported_version SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+              allow_unversioned TINYINT(1) NOT NULL DEFAULT 1,
+              version_rejection_message TEXT NULL,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               updated_by VARCHAR(191) NOT NULL DEFAULT '',
               PRIMARY KEY (id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        cur.execute(
+            "SHOW COLUMNS FROM mobile_download_shortcut_settings"
+        )
+        setting_columns = {
+            str(row[0] if isinstance(row, tuple) else row.get("Field"))
+            for row in (cur.fetchall() or [])
+        }
+        setting_additions = {
+            "current_version": "ALTER TABLE mobile_download_shortcut_settings ADD COLUMN current_version SMALLINT UNSIGNED NOT NULL DEFAULT 1 AFTER detection_timeout_seconds",
+            "minimum_supported_version": "ALTER TABLE mobile_download_shortcut_settings ADD COLUMN minimum_supported_version SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER current_version",
+            "allow_unversioned": "ALTER TABLE mobile_download_shortcut_settings ADD COLUMN allow_unversioned TINYINT(1) NOT NULL DEFAULT 1 AFTER minimum_supported_version",
+            "version_rejection_message": "ALTER TABLE mobile_download_shortcut_settings ADD COLUMN version_rejection_message TEXT NULL AFTER allow_unversioned",
+        }
+        for column, ddl in setting_additions.items():
+            if column not in setting_columns:
+                cur.execute(ddl)
         cur.execute(
             """
             INSERT IGNORE INTO mobile_download_shortcut_settings
@@ -203,6 +238,14 @@ def _ensure_schema() -> None:
                 DEFAULT_SHORTCUT_SETTINGS["download_button_label"],
             ),
         )
+        cur.execute(
+            """
+            UPDATE mobile_download_shortcut_settings
+               SET version_rejection_message=%s
+             WHERE id=1 AND COALESCE(version_rejection_message,'')=''
+            """,
+            (DEFAULT_SHORTCUT_SETTINGS["version_rejection_message"],),
+        )
         db.commit()
     finally:
         db.close()
@@ -218,7 +261,9 @@ def _get_shortcut_settings() -> dict:
             """
             SELECT is_enabled, shortcut_name, popup_title, popup_body,
                    install_steps, download_button_label, download_url,
-                   detection_timeout_seconds, updated_at, updated_by
+                   detection_timeout_seconds, current_version,
+                   minimum_supported_version, allow_unversioned,
+                   version_rejection_message, updated_at, updated_by
               FROM mobile_download_shortcut_settings
              WHERE id=1
              LIMIT 1
@@ -230,6 +275,12 @@ def _get_shortcut_settings() -> dict:
     settings = dict(DEFAULT_SHORTCUT_SETTINGS)
     settings.update(row)
     settings["is_enabled"] = bool(settings.get("is_enabled"))
+    settings["allow_unversioned"] = bool(settings.get("allow_unversioned"))
+    settings["current_version"] = max(1, int(settings.get("current_version") or 1))
+    settings["minimum_supported_version"] = max(
+        0,
+        min(int(settings.get("minimum_supported_version") or 0), settings["current_version"]),
+    )
     settings["detection_timeout_seconds"] = max(
         3, min(30, int(settings.get("detection_timeout_seconds") or 10))
     )
@@ -251,7 +302,27 @@ def _public_shortcut_settings(settings: dict | None = None) -> dict:
         "detection_timeout_seconds": int(
             settings.get("detection_timeout_seconds") or 10
         ),
+        "current_version": int(settings.get("current_version") or 1),
+        "minimum_supported_version": int(settings.get("minimum_supported_version") or 0),
+        "allow_unversioned": bool(settings.get("allow_unversioned")),
+        "version_rejection_message": str(settings.get("version_rejection_message") or ""),
     }
+
+
+def _shortcut_version_rejection(settings: dict, result: dict):
+    payload = {
+        "ok": False,
+        "error": "shortcut_update_required",
+        "reason": result.get("reason"),
+        "message": str(settings.get("version_rejection_message") or DEFAULT_SHORTCUT_SETTINGS["version_rejection_message"]),
+        "client_version": result.get("client_version"),
+        "current_version": int(settings.get("current_version") or 1),
+        "minimum_supported_version": int(settings.get("minimum_supported_version") or 0),
+        "download_url": str(settings.get("download_url") or ""),
+    }
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response, 426
 
 
 def _record_shortcut_download(job: dict, *, status: str) -> int | None:
@@ -783,6 +854,19 @@ def admin_shortcut_settings():
             )
         except (TypeError, ValueError):
             timeout_seconds = 0
+        try:
+            current_version = int(request.form.get("current_version") or 1)
+        except (TypeError, ValueError):
+            current_version = 0
+        try:
+            minimum_supported_version = int(
+                request.form.get("minimum_supported_version") or 0
+            )
+        except (TypeError, ValueError):
+            minimum_supported_version = -1
+        version_rejection_message = str(
+            request.form.get("version_rejection_message") or ""
+        ).strip()
         errors = []
         if not shortcut_name or len(shortcut_name) > 128:
             errors.append("ショートカット名は1～128文字で入力してください。")
@@ -800,6 +884,14 @@ def admin_shortcut_settings():
                 errors.append("配布URLはhttp://またはhttps://で始まるURLを入力してください。")
         if not 3 <= timeout_seconds <= 30:
             errors.append("判定待ち時間は3～30秒で入力してください。")
+        if not 1 <= current_version <= 65535:
+            errors.append("現行バージョンは1～65535で入力してください。")
+        if not 0 <= minimum_supported_version <= 65535:
+            errors.append("最低対応バージョンは0～65535で入力してください。")
+        elif current_version and minimum_supported_version > current_version:
+            errors.append("最低対応バージョンは現行バージョン以下にしてください。")
+        if not version_rejection_message:
+            errors.append("非対応時のメッセージを入力してください。")
         submitted = {
             "is_enabled": request.form.get("is_enabled") == "1",
             "shortcut_name": shortcut_name,
@@ -809,6 +901,10 @@ def admin_shortcut_settings():
             "download_button_label": download_button_label,
             "download_url": download_url,
             "detection_timeout_seconds": timeout_seconds or 10,
+            "current_version": current_version or 1,
+            "minimum_supported_version": max(0, minimum_supported_version),
+            "allow_unversioned": request.form.get("allow_unversioned") == "1",
+            "version_rejection_message": version_rejection_message,
             "updated_at": settings.get("updated_at"),
             "updated_by": username,
         }
@@ -831,6 +927,10 @@ def admin_shortcut_settings():
                            download_button_label=%s,
                            download_url=%s,
                            detection_timeout_seconds=%s,
+                           current_version=%s,
+                           minimum_supported_version=%s,
+                           allow_unversioned=%s,
+                           version_rejection_message=%s,
                            updated_by=%s
                      WHERE id=1
                     """,
@@ -843,6 +943,10 @@ def admin_shortcut_settings():
                         download_button_label,
                         download_url,
                         timeout_seconds,
+                        current_version,
+                        minimum_supported_version,
+                        1 if submitted["allow_unversioned"] else 0,
+                        version_rejection_message,
                         username,
                     ),
                 )
@@ -916,6 +1020,20 @@ def exchange_token():
     if not launch_token.startswith(LAUNCH_TOKEN_PREFIX):
         return jsonify({"ok": False, "error": "invalid_launch_token"}), 400
 
+    settings = _get_shortcut_settings()
+    raw_shortcut_version = request.headers.get("X-MFU-Shortcut-Version")
+    if raw_shortcut_version is None:
+        raw_shortcut_version = data.get("shortcut_version")
+    version_result = evaluate_shortcut_version(
+        raw_shortcut_version,
+        current_version=settings["current_version"],
+        minimum_supported_version=settings["minimum_supported_version"],
+        allow_unversioned=settings["allow_unversioned"],
+    )
+    if not version_result["ok"]:
+        return _shortcut_version_rejection(settings, version_result)
+    shortcut_version = int(version_result.get("client_version") or 0)
+
     access_token = ACCESS_TOKEN_PREFIX + secrets.token_urlsafe(32)
     session_expires_at = datetime.utcnow() + timedelta(hours=SESSION_TOKEN_HOURS)
     platform = str(data.get("platform") or "unknown")[:32]
@@ -950,10 +1068,18 @@ def exchange_token():
                    exchanged_at=UTC_TIMESTAMP(),
                    session_expires_at=%s,
                    client_platform=%s,
+                   shortcut_version=%s,
+                   shortcut_version_checked_at=UTC_TIMESTAMP(),
                    last_accessed_at=UTC_TIMESTAMP()
              WHERE id=%s
             """,
-            (_hash_token(access_token), session_expires_at, platform, job["id"]),
+            (
+                _hash_token(access_token),
+                session_expires_at,
+                platform,
+                shortcut_version,
+                job["id"],
+            ),
         )
         db.commit()
         job["session_expires_at"] = session_expires_at
@@ -973,7 +1099,16 @@ def exchange_token():
         {"launch_token": launch_token, "started": True, "completed": False, "expired": False},
         room=f"shortcut:{_hash_token(launch_token)}",
     )
-    return jsonify({"ok": True, "access_token": access_token, "manifest": manifest})
+    return jsonify(
+        {
+            "ok": True,
+            "access_token": access_token,
+            "manifest": manifest,
+            "shortcut_version": shortcut_version,
+            "current_version": settings["current_version"],
+            "minimum_supported_version": settings["minimum_supported_version"],
+        }
+    )
 
 
 @mobile_download_bp.get("/mobile-download/api/jobs/<int:job_id>")

@@ -51,3 +51,6 @@ def test_shortcut_admin_template_parses():
     assert "ショートカット配布URL" in template
     assert "ポップアップのプレビュー" in template
     assert "判定待ち時間" in template
+    assert "ショートカット バージョン管理" in template
+    assert 'name="minimum_supported_version"' in template
+    assert 'name="allow_unversioned"' in template
