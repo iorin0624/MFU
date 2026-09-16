@@ -659,8 +659,8 @@ def _upsert_ext_user(*, social_id: str, nickname: str,
             cur.execute(
                 """INSERT INTO external_login_user
                      (mfu_uuid, social_id, nickname, x_id, instagram_id, email)
-                   VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, %s, %s)""",
-                (social_id, nickname, x_id, instagram_id, email),
+                   VALUES (UNHEX(REPLACE(%s,'-','')), %s, %s, %s, %s, %s)""",
+                (str(uuid.uuid4()), social_id, nickname, x_id, instagram_id, email),
             )
         db.commit()
     except Exception:

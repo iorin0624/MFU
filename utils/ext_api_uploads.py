@@ -316,7 +316,7 @@ def create_upload():
         require_password=mode_config.get("require_password"),
     )
 
-    uuid32 = _uuid.uuid4().hex
+    uuid32 = str(_uuid.uuid4())
     password = secrets.token_hex(4) if auth_method == AUTH_PASSWORD else ""
     password_hash = hash_upload_password(password) if password else None
     access_token_hash = create_upload_access_token_hash(uuid32, auth_method)

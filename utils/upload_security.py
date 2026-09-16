@@ -45,7 +45,7 @@ UPLOAD_ACCESS_TOKEN_PREFIX = "mfu_view_"
 VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
 VIEW_AUTH_VERSION_SESSION_KEY = "view_auth_versions"
 VIEW_AUTH_MAX_ITEMS = 50
-_UUID32_RE = re.compile(r"^[0-9a-f]{32}$")
+_UUID32_RE = re.compile(r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")
 
 # 代表的な「危険な実行系拡張子」
 DENY_EXTENSION_SEGMENTS = {
@@ -327,7 +327,13 @@ def ensure_upload_password_schema() -> None:
     cur = db.cursor(dictionary=True)
     try:
         cur.execute("SHOW COLUMNS FROM uploads")
-        columns = {row["Field"] for row in cur.fetchall()}
+        upload_column_rows = cur.fetchall()
+        columns = {row["Field"] for row in upload_column_rows}
+        uuid_column = next((row for row in upload_column_rows if row["Field"] == "uuid"), None)
+        if uuid_column and str(uuid_column.get("Type") or "").lower() == "char(32)":
+            # Existing compact UUIDs remain valid; new uploads use canonical
+            # hyphenated UUIDv4 strings and therefore need 36 characters.
+            cur.execute("ALTER TABLE uploads MODIFY COLUMN uuid CHAR(36) NOT NULL")
         if "password_hash" not in columns:
             cur.execute("ALTER TABLE uploads ADD COLUMN password_hash VARCHAR(255) NULL AFTER password")
         if "auth_method" not in columns:

@@ -5,6 +5,7 @@ import math
 import os
 import re
 import textwrap
+import uuid
 from pathlib import Path
 from functools import lru_cache
 from flask import request, jsonify
@@ -659,8 +660,8 @@ def admin_test_accounts():
                         """INSERT INTO external_login_user
                              (mfu_uuid, social_id, nickname, email, email_verified_at,
                               is_test_account, test_account_enabled)
-                           VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, UTC_TIMESTAMP(), 1, 1)""",
-                        (social_id, nickname, email),
+                           VALUES (UNHEX(REPLACE(%s,'-','')), %s, %s, %s, UTC_TIMESTAMP(), 1, 1)""",
+                        (str(uuid.uuid4()), social_id, nickname, email),
                     )
                     user_id = int(cur.lastrowid)
                     db.commit()
@@ -961,8 +962,8 @@ def admin_event_new():
         fee_calc_method,
         square_fee_rate_percent
       )
-      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1, 'new', 3.6)
-    """, (title, theme_color, (starts_at or None), (int(fee_yen) if fee_yen else None),
+      VALUES (UNHEX(REPLACE(%s,'-','')), %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1, 'new', 3.6)
+    """, (str(uuid.uuid4()), title, theme_color, (starts_at or None), (int(fee_yen) if fee_yen else None),
           pay_from, pay_until,
           (place or None), (address or None), (maps_url or None)))
     db.commit()
@@ -3706,7 +3707,7 @@ def admin_event_copy(event_id: int):
           paypay_display
         )
         VALUES (
-          UNHEX(REPLACE(UUID(),'-','')),
+          UNHEX(REPLACE(%s,'-','')),
           %s, NULL,
           %s,
           %s, %s, %s,
@@ -3719,7 +3720,7 @@ def admin_event_copy(event_id: int):
           %s
         )
     """, (
-        new_title,
+        str(uuid.uuid4()), new_title,
         src["fee_yen"],
         src["place_name"], src["address"], src["maps_url"],
         src["pay_from"], src["pay_until"],
