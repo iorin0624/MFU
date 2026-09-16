@@ -106,7 +106,11 @@ from app.utils.logs import (
 )
 from app.utils.fw_auto_ban import enforcement_enabled
 from app.utils.admin_logs_html import bind_runtime_csrf_token
-from app.utils.message import generate_message
+from app.utils.message import (
+    ensure_notification_message_schema,
+    generate_message,
+    generate_notification_message,
+)
 from app.utils.storage_info import get_storage_info
 from app.utils.socket_connection_metrics import (
     connection_snapshot,
@@ -1572,7 +1576,6 @@ def submit_upload():
     mode = request.form.get("mode", "")
     uploaded_files = request.files.getlist("photos")
     expire_at = (datetime.now() + timedelta(days=60)).date()
-    expire_str = expire_at.strftime("%Y年%m月%d日")
     username = session.get("user", "default")
 
     if not uploaded_files:
@@ -1583,16 +1586,9 @@ def submit_upload():
     cursor = db.cursor(dictionary=True)
     cursor.execute("SELECT * FROM upload_modes WHERE username = %s AND mode = %s", (username, mode))
     mode_config = cursor.fetchone()
-    cursor.execute("SELECT nickname, webhook_url, email, notify_method FROM users WHERE username = %s", (username,))
-    user_info = cursor.fetchone()
     db.close()
     if not mode_config:
         return f"未定義のモードです: {mode}", 400
-
-    nickname = (user_info or {}).get("nickname") or username
-
-    # ▼ テンプレキー（未設定なら mode をそのまま使う）
-    template_key = (mode_config.get("template_key") or "").strip() or mode
 
     # ▼ サムネ生成フラグ（1/0, '1'/'0', True/False いずれでも解釈）
     gt_val = mode_config.get("generate_thumbnails", 1)
@@ -1647,7 +1643,6 @@ def submit_upload():
     # ③ 保存処理
     # =====================================
     filenames, failed = [], []
-    saved_count = 0
 
     def save_file_chunked(file_storage, save_path):
         try:
@@ -1672,7 +1667,6 @@ def submit_upload():
         for original_name, fut in futures:
             if fut.result():
                 filenames.append(original_name)
-                saved_count += 1
             else:
                 failed.append(original_name)
 
@@ -1699,42 +1693,26 @@ def submit_upload():
     db.close()
 
     # =====================================
-    # ⑤ テンプレートメッセージ生成＆保存（messages）
+    # ⑤ サイト内お知らせ／相手向け通知文を生成して別々に保存
     # =====================================
-    public_base = current_app.config.get("PUBLIC_BASE_URL")
-    if not public_base:
-        try:
-            public_base = PUBLIC_BASE_URL  # グローバル定義があれば使用
-        except NameError:
-            public_base = request.url_root.rstrip("/")
-
-    context = {
-        "uid": uid,
-        "title": title,
-        "date": (date.strftime("%Y-%m-%d") if isinstance(date, (datetime, date_cls)) else str(date or "")),
-        "expire": expire_str,
-        "username": username,
-        "nickname": nickname,
-        "base_url": public_base.rstrip("/"),
-        "link": build_upload_view_url(
-            public_base,
-            {"uuid": uid, "auth_method": auth_method},
-        ) if mode_config.get("enable_download_url") else "",
-        "download_url": f"{public_base.rstrip('/')}/d/{uid}",
-        "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
-        "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
-        "password": password or "",
-        "count": saved_count,
-    }
-
-    try:
-        message = generate_message(template_key, context, username=username)
-    except Exception as e:
-        message = f"[テンプレ生成失敗: {e}]"
-
-    db = get_db(); cur = db.cursor()
-    cur.execute("REPLACE INTO messages (uuid, mode, message) VALUES (%s, %s, %s)", (uid, template_key, message))
-    db.commit(); db.close()
+    prepared = _prepare_upload_completion(
+        {
+            "id": upload_id,
+            "uuid": uid,
+            "title": title,
+            "date": date,
+            "expire_at": expire_at,
+            "mode": mode,
+            "username": username,
+            "password": password,
+            "auth_method": auth_method,
+            "access_token_hash": access_token_hash,
+        },
+        filenames,
+    )
+    message = prepared["notification_message"]
+    template_key = prepared["template_key"]
+    context = prepared["context"]
 
     # =====================================
     # ⑥ バックグラウンド：サムネ生成 → 通知
@@ -1952,7 +1930,8 @@ def _build_upload_done_mail_context(upload_row: dict) -> dict:
 
 
 def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = None) -> dict:
-    """Web/desktop共通の完了テンプレートを生成し、messagesへ保存する。"""
+    """Generate and snapshot the site notice and recipient notification."""
+    ensure_notification_message_schema()
     uid = str(upload_row.get("uuid") or "").strip()
     username = str(upload_row.get("username") or "").strip()
     mode = str(upload_row.get("mode") or "").strip()
@@ -1998,7 +1977,7 @@ def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = N
         date_value = upload_row.get("date")
         expire_value = upload_row.get("expire_at")
         date_text = date_value.strftime("%Y-%m-%d") if isinstance(date_value, (datetime, date_cls)) else str(date_value or "")
-        expire_text = expire_value.strftime("%Y-%m-%d") if isinstance(expire_value, (datetime, date_cls)) else str(expire_value or "")
+        expire_text = expire_value.strftime("%Y年%m月%d日") if isinstance(expire_value, (datetime, date_cls)) else str(expire_value or "")
         context = {
             "uid": uid,
             "title": upload_row.get("title") or "",
@@ -2015,21 +1994,32 @@ def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = N
             "count": len(filenames or []),
         }
         try:
-            message = generate_message(template_key, context, username=username)
+            site_message = generate_message(template_key, context, username=username)
+            notification_message = generate_notification_message(template_key, context, username=username)
         except Exception as exc:
             current_app.logger.exception(
                 "upload completion template generation failed uid=%s template=%s",
                 uid,
                 template_key,
             )
-            message = f"[テンプレ生成失敗: {exc}]"
+            site_message = f"[テンプレ生成失敗: {exc}]"
+            notification_message = site_message
         cur.execute(
             "REPLACE INTO messages (uuid, mode, message) VALUES (%s, %s, %s)",
-            (uid, template_key, message),
+            (uid, template_key, site_message),
+        )
+        cur.execute(
+            """
+            REPLACE INTO upload_notification_messages (uuid, mode, message)
+            VALUES (%s, %s, %s)
+            """,
+            (uid, template_key, notification_message),
         )
         db.commit()
         return {
-            "message": message,
+            "message": notification_message,
+            "site_message": site_message,
+            "notification_message": notification_message,
             "template_key": template_key,
             "mode_config": mode_config,
             "context": context,
@@ -2046,6 +2036,7 @@ def upload_done(uid: str):
     if not re.fullmatch(r"[0-9a-f]{32}", uid):
         abort(404)
 
+    ensure_notification_message_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -2054,12 +2045,21 @@ def upload_done(uid: str):
         if not upload_row or upload_row.get("username") != session.get("user"):
             abort(404)
         cur.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uid,))
-        message_row = cur.fetchone() or {}
+        site_message_row = cur.fetchone() or {}
+        cur.execute(
+            "SELECT message FROM upload_notification_messages WHERE uuid = %s LIMIT 1",
+            (uid,),
+        )
+        notification_message_row = cur.fetchone() or {}
     finally:
         cur.close()
         db.close()
 
-    message = str(message_row.get("message") or "").strip()
+    message = str(
+        notification_message_row.get("message")
+        or site_message_row.get("message")
+        or ""
+    ).strip()
     prepared = None
     if not message:
         prepared = _prepare_upload_completion(upload_row)
@@ -2221,54 +2221,18 @@ def submit_upload_finish():
 
     username = upload_row.get("username") or session.get("user", "default")
     mode = upload_row.get("mode") or ""
-    mode_config, user_info = _fetch_upload_mode_and_user(username, mode)
+    mode_config, _user_info = _fetch_upload_mode_and_user(username, mode)
     if not mode_config:
         return jsonify({"ok": False, "error": f"未定義のモードです: {mode}"}), 400
 
-    template_key = (mode_config.get("template_key") or "").strip() or mode
     gt_val = mode_config.get("generate_thumbnails", 1)
     gen_thumbs = str(gt_val).lower() in ("1", "true", "t", "yes", "y")
-    nickname = (user_info or {}).get("nickname") or username
-    expire_at = upload_row.get("expire_at")
-    if hasattr(expire_at, "strftime"):
-        expire_str = expire_at.strftime("%Y年%m月%d日")
-    else:
-        expire_str = str(expire_at or "")
-
-    public_base = current_app.config.get("PUBLIC_BASE_URL")
-    if not public_base:
-        try:
-            public_base = PUBLIC_BASE_URL
-        except NameError:
-            public_base = request.url_root.rstrip("/")
-
     title = upload_row.get("title") or ""
     date_value = upload_row.get("date")
-    context = {
-        "uid": uid,
-        "title": title,
-        "date": (date_value.strftime("%Y-%m-%d") if isinstance(date_value, (datetime, date_cls)) else str(date_value or "")),
-        "expire": expire_str,
-        "username": username,
-        "nickname": nickname,
-        "base_url": public_base.rstrip("/"),
-        "link": build_upload_view_url(public_base, upload_row) if mode_config.get("enable_download_url") else "",
-        "download_url": f"{public_base.rstrip('/')}/d/{uid}",
-        "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
-        "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
-        "password": upload_row.get("password") or "",
-        "count": len(filenames),
-    }
-    try:
-        message = generate_message(template_key, context, username=username)
-    except Exception as e:
-        message = f"[テンプレ生成失敗: {e}]"
-
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("REPLACE INTO messages (uuid, mode, message) VALUES (%s, %s, %s)", (uid, template_key, message))
-    db.commit()
-    db.close()
+    prepared = _prepare_upload_completion(upload_row, filenames)
+    message = prepared["notification_message"]
+    template_key = prepared["template_key"]
+    context = prepared["context"]
 
     _base_dir, original_dir, thumb_dir = _upload_dirs(uid)
     app_obj = current_app._get_current_object()
@@ -2339,6 +2303,7 @@ def submit_upload_mail():
     if to_email.lower() not in allowed_emails:
         return jsonify({"ok": False, "error": "請求書に登録されているメールアドレスを選択してください。"}), 400
 
+    ensure_notification_message_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -2347,12 +2312,21 @@ def submit_upload_mail():
         if not upload_row or upload_row.get("username") != session.get("user"):
             return jsonify({"ok": False, "error": "upload not found"}), 404
 
+        cur.execute(
+            "SELECT message FROM upload_notification_messages WHERE uuid = %s LIMIT 1",
+            (uid,),
+        )
+        notification_message_row = cur.fetchone() or {}
         cur.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uid,))
-        message_row = cur.fetchone()
+        site_message_row = cur.fetchone() or {}
     finally:
         db.close()
 
-    body = str((message_row or {}).get("message") or "").strip()
+    body = str(
+        notification_message_row.get("message")
+        or site_message_row.get("message")
+        or ""
+    ).strip()
     if not body:
         return jsonify({"ok": False, "error": "送信する本文が見つかりません。"}), 400
 
@@ -2440,7 +2414,7 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
             db.close()
 
             notify_method = user.get("notify_method", "discord") if user else "discord"
-            base_msg = generate_message(mode, context, username=context["username"])
+            base_msg = generate_notification_message(mode, context, username=context["username"])
             msg = base_msg + "\n（サムネイル生成はスキップしました）"
 
             send_discord_upload_notification(
@@ -2521,7 +2495,7 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
         db.close()
 
         notify_method = user.get("notify_method", "discord") if user else "discord"
-        msg = generate_message(mode, context, username=context["username"]) + "\n（サムネイル生成が完了しました）"
+        msg = generate_notification_message(mode, context, username=context["username"]) + "\n（サムネイル生成が完了しました）"
 
         send_discord_upload_notification(
             logger=(logger or app.logger),
@@ -5672,6 +5646,7 @@ def mode_edit_combined(mode):
         return redirect(url_for("login"))
     username = session["user"]
 
+    ensure_notification_message_schema()
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -5680,7 +5655,15 @@ def mode_edit_combined(mode):
 
     cursor.execute("SELECT template FROM message_templates WHERE username = %s AND mode = %s", (username, mode))
     tpl_row = cursor.fetchone()
-    template = tpl_row["template"] if tpl_row else ""
+    site_template = tpl_row["template"] if tpl_row else ""
+    cursor.execute(
+        "SELECT template FROM notification_message_templates WHERE username = %s AND mode = %s",
+        (username, mode),
+    )
+    notification_tpl_row = cursor.fetchone()
+    notification_template = (
+        notification_tpl_row["template"] if notification_tpl_row else site_template
+    )
 
     if mode_data is None:
         generated_mode = "mode_" + uuid.uuid4().hex[:12]
@@ -5688,7 +5671,8 @@ def mode_edit_combined(mode):
 
     if request.method == "POST":
         label = request.form["label"]
-        template_text = request.form["template"]
+        site_template_text = request.form.get("site_template", "")
+        notification_template_text = request.form.get("notification_template", "")
         enable_download_url = bool(request.form.get("enable_download_url"))
         auth_method = normalize_upload_auth_method(request.form.get("auth_method"))
         require_password = auth_method == AUTH_PASSWORD
@@ -5717,7 +5701,14 @@ def mode_edit_combined(mode):
             REPLACE INTO message_templates (username, mode, template)
             VALUES (%s, %s, %s)
             """,
-            (username, mode, template_text),
+            (username, mode, site_template_text),
+        )
+        cursor.execute(
+            """
+            REPLACE INTO notification_message_templates (username, mode, template)
+            VALUES (%s, %s, %s)
+            """,
+            (username, mode, notification_template_text),
         )
 
         db.commit()
@@ -5729,7 +5720,8 @@ def mode_edit_combined(mode):
                            action="edit" if mode_data else "add",
                            mode=mode,
                            mode_data=mode_data,
-                           template=template)
+                           site_template=site_template,
+                           notification_template=notification_template)
 
 @app.post("/modes/delete/<mode>")
 def mode_delete(mode):
@@ -5737,10 +5729,12 @@ def mode_delete(mode):
         return redirect(url_for("login"))
     username = session["user"]
 
+    ensure_notification_message_schema()
     db = get_db()
     cursor = db.cursor()
     cursor.execute("DELETE FROM upload_modes WHERE username = %s AND mode = %s", (username, mode))
     cursor.execute("DELETE FROM message_templates WHERE username = %s AND mode = %s", (username, mode))
+    cursor.execute("DELETE FROM notification_message_templates WHERE username = %s AND mode = %s", (username, mode))
     cursor.execute("UPDATE users SET default_mode = NULL WHERE username = %s AND default_mode = %s", (username, mode))
     db.commit()
     db.close()
@@ -6691,6 +6685,11 @@ try:
     _ensure_upload_security_schema_once()
 except Exception as exc:
     app.logger.warning(f"upload security schema init skipped: {exc}")
+
+try:
+    ensure_notification_message_schema()
+except Exception as exc:
+    app.logger.warning(f"upload notification message schema init skipped: {exc}")
 
 try:
     from app.shipment_tracking.services import ensure_nav_item, ensure_shipment_tracking_schema

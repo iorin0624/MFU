@@ -58,9 +58,24 @@
       <label class="form-check-label" for="generate_thumbnails">サムネイル画像を生成する</label>
     </div>
 
-    <div class="mb-3">
-      <label for="template" class="form-label">テンプレート本文</label>
-      <textarea class="form-control" name="template" id="template" rows="12">{{ template }}</textarea>
+    <div class="card mt-4 mb-3">
+      <div class="card-body">
+        <label for="site_template" class="form-label fw-bold">サイト内お知らせテンプレート</label>
+        <div class="form-text mb-2">
+          公開ページの「⚠️お知らせ⚠️ 必ずお読みください」に表示する文章です。
+        </div>
+        <textarea class="form-control" name="site_template" id="site_template" rows="12">{{ site_template }}</textarea>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <label for="notification_template" class="form-label fw-bold">相手への通知文テンプレート</label>
+        <div class="form-text mb-2">
+          アップロード完了画面の送付文と、相手へアドレスをメール送信するときに使用します。
+        </div>
+        <textarea class="form-control" name="notification_template" id="notification_template" rows="12">{{ notification_template }}</textarea>
+      </div>
     </div>
 
     <h4 class="mt-4">🧩 使用可能な変数一覧</h4>
