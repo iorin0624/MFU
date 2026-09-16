@@ -54,3 +54,4 @@ def test_shortcut_admin_template_parses():
     assert "ショートカット バージョン管理" in template
     assert 'name="minimum_supported_version"' in template
     assert 'name="allow_unversioned"' in template
+    assert "status_code=426" in template

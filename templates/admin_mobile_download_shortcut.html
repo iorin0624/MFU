@@ -93,7 +93,7 @@
         <div class="col-sm-6">
           <label class="form-label fw-semibold" for="minimum_supported_version">最低対応バージョン</label>
           <input class="form-control" type="number" id="minimum_supported_version" name="minimum_supported_version" min="0" max="65535" required value="{{ settings.minimum_supported_version }}">
-          <div class="form-text">この番号未満はHTTP 426で拒否します。</div>
+          <div class="form-text">この番号未満はAPI本文の status_code=426 で拒否します。</div>
         </div>
       </div>
 

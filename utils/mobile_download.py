@@ -313,6 +313,7 @@ def _shortcut_version_rejection(settings: dict, result: dict):
     payload = {
         "ok": False,
         "error": "shortcut_update_required",
+        "status_code": 426,
         "reason": result.get("reason"),
         "message": str(settings.get("version_rejection_message") or DEFAULT_SHORTCUT_SETTINGS["version_rejection_message"]),
         "client_version": result.get("client_version"),
@@ -322,7 +323,10 @@ def _shortcut_version_rejection(settings: dict, result: dict):
     }
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store"
-    return response, 426
+    # Apache's ProxyErrorOverride replaces non-2xx API bodies with an HTML
+    # error page. Keep the transport successful so Shortcuts can read and
+    # display the structured refusal instead of failing JSON conversion.
+    return response, 200
 
 
 def _record_shortcut_download(job: dict, *, status: str) -> int | None:
