@@ -1348,7 +1348,7 @@ def _progress_clear(key: str):
             pass
 
 # UUID path 解析
-_UUID32_RE  = re.compile(r"^[0-9a-f]{32}$")
+_UUID32_RE  = re.compile(r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")
 _UUID4_RE   = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 def _resolve_relpath(rel: str):
@@ -1604,7 +1604,7 @@ def submit_upload():
     # =====================================
     # ① 事前準備
     # =====================================
-    uid = uuid4().hex
+    uid = str(uuid4())
     # パスワードはモード設定に従う（未指定なら空）
     auth_method = normalize_upload_auth_method(
         mode_config.get("auth_method"), require_password=mode_config.get("require_password")
@@ -2040,7 +2040,7 @@ def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = N
 def upload_done(uid: str):
     if "user" not in session:
         return redirect(url_for("login", next=request.path))
-    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+    if not _UUID32_RE.fullmatch(uid):
         abort(404)
 
     ensure_notification_message_schema()
@@ -2139,7 +2139,7 @@ def submit_upload_start():
     if not mode_config:
         return jsonify({"ok": False, "error": f"未定義のモードです: {mode}"}), 400
 
-    uid = uuid.uuid4().hex
+    uid = str(uuid.uuid4())
     expire_at = (datetime.now() + timedelta(days=60)).date()
     auth_method = normalize_upload_auth_method(
         mode_config.get("auth_method"), require_password=mode_config.get("require_password")
@@ -2174,7 +2174,7 @@ def submit_upload_file():
         return jsonify({"ok": False, "error": "login_required"}), 401
 
     uid = (request.form.get("uuid") or "").strip()
-    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+    if not _UUID32_RE.fullmatch(uid):
         return jsonify({"ok": False, "error": "invalid uuid"}), 400
 
     file_storage = request.files.get("photo")
@@ -2209,7 +2209,7 @@ def submit_upload_finish():
         return jsonify({"ok": False, "error": "login_required"}), 401
 
     uid = (request.form.get("uuid") or "").strip()
-    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+    if not _UUID32_RE.fullmatch(uid):
         return jsonify({"ok": False, "error": "invalid uuid"}), 400
 
     db = get_db()
@@ -2293,7 +2293,7 @@ def submit_upload_mail():
         sender_name = str(request.form.get("sender_name") or "").strip()
         cc_email = str(request.form.get("cc_email") or "").strip()
 
-    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+    if not _UUID32_RE.fullmatch(uid):
         return jsonify({"ok": False, "error": "invalid uuid"}), 400
     if not to_email:
         return jsonify({"ok": False, "error": "送信先メールアドレスを選択してください。"}), 400

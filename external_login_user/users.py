@@ -1787,8 +1787,8 @@ def line_callback():
             cur.execute("""
                 INSERT INTO external_login_user
                   (mfu_uuid, social_id, nickname, x_id, instagram_id, email, avatar_url, avatar_file)
-                VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, NULL, NULL, NULL, %s, NULL)
-            """, (sub, nick_new, picture_url))
+                VALUES (UNHEX(REPLACE(%s,'-','')), %s, %s, NULL, NULL, NULL, %s, NULL)
+            """, (str(uuid.uuid4()), sub, nick_new, picture_url))
             db.commit()
             onboarding = True          # ← 初回のみ True
             needs_email = True         # ← 新規はメール未登録扱い
