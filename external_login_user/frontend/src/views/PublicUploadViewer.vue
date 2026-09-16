@@ -74,6 +74,7 @@ const data = ref<ViewerPayload | null>(null);
 const loading = ref(true);
 const error = ref('');
 const selected = ref<number[]>([]);
+const noticeOpen = ref(true);
 const filter = ref<'all' | 'public' | 'hidden'>('all');
 const managing = ref(false);
 const busy = ref(false);
@@ -92,6 +93,7 @@ const replyLightboxIndex = ref(-1);
 let lightboxTouchStart: { x: number; y: number; at: number } | null = null;
 let activeLoadController: AbortController | null = null;
 let loadSequence = 0;
+let activeNoticeFingerprint = '';
 
 const filteredFiles = computed(() => {
   const files = data.value?.files || [];
@@ -130,6 +132,43 @@ function sortFilesByCaptureTime(files: PublicFile[]) {
   ));
 }
 
+function noticeFingerprint(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${value.length}-${(hash >>> 0).toString(16)}`;
+}
+
+function noticeStorageKey() {
+  return `mfu-public-notice-collapsed:${config.uuid || 'unknown'}`;
+}
+
+function applyNoticeInitialState(notice: string) {
+  const fingerprint = noticeFingerprint(notice);
+  if (fingerprint === activeNoticeFingerprint) return;
+  activeNoticeFingerprint = fingerprint;
+  try {
+    noticeOpen.value = localStorage.getItem(noticeStorageKey()) !== fingerprint;
+  } catch {
+    noticeOpen.value = true;
+  }
+}
+
+function closeNotice() {
+  noticeOpen.value = false;
+}
+
+function keepNoticeCollapsed() {
+  try {
+    localStorage.setItem(noticeStorageKey(), activeNoticeFingerprint);
+  } catch {
+    // Storage can be unavailable in private browsing; closing still works.
+  }
+  noticeOpen.value = false;
+}
+
 async function load() {
   const sequence = ++loadSequence;
   activeLoadController?.abort();
@@ -149,6 +188,7 @@ async function load() {
     if (!response.ok || !payload?.ok) throw new Error((payload as { message?: string } | null)?.message || '表示情報を取得できませんでした。');
     payload.files = sortFilesByCaptureTime(payload.files);
     data.value = payload;
+    if (payload.notice) applyNoticeInitialState(payload.notice);
     selected.value = selected.value.filter((id) => payload.files.some((file) => file.id === id && !file.hidden));
     await nextTick();
     const targetId = window.location.hash.replace(/^#/, '');
@@ -460,9 +500,13 @@ onUnmounted(() => {
       </header>
 
       <section v-if="data.notice" class="notice-grid">
-        <details v-if="data.notice" class="notice-card">
+        <details v-if="data.notice" class="notice-card" :open="noticeOpen" @toggle="noticeOpen=($event.currentTarget as HTMLDetailsElement).open">
           <summary><div class="notice-summary-copy"><h2 class="notice-alert-title">⚠️お知らせ⚠️</h2><small>必ずお読みください</small></div><span aria-hidden="true">⌄</span></summary>
           <p>{{ data.notice }}</p>
+          <div class="notice-actions">
+            <button type="button" @click="closeNotice">閉じる</button>
+            <button type="button" class="notice-remember-button" @click="keepNoticeCollapsed">以後折りたたむ</button>
+          </div>
         </details>
       </section>
 
