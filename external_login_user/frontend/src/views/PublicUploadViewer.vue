@@ -69,6 +69,9 @@ declare global {
 
 const configElement = document.getElementById('public-upload-config');
 const config = JSON.parse(configElement?.textContent || '{}') as { uuid?: string; replyOnly?: boolean };
+const requestedSection = new URLSearchParams(window.location.search).get('section')
+  || window.location.hash.replace(/^#/, '');
+const focusReplyOnLoad = requestedSection === 'reply';
 const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
 const filenameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 const data = ref<ViewerPayload | null>(null);
@@ -76,6 +79,7 @@ const loading = ref(true);
 const error = ref('');
 const selected = ref<number[]>([]);
 const noticeOpen = ref(true);
+const replyDetails = ref<HTMLDetailsElement | null>(null);
 const filter = ref<'all' | 'public' | 'hidden'>('all');
 const managing = ref(false);
 const busy = ref(false);
@@ -189,6 +193,26 @@ function keepNoticeCollapsed() {
   noticeOpen.value = false;
 }
 
+async function focusRequestedSection() {
+  await nextTick();
+  const target = focusReplyOnLoad
+    ? replyDetails.value
+    : document.getElementById(requestedSection);
+  if (!target) return;
+
+  let collapsible: HTMLDetailsElement | null = target instanceof HTMLDetailsElement
+    ? target
+    : target.closest('details');
+  while (collapsible) {
+    collapsible.open = true;
+    collapsible = collapsible.parentElement?.closest('details') || null;
+  }
+
+  const scroll = () => target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  window.requestAnimationFrame(() => window.requestAnimationFrame(scroll));
+  window.setTimeout(scroll, 350);
+}
+
 async function load() {
   const sequence = ++loadSequence;
   activeLoadController?.abort();
@@ -210,19 +234,7 @@ async function load() {
     data.value = payload;
     if (payload.notice) applyNoticeInitialState(payload.notice);
     selected.value = selected.value.filter((id) => payload.files.some((file) => file.id === id && !file.hidden));
-    await nextTick();
-    const targetId = window.location.hash.replace(/^#/, '');
-    if (targetId) {
-      const target = document.getElementById(targetId);
-      let collapsible: HTMLDetailsElement | null = target instanceof HTMLDetailsElement
-        ? target
-        : target?.closest('details') || null;
-      while (collapsible) {
-        collapsible.open = true;
-        collapsible = collapsible.parentElement?.closest('details') || null;
-      }
-      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    await focusRequestedSection();
   } catch (reason) {
     if (sequence !== loadSequence) return;
     error.value = reason instanceof DOMException && reason.name === 'AbortError'
@@ -530,7 +542,7 @@ onUnmounted(() => {
         </details>
       </section>
 
-      <details v-if="data.reply.enabled" id="reply" class="reply-upload-panel reply-collapsible">
+      <details v-if="data.reply.enabled" id="reply" ref="replyDetails" class="reply-upload-panel reply-collapsible" :open="focusReplyOnLoad">
         <summary class="reply-section-heading">
           <div><h2>折り返し</h2><p>加工済みの写真を選択して送信できます。</p></div><span aria-hidden="true">⌄</span>
         </summary>
