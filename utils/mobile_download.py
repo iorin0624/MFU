@@ -108,7 +108,7 @@ def _ensure_schema() -> None:
             """
             CREATE TABLE IF NOT EXISTS mobile_download_jobs (
               id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-              upload_uuid CHAR(32) NOT NULL,
+              upload_uuid CHAR(36) NOT NULL,
               upload_title VARCHAR(255) NOT NULL DEFAULT '',
               files_json LONGTEXT NOT NULL,
               launch_token_hash CHAR(64) NOT NULL,
@@ -162,9 +162,12 @@ def _ensure_schema() -> None:
             .strip()
             .upper()
         )
-        if upload_nullable != "YES":
+        upload_type = str(
+            upload_column[1] if isinstance(upload_column, tuple) else upload_column.get("Type")
+        ).strip().lower()
+        if upload_nullable != "YES" or upload_type != "char(36)":
             cur.execute(
-                "ALTER TABLE mobile_download_jobs MODIFY upload_uuid CHAR(32) NULL"
+                "ALTER TABLE mobile_download_jobs MODIFY upload_uuid CHAR(36) NULL"
             )
         cur.execute(
             """
