@@ -7,6 +7,7 @@
     <div class="d-flex gap-2">
       <a class="btn btn-outline-secondary" href="{{ url_for('admin_logs') }}">アクセスログ</a>
       <a class="btn btn-outline-secondary" href="{{ url_for('admin_uuid_registry_export') }}">CSV</a>
+      <a class="btn btn-outline-primary" href="{{ url_for('admin_uuid_registry', backfill=1) }}">既存ログを補完</a>
       <a class="btn btn-primary" href="{{ url_for('admin_uuid_registry', sync=1) }}">既存データを同期</a>
     </div>
   </div>

@@ -105,6 +105,7 @@ from app.utils.logs import (
     unban_fw_auto_permanent,
 )
 from app.utils.uuid_registry import (
+    backfill_uuid_access_logs,
     ensure_uuid_registry_schema,
     mark_uuid_deleted,
     resolve_request_resource,
@@ -6475,6 +6476,13 @@ def admin_fw_ban():
 @app.route("/admin/uuids")
 @admin_required
 def admin_uuid_registry():
+    if request.args.get("backfill") == "1":
+        result = backfill_uuid_access_logs()
+        flash(
+            f"既存アクセスログを補完しました（候補 {result['scanned']} / 一致 {result['matched']} / 更新 {result['updated']}）",
+            "success",
+        )
+        return redirect(url_for("admin_uuid_registry"))
     if request.args.get("sync") == "1":
         counts = sync_known_uuid_resources()
         flash("UUID台帳を同期しました（" + " / ".join(f"{k}: {v}" for k, v in sorted(counts.items())) + "）", "success")

@@ -384,6 +384,85 @@ def sync_known_uuid_resources() -> dict[str, int]:
         db.close()
 
 
+def backfill_uuid_access_logs(*, batch_size: int = 2000) -> dict[str, int]:
+    """Attach registry snapshots to legacy access logs without rewriting log text."""
+    ensure_uuid_registry_schema()
+    batch_size = max(100, min(int(batch_size or 2000), 10000))
+    read_db = get_db()
+    write_db = get_db()
+    read_cur = read_db.cursor(dictionary=True)
+    write_cur = write_db.cursor()
+    try:
+        read_cur.execute(
+            """
+            SELECT id, uuid_value, resource_type,
+                   COALESCE(NULLIF(title_initial,''), title_current) AS historical_title,
+                   status
+              FROM central_uuid_registry
+            """
+        )
+        registry = {
+            str(row["uuid_value"]).replace("-", "").lower(): row
+            for row in (read_cur.fetchall() or [])
+        }
+        last_id = 0
+        scanned = matched = updated = 0
+        pattern = r"[0-9A-Fa-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+        while True:
+            read_cur.execute(
+                """
+                SELECT id, path
+                  FROM logs
+                 WHERE id > %s AND resource_uuid='' AND path REGEXP %s
+                 ORDER BY id
+                 LIMIT %s
+                """,
+                (last_id, pattern, batch_size),
+            )
+            rows = read_cur.fetchall() or []
+            if not rows:
+                break
+            last_id = int(rows[-1]["id"])
+            scanned += len(rows)
+            updates = []
+            for row in rows:
+                selected = None
+                candidates = _UUID_PATTERN.findall(str(row.get("path") or ""))
+                for candidate in reversed(candidates):
+                    key = normalize_uuid(candidate).replace("-", "")
+                    if key in registry:
+                        selected = registry[key]
+                        break
+                if not selected:
+                    continue
+                matched += 1
+                updates.append(
+                    (
+                        selected["id"], selected["resource_type"], selected["uuid_value"],
+                        selected.get("historical_title") or "", selected.get("status") or "",
+                        row["id"],
+                    )
+                )
+            if updates:
+                write_cur.executemany(
+                    """
+                    UPDATE logs
+                       SET resource_registry_id=%s, resource_type=%s, resource_uuid=%s,
+                           resource_title=%s, resource_status=%s
+                     WHERE id=%s AND resource_uuid=''
+                    """,
+                    updates,
+                )
+                write_db.commit()
+                updated += max(int(write_cur.rowcount or 0), 0)
+        return {"scanned": scanned, "matched": matched, "updated": updated}
+    finally:
+        read_cur.close()
+        write_cur.close()
+        read_db.close()
+        write_db.close()
+
+
 def _lookup_registry(cur, normalized: str) -> dict[str, Any] | None:
     cur.execute(
         """
