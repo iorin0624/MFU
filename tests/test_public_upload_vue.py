@@ -28,7 +28,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
         / "PublicUploadViewer.vue"
     ).read_text(encoding="utf-8")
 
-    assert '<h2 class="notice-alert-title">⚠お知らせ⚠</h2>' in component
+    assert '<h2 class="notice-alert-title">⚠️お知らせ⚠️</h2>' in component
     assert '<small>必ずお読みください</small>' in component
     assert '<details v-if="data.notice" class="notice-card">' in component
     assert '<details v-if="data.notice" class="notice-card" open>' not in component
@@ -85,7 +85,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20260916-notice-two-lines1" in template
+    assert "public-upload-viewer.js') }}?v=20260916-notice-emoji1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():
