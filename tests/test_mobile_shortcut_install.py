@@ -22,6 +22,7 @@ def test_shortcut_button_is_ios_only_and_shared_by_all_download_views():
     assert "MFU写真保存ショートカットのアップデートが必要です" in javascript
     assert "status?.rejected" in javascript
     assert "最低対応バージョン" in javascript
+    assert "必ず「置き換え」を選択してください" in javascript
 
     for relative_path in (
         "templates/view.html",
