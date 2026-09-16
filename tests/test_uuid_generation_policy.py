@@ -35,6 +35,11 @@ class UuidGenerationPolicyTests(unittest.TestCase):
         self.assertIn("uid = str(uuid.uuid4())", main_source)
         self.assertIn("uuid32 = str(_uuid.uuid4())", api_source)
 
+    def test_mobile_download_job_accepts_canonical_upload_uuid(self):
+        source = (ROOT / "utils/mobile_download.py").read_text(encoding="utf-8")
+        self.assertIn("upload_uuid CHAR(36)", source)
+        self.assertIn("MODIFY upload_uuid CHAR(36) NULL", source)
+
 
 if __name__ == "__main__":
     unittest.main()
