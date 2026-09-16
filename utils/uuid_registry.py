@@ -97,13 +97,25 @@ def ensure_uuid_registry_schema() -> None:
             }
             for column, ddl in additions.items():
                 if column not in log_columns:
-                    cur.execute(ddl)
+                    try:
+                        cur.execute(ddl)
+                    except Exception as exc:
+                        if getattr(exc, "errno", None) != 1060:
+                            raise
             cur.execute("SHOW INDEX FROM logs WHERE Key_name='idx_logs_resource_uuid'")
             if not cur.fetchone():
-                cur.execute("CREATE INDEX idx_logs_resource_uuid ON logs(resource_uuid)")
+                try:
+                    cur.execute("CREATE INDEX idx_logs_resource_uuid ON logs(resource_uuid)")
+                except Exception as exc:
+                    if getattr(exc, "errno", None) != 1061:
+                        raise
             cur.execute("SHOW INDEX FROM logs WHERE Key_name='idx_logs_resource_title'")
             if not cur.fetchone():
-                cur.execute("CREATE INDEX idx_logs_resource_title ON logs(resource_title)")
+                try:
+                    cur.execute("CREATE INDEX idx_logs_resource_title ON logs(resource_title)")
+                except Exception as exc:
+                    if getattr(exc, "errno", None) != 1061:
+                        raise
             db.commit()
             _SCHEMA_READY = True
         finally:
