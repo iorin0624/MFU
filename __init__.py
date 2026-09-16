@@ -104,6 +104,12 @@ from app.utils.logs import (
     save_fw_404_settings,
     unban_fw_auto_permanent,
 )
+from app.utils.uuid_registry import (
+    ensure_uuid_registry_schema,
+    mark_uuid_deleted,
+    resolve_request_resource,
+    sync_known_uuid_resources,
+)
 from app.utils.fw_auto_ban import enforcement_enabled
 from app.utils.admin_logs_html import bind_runtime_csrf_token
 from app.utils.message import (
@@ -4746,13 +4752,13 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         if search_mode == "or":
             or_parts = []
             for term in search_terms:
-                or_parts.append("(log_text LIKE %s OR ip LIKE %s)")
-                params.extend([_adminlogs_like(term), _adminlogs_like(term)])
+                or_parts.append("(log_text LIKE %s OR ip LIKE %s OR resource_title LIKE %s OR resource_uuid LIKE %s OR resource_type LIKE %s)")
+                params.extend([_adminlogs_like(term)] * 5)
             where.append("(" + " OR ".join(or_parts) + ")")
         else:
             for term in search_terms:
-                where.append("(log_text LIKE %s OR ip LIKE %s)")
-                params.extend([_adminlogs_like(term), _adminlogs_like(term)])
+                where.append("(log_text LIKE %s OR ip LIKE %s OR resource_title LIKE %s OR resource_uuid LIKE %s OR resource_type LIKE %s)")
+                params.extend([_adminlogs_like(term)] * 5)
 
     if search_ip:
         where.append("ip LIKE %s")
@@ -4793,7 +4799,8 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
     elif has_ip_prefix_filter and _adminlogs_has_ip_index(cursor):
         logs_table_sql = "logs FORCE INDEX (idx_logs_ip)"
 
-    base_sql = f"SELECT id, log_date, ip, log_text FROM {logs_table_sql}"
+    log_select = "id, log_date, ip, log_text, resource_registry_id, resource_type, resource_uuid, resource_title, resource_status"
+    base_sql = f"SELECT {log_select} FROM {logs_table_sql}"
     can_count_fast = bool(selected_date or search_date_from or search_date_to)
     sql_total = None
     if can_count_fast:
@@ -4824,7 +4831,7 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         if last_id is not None:
             chunk_where.append("id < %s")
             chunk_params.append(last_id)
-        chunk_sql = f"SELECT id, log_date, ip, log_text FROM {logs_table_sql}"
+        chunk_sql = f"SELECT {log_select} FROM {logs_table_sql}"
         if chunk_where:
             chunk_sql += " WHERE " + " AND ".join(chunk_where)
         chunk_sql += " ORDER BY id DESC LIMIT %s"
@@ -5930,6 +5937,12 @@ def temp_sensor():
 def before_every_request():
     g._req_start = time.time()
 
+    try:
+        g.mfu_uuid_resource = resolve_request_resource(request)
+    except Exception as exc:
+        g.mfu_uuid_resource = None
+        app.logger.warning("UUID resource resolution failed: %s", exc)
+
     # 公開サブドメインの任意 src を安全に保持し、以後の画面遷移にも引き継ぐ。
     if public_traffic_source_host(request.host):
         raw_source = request.args.get("src")
@@ -6056,6 +6069,24 @@ def finalize_response(response):
         log_access(request, response, session, endpoint=request.endpoint)
     except Exception as e:
         app.logger.warning(f"log_access failed: {e}")
+
+    try:
+        resource = getattr(g, "mfu_uuid_resource", None) or {}
+        endpoint = request.endpoint or ""
+        if (
+            resource.get("uuid")
+            and endpoint in {
+                "upload_history.upload_delete",
+                "album.delete_album",
+                "album.delete_child",
+                "external_login_user.admin_event_soft_delete",
+            }
+            and request.method in {"POST", "DELETE"}
+            and response.status_code < 400
+        ):
+            mark_uuid_deleted(resource["uuid"], reason=f"endpoint:{endpoint}")
+    except Exception as exc:
+        app.logger.warning("UUID delete marker failed: %s", exc)
 
     if request.path == "/login" or request.path.startswith(("/auth/", "/mfa/", "/webauthn/")):
         response.headers["Content-Security-Policy"] = (
@@ -6441,6 +6472,85 @@ def admin_fw_ban():
 # =======================================
 # 管理: 直近2000件の生アクセスログをCSVダウンロード
 # =======================================
+@app.route("/admin/uuids")
+@admin_required
+def admin_uuid_registry():
+    if request.args.get("sync") == "1":
+        counts = sync_known_uuid_resources()
+        flash("UUID台帳を同期しました（" + " / ".join(f"{k}: {v}" for k, v in sorted(counts.items())) + "）", "success")
+        return redirect(url_for("admin_uuid_registry"))
+
+    query = (request.args.get("q") or "").strip()
+    resource_type = (request.args.get("type") or "").strip().upper()
+    status = (request.args.get("status") or "").strip().lower()
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    per_page = 100
+    where, params = [], []
+    if query:
+        like = f"%{query}%"
+        where.append("(uuid_value LIKE %s OR title_current LIKE %s OR title_initial LIKE %s OR source_pk LIKE %s)")
+        params.extend([like] * 4)
+    if resource_type:
+        where.append("resource_type=%s")
+        params.append(resource_type)
+    if status:
+        where.append("status=%s")
+        params.append(status)
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT COUNT(*) AS count FROM central_uuid_registry" + where_sql, params)
+    total = int((cur.fetchone() or {}).get("count") or 0)
+    cur.execute(
+        "SELECT * FROM central_uuid_registry" + where_sql + " ORDER BY last_seen_at DESC, id DESC LIMIT %s OFFSET %s",
+        params + [per_page, (page - 1) * per_page],
+    )
+    rows = cur.fetchall() or []
+    ids = [row["id"] for row in rows]
+    histories = {}
+    if ids:
+        placeholders = ",".join(["%s"] * len(ids))
+        cur.execute(
+            f"SELECT registry_id,title,change_type,recorded_at FROM central_uuid_title_history WHERE registry_id IN ({placeholders}) ORDER BY recorded_at DESC",
+            ids,
+        )
+        for history in cur.fetchall() or []:
+            histories.setdefault(history["registry_id"], []).append(history)
+    cur.execute("SELECT DISTINCT resource_type FROM central_uuid_registry ORDER BY resource_type")
+    types = [row["resource_type"] for row in cur.fetchall() or []]
+    cur.close()
+    db.close()
+    return render_template(
+        "admin_uuid_registry.html", rows=rows, histories=histories, types=types,
+        query=query, selected_type=resource_type, selected_status=status,
+        page=page, total=total, total_pages=max(1, (total + per_page - 1) // per_page),
+    )
+
+
+@app.route("/admin/uuids/export.csv")
+@admin_required
+def admin_uuid_registry_export():
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT * FROM central_uuid_registry ORDER BY id")
+    rows = cur.fetchall() or []
+    cur.close()
+    db.close()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    columns = ["id", "uuid_value", "resource_type", "title_initial", "title_current", "status", "source_table", "source_pk", "parent_uuid", "owner_key", "canonical_path", "first_seen_at", "last_seen_at", "deleted_at"]
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([row.get(column) or "" for column in columns])
+    response = Response(buf.getvalue(), mimetype="text/csv; charset=utf-8")
+    response.headers["Content-Disposition"] = 'attachment; filename="central_uuid_registry.csv"'
+    return response
+
+
 @app.route("/admin/logs/export", methods=["GET", "POST"])
 @admin_required
 def admin_logs_export():
@@ -6451,7 +6561,7 @@ def admin_logs_export():
     db = get_db()
     cur = db.cursor(dictionary=True)
     cur.execute(
-        "SELECT id, log_date, ip, log_text FROM logs ORDER BY id DESC LIMIT 3000"
+        "SELECT id, log_date, ip, resource_type, resource_uuid, resource_title, resource_status, log_text FROM logs ORDER BY id DESC LIMIT 3000"
     )
     rows = cur.fetchall()
     db.close()
@@ -6459,7 +6569,7 @@ def admin_logs_export():
     # CSV生成（UTF-8 / 改行は LF）
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["id", "log_date", "ip", "log_text"])
+    writer.writerow(["id", "log_date", "ip", "resource_type", "resource_uuid", "resource_title", "resource_status", "log_text"])
     for r in rows:
         dt = r["log_date"]
         if isinstance(dt, datetime):
@@ -6470,6 +6580,10 @@ def admin_logs_export():
             r["id"],
             dt_str,
             r.get("ip") or "",
+            r.get("resource_type") or "",
+            r.get("resource_uuid") or "",
+            r.get("resource_title") or "",
+            r.get("resource_status") or "",
             r.get("log_text") or "",
         ])
     csv_text = buf.getvalue()
@@ -6690,6 +6804,11 @@ try:
     ensure_notification_message_schema()
 except Exception as exc:
     app.logger.warning(f"upload notification message schema init skipped: {exc}")
+
+try:
+    ensure_uuid_registry_schema()
+except Exception as exc:
+    app.logger.warning(f"central UUID registry schema init skipped: {exc}")
 
 try:
     from app.shipment_tracking.services import ensure_nav_item, ensure_shipment_tracking_schema

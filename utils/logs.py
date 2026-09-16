@@ -242,6 +242,11 @@ def log_request_raw(
     latency_ms,
     location=None,   # ← 追加
     marker=None,
+    resource_registry_id=None,
+    resource_type=None,
+    resource_uuid=None,
+    resource_title=None,
+    resource_status=None,
 ) -> None:
     """
     旧来互換の生INSERT関数。
@@ -259,6 +264,11 @@ def log_request_raw(
     latency_ms = int(latency_ms) if latency_ms is not None else 0
     location   = _clamp(location or "", 512)
     marker     = _clamp(marker or "", 160)
+    resource_registry_id = int(resource_registry_id) if resource_registry_id else None
+    resource_type = _clamp(resource_type or "", 40)
+    resource_uuid = _clamp(resource_uuid or "", 36)
+    resource_title = _clamp(resource_title or "", 255)
+    resource_status = _clamp(resource_status or "", 32)
 
     # ログ1行分テキスト（Locationがあれば Loc="..." を追加）
     parts = []
@@ -284,11 +294,16 @@ def log_request_raw(
         cur.execute(
             """
             INSERT INTO logs
-              (log_date, ip, method, path, status, ua, referer, endpoint, username, latency_ms, log_text)
+              (log_date, ip, method, path, status, ua, referer, endpoint, username, latency_ms,
+               resource_registry_id, resource_type, resource_uuid, resource_title, resource_status, log_text)
             VALUES
-              (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (ip, method, path, status, ua, referer, endpoint, username, latency_ms, log_text),
+            (
+                ip, method, path, status, ua, referer, endpoint, username, latency_ms,
+                resource_registry_id, resource_type, resource_uuid, resource_title,
+                resource_status, log_text,
+            ),
         )
         db.commit()
     finally:
@@ -623,6 +638,8 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
             "[TRAFFIC_SOURCE] src=" + json.dumps(traffic_source, ensure_ascii=False)
         )
 
+    resource = getattr(g, "mfu_uuid_resource", None) or {}
+
     return dict(
         ip=_client_ip(),
         method=flask_request.method,
@@ -634,6 +651,11 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
         username=username,
         latency_ms=_latency_ms(),
         marker=" ".join(markers),
+        resource_registry_id=resource.get("id"),
+        resource_type=resource.get("resource_type") or "",
+        resource_uuid=resource.get("uuid") or "",
+        resource_title=resource.get("title") or "",
+        resource_status=resource.get("status") or "",
     )
 
 
