@@ -20,6 +20,9 @@ h2 { margin:0; font-size:1.15rem; }
 .notice-card summary::-webkit-details-marker { display:none; }
 .notice-card summary span { color:#60708a; font-size:1.35rem; transition:transform .18s ease; }
 .notice-card[open] summary span { transform:rotate(180deg); }
+.notice-summary-copy { display:flex; min-width:0; flex-direction:column; align-items:flex-start; gap:4px; }
+.notice-summary-copy h2,.notice-summary-copy small { display:block; white-space:nowrap; }
+.notice-summary-copy small { color:#697892; font-size:.86rem; font-weight:700; }
 .notice-alert-title { animation:notice-alert-blink 1.5s steps(1,end) infinite; }
 @keyframes notice-alert-blink { 0%,66.666% { opacity:1; } 66.667%,100% { opacity:0; } }
 @media(prefers-reduced-motion:reduce) { .notice-alert-title { animation:none; } }
