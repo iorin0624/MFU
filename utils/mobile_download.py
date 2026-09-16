@@ -75,8 +75,12 @@ DEFAULT_SHORTCUT_SETTINGS = {
     "current_version": 1,
     "minimum_supported_version": 0,
     "allow_unversioned": True,
-    "version_rejection_message": "このショートカットは現在のサーバーに対応していません。最新版へ更新してください。",
+    "version_rejection_message": "このショートカットは現在のサーバーに対応していません。最新版へ更新してください。\n\nアップデート時は、必ず「置き換え」を選択してください。",
 }
+
+LEGACY_VERSION_REJECTION_MESSAGE = (
+    "このショートカットは現在のサーバーに対応していません。最新版へ更新してください。"
+)
 
 
 def _hash_token(token: str) -> str:
@@ -252,9 +256,15 @@ def _ensure_schema() -> None:
             """
             UPDATE mobile_download_shortcut_settings
                SET version_rejection_message=%s
-             WHERE id=1 AND COALESCE(version_rejection_message,'')=''
+             WHERE id=1 AND (
+                    COALESCE(version_rejection_message,'')=''
+                    OR version_rejection_message=%s
+             )
             """,
-            (DEFAULT_SHORTCUT_SETTINGS["version_rejection_message"],),
+            (
+                DEFAULT_SHORTCUT_SETTINGS["version_rejection_message"],
+                LEGACY_VERSION_REJECTION_MESSAGE,
+            ),
         )
         db.commit()
     finally:

@@ -153,9 +153,14 @@
       launching.hidden = true;
       install.hidden = true;
       upgrade.hidden = false;
-      dialog.querySelector('[data-upgrade-body]').textContent =
+      const configuredMessage =
         status?.message || config.version_rejection_message ||
         '現在のショートカットは利用できません。最新版へ更新してください。';
+      const replacementGuide = 'アップデート時は、必ず「置き換え」を選択してください。';
+      dialog.querySelector('[data-upgrade-body]').textContent =
+        configuredMessage.includes('置き換え')
+          ? configuredMessage
+          : `${configuredMessage}\n\n${replacementGuide}`;
       const clientVersion = status?.client_version;
       const clientLabel = clientVersion === null || clientVersion === undefined
         ? '旧版（バージョン未送信）'
