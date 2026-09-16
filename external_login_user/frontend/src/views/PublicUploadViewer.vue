@@ -461,7 +461,7 @@ onUnmounted(() => {
 
       <section v-if="data.notice" class="notice-grid">
         <details v-if="data.notice" class="notice-card">
-          <summary><div class="notice-summary-copy"><h2 class="notice-alert-title">⚠お知らせ⚠</h2><small>必ずお読みください</small></div><span aria-hidden="true">⌄</span></summary>
+          <summary><div class="notice-summary-copy"><h2 class="notice-alert-title">⚠️お知らせ⚠️</h2><small>必ずお読みください</small></div><span aria-hidden="true">⌄</span></summary>
           <p>{{ data.notice }}</p>
         </details>
       </section>
