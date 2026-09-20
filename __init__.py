@@ -2977,8 +2977,7 @@ def public_upload_view_api(uuid):
     public_count = sum(1 for row in file_rows if not row.get("is_hidden"))
     hidden_count = sum(1 for row in file_rows if row.get("is_hidden"))
     reply_enabled = bool(
-        upload.get("mode") == "layer"
-        and mode_row.get("enable_layer_upload_url")
+        mode_row.get("enable_layer_upload_url")
     )
     reply_groups = []
     if (view_access or receipt_reply_grants) and reply_enabled:
