@@ -4354,7 +4354,7 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         "/external-login/api/notifications",
         "/profile",
         "/admin/logs/status",
-#        "",
+        "/mobile-download/api/files/",
 #        "",
 #        "",
 #        "",
