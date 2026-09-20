@@ -12,9 +12,12 @@ __pycache__/
 venv/
 
 # Editor, patch, and manual backup remnants
-*.bak
-*.bak-*
-*.bak.*
+*.bak*
+*.pre-*
+*.pre_*
+*.pre.*
+*.backup*
+*.old*
 *.orig
 *.rej
 *~
