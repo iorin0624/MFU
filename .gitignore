@@ -11,6 +11,14 @@ __pycache__/
 .venv/
 venv/
 
+# Editor, patch, and manual backup remnants
+*.bak
+*.bak-*
+*.bak.*
+*.orig
+*.rej
+*~
+
 # Build work directories
 **/build/
 **/build_v*/
