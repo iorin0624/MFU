@@ -33,6 +33,10 @@ class AdminLogsPathSearchTest(unittest.TestCase):
         migration = (ROOT / "migrations" / "20260713_logs_path_index.sql").read_text(encoding="utf-8-sig")
         self.assertIn("CREATE INDEX idx_logs_path ON logs (path(191))", migration)
 
+    def test_mobile_shortcut_file_downloads_are_hidden_from_admin_log_list(self):
+        source = function_source(ROOT / "__init__.py", "_build_admin_logs_html")
+        self.assertIn('"/mobile-download/api/files/"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
