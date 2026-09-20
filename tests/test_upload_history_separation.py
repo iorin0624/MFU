@@ -34,6 +34,7 @@ class UploadHistorySeparationTest(unittest.TestCase):
         source = function_source(ROOT / "utils" / "layer_reply.py", "_fetch_layer_upload")
         self.assertIn("layer_deleted_at IS NULL", source)
         self.assertNotIn("upload_deleted_at", source)
+        self.assertNotIn("mode='layer'", source)
 
     def test_normal_view_rejects_deleted_uploads(self):
         source = function_source(ROOT / "utils" / "upload_security.py", "fetch_upload_access_record")

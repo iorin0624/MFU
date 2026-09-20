@@ -12,8 +12,8 @@ def test_public_upload_viewer_keeps_legacy_rollback_and_access_control():
     assert 'full_access = not bool(upload.get("upload_deleted_at"))' in source
     assert "has_layer_reply_upload_auth(uuid)" in source
     assert '"notice": "" if reply_only_access else str(message_row.get("message") or "").strip()' in source
-    assert 'upload.get("mode") == "layer"' in source
     assert 'mode_row.get("enable_layer_upload_url")' in source
+    assert 'upload.get("mode") == "layer"\n        and mode_row.get("enable_layer_upload_url")' not in source
     assert "fetch_layer_reply_access_record" in source
     assert 'bool(upload.get("upload_deleted_at"))' in source
 

@@ -46,7 +46,7 @@ def _fetch_layer_upload(uuid: str) -> tuple[dict | None, dict | None]:
         cursor.execute(
             """
             SELECT * FROM uploads
-             WHERE uuid=%s AND mode='layer' AND layer_deleted_at IS NULL
+             WHERE uuid=%s AND layer_deleted_at IS NULL
              LIMIT 1
             """,
             (uuid,),
