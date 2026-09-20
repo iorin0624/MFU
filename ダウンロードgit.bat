@@ -1,160 +1,102 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
+chcp 65001 >nul
 
-set "SCRIPT_VERSION=20260714a"
-set "HOST=server-103-16"
-set "REMOTE_DIR=/mnt/mfu/app"
-set "TMP=C:\mfu_tmp_dl"
-set "MSG=backup from server-103-16 (/mnt/mfu/app)"
+set "SCRIPT_VERSION=20260921a"
 set "BRANCH=main"
-set "SSHOPTS=-o StrictHostKeyChecking=accept-new"
-
-echo [INFO] SCRIPT_VERSION=%SCRIPT_VERSION%
-
-set "DEST="
+set "REMOTE=origin"
 set "SCRIPT_DIR=%~dp0"
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
-if exist "%SCRIPT_DIR%\.git\" set "DEST=%SCRIPT_DIR%"
-if not defined DEST if exist "%CD%\.git\" set "DEST=%CD%"
-
-if not defined DEST (
-  echo [ERROR] DEST not detected
-  echo [HINT] Put this bat in the repo root, or run it from the repo root
-  goto FAIL
-)
-
-echo [INFO] HOST=%HOST%
-echo [INFO] REMOTE_DIR=%REMOTE_DIR%
-echo [INFO] DEST=%DEST%
-echo [INFO] TMP=%TMP%
+echo [INFO] MFU GitHub download
+echo [INFO] SCRIPT_VERSION=%SCRIPT_VERSION%
+echo [INFO] REPOSITORY=%SCRIPT_DIR%
+echo [INFO] This script only downloads updates from GitHub.
+echo [INFO] It does not copy files directly from the production server.
 echo.
 
-where scp >nul 2>&1 || (
-  echo [ERROR] scp not found
-  goto FAIL
-)
-where ssh >nul 2>&1 || (
-  echo [ERROR] ssh not found
-  goto FAIL
-)
-where git >nul 2>&1 || (
-  echo [ERROR] git not found
-  goto FAIL
-)
-where powershell >nul 2>&1 || (
-  echo [ERROR] powershell not found
-  goto FAIL
-)
-where robocopy >nul 2>&1 || (
-  echo [ERROR] robocopy not found
-  goto FAIL
-)
-
-if not exist "%DEST%\.git" (
-  echo [ERROR] DEST is not a git repository
-  goto FAIL
-)
-
-if exist "%TMP%\" rmdir /S /Q "%TMP%" >nul 2>&1
-mkdir "%TMP%" >nul 2>&1 || (
-  echo [ERROR] TMP create failed
-  goto FAIL
-)
-
-echo [STEP] Download to TMP
-scp %SSHOPTS% -r %HOST%:%REMOTE_DIR% "%TMP%"
+where git >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] scp failed
+  echo [ERROR] Git was not found in PATH.
   goto FAIL
 )
 
-if not exist "%TMP%\app\" (
-  echo [ERROR] TMP\app not found after scp
+if not exist "%SCRIPT_DIR%\.git\" (
+  echo [ERROR] The batch file is not in the repository root.
   goto FAIL
 )
 
-echo [STEP] Copy app into DEST
-robocopy "%TMP%\app" "%DEST%" /E /R:1 /W:1 /COPY:DAT /DCOPY:DAT /NFL /NDL /NJH /NJS /NP >nul
-set "RC=%ERRORLEVEL%"
-echo [INFO] robocopy rc=%RC%
-if %RC% GEQ 8 (
-  echo [ERROR] robocopy failed
-  goto FAIL
-)
-
-if exist "%TMP%\" rmdir /S /Q "%TMP%" >nul 2>&1
-
-echo [STEP] Git add/commit/pull/push
-pushd "%DEST%"
+pushd "%SCRIPT_DIR%"
 if errorlevel 1 (
-  echo [ERROR] pushd failed
+  echo [ERROR] Could not open the repository folder.
   goto FAIL
 )
 
-git add -A
-if errorlevel 1 (
-  echo [ERROR] git add failed
+for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%B"
+if not defined CURRENT_BRANCH (
+  echo [ERROR] Git is in detached HEAD state.
+  popd
+  goto FAIL
+)
+if /I not "%CURRENT_BRANCH%"=="%BRANCH%" (
+  echo [ERROR] Current branch is "%CURRENT_BRANCH%". Expected "%BRANCH%".
   popd
   goto FAIL
 )
 
-for /r "%DEST%" %%F in (.env) do (
-  if exist "%%~fF" (
-    set "ENVABS=%%~fF"
-    set "CHECK_GIT=!ENVABS:\.git\=!"
-    if /I "!CHECK_GIT!"=="!ENVABS!" (
-      set "RELPATH=!ENVABS:%DEST%\=!"
-      set "RELPATH=!RELPATH:\=/!"
-      if defined RELPATH (
-        echo [INFO] exclude .env : !RELPATH!
-        git restore --staged -- "!RELPATH!" >nul 2>&1
-        if errorlevel 1 git reset -q HEAD -- "!RELPATH!" >nul 2>&1
-      )
-    )
-  )
+set "DIRTY="
+for /f "delims=" %%S in ('git status --porcelain --untracked-files^=all') do set "DIRTY=1"
+if defined DIRTY (
+  echo [ERROR] Local changes exist. Nothing was downloaded.
+  echo [HINT] Commit, stash, or remove these changes first:
+  git status --short
+  popd
+  goto FAIL
 )
 
-git diff --cached --quiet
+for /f "delims=" %%H in ('git rev-parse --short HEAD') do set "BEFORE=%%H"
+
+echo [STEP] Fetching %REMOTE%/%BRANCH%...
+git fetch --prune "%REMOTE%"
 if errorlevel 1 (
-  git commit -m "%MSG%"
-  if errorlevel 1 (
-    echo [ERROR] git commit failed
-    popd
-    goto FAIL
-  )
+  echo [ERROR] git fetch failed.
+  popd
+  goto FAIL
+)
+
+echo [STEP] Updating by fast-forward only...
+git pull --ff-only --no-rebase "%REMOTE%" "%BRANCH%"
+if errorlevel 1 (
+  echo [ERROR] Fast-forward update failed.
+  echo [HINT] No reset or automatic rebase was performed.
+  popd
+  goto FAIL
+)
+
+for /f "delims=" %%H in ('git rev-parse --short HEAD') do set "AFTER=%%H"
+
+echo.
+if /I "%BEFORE%"=="%AFTER%" (
+  echo [OK] Already up to date: %AFTER%
 ) else (
-  echo [INFO] no staged changes
+  echo [OK] Updated: %BEFORE% -^> %AFTER%
+  echo [INFO] Downloaded commits:
+  git log --oneline "%BEFORE%..%AFTER%"
 )
-
-git -c rebase.autoStash=true pull --rebase origin %BRANCH%
-if errorlevel 1 (
-  echo [ERROR] git pull --rebase failed
-  popd
-  goto FAIL
-)
-
-git push origin %BRANCH%
-if errorlevel 1 (
-  echo [ERROR] git push failed
-  popd
-  goto FAIL
-)
-
+git status --short --branch
 popd
 goto OK
 
 :OK
 echo.
-echo [OK] completed
-echo [OK] local copy keeps .env, GitHub excludes .env
+echo [OK] GitHub download completed safely.
 echo.
 pause
 exit /b 0
 
 :FAIL
 echo.
-echo [FAIL] stopped due to error above
+echo [FAIL] Stopped without overwriting local work.
 echo.
 pause
 exit /b 1
