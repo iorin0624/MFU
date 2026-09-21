@@ -43,6 +43,7 @@ body {
 .button.secondary { color: var(--color-ink); background: #eee5df; }
 .button.danger { background: #9d3030; }
 .actions { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; }
+.grow { flex: 1 1 16rem; }
 .visit-list { display: grid; gap: 1rem; margin-top: 2rem; }
 .visit-card { padding: 1rem; border: 1px solid #eadfd7; border-radius: .7rem; }
 .visit-card h2, .visit-card h3 { margin-top: 0; }
