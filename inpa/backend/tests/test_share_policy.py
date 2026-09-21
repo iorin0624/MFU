@@ -2,7 +2,7 @@ from datetime import time, timedelta
 
 import pytest
 
-from inpa_app.share import _time_text, visibility_allows
+from inpa_app.share import _share_artifacts, _time_text, visibility_allows
 
 
 @pytest.mark.parametrize(
@@ -61,3 +61,13 @@ def test_owner_always_sees_own_visit(visibility):
 )
 def test_database_time_serialization(value, expected):
     assert _time_text(value) == expected
+
+
+def test_share_artifacts_use_short_url_and_embedded_svg():
+    from inpa_app import create_app
+
+    app = create_app("public", {"TESTING": True, "PUBLIC_ORIGIN": "https://inpa.example"})
+    with app.app_context():
+        result = _share_artifacts("0123456789ABCDEFGHJKM")
+    assert result["url"] == "https://inpa.example/0123456789ABCDEFGHJKM"
+    assert result["qr_svg"].startswith("<svg")
