@@ -219,8 +219,7 @@ CREATE TABLE reports (
   CONSTRAINT fk_reports_reporter FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE SET NULL,
   CONSTRAINT fk_reports_target_user FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL,
   CONSTRAINT fk_reports_target_visit FOREIGN KEY (target_visit_id) REFERENCES visits(id) ON DELETE SET NULL,
-  CONSTRAINT chk_reports_status CHECK (status IN ('open','in_progress','resolved','dismissed')),
-  CONSTRAINT chk_reports_target CHECK (target_user_id IS NOT NULL OR target_visit_id IS NOT NULL)
+  CONSTRAINT chk_reports_status CHECK (status IN ('open','in_progress','resolved','dismissed'))
 ) ENGINE=InnoDB;
 
 CREATE TABLE security_events (
