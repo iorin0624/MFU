@@ -16,7 +16,9 @@ from .config import apply_settings
 from .db import init_app as init_db
 from .health import bp as health_bp
 from .internal_admin import bp as internal_admin_bp
+from .planner import bp as planner_bp
 from .public import bp as public_bp
+from .share import bp as share_bp
 
 
 def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
@@ -32,6 +34,8 @@ def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
     if role == "public":
         app.register_blueprint(public_bp)
         app.register_blueprint(auth_bp)
+        app.register_blueprint(planner_bp)
+        app.register_blueprint(share_bp)
     else:
         app.register_blueprint(internal_admin_bp)
 

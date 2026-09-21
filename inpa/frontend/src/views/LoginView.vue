@@ -7,7 +7,7 @@ const router = useRouter(); const email = ref(''); const password = ref(''); con
 const pending = ref(false); const error = ref('')
 async function submit() {
   pending.value = true; error.value = ''
-  try { await api('/auth/login', { email: email.value, password: password.value, remember: remember.value }); await router.push('/') }
+  try { await api('/auth/login', { method: 'POST', body: { email: email.value, password: password.value, remember: remember.value } }); await router.push('/') }
   catch (cause) { error.value = cause instanceof ApiError ? cause.message : '通信に失敗しました。' }
   finally { pending.value = false }
 }

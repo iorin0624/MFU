@@ -14,7 +14,7 @@ async function submit() {
   if (password.value !== passwordAgain.value) { error.value = 'パスワードが一致しません。'; return }
   pending.value = true
   try {
-    await api('/auth/register/complete', { token: token.value, password: password.value, terms_accepted: termsAccepted.value, display_name: displayName.value })
+    await api('/auth/register/complete', { method: 'POST', body: { token: token.value, password: password.value, terms_accepted: termsAccepted.value, display_name: displayName.value } })
     await router.push('/')
   } catch (cause) { error.value = cause instanceof ApiError ? cause.message : '通信に失敗しました。' } finally { pending.value = false }
 }
