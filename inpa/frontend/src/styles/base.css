@@ -70,9 +70,10 @@ body {
 .calendar-cell.selected { background: #fff1e9; box-shadow: inset 0 0 0 2px var(--color-accent); }
 .day-number { display: grid; width: 1.75rem; height: 1.75rem; place-items: center; margin-bottom: .25rem; border-radius: 999px; font-weight: 700; }
 .calendar-cell.today .day-number { color: #fff; background: var(--color-accent); }
-.sunday .day-number, .weekday.sunday { color: #c43d4d; }
+.sunday .day-number, .holiday .day-number, .weekday.sunday { color: #c43d4d; }
 .saturday .day-number, .weekday.saturday { color: #3478bf; }
-.calendar-cell.today.sunday .day-number, .calendar-cell.today.saturday .day-number { color: #fff; }
+.calendar-cell.today.sunday .day-number, .calendar-cell.today.saturday .day-number, .calendar-cell.today.holiday .day-number { color: #fff; }
+.holiday-name { display: block; overflow: hidden; margin-bottom: .2rem; color: #c43d4d; font-size: .62rem; font-weight: 700; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
 .day-counts { display: grid; gap: .2rem; }
 .park-count { overflow: hidden; padding: .16rem .28rem; border-radius: .25rem; color: #fff; font-size: .68rem; font-weight: 750; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .park-both { background: #8e44ad; }
