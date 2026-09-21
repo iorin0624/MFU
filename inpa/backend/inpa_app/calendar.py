@@ -16,6 +16,13 @@ from .restrictions import serialize_restriction
 bp = Blueprint("calendar", __name__, url_prefix="/api/v1")
 
 
+def _park_counts(entries: list[dict[str, object]]) -> dict[str, int]:
+    return {
+        park: sum(entry.get("park") == park for entry in entries)
+        for park in ("both", "land", "sea", "undecided")
+    }
+
+
 @bp.get("/calendar")
 def integrated_calendar():
     session, error = _require_session()
@@ -28,29 +35,32 @@ def integrated_calendar():
     except ValueError:
         return _error("invalid_month", "年月を確認してください。", 400)
     end = date(year, month, month_calendar.monthrange(year, month)[1])
-    season_public_id = request.args.get("season_id", "")
+    season_public_id = request.args.get("season_id", "").strip()
     person_public_id = request.args.get("person_id", "")
     myself_only = request.args.get("myself_only") == "1"
     viewer_id = int(session["user_id"])
     with get_engine().connect() as connection:
-        season = connection.execute(
-            text("SELECT id,public_id,name FROM seasons WHERE public_id=:id AND is_active=1"),
-            {"id": season_public_id},
-        ).mappings().first()
-        if not season:
-            return _error("invalid_season", "シーズンを確認してください。", 400)
+        season = None
+        if season_public_id:
+            season = connection.execute(
+                text("SELECT id,public_id,name FROM seasons WHERE public_id=:id AND is_active=1"),
+                {"id": season_public_id},
+            ).mappings().first()
+            if not season:
+                return _error("invalid_season", "シーズンを確認してください。", 400)
         rows = connection.execute(
             text(
                 "SELECT v.user_id,u.public_id AS user_public_id,u.display_name,"
                 "u.x_handle,u.instagram_handle,u.x_handle_visible,u.instagram_handle_visible,"
                 "v.visit_date,v.park,v.costume,v.memo "
-                "FROM visits v JOIN users u ON u.id=v.user_id "
-                "WHERE v.season_id=:season AND v.visit_date BETWEEN :start AND :end "
+                "FROM visits v JOIN users u ON u.id=v.user_id JOIN seasons s ON s.id=v.season_id "
+                "WHERE s.is_active=1 AND (:season IS NULL OR v.season_id=:season) "
+                "AND v.visit_date BETWEEN :start AND :end "
                 "AND (v.user_id=:viewer OR ("
                 ":myself_only=0 AND v.user_id IN (SELECT followed_user_id FROM follows WHERE follower_user_id=:viewer))) "
                 "AND (:person_id='' OR u.public_id=:person_id) ORDER BY v.visit_date,u.display_name,v.id"
             ),
-            {"season": season["id"], "start": start, "end": end, "viewer": viewer_id,
+            {"season": season["id"] if season else None, "start": start, "end": end, "viewer": viewer_id,
              "myself_only": int(myself_only), "person_id": person_public_id},
         ).mappings().all()
         follows = connection.execute(
@@ -68,10 +78,11 @@ def integrated_calendar():
             text(
                 "SELECT r.public_id,r.name,r.restriction_type,r.start_date,r.end_date,"
                 "r.park_scope,r.description,r.enforcement FROM restriction_periods r "
-                "WHERE r.season_id=:season AND r.is_active=1 "
+                "JOIN seasons s ON s.id=r.season_id WHERE s.is_active=1 "
+                "AND (:season IS NULL OR r.season_id=:season) AND r.is_active=1 "
                 "AND r.start_date<=:end AND r.end_date>=:start ORDER BY r.start_date,r.id"
             ),
-            {"season": season["id"], "start": start, "end": end},
+            {"season": season["id"] if season else None, "start": start, "end": end},
         ).mappings().all()
         privacy_matrices = {
             owner_id: load_matrix(connection, owner_id)
@@ -109,10 +120,11 @@ def integrated_calendar():
             "date": day, "count": len(entries),
             "land_count": sum(entry.get("park") in {"land", "both"} for entry in entries),
             "sea_count": sum(entry.get("park") in {"sea", "both"} for entry in entries),
+            "park_counts": _park_counts(entries),
             "entries": entries,
         })
     return jsonify(
-        season={"public_id": season["public_id"], "name": season["name"]},
+        season={"public_id": season["public_id"], "name": season["name"]} if season else None,
         days=result,
         restrictions=[serialize_restriction(row) for row in restrictions],
     )
