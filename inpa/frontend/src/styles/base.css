@@ -64,7 +64,7 @@ body {
 .calendar-add { color: #fff; background: var(--color-accent); border-color: var(--color-accent); }
 .month-calendar { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); overflow: hidden; background: #fff; border: 1px solid #eadfd7; border-radius: 1rem; }
 .weekday { padding: .55rem .2rem; text-align: center; border-bottom: 1px solid #eadfd7; font-size: .82rem; font-weight: 700; }
-.calendar-cell { min-width: 0; min-height: calc(7rem + var(--restriction-lanes, 0) * 1.15rem); padding: .45rem; color: inherit; background: #fff; border: 0; border-right: 1px solid #f0e7e1; border-bottom: 1px solid #f0e7e1; text-align: left; cursor: pointer; }
+.calendar-cell { display: grid; min-width: 0; min-height: calc(7rem + var(--restriction-lanes, 0) * 1.15rem); grid-template-rows: 1.9rem auto; align-content: start; padding: .45rem; color: inherit; background: #fff; border: 0; border-right: 1px solid #f0e7e1; border-bottom: 1px solid #f0e7e1; text-align: left; cursor: pointer; }
 .calendar-cell.saturday { border-right: 0; }
 .calendar-cell.blank { cursor: default; background: #fffaf7; }
 .calendar-cell.selected { background: #fff1e9; box-shadow: inset 0 0 0 2px var(--color-accent); }
@@ -76,7 +76,7 @@ body {
 .calendar-cell.today.sunday .day-number, .calendar-cell.today.saturday .day-number, .calendar-cell.today.holiday .day-number { color: #fff; }
 .holiday-name { display: block; overflow: hidden; padding-top: .25rem; color: #c43d4d; font-size: .6rem; font-weight: 700; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
 .day-counts { display: grid; gap: .2rem; margin-top: calc(var(--restriction-lanes, 0) * 1.15rem); }
-.restriction-bar { z-index: 2; align-self: start; overflow: hidden; height: 1rem; margin: calc(2.35rem + var(--restriction-lane) * 1.15rem) 2px 0; padding: .08rem .35rem; color: #fff; background: #b4232f; border-radius: .22rem; box-shadow: 0 1px 3px rgba(88, 8, 17, .25); font-size: .66rem; font-weight: 750; line-height: .84rem; text-align: center; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.restriction-bar { z-index: 2; align-self: start; overflow: hidden; height: 1rem; margin: calc(2.45rem + var(--restriction-lane) * 1.15rem) 2px 0; padding: .08rem .35rem; color: #fff; background: #b4232f; border-radius: .22rem; box-shadow: 0 1px 3px rgba(88, 8, 17, .25); font-size: .66rem; font-weight: 750; line-height: .84rem; text-align: center; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .park-count { overflow: hidden; padding: .16rem .28rem; border-radius: .25rem; color: #fff; font-size: .68rem; font-weight: 750; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .park-both { background: #8e44ad; }
 .park-land { background: #e85f91; }
@@ -120,7 +120,7 @@ body {
   .day-number { width: 1.55rem; height: 1.55rem; margin-inline: auto; }
   .day-header { min-height: 1.9rem; }
   .day-counts { margin-top: calc(var(--restriction-lanes, 0) * 1.05rem); }
-  .restriction-bar { height: .92rem; margin-top: calc(2.25rem + var(--restriction-lane) * 1.05rem); padding-inline: .18rem; font-size: .55rem; line-height: .76rem; }
+  .restriction-bar { height: .92rem; margin-top: calc(2.3rem + var(--restriction-lane) * 1.05rem); padding-inline: .18rem; font-size: .55rem; line-height: .76rem; }
   .park-count { padding: .13rem .16rem; font-size: .56rem; text-align: center; }
   .selected-date-panel { padding: 1rem; }
 }
