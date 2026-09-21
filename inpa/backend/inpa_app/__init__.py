@@ -20,6 +20,7 @@ from .internal_admin import bp as internal_admin_bp
 from .planner import bp as planner_bp
 from .public import bp as public_bp
 from .relationships import bp as relationships_bp
+from .restrictions import bp as restrictions_bp
 from .share import bp as share_bp
 
 
@@ -39,6 +40,7 @@ def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
         app.register_blueprint(calendar_bp)
         app.register_blueprint(planner_bp)
         app.register_blueprint(relationships_bp)
+        app.register_blueprint(restrictions_bp)
         app.register_blueprint(share_bp)
     else:
         app.register_blueprint(internal_admin_bp)

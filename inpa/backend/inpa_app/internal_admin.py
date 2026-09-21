@@ -290,16 +290,19 @@ def update_season(public_id: str):
         with get_engine().begin() as connection:
             key = require_idempotency(connection)
             before = connection.execute(text(
-                "SELECT name,slug,start_date,end_date,is_active FROM seasons WHERE public_id=:id FOR UPDATE"
+                "SELECT name,slug,start_date,end_date,is_active,updated_at FROM seasons WHERE public_id=:id FOR UPDATE"
             ), {"id": public_id}).mappings().first()
             if not before:
                 return _error("Season not found.", 404)
-            values = _season_values(request.get_json(silent=True), _season(before))
+            data = request.get_json(silent=True) or {}
+            if data.get("expected_updated_at") and data["expected_updated_at"] != _row(before)["updated_at"]:
+                return _error("Season was updated by another administrator. Reload and try again.", 409)
+            values = _season_values(data, _season(before))
             impacted = connection.execute(text(
                 "SELECT COUNT(*) FROM visits v JOIN seasons s ON s.id=v.season_id "
                 "WHERE s.public_id=:id AND (v.visit_date<:start OR v.visit_date>:end)"
             ), {"id": public_id, "start": values["start_date"], "end": values["end_date"]}).scalar()
-            if impacted and (request.get_json(silent=True) or {}).get("confirm_impacted") is not True:
+            if impacted and data.get("confirm_impacted") is not True:
                 return jsonify(error={"message": "Season change affects visits.", "impacted_count": impacted}), 409
             connection.execute(text(
                 "UPDATE seasons SET name=:name,slug=:slug,start_date=:start_date,end_date=:end_date,"
@@ -312,6 +315,157 @@ def update_season(public_id: str):
     except IntegrityError:
         return _error("Season slug already exists.", 409)
     return jsonify(public_id=public_id, impacted_count=impacted)
+
+
+@bp.get("/restriction-periods")
+@require_admin_hmac
+def list_restriction_periods():
+    season_id = request.args.get("season_id", "")
+    with get_engine().connect() as connection:
+        rows = connection.execute(text(
+            "SELECT r.public_id,s.public_id AS season_public_id,s.name AS season_name,r.name,"
+            "r.restriction_type,r.start_date,r.end_date,r.park_scope,r.description,"
+            "r.enforcement,r.is_active,r.created_at,r.updated_at FROM restriction_periods r "
+            "JOIN seasons s ON s.id=r.season_id WHERE (:season='' OR s.public_id=:season) "
+            "ORDER BY r.start_date DESC,r.id DESC"
+        ), {"season": season_id}).mappings().all()
+    return jsonify(restrictions=[_row(row) for row in rows])
+
+
+def _restriction_values(connection, data: object, current: dict | None = None):
+    if not isinstance(data, dict):
+        raise TypeError("JSON body is required.")
+    merged = {**(current or {}), **data}
+    name = merged.get("name")
+    restriction_type = merged.get("restriction_type", "costume_prohibited")
+    season_public_id = merged.get("season_public_id")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+        raise ValueError("Invalid restriction name.")
+    if restriction_type not in {"costume_prohibited", "custom_notice"}:
+        raise ValueError("Invalid restriction type.")
+    if not isinstance(season_public_id, str):
+        raise TypeError("Season is required.")
+    season = connection.execute(text(
+        "SELECT id,start_date,end_date FROM seasons WHERE public_id=:id"
+    ), {"id": season_public_id}).mappings().first()
+    if not season:
+        raise ValueError("Season not found.")
+    try:
+        start = date.fromisoformat(str(merged["start_date"])); end = date.fromisoformat(str(merged["end_date"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid restriction dates.") from exc
+    if start > end or start < season["start_date"] or end > season["end_date"]:
+        raise ValueError("Restriction dates must be inside the season.")
+    park_scope = merged.get("park_scope", "all")
+    if park_scope not in {"all", "land", "sea"}:
+        raise ValueError("Invalid park scope.")
+    description = merged.get("description") or None
+    if description is not None and (not isinstance(description, str) or len(description) > 500):
+        raise ValueError("Restriction description is too long.")
+    active = merged.get("is_active", True)
+    if not isinstance(active, bool):
+        raise TypeError("is_active must be boolean.")
+    return {
+        "season_id": season["id"], "season_public_id": season_public_id,
+        "name": name.strip(), "restriction_type": restriction_type,
+        "start_date": start, "end_date": end, "park_scope": park_scope,
+        "description": description, "enforcement": "warning", "is_active": active,
+    }
+
+
+def _restriction_overlap(connection, values: dict[str, object], exclude: str = "") -> bool:
+    if not values["is_active"]:
+        return False
+    return bool(connection.execute(text(
+        "SELECT 1 FROM restriction_periods WHERE season_id=:season_id AND is_active=1 "
+        "AND restriction_type=:restriction_type AND park_scope=:park_scope "
+        "AND start_date<=:end_date AND end_date>=:start_date "
+        "AND (:exclude='' OR public_id<>:exclude) LIMIT 1"
+    ), {**values, "exclude": exclude}).first())
+
+
+def _restriction_impact(connection, values: dict[str, object]) -> int:
+    if values["restriction_type"] != "costume_prohibited":
+        return 0
+    return int(connection.execute(text(
+        "SELECT COUNT(*) FROM visits WHERE season_id=:season_id AND costume IS NOT NULL "
+        "AND costume<>'' AND visit_date BETWEEN :start_date AND :end_date "
+        "AND (:park_scope='all' OR park=:park_scope OR park='both')"
+    ), values).scalar())
+
+
+@bp.post("/restriction-periods")
+@require_admin_hmac
+def create_restriction_period():
+    try:
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            values = _restriction_values(connection, request.get_json(silent=True))
+            if _restriction_overlap(connection, values):
+                return _error("An overlapping active restriction already exists.", 409)
+            public_id = new_public_id(); impact = _restriction_impact(connection, values)
+            connection.execute(text(
+                "INSERT INTO restriction_periods "
+                "(public_id,season_id,name,restriction_type,start_date,end_date,park_scope,description,enforcement,is_active) "
+                "VALUES (:public_id,:season_id,:name,:restriction_type,:start_date,:end_date,:park_scope,:description,:enforcement,:is_active)"
+            ), {**values, "public_id": public_id})
+            write_audit(connection, action="restriction_create", target_type="restriction_period",
+                        target_id=public_id, after={**values, "impacted_visits": impact}, idempotency_key=key)
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, impacted_count=impact), 201
+
+
+@bp.patch("/restriction-periods/<public_id>")
+@require_admin_hmac
+def update_restriction_period(public_id: str):
+    try:
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT r.name,r.restriction_type,r.start_date,r.end_date,r.park_scope,r.description,"
+                "r.enforcement,r.is_active,s.public_id AS season_public_id FROM restriction_periods r "
+                "JOIN seasons s ON s.id=r.season_id WHERE r.public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                return _error("Restriction not found.", 404)
+            values = _restriction_values(connection, request.get_json(silent=True), _row(before))
+            if _restriction_overlap(connection, values, public_id):
+                return _error("An overlapping active restriction already exists.", 409)
+            impact = _restriction_impact(connection, values)
+            connection.execute(text(
+                "UPDATE restriction_periods SET season_id=:season_id,name=:name,"
+                "restriction_type=:restriction_type,start_date=:start_date,end_date=:end_date,"
+                "park_scope=:park_scope,description=:description,enforcement=:enforcement,"
+                "is_active=:is_active,updated_at=UTC_TIMESTAMP(6) WHERE public_id=:public_id"
+            ), {**values, "public_id": public_id})
+            write_audit(connection, action="restriction_update", target_type="restriction_period",
+                        target_id=public_id, before=_row(before),
+                        after={**values, "impacted_visits": impact}, idempotency_key=key)
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, impacted_count=impact)
+
+
+@bp.delete("/restriction-periods/<public_id>")
+@require_admin_hmac
+def deactivate_restriction_period(public_id: str):
+    try:
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT name,is_active FROM restriction_periods WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                return _error("Restriction not found.", 404)
+            connection.execute(text(
+                "UPDATE restriction_periods SET is_active=0,updated_at=UTC_TIMESTAMP(6) WHERE public_id=:id"
+            ), {"id": public_id})
+            write_audit(connection, action="restriction_deactivate", target_type="restriction_period",
+                        target_id=public_id, before=_row(before), after={"is_active": False}, idempotency_key=key)
+    except (LookupError, ValueError) as exc:
+        return _mutation_error(exc)
+    return "", 204
 
 
 @bp.get("/reports")

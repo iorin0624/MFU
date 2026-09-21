@@ -77,6 +77,7 @@ _SECTIONS = {
     "visits": ("/internal/admin/v1/visits", "visits"),
     "reports": ("/internal/admin/v1/reports", "reports"),
     "seasons": ("/internal/admin/v1/seasons", "seasons"),
+    "restrictions": ("/internal/admin/v1/restriction-periods", "restrictions"),
     "security": ("/internal/admin/v1/security-events", "events"),
     "mail": ("/internal/admin/v1/mail-logs", "logs"),
     "audit": ("/internal/admin/v1/audit-logs", "logs"),
@@ -142,3 +143,75 @@ def create_season():
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
     return redirect(url_for("inpa_admin.index", section="seasons"))
+
+
+@inpa_admin_bp.post("/admin/inpa/seasons/<public_id>")
+@_admin_required
+def update_season(public_id: str):
+    payload = {
+        "name": request.form.get("name", ""), "slug": request.form.get("slug", ""),
+        "start_date": request.form.get("start_date", ""), "end_date": request.form.get("end_date", ""),
+        "is_active": request.form.get("is_active") == "1",
+        "confirm_impacted": request.form.get("confirm_impacted") == "1",
+        "expected_updated_at": request.form.get("expected_updated_at", ""),
+    }
+    try:
+        result = call_inpa("PATCH", f"/internal/admin/v1/seasons/{public_id}", payload=payload,
+                           idempotency_key=secrets.token_urlsafe(24))
+        flash(f"シーズンを更新しました。影響予定: {result.get('impacted_count', 0)}件", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="seasons"))
+
+
+@inpa_admin_bp.post("/admin/inpa/restrictions")
+@_admin_required
+def create_restriction():
+    payload = {
+        "season_public_id": request.form.get("season_public_id", ""),
+        "name": request.form.get("name", ""),
+        "restriction_type": request.form.get("restriction_type", "costume_prohibited"),
+        "start_date": request.form.get("start_date", ""), "end_date": request.form.get("end_date", ""),
+        "park_scope": request.form.get("park_scope", "all"),
+        "description": request.form.get("description", ""), "is_active": True,
+    }
+    try:
+        result = call_inpa("POST", "/internal/admin/v1/restriction-periods", payload=payload,
+                           idempotency_key=secrets.token_urlsafe(24))
+        flash(f"禁止期間を作成しました。該当予定: {result.get('impacted_count', 0)}件", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="restrictions"))
+
+
+@inpa_admin_bp.post("/admin/inpa/restrictions/<public_id>")
+@_admin_required
+def update_restriction(public_id: str):
+    payload = {
+        "season_public_id": request.form.get("season_public_id", ""),
+        "name": request.form.get("name", ""),
+        "restriction_type": request.form.get("restriction_type", "costume_prohibited"),
+        "start_date": request.form.get("start_date", ""), "end_date": request.form.get("end_date", ""),
+        "park_scope": request.form.get("park_scope", "all"),
+        "description": request.form.get("description", ""),
+        "is_active": request.form.get("is_active") == "1",
+    }
+    try:
+        result = call_inpa("PATCH", f"/internal/admin/v1/restriction-periods/{public_id}", payload=payload,
+                           idempotency_key=secrets.token_urlsafe(24))
+        flash(f"禁止期間を更新しました。該当予定: {result.get('impacted_count', 0)}件", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="restrictions"))
+
+
+@inpa_admin_bp.post("/admin/inpa/restrictions/<public_id>/deactivate")
+@_admin_required
+def deactivate_restriction(public_id: str):
+    try:
+        call_inpa("DELETE", f"/internal/admin/v1/restriction-periods/{public_id}",
+                  idempotency_key=secrets.token_urlsafe(24))
+        flash("禁止期間を無効化しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="restrictions"))

@@ -67,6 +67,7 @@ GET    /api/v1/visits/{id}
 PATCH  /api/v1/visits/{id}
 DELETE /api/v1/visits/{id}
 GET    /api/v1/calendar?season_id=&year=&month=
+GET    /api/v1/restrictions?season_id=&date=&park=
 ```
 
 更新系は、ログイン、メール確認、CSRF、所有者、入力値を検証します。
@@ -136,6 +137,10 @@ PATCH  /internal/admin/v1/reports/{id}
 GET    /internal/admin/v1/seasons
 POST   /internal/admin/v1/seasons
 PATCH  /internal/admin/v1/seasons/{id}
+GET    /internal/admin/v1/restriction-periods
+POST   /internal/admin/v1/restriction-periods
+PATCH  /internal/admin/v1/restriction-periods/{id}
+DELETE /internal/admin/v1/restriction-periods/{id}
 GET    /internal/admin/v1/security-events
 GET    /internal/admin/v1/mail-logs
 POST   /internal/admin/v1/mail-logs/{id}/retry
