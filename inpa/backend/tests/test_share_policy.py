@@ -1,6 +1,8 @@
+from datetime import time, timedelta
+
 import pytest
 
-from inpa_app.share import visibility_allows
+from inpa_app.share import _time_text, visibility_allows
 
 
 @pytest.mark.parametrize(
@@ -51,3 +53,11 @@ def test_owner_always_sees_own_visit(visibility):
         viewer_follows_owner=False,
         blocked=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(time(9, 30), "09:30:00"), (timedelta(hours=9, minutes=30), "09:30:00"), (None, None)],
+)
+def test_database_time_serialization(value, expected):
+    assert _time_text(value) == expected

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import time, timedelta
 
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text
@@ -17,6 +18,17 @@ VISIBLE_FIELDS = {
     "date": (), "park": ("park",), "memo": ("park", "memo"),
     "full": ("park", "arrival_time", "costume", "memo"),
 }
+
+
+def _time_text(value: time | timedelta | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        seconds = int(value.total_seconds())
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return value.isoformat()
 
 
 def visibility_allows(
@@ -79,7 +91,7 @@ def _render_visits(owner_id: int, rows, viewer_id: int | None, relationship):
         item = {"visit_date": row["visit_date"].isoformat()}
         for key in VISIBLE_FIELDS[row["detail_level"]]:
             value = row[key]
-            item[key] = value.isoformat() if key == "arrival_time" and value else value
+            item[key] = _time_text(value) if key == "arrival_time" else value
         result.append(item)
     return result
 
