@@ -13,6 +13,7 @@ from .service import (
     complete_registration,
     create_registration_request,
     get_session,
+    registration_is_invite_only,
     revoke_session,
     verify_csrf,
 )
@@ -80,6 +81,11 @@ def _require_session():
         return None, _error("authentication_required", "Sign in to continue.", 401)
     g.inpa_session = session
     return session, None
+
+
+@bp.get("/registration-settings")
+def registration_settings():
+    return jsonify(invite_only=registration_is_invite_only())
 
 
 @bp.post("/register/request")

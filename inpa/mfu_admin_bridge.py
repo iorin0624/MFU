@@ -100,6 +100,14 @@ def index(section: str = "dashboard"):
             seasons = call_inpa("GET", "/internal/admin/v1/seasons").get("seasons", [])
             restrictions = call_inpa("GET", "/internal/admin/v1/restriction-periods").get("restrictions", [])
             data = {"seasons": seasons, "restrictions": restrictions}
+        elif section == "invitations":
+            invitations = call_inpa(
+                "GET", "/internal/admin/v1/registration-invitations"
+            ).get("invitations", [])
+            settings = call_inpa(
+                "GET", "/internal/admin/v1/registration-settings"
+            ).get("settings", {"invite_only": True})
+            data = {"invitations": invitations, "settings": settings}
         else:
             path, key = _SECTIONS[section]
             if query:
@@ -112,6 +120,8 @@ def index(section: str = "dashboard"):
             data = {}
         elif section == "seasons":
             data = {"seasons": [], "restrictions": []}
+        elif section == "invitations":
+            data = {"invitations": [], "settings": {"invite_only": True}}
         else:
             data = []
         error = str(exc)
@@ -130,11 +140,15 @@ def create_invitation():
             payload={"memo": request.form.get("memo", ""), "expires_in_days": days},
             idempotency_key=secrets.token_urlsafe(24),
         )
-        data = call_inpa(
+        invitations = call_inpa(
             "GET", "/internal/admin/v1/registration-invitations"
         ).get("invitations", [])
+        settings = call_inpa(
+            "GET", "/internal/admin/v1/registration-settings"
+        ).get("settings", {"invite_only": True})
         return render_template(
-            "admin_inpa.html", section="invitations", data=data, error=None,
+            "admin_inpa.html", section="invitations",
+            data={"invitations": invitations, "settings": settings}, error=None,
             invite_result=result,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -152,6 +166,24 @@ def update_invitation(public_id: str):
             idempotency_key=secrets.token_urlsafe(24),
         )
         flash("招待トークンのメモを更新しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="invitations"))
+
+
+@inpa_admin_bp.post("/admin/inpa/registration-settings")
+@_admin_required
+def update_registration_settings():
+    try:
+        invite_only = request.form.get("invite_only") == "1"
+        call_inpa(
+            "PATCH", "/internal/admin/v1/registration-settings",
+            payload={"invite_only": invite_only}, idempotency_key=secrets.token_urlsafe(24),
+        )
+        if invite_only:
+            flash("一般の新規登録を無効にし、招待トークンを必須にしました。", "success")
+        else:
+            flash("一般の新規登録を有効にしました。", "warning")
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
     return redirect(url_for("inpa_admin.index", section="invitations"))

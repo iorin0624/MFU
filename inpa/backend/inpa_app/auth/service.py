@@ -44,6 +44,18 @@ def hash_secret(value: str) -> str:
     return hmac.new(pepper, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _registration_invite_only(connection, *, lock: bool = False) -> bool:
+    lock_clause = " FOR UPDATE" if lock and connection.dialect.name != "sqlite" else ""
+    return bool(connection.execute(text(
+        f"SELECT invite_only FROM registration_settings WHERE id=1{lock_clause}"
+    )).scalar_one())
+
+
+def registration_is_invite_only() -> bool:
+    with get_engine().connect() as connection:
+        return _registration_invite_only(connection)
+
+
 def normalize_email(value: object) -> tuple[str, str]:
     if not isinstance(value, str):
         raise RegistrationError("Enter a valid email address.")
@@ -87,8 +99,7 @@ def create_registration_request(
     user_agent: str | None,
 ) -> tuple[str, str] | None:
     """Claim an administrator invitation and create an email confirmation request."""
-    if not isinstance(invitation_value, str) or not invitation_value.strip():
-        raise RegistrationError("Enter a valid invitation token.")
+    invitation_token = invitation_value.strip() if isinstance(invitation_value, str) else ""
     email, normalized = normalize_email(email_value)
     token = new_secret()
     token_hash = hash_secret(token)
@@ -97,24 +108,29 @@ def create_registration_request(
     expires_at = now + timedelta(seconds=current_app.config["REGISTRATION_TTL_SECONDS"])
     engine = get_engine()
     with engine.begin() as connection:
-        invitation = connection.execute(
-            text(
-                "SELECT id,status,claimed_email_normalized FROM registration_invitations "
-                "WHERE token_hash=:token_hash AND revoked_at IS NULL AND used_at IS NULL "
-                "AND expires_at>:now FOR UPDATE"
-            ),
-            {"token_hash": hash_secret(invitation_value.strip()), "now": now},
-        ).mappings().first()
-        if not invitation or invitation["status"] not in {"active", "claimed"}:
-            raise RegistrationError("This invitation token is invalid, expired, or unavailable.")
-        if invitation["status"] == "claimed" and invitation["claimed_email_normalized"] != normalized:
-            raise RegistrationError("This invitation token is invalid, expired, or unavailable.")
+        invite_only = _registration_invite_only(connection, lock=True)
+        invitation = None
+        if invitation_token:
+            invitation = connection.execute(
+                text(
+                    "SELECT id,status,claimed_email_normalized FROM registration_invitations "
+                    "WHERE token_hash=:token_hash AND revoked_at IS NULL AND used_at IS NULL "
+                    "AND expires_at>:now FOR UPDATE"
+                ),
+                {"token_hash": hash_secret(invitation_token), "now": now},
+            ).mappings().first()
+            if not invitation or invitation["status"] not in {"active", "claimed"}:
+                raise RegistrationError("This invitation token is invalid, expired, or unavailable.")
+            if invitation["status"] == "claimed" and invitation["claimed_email_normalized"] != normalized:
+                raise RegistrationError("This invitation token is invalid, expired, or unavailable.")
+        elif invite_only:
+            raise RegistrationError("An invitation token is required for registration.")
         existing = connection.execute(
             text("SELECT id FROM users WHERE email_normalized = :email LIMIT 1"), {"email": normalized}
         ).first()
         if existing:
             return None
-        if invitation["status"] == "active":
+        if invitation and invitation["status"] == "active":
             connection.execute(
                 text(
                     "UPDATE registration_invitations SET status='claimed',"
@@ -138,7 +154,7 @@ def create_registration_request(
             ),
             {
                 "public_id": public_id,
-                "invitation_id": invitation["id"],
+                "invitation_id": invitation["id"] if invitation else None,
                 "email": email,
                 "normalized": normalized,
                 "token_hash": token_hash,
@@ -175,14 +191,18 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
             text(
                 "SELECT r.id,r.invitation_id,r.email,r.email_normalized,i.status AS invitation_status,"
                 "i.claimed_email_normalized,i.expires_at AS invitation_expires_at,i.revoked_at,i.used_at "
-                "FROM registration_requests r JOIN registration_invitations i ON i.id=r.invitation_id "
+                "FROM registration_requests r LEFT JOIN registration_invitations i ON i.id=r.invitation_id "
                 "WHERE r.token_hash=:token_hash AND r.consumed_at IS NULL AND r.expires_at>:now FOR UPDATE"
             ),
             {"token_hash": token_hash, "now": now},
         ).mappings().first()
         if not request_row:
             raise RegistrationError("This registration link is invalid or expired.")
-        if (
+        if request_row["invitation_id"] is None:
+            invite_only = _registration_invite_only(connection, lock=True)
+            if invite_only:
+                raise RegistrationError("This registration link is invalid or expired.")
+        elif (
             request_row["invitation_status"] != "claimed"
             or request_row["claimed_email_normalized"] != request_row["email_normalized"]
             or request_row["invitation_expires_at"] <= now
@@ -225,13 +245,14 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
             text("UPDATE registration_requests SET consumed_at = :now WHERE id = :id"),
             {"now": now, "id": request_row["id"]},
         )
-        connection.execute(
-            text(
-                "UPDATE registration_invitations SET status='used',used_by_user_id=:user_id,"
-                "used_at=:now,updated_at=:now WHERE id=:id AND status='claimed'"
-            ),
-            {"user_id": user_id, "now": now, "id": request_row["invitation_id"]},
-        )
+        if request_row["invitation_id"] is not None:
+            connection.execute(
+                text(
+                    "UPDATE registration_invitations SET status='used',used_by_user_id=:user_id,"
+                    "used_at=:now,updated_at=:now WHERE id=:id AND status='claimed'"
+                ),
+                {"user_id": user_id, "now": now, "id": request_row["invitation_id"]},
+            )
     return create_session(int(user_id), remember=True)
 
 

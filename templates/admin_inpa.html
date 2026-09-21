@@ -16,6 +16,17 @@
     <div class="row g-3">{% for key,value in data.items() %}<div class="col-6 col-lg-3"><div class="card"><div class="card-body"><small class="text-muted">{{ key }}</small><div class="fs-3">{{ value }}</div></div></div></div>{% endfor %}</div>
 
   {% elif section == 'invitations' %}
+    {% set invitations = data.invitations %}
+    {% set registration_settings = data.settings %}
+    <h3 class="h5">新規登録設定</h3>
+    <form method="post" action="{{ url_for('inpa_admin.update_registration_settings') }}" class="card card-body mb-4">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" role="switch" id="invite-only" name="invite_only" value="1" {% if registration_settings.invite_only %}checked{% endif %}>
+        <label class="form-check-label" for="invite-only"><strong>一般の新規登録を無効にする</strong>（招待トークン必須）</label>
+      </div>
+      <p class="text-muted mt-2 mb-2">ONでは管理画面で発行したトークンが必要です。OFFでは招待なしでも登録できます。</p>
+      <div><button class="btn btn-outline-primary btn-sm">登録設定を保存</button></div>
+    </form>
     <div class="alert alert-info">招待トークンは一度だけ全文を表示します。安全な方法で登録者へ渡してください。</div>
     {% if invite_result %}
       <div class="alert alert-success">
@@ -34,7 +45,7 @@
     <h3 class="h5">発行済み招待トークン</h3>
     <div class="table-responsive"><table class="table table-sm table-striped align-middle">
       <thead><tr><th>末尾</th><th>メモ</th><th>状態</th><th>発行者</th><th>発行日時</th><th>有効期限</th><th>割当メール</th><th>使用日時</th><th>操作</th></tr></thead>
-      <tbody>{% for row in data %}<tr>
+      <tbody>{% for row in invitations %}<tr>
         <td>…{{ row.token_last4 }}</td>
         <td><form method="post" action="{{ url_for('inpa_admin.update_invitation', public_id=row.public_id) }}" class="d-flex gap-1"><input class="form-control form-control-sm" name="memo" maxlength="255" value="{{ row.memo or '' }}"><button class="btn btn-sm btn-outline-primary">保存</button></form></td>
         <td>{{ {'active':'有効','claimed':'手続中','used':'使用済み','revoked':'無効','expired':'期限切れ'}.get(row.status,row.status) }}</td>

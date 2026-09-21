@@ -55,6 +55,13 @@ def _app():
         connection.execute(text(
             "CREATE TABLE users (id INTEGER PRIMARY KEY, public_id VARCHAR(26))"
         ))
+        connection.execute(text(
+            "CREATE TABLE registration_settings (id INTEGER PRIMARY KEY, invite_only BOOLEAN, "
+            "updated_by VARCHAR(128), updated_at DATETIME)"
+        ))
+        connection.execute(text(
+            "INSERT INTO registration_settings (id,invite_only) VALUES (1,1)"
+        ))
     return app, secret
 
 
@@ -85,3 +92,20 @@ def test_admin_can_create_and_list_single_use_invitation_without_storing_plainte
     listed = list_response.get_json()["invitations"][0]
     assert "token" not in listed
     assert listed["token_last4"] == created["token"][-4:]
+
+
+def test_admin_can_toggle_general_registration():
+    app, secret = _app()
+    path = "/internal/admin/v1/registration-settings"
+    payload = {"invite_only": False}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    headers = _headers(secret, "PATCH", path, body)
+    headers.update({"Content-Type": "application/json", "Idempotency-Key": "settings-update-test-key"})
+
+    response = app.test_client().patch(path, data=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["invite_only"] is False
+    read_response = app.test_client().get(path, headers=_headers(secret, "GET", path))
+    assert read_response.status_code == 200
+    assert read_response.get_json()["settings"]["invite_only"] is False

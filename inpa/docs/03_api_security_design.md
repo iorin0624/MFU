@@ -131,6 +131,8 @@ GET    /internal/admin/v1/registration-invitations
 POST   /internal/admin/v1/registration-invitations
 PATCH  /internal/admin/v1/registration-invitations/{id}
 POST   /internal/admin/v1/registration-invitations/{id}/revoke
+GET    /internal/admin/v1/registration-settings
+PATCH  /internal/admin/v1/registration-settings
 GET    /internal/admin/v1/visits
 DELETE /internal/admin/v1/visits/{id}
 POST   /internal/admin/v1/share-tokens/{id}/revoke
