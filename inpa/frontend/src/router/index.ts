@@ -9,6 +9,7 @@ import VisitsView from '@/views/VisitsView.vue'
 import ShareManageView from '@/views/ShareManageView.vue'
 import SharedView from '@/views/SharedView.vue'
 import ConnectionsView from '@/views/ConnectionsView.vue'
+import CalendarView from '@/views/CalendarView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -22,6 +23,7 @@ const router = createRouter({
     { path: '/share', name: 'share-manage', component: ShareManageView },
     { path: '/share/:token', name: 'shared', component: SharedView },
     { path: '/connections', name: 'connections', component: ConnectionsView },
+    { path: '/calendar', name: 'calendar', component: CalendarView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

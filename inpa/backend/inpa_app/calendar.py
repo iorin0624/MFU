@@ -1,0 +1,109 @@
+"""Integrated monthly calendar for the owner and registered people."""
+
+from __future__ import annotations
+
+import calendar as month_calendar
+from datetime import date, time, timedelta
+
+from flask import Blueprint, jsonify, request
+from sqlalchemy import text
+
+from .auth.routes import _error, _require_session
+from .db import get_engine
+from .share import VISIBLE_FIELDS, visibility_allows
+
+bp = Blueprint("calendar", __name__, url_prefix="/api/v1")
+
+
+def _time_text(value: time | timedelta | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        seconds = int(value.total_seconds())
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return value.isoformat()
+
+
+@bp.get("/calendar")
+def integrated_calendar():
+    session, error = _require_session()
+    if error:
+        return error
+    try:
+        year = int(request.args.get("year", ""))
+        month = int(request.args.get("month", ""))
+        start = date(year, month, 1)
+    except ValueError:
+        return _error("invalid_month", "年月を確認してください。", 400)
+    end = date(year, month, month_calendar.monthrange(year, month)[1])
+    season_public_id = request.args.get("season_id", "")
+    person_public_id = request.args.get("person_id", "")
+    myself_only = request.args.get("myself_only") == "1"
+    viewer_id = int(session["user_id"])
+    with get_engine().connect() as connection:
+        season = connection.execute(
+            text("SELECT id,public_id,name FROM seasons WHERE public_id=:id AND is_active=1"),
+            {"id": season_public_id},
+        ).mappings().first()
+        if not season:
+            return _error("invalid_season", "シーズンを確認してください。", 400)
+        rows = connection.execute(
+            text(
+                "SELECT v.user_id,u.public_id AS user_public_id,u.display_name,"
+                "u.x_handle,u.instagram_handle,u.x_handle_visible,u.instagram_handle_visible,"
+                "v.visit_date,v.park,v.arrival_time,v.costume,v.memo,v.visibility,v.detail_level "
+                "FROM visits v JOIN users u ON u.id=v.user_id "
+                "WHERE v.season_id=:season AND v.visit_date BETWEEN :start AND :end "
+                "AND (v.user_id=:viewer OR ("
+                ":myself_only=0 AND v.user_id IN (SELECT followed_user_id FROM follows WHERE follower_user_id=:viewer))) "
+                "AND (:person_id='' OR u.public_id=:person_id) ORDER BY v.visit_date,u.display_name,v.id"
+            ),
+            {"season": season["id"], "start": start, "end": end, "viewer": viewer_id,
+             "myself_only": int(myself_only), "person_id": person_public_id},
+        ).mappings().all()
+        follows = connection.execute(
+            text(
+                "SELECT follower_user_id,followed_user_id FROM follows WHERE "
+                "follower_user_id=:viewer OR followed_user_id=:viewer"
+            ),
+            {"viewer": viewer_id},
+        ).all()
+        blocks = connection.execute(
+            text("SELECT blocker_user_id,blocked_user_id FROM blocks WHERE blocker_user_id=:viewer OR blocked_user_id=:viewer"),
+            {"viewer": viewer_id},
+        ).all()
+    follow_pairs = {(int(row[0]), int(row[1])) for row in follows}
+    block_pairs = {(int(row[0]), int(row[1])) for row in blocks}
+    days: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        owner_id = int(row["user_id"])
+        owner = owner_id == viewer_id
+        blocked = (owner_id, viewer_id) in block_pairs or (viewer_id, owner_id) in block_pairs
+        if not visibility_allows(
+            row["visibility"], owner=owner, has_link=False, logged_in=True,
+            owner_follows_viewer=(owner_id, viewer_id) in follow_pairs,
+            viewer_follows_owner=(viewer_id, owner_id) in follow_pairs, blocked=blocked,
+        ):
+            continue
+        entry: dict[str, object] = {
+            "user_public_id": row["user_public_id"], "display_name": row["display_name"],
+        }
+        for key in VISIBLE_FIELDS["full" if owner else row["detail_level"]]:
+            value = row[key]
+            entry[key] = _time_text(value) if key == "arrival_time" else value
+        if owner or (row["x_handle_visible"] and row["x_handle"]):
+            entry["x_handle"] = row["x_handle"]
+        if owner or (row["instagram_handle_visible"] and row["instagram_handle"]):
+            entry["instagram_handle"] = row["instagram_handle"]
+        days.setdefault(row["visit_date"].isoformat(), []).append(entry)
+    result = []
+    for day, entries in days.items():
+        result.append({
+            "date": day, "count": len(entries),
+            "land_count": sum(entry.get("park") in {"land", "both"} for entry in entries),
+            "sea_count": sum(entry.get("park") in {"sea", "both"} for entry in entries),
+            "entries": entries,
+        })
+    return jsonify(season={"public_id": season["public_id"], "name": season["name"]}, days=result)

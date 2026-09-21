@@ -5,6 +5,8 @@ from __future__ import annotations
 import secrets
 from datetime import time, timedelta
 
+import segno
+from cryptography.fernet import Fernet, InvalidToken
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text
 
@@ -18,6 +20,18 @@ VISIBLE_FIELDS = {
     "date": (), "park": ("park",), "memo": ("park", "memo"),
     "full": ("park", "arrival_time", "costume", "memo"),
 }
+
+
+def _cipher() -> Fernet:
+    return Fernet(current_app.config["MAIL_ENCRYPTION_KEY"].encode("ascii"))
+
+
+def _share_artifacts(token: str) -> dict[str, str]:
+    short_url = f"{current_app.config['PUBLIC_ORIGIN'].rstrip('/')}/{token}"
+    return {
+        "url": short_url,
+        "qr_svg": segno.make_qr(short_url, error="h").svg_inline(scale=4),
+    }
 
 
 def _time_text(value: time | timedelta | None) -> str | None:
@@ -156,18 +170,25 @@ def share_token_status():
     with get_engine().connect() as connection:
         row = connection.execute(
             text(
-                "SELECT token_last4, created_at, last_used_at FROM share_tokens "
+                "SELECT token_last4, token_ciphertext, created_at, last_used_at FROM share_tokens "
                 "WHERE user_id=:id AND status='active'"
             ),
             {"id": session["user_id"]},
         ).mappings().first()
     if not row:
         return jsonify(active=False)
-    return jsonify(
-        active=True, token_last4=row["token_last4"],
-        created_at=row["created_at"].isoformat(),
-        last_used_at=row["last_used_at"].isoformat() if row["last_used_at"] else None,
-    )
+    result = {
+        "active": True, "token_last4": row["token_last4"],
+        "created_at": row["created_at"].isoformat(),
+        "last_used_at": row["last_used_at"].isoformat() if row["last_used_at"] else None,
+    }
+    if row["token_ciphertext"]:
+        try:
+            token = _cipher().decrypt(row["token_ciphertext"]).decode("ascii")
+            result.update(_share_artifacts(token))
+        except InvalidToken:
+            pass
+    return jsonify(result)
 
 
 def _rotate_token(user_id: int):
@@ -182,13 +203,14 @@ def _rotate_token(user_id: int):
         )
         connection.execute(
             text(
-                "INSERT INTO share_tokens (public_id,user_id,token_hash,token_last4) "
-                "VALUES (:public_id,:user_id,:hash,:last4)"
+                "INSERT INTO share_tokens (public_id,user_id,token_hash,token_last4,token_ciphertext) "
+                "VALUES (:public_id,:user_id,:hash,:last4,:ciphertext)"
             ),
             {"public_id": new_public_id(), "user_id": user_id,
-             "hash": hash_secret(token), "last4": token[-4:]},
+             "hash": hash_secret(token), "last4": token[-4:],
+             "ciphertext": _cipher().encrypt(token.encode("ascii"))},
         )
-    return jsonify(url=f"{request.host_url.rstrip('/')}/share/{token}"), 201
+    return jsonify(_share_artifacts(token)), 201
 
 
 @bp.post("/share-token")

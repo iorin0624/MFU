@@ -12,6 +12,7 @@ from typing import Any
 from flask import Flask, jsonify
 
 from .auth.routes import bp as auth_bp
+from .calendar import bp as calendar_bp
 from .config import apply_settings
 from .db import init_app as init_db
 from .health import bp as health_bp
@@ -35,6 +36,7 @@ def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
     if role == "public":
         app.register_blueprint(public_bp)
         app.register_blueprint(auth_bp)
+        app.register_blueprint(calendar_bp)
         app.register_blueprint(planner_bp)
         app.register_blueprint(relationships_bp)
         app.register_blueprint(share_bp)

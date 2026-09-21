@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Blueprint, abort, current_app, jsonify, send_from_directory
+from flask import Blueprint, abort, current_app, jsonify, redirect, send_from_directory
 
 bp = Blueprint("public", __name__)
 
@@ -13,6 +13,13 @@ bp = Blueprint("public", __name__)
 def bootstrap():
     """Unauthenticated capability endpoint for the Vue bootstrap flow."""
     return jsonify(service="inpa", api_version="v1", authentication="cookie_session")
+
+
+@bp.get("/<token>")
+def short_share(token: str):
+    if len(token) == 20 and all(char in "0123456789ABCDEFGHJKMNPQRSTVWXYZ" for char in token):
+        return redirect(f"/share/{token}", code=302)
+    return frontend(token)
 
 
 @bp.get("/")

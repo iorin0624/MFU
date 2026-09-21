@@ -6796,6 +6796,10 @@ from app.mail_filters import (
 )
 app.register_blueprint(mail_filters_bp)
 
+# INPA administration uses only its signed Unix-socket API; MFU has no INPA DB credentials.
+from app.inpa.mfu_admin_bridge import inpa_admin_bp
+app.register_blueprint(inpa_admin_bp)
+
 try:
     ensure_mail_filter_schema()
     ensure_mail_filter_nav_item()

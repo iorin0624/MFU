@@ -10,6 +10,7 @@ import { RouterView } from 'vue-router'
         <RouterLink to="/login">ログイン</RouterLink>
         <RouterLink to="/profile">プロフィール</RouterLink>
         <RouterLink to="/visits">予定</RouterLink>
+        <RouterLink to="/calendar">カレンダー</RouterLink>
         <RouterLink to="/share">共有</RouterLink>
         <RouterLink to="/connections">つながり</RouterLink>
         <RouterLink to="/register">新規登録</RouterLink>

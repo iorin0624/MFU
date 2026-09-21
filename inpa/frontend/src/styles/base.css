@@ -49,6 +49,11 @@ body {
 .visit-card h2, .visit-card h3 { margin-top: 0; }
 .share-result { display: grid; gap: .7rem; margin: 1rem 0; }
 .share-result input { width: 100%; padding: .75rem; }
+.qr-code { width: min(100%, 20rem); padding: 1rem; background: #fff; }
+.qr-code svg { display: block; width: 100%; height: auto; }
+.calendar-filters { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); align-items: end; }
+.calendar-days { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+.calendar-day { display: grid; gap: .3rem; padding: .8rem; text-align: left; color: inherit; background: #fff8f4; border: 1px solid #eadfd7; border-radius: .6rem; cursor: pointer; }
 .panel hr { margin: 2rem 0; border: 0; border-top: 1px solid #eadfd7; }
 .notice { padding: .8rem; border-radius: .5rem; background: #f4eee9; }
 .error { color: #a52a2a; }
