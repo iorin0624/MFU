@@ -9,7 +9,10 @@ type ParkCounts = { both: number; land: number; sea: number; undecided: number }
 type Day = { date: string; count: number; park_counts: ParkCounts; entries: Entry[] }
 type Holiday = { date: string; name: string }
 type Season = { public_id: string; name: string; start_date: string; end_date: string }
-type Restriction = { public_id: string; name: string; start_date: string; end_date: string }
+type Restriction = {
+  public_id: string; name: string; start_date: string; end_date: string
+  restriction_type: string; park_scope: string; description: string | null
+}
 type RestrictionBar = Restriction & { key: string; week: number; startColumn: number; endColumn: number; lane: number }
 type Cell = { key: string; date: string | null; number: number | null; weekday: number; week: number; column: number; inSeason: boolean }
 
@@ -47,6 +50,9 @@ const dayMap = computed(() => new Map(days.value.map(day => [day.date, day])))
 const holidayMap = computed(() => new Map(holidays.value.map(holiday => [holiday.date, holiday.name])))
 const selectedDay = computed(() => selectedDate.value ? dayMap.value.get(selectedDate.value) : undefined)
 const selectedEntries = computed(() => selectedDay.value?.entries ?? [])
+const selectedRestrictions = computed(() => restrictions.value.filter(restriction =>
+  selectedDate.value >= restriction.start_date && selectedDate.value <= restriction.end_date,
+))
 const selectedDateInSeason = computed(() => dateInSeason(selectedDate.value))
 const todayInActiveSeason = computed(() => dateInSeason(isoDate(today)))
 const addLink = computed(() => ({
@@ -134,6 +140,9 @@ function restrictionStyle(bar: RestrictionBar): Record<string, string> {
 }
 function parkLabel(park?: string) {
   return ({ both: '両方', land: 'TDL', sea: 'TDS', undecided: '未定' } as Record<string, string>)[park ?? ''] ?? '未定'
+}
+function restrictionScopeLabel(scope: string) {
+  return ({ all: '全パーク', land: 'TDL', sea: 'TDS' } as Record<string, string>)[scope] ?? scope
 }
 async function loadCalendar() {
   if (!selectedSeasonId.value) return
@@ -237,6 +246,14 @@ function dateInRange(value: string, season: Season) {
     <div class="calendar-footer"><button class="button secondary" type="button" @click="goToday">{{ todayInActiveSeason ? '今日' : 'シーズン開始日' }}</button></div>
 
     <section v-if="selectedDateInSeason" class="selected-date-panel">
+      <div v-if="selectedRestrictions.length" class="selected-restrictions" role="alert">
+        <h3>禁止・注意期間</h3>
+        <article v-for="restriction in selectedRestrictions" :key="restriction.public_id" class="selected-restriction-notice">
+          <strong>{{ restriction.name }}</strong>
+          <p v-if="restriction.description">{{ restriction.description }}</p>
+          <small>{{ formatJapaneseDate(restriction.start_date) }}〜{{ formatJapaneseDate(restriction.end_date) }} / {{ restrictionScopeLabel(restriction.park_scope) }}</small>
+        </article>
+      </div>
       <div class="selected-date-heading"><h2>{{ formatJapaneseDate(selectedDate) }}の予定</h2><RouterLink class="button" :to="addLink">この日に予定を追加</RouterLink></div>
       <div v-if="selectedEntries.length" class="visit-list compact">
         <article v-for="(entry, index) in selectedEntries" :key="`${entry.user_public_id}-${index}`" class="visit-card">
