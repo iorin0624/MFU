@@ -85,6 +85,7 @@ DELETE /api/v1/share-token
 GET    /api/v1/people/by-connection-id/{connectionId}
 GET    /api/v1/people/{publicId}
 GET    /api/v1/follows
+GET    /api/v1/followers
 POST   /api/v1/follows/{publicId}
 DELETE /api/v1/follows/{publicId}
 GET    /api/v1/blocks

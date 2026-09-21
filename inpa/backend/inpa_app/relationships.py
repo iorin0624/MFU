@@ -175,6 +175,39 @@ def list_follows():
     return jsonify(people=people)
 
 
+@bp.get("/followers")
+def list_followers():
+    session, error = _session()
+    if error:
+        return error
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT u.public_id,u.connection_id,u.display_name,u.x_handle,u.instagram_handle,"
+                "u.x_handle_visible,u.instagram_handle_visible,"
+                "EXISTS(SELECT 1 FROM follows owner_follow "
+                "WHERE owner_follow.follower_user_id=f.followed_user_id "
+                "AND owner_follow.followed_user_id=f.follower_user_id) AS mutual "
+                "FROM follows f JOIN users u ON u.id=f.follower_user_id "
+                "WHERE f.followed_user_id=:id AND u.status='active' ORDER BY u.display_name,u.id"
+            ),
+            {"id": session["user_id"]},
+        ).mappings().all()
+    people = []
+    for row in rows:
+        item = {
+            "public_id": row["public_id"], "connection_id": row["connection_id"],
+            "display_name": row["display_name"], "mutual": bool(row["mutual"]),
+            "following": bool(row["mutual"]), "follows_me": True,
+        }
+        if row["x_handle_visible"] and row["x_handle"]:
+            item["x_handle"] = row["x_handle"]
+        if row["instagram_handle_visible"] and row["instagram_handle"]:
+            item["instagram_handle"] = row["instagram_handle"]
+        people.append(item)
+    return jsonify(people=people)
+
+
 @bp.post("/follows/<public_id>")
 def follow(public_id: str):
     session, error = _session(csrf=True)
