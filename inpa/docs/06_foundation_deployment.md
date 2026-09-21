@@ -34,7 +34,7 @@
 2. HTTP-01検証パスを除きHTTPからHTTPSへ転送します。
 3. Certbot webroot方式で `inpa.mydns.jp` の証明書を発行します。
 4. `deploy/certbot/20-reload-apache` をCertbot deploy hookとして配置し、更新成功時にApacheをreloadします。
-5. `deploy/apache/inpa.conf` をそのTLS VirtualHostへincludeします。
+5. `deploy/apache/inpa.conf` を `/etc/apache2/sites-available/030-inpa.conf` として配置し、有効化します。
 6. Apache設定を検証してからreloadします。
 7. server-103-15以外からSE02のTCP/8090へ接続できないことを確認します。
 
