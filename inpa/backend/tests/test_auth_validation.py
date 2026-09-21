@@ -1,7 +1,9 @@
 import pytest
+from sqlalchemy import text
 
 from inpa_app import create_app
 from inpa_app.auth.service import RegistrationError, hash_secret, new_public_id, validate_password
+from inpa_app.db import get_engine
 from inpa_app.internal_admin import _invitation_memo
 
 
@@ -46,6 +48,13 @@ def test_login_does_not_leak_invalid_json_details(app):
 
 def test_registration_requires_an_administrator_invitation(app):
     app.config["TURNSTILE_BYPASS"] = True
+    with app.app_context(), get_engine().begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE registration_settings (id INTEGER PRIMARY KEY, invite_only BOOLEAN)"
+        ))
+        connection.execute(text(
+            "INSERT INTO registration_settings (id,invite_only) VALUES (1,1)"
+        ))
 
     response = app.test_client().post(
         "/api/v1/auth/register/request", json={"email": "new@example.com"}
@@ -53,6 +62,10 @@ def test_registration_requires_an_administrator_invitation(app):
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_request"
+
+    settings = app.test_client().get("/api/v1/auth/registration-settings")
+    assert settings.status_code == 200
+    assert settings.get_json()["invite_only"] is True
 
 
 def test_invitation_memo_is_trimmed_and_limited():

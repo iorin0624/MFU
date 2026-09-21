@@ -113,6 +113,48 @@ def registration_invitations():
     return jsonify(invitations=result)
 
 
+@bp.get("/registration-settings")
+@require_admin_hmac
+def registration_settings():
+    with get_engine().connect() as connection:
+        row = connection.execute(text(
+            "SELECT invite_only,updated_by,updated_at FROM registration_settings WHERE id=1"
+        )).mappings().one()
+    settings = _row(row)
+    settings["invite_only"] = bool(row["invite_only"])
+    return jsonify(settings=settings)
+
+
+@bp.patch("/registration-settings")
+@require_admin_hmac
+def update_registration_settings():
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not isinstance(data.get("invite_only"), bool):
+            raise TypeError("invite_only must be boolean.")
+        invite_only = data["invite_only"]
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            lock_clause = "" if connection.dialect.name == "sqlite" else " FOR UPDATE"
+            before = connection.execute(text(
+                "SELECT invite_only,updated_by,updated_at FROM registration_settings "
+                f"WHERE id=1{lock_clause}"
+            )).mappings().one()
+            now = datetime.now(UTC).replace(tzinfo=None)
+            connection.execute(text(
+                "UPDATE registration_settings SET invite_only=:invite_only,updated_by=:admin,"
+                "updated_at=:now WHERE id=1"
+            ), {"invite_only": invite_only, "admin": g.inpa_admin, "now": now})
+            write_audit(
+                connection, action="registration_settings_update",
+                target_type="registration_settings", target_id="1",
+                before=_row(before), after={"invite_only": invite_only}, idempotency_key=key,
+            )
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(invite_only=invite_only)
+
+
 @bp.post("/registration-invitations")
 @require_admin_hmac
 def create_registration_invitation():
