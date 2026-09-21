@@ -1,0 +1,23 @@
+[Unit]
+Description=INPA public web and API service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=inpa
+Group=inpa
+WorkingDirectory=/mnt/mfu/app/inpa/backend
+EnvironmentFile=/etc/inpa/runtime.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/mnt/mfu/app/inpa/backend/.venv/bin/gunicorn --workers 2 --bind 192.168.103.16:8090 --access-logfile - --error-logfile - --capture-output inpa_app.wsgi:public_app
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/mnt/mfu/app/inpa/var
+
+[Install]
+WantedBy=multi-user.target

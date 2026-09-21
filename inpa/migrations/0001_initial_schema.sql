@@ -1,17 +1,9 @@
 -- INPA V1 initial schema (MySQL 8.0+)
 -- Application timestamps are stored in UTC. visit_date and arrival_time represent Asia/Tokyo.
-
-CREATE DATABASE IF NOT EXISTS inpa_db
-  CHARACTER SET utf8mb4
-  COLLATE utf8mb4_0900_ai_ci;
-
-USE inpa_db;
-
-CREATE TABLE schema_migrations (
-  version VARCHAR(64) NOT NULL,
-  applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (version)
-) ENGINE=InnoDB;
+-- The database and DB accounts are created by deploy/mysql bootstrap scripts.
+-- Schema revision state is managed by Alembic's alembic_version table.
+-- This file is immutable schema source for Alembic revision 0001_initial_schema,
+-- not a DB bootstrap script. Later schema changes must use new Alembic revisions.
 
 CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -22,6 +14,8 @@ CREATE TABLE users (
   display_name VARCHAR(40) NOT NULL,
   x_handle VARCHAR(15) NULL,
   instagram_handle VARCHAR(30) NULL,
+  x_handle_visible TINYINT(1) NOT NULL DEFAULT 0,
+  instagram_handle_visible TINYINT(1) NOT NULL DEFAULT 0,
   default_visibility VARCHAR(16) NOT NULL DEFAULT 'link',
   default_detail_level VARCHAR(16) NOT NULL DEFAULT 'park',
   email_verified_at DATETIME(6) NULL,
@@ -36,6 +30,8 @@ CREATE TABLE users (
   KEY ix_users_status_created (status, created_at),
   CONSTRAINT chk_users_visibility CHECK (default_visibility IN ('link','logged_in','following','mutual','private')),
   CONSTRAINT chk_users_detail CHECK (default_detail_level IN ('date','park','memo','full')),
+  CONSTRAINT chk_users_x_handle_visible CHECK (x_handle_visible IN (0,1)),
+  CONSTRAINT chk_users_instagram_handle_visible CHECK (instagram_handle_visible IN (0,1)),
   CONSTRAINT chk_users_status CHECK (status IN ('pending','active','suspended','deletion_pending','deleted'))
 ) ENGINE=InnoDB;
 
@@ -183,6 +179,9 @@ CREATE TABLE share_tokens (
   token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   token_last4 CHAR(4) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   status VARCHAR(16) NOT NULL DEFAULT 'active',
+  active_user_id BIGINT UNSIGNED GENERATED ALWAYS AS (
+    CASE WHEN status = 'active' THEN user_id ELSE NULL END
+  ) STORED,
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   last_used_at DATETIME(6) NULL,
   revoked_at DATETIME(6) NULL,
@@ -190,9 +189,14 @@ CREATE TABLE share_tokens (
   PRIMARY KEY (id),
   UNIQUE KEY uq_share_tokens_public_id (public_id),
   UNIQUE KEY uq_share_tokens_hash (token_hash),
+  UNIQUE KEY uq_share_tokens_one_active_user (active_user_id),
   KEY ix_share_tokens_user_status (user_id, status),
   CONSTRAINT fk_share_tokens_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  CONSTRAINT chk_share_tokens_status CHECK (status IN ('active','revoked'))
+  CONSTRAINT chk_share_tokens_status CHECK (status IN ('active','revoked')),
+  CONSTRAINT chk_share_tokens_revocation CHECK (
+    (status = 'active' AND revoked_at IS NULL) OR
+    (status = 'revoked' AND revoked_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB;
 
 CREATE TABLE reports (
@@ -311,13 +315,14 @@ CREATE TABLE account_deletion_requests (
   user_id BIGINT UNSIGNED NOT NULL,
   requested_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   scheduled_for DATETIME(6) NOT NULL,
+  cancel_token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  cancel_token_used_at DATETIME(6) NULL,
   cancelled_at DATETIME(6) NULL,
   completed_at DATETIME(6) NULL,
   request_reason VARCHAR(500) NULL,
   PRIMARY KEY (id),
+  UNIQUE KEY uq_account_deletion_cancel_token (cancel_token_hash),
   KEY ix_account_deletion_due (completed_at, cancelled_at, scheduled_for),
   KEY ix_account_deletion_user (user_id, requested_at),
   CONSTRAINT fk_account_deletion_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
-
-INSERT INTO schema_migrations (version) VALUES ('0001_initial_schema');

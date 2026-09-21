@@ -1,0 +1,24 @@
+[Unit]
+Description=INPA DB-backed mail queue worker
+After=network-online.target inpa-web.service
+Wants=network-online.target
+ConditionPathExists=/etc/inpa/enable-mail-worker
+
+[Service]
+Type=exec
+User=inpa
+Group=inpa
+WorkingDirectory=/mnt/mfu/app/inpa/backend
+EnvironmentFile=/etc/inpa/runtime.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/mnt/mfu/app/inpa/backend/.venv/bin/python -m inpa_app.worker
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/mnt/mfu/app/inpa/var
+
+[Install]
+WantedBy=multi-user.target

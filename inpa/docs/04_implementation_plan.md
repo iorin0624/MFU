@@ -5,6 +5,10 @@
 一度に全機能を本番公開せず、基盤、認証、予定共有、利用者関係、MFU管理、運用の順に完成させます。
 各段階で自動テストとスマートフォン実機確認を行います。
 
+バックエンドはFlask 3系、Gunicorn、SQLAlchemy 2系、Alembic、PyMySQLを使用します。公開用API、
+Internal Admin API、メールworkerは別プロセスとし、公開用アプリへInternal Admin Blueprintを
+登録しません。
+
 ## 2. フェーズ0: 確定と外部準備
 
 - 正式サービス名と本番ドメインを確定
@@ -26,6 +30,7 @@
 - 独立systemd serviceとメールworker service
 - Webサーバーの同一オリジン配信設定
 - 環境変数と秘密値の権限設定
+- DB管理者bootstrap、`inpa_migrator`、`inpa_app` の権限分離
 - journald、ローテーション、監視
 
 完了条件：MFUを停止せずINPAだけ起動・停止・更新できること。
@@ -37,6 +42,8 @@
 - Argon2idパスワード
 - ログイン、ログアウト、セッション一覧、全失効
 - パスワード再設定
+- パスワード変更と全session失効
+- メールアドレス変更要求・確認と新旧アドレスへの通知
 - Rate Limit、セキュリティイベント
 - メールキューと再送worker
 - 登録・ログイン・再設定の列挙耐性テスト
@@ -46,6 +53,7 @@
 ## 5. フェーズ3: プロフィール・シーズン・予定
 
 - プロフィールと標準公開設定
+- SNS名ごとの表示許可
 - シーズン取得
 - 予定の追加・編集・削除
 - 1ユーザー・1シーズン・1日制約
@@ -58,6 +66,7 @@
 
 - 80bit短縮トークン発行
 - token hash検索
+- 1ユーザー1有効tokenのDB制約と同時再発行テスト
 - 共有HTMLのOG・robots・referrer設定
 - 匿名共有API
 - URLコピー、QR、無効化、再発行
@@ -93,6 +102,7 @@
 
 - 通報受付と対応状態
 - 退会申請、30日猶予、取消、完全削除job
+- メール取消token、取消後の共有URL再発行導線
 - ログ削除job
 - DBバックアップ、暗号化、復元手順
 - 障害時のロールバック
@@ -116,6 +126,7 @@
 
 ```text
 inpa/
+├── alembic.ini
 ├── backend/
 │   ├── pyproject.toml
 │   ├── inpa_app/
@@ -145,8 +156,13 @@ inpa/
 │       └── views/
 ├── mfu_admin_bridge/
 ├── migrations/
+│   ├── env.py
+│   ├── script.py.mako
+│   ├── versions/
+│   └── 0001_initial_schema.sql
 ├── deploy/
 │   ├── apache/
+│   ├── mysql/
 │   ├── systemd/
 │   └── install.sh
 ├── docs/
@@ -161,7 +177,7 @@ inpa/
 
 1. CIでバックエンドテスト、Vue lint/typecheck/test/buildを実行します。
 2. `/mnt/mfu/app/inpa` のリリース候補へ配置します。
-3. DBマイグレーションの前方互換性を確認して適用します。
+3. runtimeとは分離したmigration資格情報で、前方互換性を確認して `alembic upgrade head` を適用します。
 4. INPA APIとworkerだけを再起動します。
 5. readiness確認後に新しいVue assetsへ切り替えます。
 6. MFU管理接続をスモークテストします。
@@ -176,4 +192,13 @@ inpa/
 - ログ保存期間
 - メール通知の範囲（セキュリティのみか、登録・ブロック等も含むか）
 - QRコード表示をV1へ含めるか
+
+次の項目は `05_account_backend_database_decisions.md` で確定済みです。
+
+- アカウント関連APIと退会取消方法
+- SNS名の表示許可
+- 1ユーザー1有効共有tokenのDB保証
+- 登録完了とオンボーディングの分担
+- Flask / SQLAlchemy / Alembicを用いたバックエンド構成
+- bootstrap、migration、runtimeのDB権限分離
 

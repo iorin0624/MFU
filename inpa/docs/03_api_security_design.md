@@ -11,6 +11,10 @@ MFU管理向け:       /internal/admin/v1/*
 
 利用者向けAPIとVueは同一オリジンにし、通常運用でCORSを不要にします。
 
+利用者向けAPIとInternal Admin APIは別のFlaskアプリインスタンスと別のGunicornプロセスで
+稼働させます。公開用アプリにはInternal Admin Blueprintを登録せず、Internal Admin APIは
+Unix domain socketだけで待ち受けます。
+
 ## 2. 認証API
 
 ```text
@@ -28,6 +32,30 @@ GET    /api/v1/auth/me
 ```
 
 登録要求、ログイン、不審操作ではTurnstile tokenを受け取り、バックエンドから検証します。
+
+### 2.1 プロフィール・アカウントAPI
+
+```text
+GET    /api/v1/profile
+PATCH  /api/v1/profile
+PATCH  /api/v1/privacy-defaults
+POST   /api/v1/privacy-defaults/apply-to-visits
+POST   /api/v1/account/password/change
+POST   /api/v1/account/email-change/request
+POST   /api/v1/account/email-change/confirm
+GET    /api/v1/account/deletion
+POST   /api/v1/account/deletion/request
+POST   /api/v1/account/deletion/cancel
+```
+
+- プロフィールAPIは表示名、SNS名、SNSごとの表示許可だけを扱います。
+- 標準公開設定は専用APIで扱い、既存予定への一括反映は対象範囲と件数を確認してから
+  `POST /privacy-defaults/apply-to-visits` で実行します。
+- パスワード変更とメール変更要求では現在のパスワードを再確認します。
+- パスワードまたはメールアドレスの変更完了時は全sessionを失効します。
+- メールアドレスは新アドレスの確認が完了するまで変更しません。
+- 退会申請後は通常ログインを許可せず、メールで送った取消tokenによりログインなしで取り消します。
+- 取消tokenはpepper付きhashで保存し、期限、未使用、Rate Limitを検証します。
 
 ## 3. 予定・カレンダーAPI
 
@@ -61,6 +89,8 @@ POST   /api/v1/reports
 ```
 
 `GET /share/{token}` は閲覧者の状態に応じてレスポンス項目を構築し、DB行をそのままJSON化しません。
+共有tokenは1ユーザーにつき同時に1件だけ有効とし、再発行は旧tokenの失効と新tokenの作成を
+同一トランザクションで行います。
 
 ## 5. 公開判定
 
@@ -84,6 +114,9 @@ full:  visit_date, park, arrival_time, costume, memo
 ```
 
 常に返してよいのは、予定IDそのものではなく画面操作に必要な不透明IDと、許可された表示項目だけです。
+
+X・Instagramハンドルは、所有者本人または各ハンドルの表示許可が有効な場合だけレスポンスへ
+含めます。許可されていない場合は `null` を返すのではなくフィールド自体を省略します。
 
 ## 6. Internal Admin API
 
@@ -142,6 +175,9 @@ INPAはUnix socketの接続権限、HMAC、時刻差、nonce未使用を確認�
 - パスワードはArgon2id
 - 秘密tokenはSHA-256 + サービス固有pepperで保存
 - 重要な比較はconstant-time比較
+
+パスワード変更、メールアドレス変更完了、退会申請・取消はセキュリティイベントとして記録し、
+確認済みメールアドレスへ通知します。退会取消後も旧共有tokenは復活させません。
 
 ## 9. TurnstileとRate Limit
 

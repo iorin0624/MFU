@@ -1,0 +1,21 @@
+-- Run once on server-103-17 as a MySQL administrator.
+-- Replace every REPLACE_AT_DEPLOY value outside Git before execution.
+-- The runtime and migration passwords must be independent random values.
+
+CREATE DATABASE inpa_db
+  CHARACTER SET utf8mb4
+  -- MariaDB 11 on server-103-17 does not provide MySQL's 0900 collations.
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE USER 'inpa_app'@'192.168.103.16' IDENTIFIED BY 'REPLACE_AT_DEPLOY';
+CREATE USER 'inpa_migrator'@'192.168.103.16' IDENTIFIED BY 'REPLACE_AT_DEPLOY';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON inpa_db.*
+  TO 'inpa_app'@'192.168.103.16';
+
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES
+  ON inpa_db.* TO 'inpa_migrator'@'192.168.103.16';
+
+-- Verify the grants before leaving the maintenance session.
+SHOW GRANTS FOR 'inpa_app'@'192.168.103.16';
+SHOW GRANTS FOR 'inpa_migrator'@'192.168.103.16';
