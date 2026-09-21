@@ -12,6 +12,7 @@ from flask import current_app
 from sqlalchemy import text
 
 from ..db import get_engine
+from ..privacy import create_default_matrix
 
 _PASSWORDS = PasswordHasher()
 _PUBLIC_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -180,6 +181,7 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
             },
         )
         user_id = connection.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+        create_default_matrix(connection, int(user_id))
         connection.execute(
             text("UPDATE registration_requests SET consumed_at = :now WHERE id = :id"),
             {"now": now, "id": request_row["id"]},

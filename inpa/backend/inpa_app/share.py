@@ -13,6 +13,7 @@ from sqlalchemy import text
 from .auth.routes import _error, _require_session
 from .auth.service import get_session, hash_secret, new_public_id, verify_csrf
 from .db import get_engine
+from .privacy import effective_fields, load_matrix, viewer_audience
 
 bp = Blueprint("share", __name__, url_prefix="/api/v1")
 TOKEN_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -92,21 +93,28 @@ def _relationship(connection, owner_id: int, viewer_id: int | None) -> tuple[boo
     return bool(blocked), (owner_id, viewer_id) in pairs, (viewer_id, owner_id) in pairs
 
 
-def _render_visits(owner_id: int, rows, viewer_id: int | None, relationship):
+def _render_visits(owner_id: int, rows, viewer_id: int | None, relationship, privacy_matrix):
     blocked, owner_follows, viewer_follows = relationship
+    audience = viewer_audience(
+        owner=viewer_id == owner_id,
+        logged_in=viewer_id is not None,
+        owner_follows_viewer=owner_follows,
+        viewer_follows_owner=viewer_follows,
+        blocked=blocked,
+    )
+    fields = effective_fields(privacy_matrix, audience)
+    if not fields:
+        return []
     result = []
     for row in rows:
-        if not visibility_allows(
-            row["visibility"], owner=viewer_id == owner_id, has_link=True,
-            logged_in=viewer_id is not None, owner_follows_viewer=owner_follows,
-            viewer_follows_owner=viewer_follows, blocked=blocked,
-        ):
-            continue
-        item = {"visit_date": row["visit_date"].isoformat()}
-        for key in VISIBLE_FIELDS[row["detail_level"]]:
-            value = row[key]
-            item[key] = _time_text(value) if key == "arrival_time" else value
-        result.append(item)
+        item = {}
+        if "date" in fields:
+            item["visit_date"] = row["visit_date"].isoformat()
+        for key in ("park", "costume", "memo"):
+            if key in fields:
+                item[key] = row[key]
+        if any(value not in (None, "") for value in item.values()):
+            result.append(item)
     return result
 
 
@@ -136,12 +144,13 @@ def share(token: str):
         ).mappings().one()
         rows = connection.execute(
             text(
-                "SELECT visit_date,park,arrival_time,costume,memo,visibility,detail_level "
+                "SELECT visit_date,park,costume,memo "
                 "FROM visits WHERE user_id=:id ORDER BY visit_date"
             ),
             {"id": owner_id},
         ).mappings().all()
         relationship = _relationship(connection, owner_id, viewer_id)
+        privacy_matrix = load_matrix(connection, owner_id)
     profile = {"public_id": user["public_id"], "display_name": user["display_name"]}
     if viewer_id == owner_id or (user["x_handle_visible"] and user["x_handle"]):
         profile["x_handle"] = user["x_handle"]
@@ -149,7 +158,7 @@ def share(token: str):
         profile["instagram_handle"] = user["instagram_handle"]
     return jsonify(
         profile=profile,
-        visits=_render_visits(owner_id, rows, viewer_id, relationship),
+        visits=_render_visits(owner_id, rows, viewer_id, relationship, privacy_matrix),
     )
 
 

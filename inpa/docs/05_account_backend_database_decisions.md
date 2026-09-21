@@ -12,7 +12,6 @@
 GET    /api/v1/profile
 PATCH  /api/v1/profile
 PATCH  /api/v1/privacy-defaults
-POST   /api/v1/privacy-defaults/apply-to-visits
 
 POST   /api/v1/account/password/change
 POST   /api/v1/account/email-change/request
@@ -23,14 +22,13 @@ POST   /api/v1/account/deletion/request
 POST   /api/v1/account/deletion/cancel
 ```
 
-### 1.1 プロフィールと標準公開設定
+### 1.1 プロフィールと一括公開設定
 
 - `PATCH /profile` は表示名、Xハンドル、Instagramハンドル、各SNS名の表示許可だけを更新します。
 - メールアドレスとパスワードはプロフィールAPIで変更しません。
 - 空のSNSハンドルは `NULL` へ正規化します。
-- `PATCH /privacy-defaults` は標準公開対象と標準公開情報量を更新します。
-- 既存予定への一括反映は、対象件数と変更内容を確認したうえで
-  `POST /api/v1/privacy-defaults/apply-to-visits` から実行します。
+- `PATCH /privacy-defaults` は4つの公開範囲ごとに日付、パーク、服装、メモの表示許可を更新します。
+- 設定は予定行へ複製せず、閲覧時に参照することで既存予定を含む全件へ即時適用します。
 - すべての更新系APIでログイン、メール確認、CSRF、入力値、Rate Limitを検証します。
 
 ### 1.2 パスワード変更
@@ -120,7 +118,7 @@ UNIQUE KEY uq_share_tokens_one_active_user (active_user_id)
 -> /register/complete?token=...
   1. パスワード・規約同意
   2. 表示名・SNS名・SNS表示許可
-  3. 標準公開対象・標準公開情報量
+  3. 公開設定は登録後のプロフィール画面で変更
 -> 正式ユーザーを作成してログイン
 -> /onboarding
   4. 共有URL発行
