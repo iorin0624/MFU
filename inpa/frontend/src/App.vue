@@ -9,7 +9,7 @@ const logoutPending = ref(false); const logoutError = ref('')
 
 async function refreshAuth() {
   try {
-    await api<{ user: { public_id: string; display_name: string } }>('/auth/me')
+    await api<{ user: { public_id: string; connection_id: string; display_name: string } }>('/auth/me')
     authenticated.value = true
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 401) authenticated.value = false

@@ -137,7 +137,7 @@ def share(token: str):
         )
         user = connection.execute(
             text(
-                "SELECT public_id,display_name,x_handle,instagram_handle,"
+                "SELECT public_id,connection_id,display_name,x_handle,instagram_handle,"
                 "x_handle_visible,instagram_handle_visible FROM users WHERE id=:id"
             ),
             {"id": owner_id},
@@ -151,7 +151,10 @@ def share(token: str):
         ).mappings().all()
         relationship = _relationship(connection, owner_id, viewer_id)
         privacy_matrix = load_matrix(connection, owner_id)
-    profile = {"public_id": user["public_id"], "display_name": user["display_name"]}
+    profile = {
+        "public_id": user["public_id"], "connection_id": user["connection_id"],
+        "display_name": user["display_name"],
+    }
     if viewer_id == owner_id or (user["x_handle_visible"] and user["x_handle"]):
         profile["x_handle"] = user["x_handle"]
     if viewer_id == owner_id or (user["instagram_handle_visible"] and user["instagram_handle"]):
@@ -177,6 +180,10 @@ def share_token_status():
     if error:
         return error
     with get_engine().connect() as connection:
+        connection_id = connection.execute(
+            text("SELECT connection_id FROM users WHERE id=:id"),
+            {"id": session["user_id"]},
+        ).scalar_one()
         row = connection.execute(
             text(
                 "SELECT token_last4, token_ciphertext, created_at, last_used_at FROM share_tokens "
@@ -185,9 +192,9 @@ def share_token_status():
             {"id": session["user_id"]},
         ).mappings().first()
     if not row:
-        return jsonify(active=False)
+        return jsonify(active=False, connection_id=connection_id)
     result = {
-        "active": True, "token_last4": row["token_last4"],
+        "active": True, "connection_id": connection_id, "token_last4": row["token_last4"],
         "created_at": row["created_at"].isoformat(),
         "last_used_at": row["last_used_at"].isoformat() if row["last_used_at"] else None,
     }

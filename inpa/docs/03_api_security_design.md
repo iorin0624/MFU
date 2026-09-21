@@ -78,9 +78,11 @@ GET    /api/v1/restrictions?season_id=&date=&park=
 
 ```text
 GET    /api/v1/share/{token}
+GET    /api/v1/share-token
 POST   /api/v1/share-token
 POST   /api/v1/share-token/rotate
 DELETE /api/v1/share-token
+GET    /api/v1/people/by-connection-id/{connectionId}
 GET    /api/v1/people/{publicId}
 GET    /api/v1/follows
 POST   /api/v1/follows/{publicId}
@@ -90,6 +92,10 @@ POST   /api/v1/blocks/{publicId}
 DELETE /api/v1/blocks/{publicId}
 POST   /api/v1/reports
 ```
+
+`users.public_id` は既存APIの不変な参照キーとして維持します。利用者が手入力する検索には、
+8文字・大文字Crockford Base32の `users.connection_id` を使用します。DBの一意制約で重複を防ぎ、
+検索は完全一致のみ、1アカウント・IPにつき毎分10回までとします。
 
 `GET /share/{token}` は閲覧者の状態に応じてレスポンス項目を構築し、DB行をそのままJSON化しません。
 共有tokenは1ユーザーにつき同時に1件だけ有効とし、再発行は旧tokenの失効と新tokenの作成を

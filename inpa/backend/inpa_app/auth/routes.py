@@ -162,4 +162,8 @@ def me():
     session, error = _require_session()
     if error:
         return error
-    return jsonify(user={"public_id": session["public_id"], "display_name": session["display_name"]})
+    return jsonify(user={
+        "public_id": session["public_id"],
+        "connection_id": session["connection_id"],
+        "display_name": session["display_name"],
+    })

@@ -49,7 +49,7 @@ def get_profile():
     with get_engine().connect() as connection:
         row = connection.execute(
             text(
-                "SELECT public_id, display_name, x_handle, instagram_handle, "
+                "SELECT public_id, connection_id, display_name, x_handle, instagram_handle, "
                 "x_handle_visible, instagram_handle_visible FROM users WHERE id=:id"
             ),
             {"id": session["user_id"]},

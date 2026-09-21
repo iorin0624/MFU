@@ -2,7 +2,14 @@ import pytest
 from sqlalchemy import text
 
 from inpa_app import create_app
-from inpa_app.auth.service import RegistrationError, hash_secret, new_public_id, validate_password
+from inpa_app.auth.service import (
+    RegistrationError,
+    hash_secret,
+    new_connection_id,
+    new_public_id,
+    normalize_connection_id,
+    validate_password,
+)
 from inpa_app.db import get_engine
 from inpa_app.internal_admin import _invitation_memo
 
@@ -25,6 +32,16 @@ def test_public_ids_use_the_documented_crockford_alphabet():
 
     assert len(public_id) == 26
     assert set(public_id) <= set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+
+
+def test_connection_ids_are_short_and_normalized_for_human_input():
+    connection_id = new_connection_id()
+
+    assert len(connection_id) == 8
+    assert set(connection_id) <= set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+    assert normalize_connection_id("7k3m-p9qx") == "7K3MP9QX"
+    assert normalize_connection_id(" 7K3M P9QX ") == "7K3MP9QX"
+    assert normalize_connection_id("contains-O") == ""
 
 
 def test_secret_hash_is_pepper_bound(app):
