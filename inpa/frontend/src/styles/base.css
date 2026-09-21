@@ -54,6 +54,8 @@ body {
 .calendar-filters { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); align-items: end; }
 .calendar-days { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
 .calendar-day { display: grid; gap: .3rem; padding: .8rem; text-align: left; color: inherit; background: #fff8f4; border: 1px solid #eadfd7; border-radius: .6rem; cursor: pointer; }
+.warning-notice { padding: .9rem; color: #704b00; background: #fff4cf; border: 1px solid #e1bd54; border-radius: .6rem; }
+.warning-notice p { margin: .35rem 0; }
 .panel hr { margin: 2rem 0; border: 0; border-top: 1px solid #eadfd7; }
 .notice { padding: .8rem; border-radius: .5rem; background: #f4eee9; }
 .error { color: #a52a2a; }

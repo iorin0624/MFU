@@ -2,20 +2,77 @@
 {% block title %}INPA管理{% endblock %}
 {% block content %}
 <div class="container my-4">
-  <div class="d-flex justify-content-between align-items-center mb-3"><h2>INPA管理</h2><span class="badge bg-secondary">署名付きInternal API</span></div>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>INPA管理</h2><span class="badge bg-secondary">署名付きInternal API</span>
+  </div>
   <nav class="nav nav-tabs mb-4">
-    {% for key,label in [('dashboard','概要'),('users','利用者'),('visits','予定'),('reports','通報'),('seasons','シーズン'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
+    {% for key,label in [('dashboard','概要'),('users','利用者'),('visits','予定'),('reports','通報'),('seasons','シーズン'),('restrictions','禁止期間'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
       <a class="nav-link {% if section==key %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}</a>
     {% endfor %}
   </nav>
   {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+
   {% if section == 'dashboard' %}
     <div class="row g-3">{% for key,value in data.items() %}<div class="col-6 col-lg-3"><div class="card"><div class="card-body"><small class="text-muted">{{ key }}</small><div class="fs-3">{{ value }}</div></div></div></div>{% endfor %}</div>
+
   {% elif section == 'seasons' %}
-    <form method="post" action="{{ url_for('inpa_admin.create_season') }}" class="row g-2 mb-4"><div class="col-md-3"><input class="form-control" name="name" placeholder="シーズン名" required></div><div class="col-md-2"><input class="form-control" name="slug" placeholder="slug" required></div><div class="col-md-2"><input class="form-control" type="date" name="start_date" required></div><div class="col-md-2"><input class="form-control" type="date" name="end_date" required></div><div class="col-md-2 form-check pt-2"><input class="form-check-input" type="checkbox" name="is_active" value="1" checked><label class="form-check-label">有効</label></div><div class="col-md-1"><button class="btn btn-primary">作成</button></div></form>
-    <div class="table-responsive"><table class="table table-striped"><thead><tr><th>名称</th><th>slug</th><th>期間</th><th>状態</th></tr></thead><tbody>{% for row in data %}<tr><td>{{row.name}}</td><td>{{row.slug}}</td><td>{{row.start_date}}〜{{row.end_date}}</td><td>{{'有効' if row.is_active else '無効'}}</td></tr>{% endfor %}</tbody></table></div>
+    <h3 class="h5">新規シーズン</h3>
+    <form method="post" action="{{ url_for('inpa_admin.create_season') }}" class="row g-2 mb-4">
+      <div class="col-md-3"><input class="form-control" name="name" placeholder="シーズン名" required></div>
+      <div class="col-md-2"><input class="form-control" name="slug" placeholder="slug" required></div>
+      <div class="col-md-2"><input class="form-control" type="date" name="start_date" required></div>
+      <div class="col-md-2"><input class="form-control" type="date" name="end_date" required></div>
+      <div class="col-md-2 form-check pt-2"><input class="form-check-input" type="checkbox" name="is_active" value="1" checked><label class="form-check-label">有効</label></div>
+      <div class="col-md-1"><button class="btn btn-primary">作成</button></div>
+    </form>
+    <h3 class="h5">既存シーズンを編集</h3>
+    {% for row in data %}
+      <form method="post" action="{{ url_for('inpa_admin.update_season', public_id=row.public_id) }}" class="card card-body mb-3">
+        <input type="hidden" name="expected_updated_at" value="{{row.updated_at}}">
+        <div class="row g-2">
+          <div class="col-md-3"><label class="form-label">名称<input class="form-control" name="name" value="{{row.name}}" required></label></div>
+          <div class="col-md-2"><label class="form-label">slug<input class="form-control" name="slug" value="{{row.slug}}" required></label></div>
+          <div class="col-md-2"><label class="form-label">開始日<input class="form-control" type="date" name="start_date" value="{{row.start_date}}" required></label></div>
+          <div class="col-md-2"><label class="form-label">終了日<input class="form-control" type="date" name="end_date" value="{{row.end_date}}" required></label></div>
+          <div class="col-md-1 form-check pt-4"><input class="form-check-input" type="checkbox" name="is_active" value="1" {% if row.is_active %}checked{% endif %}><label class="form-check-label">有効</label></div>
+          <div class="col-md-2"><label class="form-check pt-4"><input class="form-check-input" type="checkbox" name="confirm_impacted" value="1">影響を確認して保存</label></div>
+        </div>
+        <div><button class="btn btn-outline-primary btn-sm">更新</button></div>
+      </form>
+    {% endfor %}
+
+  {% elif section == 'restrictions' %}
+    <div class="alert alert-info">禁止期間は警告表示のみです。仮装情報の入力・保存は妨げません。</div>
+    <h3 class="h5">禁止期間を追加</h3>
+    <form method="post" action="{{ url_for('inpa_admin.create_restriction') }}" class="row g-2 mb-4">
+      <div class="col-md-3"><input class="form-control" name="season_public_id" placeholder="シーズンID" required></div>
+      <div class="col-md-3"><input class="form-control" name="name" placeholder="例：仮装禁止期間" required></div>
+      <div class="col-md-2"><select class="form-select" name="restriction_type"><option value="costume_prohibited">仮装禁止</option><option value="custom_notice">その他の注意</option></select></div>
+      <div class="col-md-2"><input class="form-control" type="date" name="start_date" required></div>
+      <div class="col-md-2"><input class="form-control" type="date" name="end_date" required></div>
+      <div class="col-md-2"><select class="form-select" name="park_scope"><option value="all">全パーク</option><option value="land">ランド</option><option value="sea">シー</option></select></div>
+      <div class="col-md-8"><input class="form-control" name="description" maxlength="500" placeholder="利用者へ表示する説明"></div>
+      <div class="col-md-2"><button class="btn btn-primary">追加</button></div>
+    </form>
+    <h3 class="h5">登録済み禁止期間</h3>
+    {% for row in data %}
+      <form method="post" action="{{ url_for('inpa_admin.update_restriction', public_id=row.public_id) }}" class="card card-body mb-3">
+        <div class="row g-2">
+          <div class="col-md-3"><label class="form-label">シーズンID<input class="form-control" name="season_public_id" value="{{row.season_public_id}}" required></label></div>
+          <div class="col-md-3"><label class="form-label">名称<input class="form-control" name="name" value="{{row.name}}" required></label></div>
+          <div class="col-md-2"><label class="form-label">種別<select class="form-select" name="restriction_type"><option value="costume_prohibited" {% if row.restriction_type=='costume_prohibited' %}selected{% endif %}>仮装禁止</option><option value="custom_notice" {% if row.restriction_type=='custom_notice' %}selected{% endif %}>その他の注意</option></select></label></div>
+          <div class="col-md-2"><label class="form-label">開始日<input class="form-control" type="date" name="start_date" value="{{row.start_date}}" required></label></div>
+          <div class="col-md-2"><label class="form-label">終了日<input class="form-control" type="date" name="end_date" value="{{row.end_date}}" required></label></div>
+          <div class="col-md-2"><label class="form-label">対象<select class="form-select" name="park_scope"><option value="all" {% if row.park_scope=='all' %}selected{% endif %}>全パーク</option><option value="land" {% if row.park_scope=='land' %}selected{% endif %}>ランド</option><option value="sea" {% if row.park_scope=='sea' %}selected{% endif %}>シー</option></select></label></div>
+          <div class="col-md-8"><label class="form-label">説明<input class="form-control" name="description" maxlength="500" value="{{row.description or ''}}"></label></div>
+          <div class="col-md-2 form-check pt-4"><input class="form-check-input" type="checkbox" name="is_active" value="1" {% if row.is_active %}checked{% endif %}><label class="form-check-label">有効</label></div>
+        </div>
+        <div class="d-flex gap-2"><button class="btn btn-outline-primary btn-sm">更新</button><button class="btn btn-outline-danger btn-sm" formaction="{{ url_for('inpa_admin.deactivate_restriction', public_id=row.public_id) }}" onclick="return confirm('無効化しますか？')">無効化</button></div>
+      </form>
+    {% endfor %}
+
   {% else %}
-    <form class="row g-2 mb-3"><input type="hidden" name="section" value="{{section}}"><div class="col-md-4"><input class="form-control" name="q" value="{{request.args.get('q','')}}" placeholder="検索"></div><div class="col"><button class="btn btn-outline-primary">絞り込み</button></div></form>
+    <form class="row g-2 mb-3"><div class="col-md-4"><input class="form-control" name="q" value="{{request.args.get('q','')}}" placeholder="検索"></div><div class="col"><button class="btn btn-outline-primary">絞り込み</button></div></form>
     <div class="table-responsive"><table class="table table-sm table-striped align-middle"><thead><tr>{% if data %}{% for key in data[0].keys() %}<th>{{key}}</th>{% endfor %}<th>操作</th>{% endif %}</tr></thead><tbody>{% for row in data %}<tr>{% for value in row.values() %}<td style="max-width:18rem;word-break:break-all">{{value}}</td>{% endfor %}<td>{% if section=='users' %}<form method="post" action="{{url_for('inpa_admin.action')}}" class="d-flex gap-1"><input type="hidden" name="target" value="{{row.public_id}}"><button class="btn btn-sm btn-warning" name="action" value="suspend">停止</button><button class="btn btn-sm btn-success" name="action" value="unsuspend">解除</button><button class="btn btn-sm btn-secondary" name="action" value="logout_all">全ログアウト</button></form>{% elif section=='visits' %}<form method="post" action="{{url_for('inpa_admin.action')}}"><input type="hidden" name="target" value="{{row.public_id}}"><button class="btn btn-sm btn-danger" name="action" value="delete_visit" onclick="return confirm('削除しますか？')">削除</button></form>{% elif section=='reports' %}<form method="post" action="{{url_for('inpa_admin.action')}}" class="d-flex gap-1"><input type="hidden" name="target" value="{{row.public_id}}"><select class="form-select form-select-sm" name="status"><option>open</option><option>in_progress</option><option>resolved</option><option>dismissed</option></select><button class="btn btn-sm btn-primary" name="action" value="report_status">更新</button></form>{% elif section=='mail' and row.status=='failed' %}<form method="post" action="{{url_for('inpa_admin.action')}}"><input type="hidden" name="target" value="{{row.public_id}}"><button class="btn btn-sm btn-primary" name="action" value="retry_mail">再試行</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
   {% endif %}
 </div>

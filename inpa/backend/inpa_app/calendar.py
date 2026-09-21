@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from .auth.routes import _error, _require_session
 from .db import get_engine
+from .restrictions import serialize_restriction
 from .share import VISIBLE_FIELDS, visibility_allows
 
 bp = Blueprint("calendar", __name__, url_prefix="/api/v1")
@@ -74,6 +75,15 @@ def integrated_calendar():
             text("SELECT blocker_user_id,blocked_user_id FROM blocks WHERE blocker_user_id=:viewer OR blocked_user_id=:viewer"),
             {"viewer": viewer_id},
         ).all()
+        restrictions = connection.execute(
+            text(
+                "SELECT r.public_id,r.name,r.restriction_type,r.start_date,r.end_date,"
+                "r.park_scope,r.description,r.enforcement FROM restriction_periods r "
+                "WHERE r.season_id=:season AND r.is_active=1 "
+                "AND r.start_date<=:end AND r.end_date>=:start ORDER BY r.start_date,r.id"
+            ),
+            {"season": season["id"], "start": start, "end": end},
+        ).mappings().all()
     follow_pairs = {(int(row[0]), int(row[1])) for row in follows}
     block_pairs = {(int(row[0]), int(row[1])) for row in blocks}
     days: dict[str, list[dict[str, object]]] = {}
@@ -106,4 +116,8 @@ def integrated_calendar():
             "sea_count": sum(entry.get("park") in {"sea", "both"} for entry in entries),
             "entries": entries,
         })
-    return jsonify(season={"public_id": season["public_id"], "name": season["name"]}, days=result)
+    return jsonify(
+        season={"public_id": season["public_id"], "name": season["name"]},
+        days=result,
+        restrictions=[serialize_restriction(row) for row in restrictions],
+    )
