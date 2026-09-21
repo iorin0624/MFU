@@ -17,7 +17,7 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "registration_settings",
-        sa.Column("id", sa.SmallInteger(), nullable=False),
+        sa.Column("id", sa.SmallInteger(), autoincrement=False, nullable=False),
         sa.Column("invite_only", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("updated_by", sa.String(128), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP(6)")),
