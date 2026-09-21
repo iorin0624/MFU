@@ -7,6 +7,7 @@ Create Date: 2026-09-21
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import mysql
 
 revision = "0003_restriction_periods"
 down_revision = "0002_share_token_recovery"
@@ -17,9 +18,9 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "restriction_periods",
-        sa.Column("id", sa.BigInteger().with_variant(sa.BIGINT(unsigned=True), "mysql"), primary_key=True, autoincrement=True),
+        sa.Column("id", mysql.BIGINT(unsigned=True), primary_key=True, autoincrement=True),
         sa.Column("public_id", sa.CHAR(26), nullable=False),
-        sa.Column("season_id", sa.BigInteger().with_variant(sa.BIGINT(unsigned=True), "mysql"), nullable=False),
+        sa.Column("season_id", mysql.BIGINT(unsigned=True), nullable=False),
         sa.Column("name", sa.String(80), nullable=False),
         sa.Column("restriction_type", sa.String(32), nullable=False, server_default="costume_prohibited"),
         sa.Column("start_date", sa.Date(), nullable=False),
