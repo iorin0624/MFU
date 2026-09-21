@@ -88,6 +88,11 @@ body {
 .park-undecided { background: #7b818b; }
 .calendar-footer { display: flex; justify-content: flex-start; }
 .selected-date-panel { margin-top: .5rem; padding: 1.25rem; background: #fff; border: 1px solid #eadfd7; border-radius: var(--radius-card); }
+.selected-restrictions { display: grid; gap: .55rem; margin-bottom: 1rem; }
+.selected-restrictions h3 { margin: 0; color: #991f2b; font-size: 1rem; }
+.selected-restriction-notice { padding: .8rem .9rem; color: #741722; background: #fff0f1; border: 1px solid #d74a59; border-left-width: .35rem; border-radius: .55rem; }
+.selected-restriction-notice p { margin: .35rem 0; }
+.selected-restriction-notice small { display: block; color: #741722; }
 .selected-date-heading { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; }
 .selected-date-heading h2 { margin: 0; font-size: 1.2rem; }
 .visit-list.compact { margin-top: 1rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
