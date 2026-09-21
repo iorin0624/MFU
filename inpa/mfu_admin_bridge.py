@@ -77,7 +77,6 @@ _SECTIONS = {
     "visits": ("/internal/admin/v1/visits", "visits"),
     "reports": ("/internal/admin/v1/reports", "reports"),
     "seasons": ("/internal/admin/v1/seasons", "seasons"),
-    "restrictions": ("/internal/admin/v1/restriction-periods", "restrictions"),
     "security": ("/internal/admin/v1/security-events", "events"),
     "mail": ("/internal/admin/v1/mail-logs", "logs"),
     "audit": ("/internal/admin/v1/audit-logs", "logs"),
@@ -88,18 +87,33 @@ _SECTIONS = {
 @inpa_admin_bp.get("/admin/inpa/<section>")
 @_admin_required
 def index(section: str = "dashboard"):
+    # The former standalone restriction page is kept as a compatibility URL,
+    # but season and restriction management now share one screen.
+    if section == "restrictions":
+        return redirect(url_for("inpa_admin.index", section="seasons"))
     if section not in _SECTIONS:
         section = "dashboard"
-    path, key = _SECTIONS[section]
     query = {name: value for name in ("q", "status", "season_id", "user_id", "page") if (value := request.args.get(name))}
-    if query:
-        path = f"{path}?{urlencode(query)}"
     try:
-        result = call_inpa("GET", path)
-        data = result.get(key, result)
+        if section == "seasons":
+            seasons = call_inpa("GET", "/internal/admin/v1/seasons").get("seasons", [])
+            restrictions = call_inpa("GET", "/internal/admin/v1/restriction-periods").get("restrictions", [])
+            data = {"seasons": seasons, "restrictions": restrictions}
+        else:
+            path, key = _SECTIONS[section]
+            if query:
+                path = f"{path}?{urlencode(query)}"
+            result = call_inpa("GET", path)
+            data = result.get(key, result)
         error = None
     except (OSError, RuntimeError, ValueError) as exc:
-        data, error = [] if section != "dashboard" else {}, str(exc)
+        if section == "dashboard":
+            data = {}
+        elif section == "seasons":
+            data = {"seasons": [], "restrictions": []}
+        else:
+            data = []
+        error = str(exc)
     return render_template("admin_inpa.html", section=section, data=data, error=error)
 
 
@@ -181,7 +195,7 @@ def create_restriction():
         flash(f"禁止期間を作成しました。該当予定: {result.get('impacted_count', 0)}件", "success")
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
-    return redirect(url_for("inpa_admin.index", section="restrictions"))
+    return redirect(url_for("inpa_admin.index", section="seasons"))
 
 
 @inpa_admin_bp.post("/admin/inpa/restrictions/<public_id>")
@@ -202,7 +216,7 @@ def update_restriction(public_id: str):
         flash(f"禁止期間を更新しました。該当予定: {result.get('impacted_count', 0)}件", "success")
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
-    return redirect(url_for("inpa_admin.index", section="restrictions"))
+    return redirect(url_for("inpa_admin.index", section="seasons"))
 
 
 @inpa_admin_bp.post("/admin/inpa/restrictions/<public_id>/deactivate")
@@ -214,4 +228,4 @@ def deactivate_restriction(public_id: str):
         flash("禁止期間を無効化しました。", "success")
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
-    return redirect(url_for("inpa_admin.index", section="restrictions"))
+    return redirect(url_for("inpa_admin.index", section="seasons"))

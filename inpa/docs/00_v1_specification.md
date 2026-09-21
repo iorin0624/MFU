@@ -211,7 +211,7 @@ MFU管理画面から以下を操作します。
 - 通報対応
 - mail送信履歴・失敗再送
 - login・security・Turnstile・Rate Limit確認
-- season管理
+- season管理と、各season内の禁止・注意期間管理
 - admin監査ログ
 
 MFUはINPA DBへ直接SQLを発行しません。同一サーバーではUnix domain socket + HMAC署名の
