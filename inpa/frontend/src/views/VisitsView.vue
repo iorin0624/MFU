@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '@/lib/api'
 
+const route = useRoute(); const router = useRouter()
 type Season = { public_id: string; name: string; start_date: string; end_date: string }
 type Visit = {
   public_id: string; season_public_id: string; season_name: string; visit_date: string
@@ -37,9 +39,13 @@ function reset() { editing.value = null; form.value = blank(); if (seasons.value
 async function save() {
   error.value = ''; notice.value = ''
   try {
+    const savedDate = form.value.visit_date
     const path = editing.value ? `/visits/${editing.value}` : '/visits'
     await api(path, { method: editing.value ? 'PATCH' : 'POST', body: form.value })
     notice.value = editing.value ? '予定を更新しました。' : '予定を追加しました。'
+    if (!editing.value && route.query.return === 'calendar') {
+      await router.push({ path: '/', query: { date: savedDate } }); return
+    }
     reset(); await load()
   } catch (value) { error.value = errorMessage(value) }
 }
@@ -48,7 +54,12 @@ async function remove(visit: Visit) {
   try { await api(`/visits/${visit.public_id}`, { method: 'DELETE' }); await load(); notice.value = '予定を削除しました。' }
   catch (value) { error.value = errorMessage(value) }
 }
-onMounted(load)
+onMounted(async () => {
+  if (typeof route.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(route.query.date)) {
+    form.value.visit_date = route.query.date
+  }
+  await load()
+})
 watch(() => [form.value.season_public_id, form.value.visit_date, form.value.park], loadWarnings)
 </script>
 

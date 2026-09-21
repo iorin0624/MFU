@@ -66,11 +66,13 @@ POST   /api/v1/visits
 GET    /api/v1/visits/{id}
 PATCH  /api/v1/visits/{id}
 DELETE /api/v1/visits/{id}
-GET    /api/v1/calendar?season_id=&year=&month=
+GET    /api/v1/calendar?year=&month=&season_id=
 GET    /api/v1/restrictions?season_id=&date=&park=
 ```
 
 更新系は、ログイン、メール確認、CSRF、所有者、入力値を検証します。
+`season_id` は任意で、省略時は有効な全シーズンを横断します。日別レスポンスは両方、TDL、TDS、
+未定を重複させない `park_counts` と、公開設定で閲覧可能な予定だけを返します。
 
 ## 4. 共有・関係API
 
