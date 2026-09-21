@@ -1,9 +1,14 @@
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from inpa_app import create_app
 from inpa_app.auth.service import (
     RegistrationError,
+    _touch_session,
     hash_secret,
     new_connection_id,
     new_public_id,
@@ -90,3 +95,39 @@ def test_invitation_memo_is_trimmed_and_limited():
     assert _invitation_memo("") is None
     with pytest.raises(ValueError):
         _invitation_memo("x" * 256)
+
+
+def test_session_activity_is_updated_only_after_five_minutes(app):
+    now = datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC).replace(tzinfo=None)
+    with app.app_context():
+        engine = get_engine()
+        with engine.begin() as connection:
+            connection.execute(text(
+                "CREATE TABLE user_sessions (id INTEGER PRIMARY KEY, last_seen_at DATETIME)"
+            ))
+            connection.execute(
+                text("INSERT INTO user_sessions (id,last_seen_at) VALUES (1,:seen)"),
+                {"seen": now - timedelta(minutes=10)},
+            )
+        _touch_session(engine, 1, now - timedelta(minutes=10), now)
+        _touch_session(engine, 1, now, now + timedelta(minutes=1))
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT last_seen_at FROM user_sessions WHERE id=1"
+            )).scalar_one() == now.isoformat(" ")
+
+
+def test_session_activity_failure_does_not_fail_the_request(app):
+    class BrokenEngine:
+        @contextmanager
+        def begin(self):
+            raise OperationalError("UPDATE user_sessions", {}, Exception("concurrent update"))
+            yield
+
+    with app.app_context():
+        _touch_session(
+            BrokenEngine(),
+            session_id=1,
+            last_seen_at=datetime(2026, 9, 21, 23, 0, 0, tzinfo=UTC).replace(tzinfo=None),
+            now=datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC).replace(tzinfo=None),
+        )

@@ -10,6 +10,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from flask import current_app
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from ..db import get_engine
 from ..privacy import create_default_matrix
@@ -17,6 +18,7 @@ from ..privacy import create_default_matrix
 _PASSWORDS = PasswordHasher()
 _PUBLIC_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CONNECTION_ID_LENGTH = 8
+_SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
@@ -338,10 +340,12 @@ def get_session(token: str | None) -> dict[str, object] | None:
     if not token:
         return None
     now = _now()
-    with get_engine().begin() as connection:
+    engine = get_engine()
+    with engine.connect() as connection:
         session = connection.execute(
             text(
-                "SELECT s.id, s.user_id, s.csrf_secret_hash, u.public_id, u.connection_id, "
+                "SELECT s.id, s.user_id, s.csrf_secret_hash, s.last_seen_at, "
+                "u.public_id, u.connection_id, "
                 "u.display_name, u.status "
                 "FROM user_sessions s JOIN users u ON u.id = s.user_id "
                 "WHERE s.token_hash = :token_hash AND s.revoked_at IS NULL "
@@ -351,8 +355,31 @@ def get_session(token: str | None) -> dict[str, object] | None:
         ).mappings().first()
         if not session or session["status"] != "active":
             return None
-        connection.execute(text("UPDATE user_sessions SET last_seen_at = :now WHERE id = :id"), {"now": now, "id": session["id"]})
+    _touch_session(engine, int(session["id"]), session["last_seen_at"], now)
     return dict(session)
+
+
+def _touch_session(engine, session_id: int, last_seen_at: datetime | None, now: datetime) -> None:
+    """Refresh session activity at most once per interval without failing the request."""
+    threshold = now - _SESSION_TOUCH_INTERVAL
+    if last_seen_at is not None and last_seen_at >= threshold:
+        return
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE user_sessions SET last_seen_at=:now "
+                    "WHERE id=:id AND last_seen_at<:threshold"
+                ),
+                {"now": now, "id": session_id, "threshold": threshold},
+            )
+    except SQLAlchemyError:
+        # Session validity was already established by the read above. Activity
+        # tracking is best-effort and must not turn a valid API request into 500.
+        current_app.logger.warning(
+            "Session activity timestamp update failed; continuing the request.",
+            exc_info=True,
+        )
 
 
 def verify_csrf(session: dict[str, object], csrf_secret: str | None) -> bool:
