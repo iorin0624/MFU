@@ -1,0 +1,12 @@
+[Unit]
+Description=Restrict INPA public listener to the reverse proxy
+After=network-pre.target
+Before=inpa-web.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/inpa-app-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+:root {
+  color-scheme: light;
+  --color-ink: #1f2937;
+  --color-surface: #fffaf5;
+  --color-accent: #d06f46;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --radius-card: 1rem;
+}

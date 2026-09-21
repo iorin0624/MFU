@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+# Certbot executes deploy hooks only after a successful renewal. Apache must
+# reload to begin serving the certificate files that Certbot has replaced.
+systemctl reload apache2

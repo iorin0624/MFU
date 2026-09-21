@@ -1,0 +1,26 @@
+[Unit]
+Description=INPA Unix-socket Internal Admin API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=inpa
+Group=inpa_admin
+WorkingDirectory=/mnt/mfu/app/inpa/backend
+EnvironmentFile=/etc/inpa/runtime.env
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=inpa
+RuntimeDirectoryMode=0750
+UMask=0007
+ExecStart=/mnt/mfu/app/inpa/backend/.venv/bin/gunicorn --workers 1 --bind unix:/run/inpa/admin.sock --access-logfile - --error-logfile - --capture-output inpa_app.wsgi:admin_app
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/mnt/mfu/app/inpa/var
+
+[Install]
+WantedBy=multi-user.target

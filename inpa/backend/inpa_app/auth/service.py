@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import secrets
+from datetime import UTC, datetime, timedelta
+
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
+from flask import current_app
+from sqlalchemy import text
+
+from ..db import get_engine
+
+_PASSWORDS = PasswordHasher()
+_PUBLIC_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+class AuthenticationError(Exception):
+    pass
+
+
+class RegistrationError(Exception):
+    pass
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def new_public_id() -> str:
+    return "".join(secrets.choice(_PUBLIC_ID_ALPHABET) for _ in range(26))
+
+
+def new_secret() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_secret(value: str) -> str:
+    pepper = current_app.config["TOKEN_PEPPER"].encode("utf-8")
+    return hmac.new(pepper, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def normalize_email(value: object) -> tuple[str, str]:
+    if not isinstance(value, str):
+        raise RegistrationError("Enter a valid email address.")
+    email = value.strip()
+    normalized = email.casefold()
+    if len(email) > 254 or not _EMAIL_RE.fullmatch(email):
+        raise RegistrationError("Enter a valid email address.")
+    return email, normalized
+
+
+def validate_password(value: object) -> str:
+    if not isinstance(value, str) or len(value) < 12 or len(value) > 256:
+        raise RegistrationError("Use a password between 12 and 256 characters.")
+    return value
+
+
+def validate_display_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise RegistrationError("Enter a display name.")
+    name = value.strip()
+    if not (1 <= len(name) <= 40) or any(ord(char) < 32 for char in name):
+        raise RegistrationError("Enter a display name between 1 and 40 characters.")
+    return name
+
+
+def _optional_handle(value: object, maximum: int) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise RegistrationError("Enter a valid social handle.")
+    handle = value.strip().lstrip("@")
+    if not handle or len(handle) > maximum or any(char.isspace() or ord(char) < 32 for char in handle):
+        raise RegistrationError("Enter a valid social handle.")
+    return handle
+
+
+def create_registration_request(email_value: object, requested_ip: bytes | None, user_agent: str | None) -> tuple[str, str] | None:
+    """Create a single-use confirmation request, unless the address already belongs to a user."""
+    email, normalized = normalize_email(email_value)
+    token = new_secret()
+    token_hash = hash_secret(token)
+    public_id = new_public_id()
+    now = _now()
+    expires_at = now + timedelta(seconds=current_app.config["REGISTRATION_TTL_SECONDS"])
+    engine = get_engine()
+    with engine.begin() as connection:
+        existing = connection.execute(
+            text("SELECT id FROM users WHERE email_normalized = :email LIMIT 1"), {"email": normalized}
+        ).first()
+        if existing:
+            return None
+        connection.execute(
+            text(
+                "UPDATE registration_requests SET consumed_at = :now "
+                "WHERE email_normalized = :email AND consumed_at IS NULL"
+            ),
+            {"now": now, "email": normalized},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO registration_requests "
+                "(public_id, email, email_normalized, token_hash, requested_ip, requested_user_agent, expires_at) "
+                "VALUES (:public_id, :email, :normalized, :token_hash, :ip, :agent, :expires_at)"
+            ),
+            {
+                "public_id": public_id,
+                "email": email,
+                "normalized": normalized,
+                "token_hash": token_hash,
+                "ip": requested_ip,
+                "agent": (user_agent or "")[:512] or None,
+                "expires_at": expires_at,
+            },
+        )
+    return email, token
+
+
+def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
+    token_value = payload.get("token")
+    if not isinstance(token_value, str) or not token_value:
+        raise RegistrationError("This registration link is invalid or expired.")
+    password = validate_password(payload.get("password"))
+    if payload.get("terms_accepted") is not True:
+        raise RegistrationError("You must accept the terms to register.")
+    display_name = validate_display_name(payload.get("display_name"))
+    x_handle = _optional_handle(payload.get("x_handle"), 15)
+    instagram_handle = _optional_handle(payload.get("instagram_handle"), 30)
+    visibility = payload.get("default_visibility", "link")
+    detail = payload.get("default_detail_level", "park")
+    if visibility not in {"link", "logged_in", "following", "mutual", "private"}:
+        raise RegistrationError("Choose a valid visibility setting.")
+    if detail not in {"date", "park", "memo", "full"}:
+        raise RegistrationError("Choose a valid detail setting.")
+
+    now = _now()
+    token_hash = hash_secret(token_value)
+    engine = get_engine()
+    with engine.begin() as connection:
+        request_row = connection.execute(
+            text(
+                "SELECT id, email, email_normalized FROM registration_requests "
+                "WHERE token_hash = :token_hash AND consumed_at IS NULL AND expires_at > :now FOR UPDATE"
+            ),
+            {"token_hash": token_hash, "now": now},
+        ).mappings().first()
+        if not request_row:
+            raise RegistrationError("This registration link is invalid or expired.")
+        duplicate = connection.execute(
+            text("SELECT id FROM users WHERE email_normalized = :email LIMIT 1 FOR UPDATE"),
+            {"email": request_row["email_normalized"]},
+        ).first()
+        if duplicate:
+            raise RegistrationError("This registration link is invalid or expired.")
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(public_id, email, email_normalized, password_hash, display_name, x_handle, instagram_handle, "
+                "x_handle_visible, instagram_handle_visible, default_visibility, default_detail_level, email_verified_at) "
+                "VALUES (:public_id, :email, :normalized, :password_hash, :display_name, :x_handle, "
+                ":instagram_handle, :x_visible, :instagram_visible, :visibility, :detail, :now)"
+            ),
+            {
+                "public_id": new_public_id(),
+                "email": request_row["email"],
+                "normalized": request_row["email_normalized"],
+                "password_hash": _PASSWORDS.hash(password),
+                "display_name": display_name,
+                "x_handle": x_handle,
+                "instagram_handle": instagram_handle,
+                "x_visible": int(bool(payload.get("x_handle_visible", False))),
+                "instagram_visible": int(bool(payload.get("instagram_handle_visible", False))),
+                "visibility": visibility,
+                "detail": detail,
+                "now": now,
+            },
+        )
+        user_id = connection.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+        connection.execute(
+            text("UPDATE registration_requests SET consumed_at = :now WHERE id = :id"),
+            {"now": now, "id": request_row["id"]},
+        )
+    return create_session(int(user_id), remember=True)
+
+
+def authenticate(email_value: object, password_value: object, remember: bool) -> tuple[int, str, str]:
+    try:
+        _, normalized = normalize_email(email_value)
+    except RegistrationError as exc:
+        raise AuthenticationError("Invalid email address or password.") from exc
+    if not isinstance(password_value, str):
+        raise AuthenticationError("Invalid email address or password.")
+    engine = get_engine()
+    with engine.connect() as connection:
+        user = connection.execute(
+            text("SELECT id, password_hash, status, email_verified_at FROM users WHERE email_normalized = :email LIMIT 1"),
+            {"email": normalized},
+        ).mappings().first()
+    if not user or user["status"] != "active" or user["email_verified_at"] is None:
+        raise AuthenticationError("Invalid email address or password.")
+    try:
+        valid = _PASSWORDS.verify(user["password_hash"], password_value)
+    except (VerificationError, InvalidHashError):
+        valid = False
+    if not valid:
+        raise AuthenticationError("Invalid email address or password.")
+    return create_session(int(user["id"]), remember=remember)
+
+
+def create_session(user_id: int, remember: bool) -> tuple[int, str, str]:
+    now = _now()
+    token = new_secret()
+    csrf_secret = new_secret()
+    expires_at = now + timedelta(days=current_app.config["SESSION_IDLE_DAYS"])
+    absolute_expires_at = now + timedelta(days=current_app.config["SESSION_ABSOLUTE_DAYS"])
+    with get_engine().begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO user_sessions "
+                "(public_id, user_id, token_hash, csrf_secret_hash, expires_at, absolute_expires_at) "
+                "VALUES (:public_id, :user_id, :token_hash, :csrf_hash, :expires_at, :absolute_expires_at)"
+            ),
+            {
+                "public_id": new_public_id(),
+                "user_id": user_id,
+                "token_hash": hash_secret(token),
+                "csrf_hash": hash_secret(csrf_secret),
+                "expires_at": expires_at,
+                "absolute_expires_at": absolute_expires_at,
+            },
+        )
+    return user_id, token, csrf_secret
+
+
+def get_session(token: str | None) -> dict[str, object] | None:
+    if not token:
+        return None
+    now = _now()
+    with get_engine().begin() as connection:
+        session = connection.execute(
+            text(
+                "SELECT s.id, s.user_id, s.csrf_secret_hash, u.public_id, u.display_name, u.status "
+                "FROM user_sessions s JOIN users u ON u.id = s.user_id "
+                "WHERE s.token_hash = :token_hash AND s.revoked_at IS NULL "
+                "AND s.expires_at > :now AND s.absolute_expires_at > :now LIMIT 1"
+            ),
+            {"token_hash": hash_secret(token), "now": now},
+        ).mappings().first()
+        if not session or session["status"] != "active":
+            return None
+        connection.execute(text("UPDATE user_sessions SET last_seen_at = :now WHERE id = :id"), {"now": now, "id": session["id"]})
+    return dict(session)
+
+
+def verify_csrf(session: dict[str, object], csrf_secret: str | None) -> bool:
+    return bool(csrf_secret) and hmac.compare_digest(str(session["csrf_secret_hash"]), hash_secret(csrf_secret))
+
+
+def revoke_session(session_id: int) -> None:
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE user_sessions SET revoked_at = :now, revoke_reason = 'logout' WHERE id = :id AND revoked_at IS NULL"),
+            {"now": _now(), "id": session_id},
+        )
