@@ -26,8 +26,11 @@ body {
 }
 
 .site-header a { color: inherit; text-decoration: none; }
-.site-header nav { display: flex; gap: 1rem; font-size: .9rem; }
+.site-header nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 1rem; font-size: .9rem; }
 .site-header nav a.router-link-active { color: var(--color-accent); font-weight: 700; }
+.nav-button { padding: 0; color: inherit; background: none; border: 0; font: inherit; cursor: pointer; }
+.nav-button:hover { color: var(--color-accent); }
+.nav-button:disabled { cursor: wait; opacity: .6; }
 .brand { color: var(--color-accent) !important; font-size: 1.2rem; font-weight: 800; letter-spacing: .1em; }
 
 .auth-card, .panel { max-width: 42rem; padding: 1.5rem; background: #fff; border: 1px solid #eadfd7; border-radius: var(--radius-card); box-shadow: 0 8px 24px rgba(75, 48, 33, .06); }
