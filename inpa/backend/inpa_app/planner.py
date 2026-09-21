@@ -1,0 +1,335 @@
+"""Authenticated profile, season, and visit APIs."""
+
+from __future__ import annotations
+
+from datetime import date, time
+
+from flask import Blueprint, jsonify, request
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+from .auth.routes import _error, _require_session
+from .auth.service import RegistrationError, new_public_id, verify_csrf
+from .db import get_engine
+
+bp = Blueprint("planner", __name__, url_prefix="/api/v1")
+VISIBILITIES = {"link", "logged_in", "following", "mutual", "private"}
+DETAIL_LEVELS = {"date", "park", "memo", "full"}
+PARKS = {"land", "sea", "both", "undecided", None}
+
+
+def _payload() -> dict[str, object]:
+    value = request.get_json(silent=True)
+    if not isinstance(value, dict):
+        raise RegistrationError("JSON形式で送信してください。")
+    return value
+
+
+def _session(*, csrf: bool = False):
+    session, error = _require_session()
+    if error:
+        return None, error
+    if csrf and not verify_csrf(session, request.headers.get("X-CSRF-Token")):
+        return None, _error("csrf_failed", "リクエストを確認できませんでした。", 403)
+    return session, None
+
+
+def _profile(row) -> dict[str, object]:
+    result = dict(row)
+    result["x_handle_visible"] = bool(result["x_handle_visible"])
+    result["instagram_handle_visible"] = bool(result["instagram_handle_visible"])
+    return result
+
+
+@bp.get("/profile")
+def get_profile():
+    session, error = _session()
+    if error:
+        return error
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT public_id, display_name, x_handle, instagram_handle, "
+                "x_handle_visible, instagram_handle_visible, default_visibility, "
+                "default_detail_level FROM users WHERE id=:id"
+            ),
+            {"id": session["user_id"]},
+        ).mappings().one()
+    return jsonify(profile=_profile(row))
+
+
+def _handle(value: object, maximum: int) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise RegistrationError("SNS名を確認してください。")
+    result = value.strip().lstrip("@")
+    if not result or len(result) > maximum or any(char.isspace() for char in result):
+        raise RegistrationError("SNS名を確認してください。")
+    return result
+
+
+@bp.patch("/profile")
+def patch_profile():
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    try:
+        data = _payload()
+        allowed = {
+            "display_name", "x_handle", "instagram_handle",
+            "x_handle_visible", "instagram_handle_visible",
+        }
+        if unknown := set(data) - allowed:
+            raise RegistrationError(f"更新できない項目が含まれています: {', '.join(sorted(unknown))}")
+        updates = dict(data)
+        if not updates:
+            raise RegistrationError("更新する項目を入力してください。")
+        if "display_name" in updates:
+            value = updates["display_name"]
+            if not isinstance(value, str) or not 1 <= len(value.strip()) <= 40:
+                raise RegistrationError("表示名は1〜40文字で入力してください。")
+            updates["display_name"] = value.strip()
+        if "x_handle" in updates:
+            updates["x_handle"] = _handle(updates["x_handle"], 15)
+        if "instagram_handle" in updates:
+            updates["instagram_handle"] = _handle(updates["instagram_handle"], 30)
+        for key in ("x_handle_visible", "instagram_handle_visible"):
+            if key in updates and not isinstance(updates[key], bool):
+                raise RegistrationError("表示許可はtrueまたはfalseで指定してください。")
+        sets = ", ".join(f"{key}=:{key}" for key in updates)
+        with get_engine().begin() as connection:
+            connection.execute(
+                text(f"UPDATE users SET {sets} WHERE id=:id"),
+                {**updates, "id": session["user_id"]},
+            )
+    except RegistrationError as exc:
+        return _error("invalid_request", str(exc), 400)
+    return get_profile()
+
+
+@bp.patch("/privacy-defaults")
+def patch_privacy_defaults():
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    try:
+        data = _payload()
+        visibility = data.get("default_visibility")
+        detail = data.get("default_detail_level")
+        if visibility not in VISIBILITIES or detail not in DETAIL_LEVELS:
+            raise RegistrationError("公開範囲と公開情報を選択してください。")
+        with get_engine().begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE users SET default_visibility=:visibility, "
+                    "default_detail_level=:detail WHERE id=:id"
+                ),
+                {"visibility": visibility, "detail": detail, "id": session["user_id"]},
+            )
+    except RegistrationError as exc:
+        return _error("invalid_request", str(exc), 400)
+    return get_profile()
+
+
+@bp.post("/privacy-defaults/apply-to-visits")
+def apply_privacy_defaults():
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    if data.get("confirmed") is not True:
+        return _error("confirmation_required", "既存予定への反映を確認してください。", 400)
+    with get_engine().begin() as connection:
+        result = connection.execute(
+            text(
+                "UPDATE visits v JOIN users u ON u.id=v.user_id "
+                "SET v.visibility=u.default_visibility, v.detail_level=u.default_detail_level "
+                "WHERE v.user_id=:id"
+            ),
+            {"id": session["user_id"]},
+        )
+    return jsonify(updated_count=result.rowcount)
+
+
+@bp.get("/seasons")
+def list_seasons():
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT public_id, name, slug, start_date, end_date FROM seasons "
+                "WHERE is_active=1 ORDER BY start_date DESC"
+            )
+        ).mappings().all()
+    return jsonify(seasons=[{
+        **dict(row), "start_date": row["start_date"].isoformat(),
+        "end_date": row["end_date"].isoformat(),
+    } for row in rows])
+
+
+def _visit(row) -> dict[str, object]:
+    value = dict(row)
+    value["visit_date"] = value["visit_date"].isoformat()
+    value["arrival_time"] = value["arrival_time"].isoformat() if value["arrival_time"] else None
+    return value
+
+
+_VISIT_SELECT = (
+    "SELECT v.public_id, s.public_id AS season_public_id, s.name AS season_name, "
+    "v.visit_date, v.park, v.arrival_time, v.costume, v.memo, v.visibility, v.detail_level "
+    "FROM visits v JOIN seasons s ON s.id=v.season_id "
+)
+
+
+def _visits_for(user_id: int):
+    with get_engine().connect() as connection:
+        return connection.execute(
+            text(_VISIT_SELECT + "WHERE v.user_id=:id ORDER BY v.visit_date, v.id"),
+            {"id": user_id},
+        ).mappings().all()
+
+
+@bp.get("/visits")
+def list_visits():
+    session, error = _session()
+    if error:
+        return error
+    return jsonify(visits=[_visit(row) for row in _visits_for(int(session["user_id"]))])
+
+
+@bp.get("/visits/<public_id>")
+def get_visit(public_id: str):
+    session, error = _session()
+    if error:
+        return error
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(_VISIT_SELECT + "WHERE v.public_id=:public_id AND v.user_id=:user_id"),
+            {"public_id": public_id, "user_id": session["user_id"]},
+        ).mappings().first()
+    if not row:
+        return _error("not_found", "予定が見つかりません。", 404)
+    return jsonify(visit=_visit(row))
+
+
+def _validate_visit(data: dict[str, object]) -> dict[str, object]:
+    season_public_id = data.get("season_public_id")
+    visit_date = data.get("visit_date")
+    park = data.get("park")
+    visibility = data.get("visibility")
+    detail = data.get("detail_level")
+    if not isinstance(season_public_id, str) or not isinstance(visit_date, str) or park not in PARKS:
+        raise RegistrationError("シーズン、日付、パークを確認してください。")
+    try:
+        parsed_date = date.fromisoformat(visit_date)
+    except ValueError as exc:
+        raise RegistrationError("日付を確認してください。") from exc
+    if visibility not in VISIBILITIES or detail not in DETAIL_LEVELS:
+        raise RegistrationError("公開範囲と公開情報を選択してください。")
+    arrival = data.get("arrival_time") or None
+    if arrival is not None:
+        try:
+            time.fromisoformat(str(arrival))
+        except ValueError as exc:
+            raise RegistrationError("到着時刻を確認してください。") from exc
+    costume, memo = data.get("costume") or None, data.get("memo") or None
+    if costume is not None and (not isinstance(costume, str) or len(costume) > 100):
+        raise RegistrationError("服装は100文字以内で入力してください。")
+    if memo is not None and (not isinstance(memo, str) or len(memo) > 500):
+        raise RegistrationError("メモは500文字以内で入力してください。")
+    return {
+        "season_public_id": season_public_id, "visit_date": parsed_date, "park": park,
+        "arrival_time": arrival, "costume": costume, "memo": memo,
+        "visibility": visibility, "detail_level": detail,
+    }
+
+
+def _save_visit(user_id: int, data: dict[str, object], public_id: str | None = None) -> str:
+    values = _validate_visit(data)
+    with get_engine().begin() as connection:
+        season = connection.execute(
+            text(
+                "SELECT id, start_date, end_date FROM seasons "
+                "WHERE public_id=:public_id AND is_active=1"
+            ),
+            {"public_id": values.pop("season_public_id")},
+        ).mappings().first()
+        if not season or not season["start_date"] <= values["visit_date"] <= season["end_date"]:
+            raise RegistrationError("日付が選択したシーズンの期間外です。")
+        values["season_id"] = season["id"]
+        if public_id:
+            result = connection.execute(
+                text(
+                    "UPDATE visits SET season_id=:season_id, visit_date=:visit_date, park=:park, "
+                    "arrival_time=:arrival_time, costume=:costume, memo=:memo, "
+                    "visibility=:visibility, detail_level=:detail_level "
+                    "WHERE public_id=:public_id AND user_id=:user_id"
+                ),
+                {**values, "public_id": public_id, "user_id": user_id},
+            )
+            if result.rowcount != 1:
+                raise RegistrationError("予定が見つかりません。")
+            return public_id
+        public_id = new_public_id()
+        connection.execute(
+            text(
+                "INSERT INTO visits "
+                "(public_id,user_id,season_id,visit_date,park,arrival_time,costume,memo,visibility,detail_level) "
+                "VALUES (:public_id,:user_id,:season_id,:visit_date,:park,:arrival_time,:costume,:memo,:visibility,:detail_level)"
+            ),
+            {**values, "public_id": public_id, "user_id": user_id},
+        )
+        return public_id
+
+
+@bp.post("/visits")
+def create_visit():
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    try:
+        public_id = _save_visit(int(session["user_id"]), _payload())
+    except RegistrationError as exc:
+        return _error("invalid_visit", str(exc), 400)
+    except IntegrityError:
+        return _error("duplicate_visit", "同じシーズン・日付の予定は登録済みです。", 409)
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(_VISIT_SELECT + "WHERE v.public_id=:public_id AND v.user_id=:user_id"),
+            {"public_id": public_id, "user_id": session["user_id"]},
+        ).mappings().one()
+    return jsonify(visit=_visit(row)), 201
+
+
+@bp.patch("/visits/<public_id>")
+def update_visit(public_id: str):
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(_VISIT_SELECT + "WHERE v.public_id=:public_id AND v.user_id=:user_id"),
+            {"public_id": public_id, "user_id": session["user_id"]},
+        ).mappings().first()
+    if not row:
+        return _error("not_found", "予定が見つかりません。", 404)
+    try:
+        _save_visit(int(session["user_id"]), {**_visit(row), **_payload()}, public_id)
+    except RegistrationError as exc:
+        return _error("invalid_visit", str(exc), 400)
+    except IntegrityError:
+        return _error("duplicate_visit", "同じシーズン・日付の予定は登録済みです。", 409)
+    return get_visit(public_id)
+
+
+@bp.delete("/visits/<public_id>")
+def delete_visit(public_id: str):
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    with get_engine().begin() as connection:
+        result = connection.execute(
+            text("DELETE FROM visits WHERE public_id=:public_id AND user_id=:user_id"),
+            {"public_id": public_id, "user_id": session["user_id"]},
+        )
+    return ("", 204) if result.rowcount else _error("not_found", "予定が見つかりません。", 404)

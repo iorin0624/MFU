@@ -12,7 +12,7 @@ const error = ref('')
 async function submit() {
   pending.value = true; message.value = ''; error.value = ''
   try {
-    const result = await api<{ message: string }>('/auth/register/request', { email: email.value, turnstile_token: turnstileToken.value })
+    const result = await api<{ message: string }>('/auth/register/request', { method: 'POST', body: { email: email.value, turnstile_token: turnstileToken.value } })
     message.value = result.message
   } catch (cause) {
     error.value = cause instanceof ApiError ? cause.message : '通信に失敗しました。'

@@ -1,0 +1,53 @@
+import pytest
+
+from inpa_app.share import visibility_allows
+
+
+@pytest.mark.parametrize(
+    ("visibility", "expected"),
+    [("link", True), ("logged_in", False), ("following", False), ("mutual", False), ("private", False)],
+)
+def test_anonymous_link_viewer(visibility, expected):
+    assert visibility_allows(
+        visibility,
+        owner=False,
+        has_link=True,
+        logged_in=False,
+        owner_follows_viewer=False,
+        viewer_follows_owner=False,
+        blocked=False,
+    ) is expected
+
+
+def test_logged_in_and_relationship_levels():
+    common = {"owner": False, "has_link": True, "logged_in": True, "blocked": False}
+    assert visibility_allows("logged_in", owner_follows_viewer=False, viewer_follows_owner=False, **common)
+    assert visibility_allows("following", owner_follows_viewer=True, viewer_follows_owner=False, **common)
+    assert not visibility_allows("mutual", owner_follows_viewer=True, viewer_follows_owner=False, **common)
+    assert visibility_allows("mutual", owner_follows_viewer=True, viewer_follows_owner=True, **common)
+
+
+@pytest.mark.parametrize("visibility", ["link", "logged_in", "following", "mutual", "private"])
+def test_block_hides_every_level_from_non_owner(visibility):
+    assert not visibility_allows(
+        visibility,
+        owner=False,
+        has_link=True,
+        logged_in=True,
+        owner_follows_viewer=True,
+        viewer_follows_owner=True,
+        blocked=True,
+    )
+
+
+@pytest.mark.parametrize("visibility", ["link", "logged_in", "following", "mutual", "private"])
+def test_owner_always_sees_own_visit(visibility):
+    assert visibility_allows(
+        visibility,
+        owner=True,
+        has_link=False,
+        logged_in=True,
+        owner_follows_viewer=False,
+        viewer_follows_owner=False,
+        blocked=True,
+    )
