@@ -74,6 +74,7 @@ def call_inpa(method: str, path: str, *, payload: object = None, idempotency_key
 _SECTIONS = {
     "dashboard": ("/internal/admin/v1/summary", "summary"),
     "users": ("/internal/admin/v1/users", "users"),
+    "invitations": ("/internal/admin/v1/registration-invitations", "invitations"),
     "visits": ("/internal/admin/v1/visits", "visits"),
     "reports": ("/internal/admin/v1/reports", "reports"),
     "seasons": ("/internal/admin/v1/seasons", "seasons"),
@@ -114,7 +115,60 @@ def index(section: str = "dashboard"):
         else:
             data = []
         error = str(exc)
-    return render_template("admin_inpa.html", section=section, data=data, error=error)
+    return render_template(
+        "admin_inpa.html", section=section, data=data, error=error, invite_result=None
+    )
+
+
+@inpa_admin_bp.post("/admin/inpa/invitations")
+@_admin_required
+def create_invitation():
+    try:
+        days = int(request.form.get("expires_in_days", "7"))
+        result = call_inpa(
+            "POST", "/internal/admin/v1/registration-invitations",
+            payload={"memo": request.form.get("memo", ""), "expires_in_days": days},
+            idempotency_key=secrets.token_urlsafe(24),
+        )
+        data = call_inpa(
+            "GET", "/internal/admin/v1/registration-invitations"
+        ).get("invitations", [])
+        return render_template(
+            "admin_inpa.html", section="invitations", data=data, error=None,
+            invite_result=result,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("inpa_admin.index", section="invitations"))
+
+
+@inpa_admin_bp.post("/admin/inpa/invitations/<public_id>")
+@_admin_required
+def update_invitation(public_id: str):
+    try:
+        call_inpa(
+            "PATCH", f"/internal/admin/v1/registration-invitations/{public_id}",
+            payload={"memo": request.form.get("memo", "")},
+            idempotency_key=secrets.token_urlsafe(24),
+        )
+        flash("招待トークンのメモを更新しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="invitations"))
+
+
+@inpa_admin_bp.post("/admin/inpa/invitations/<public_id>/revoke")
+@_admin_required
+def revoke_invitation(public_id: str):
+    try:
+        call_inpa(
+            "POST", f"/internal/admin/v1/registration-invitations/{public_id}/revoke",
+            idempotency_key=secrets.token_urlsafe(24),
+        )
+        flash("招待トークンを無効化しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="invitations"))
 
 
 @inpa_admin_bp.post("/admin/inpa/action")

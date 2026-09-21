@@ -80,8 +80,15 @@ def _optional_handle(value: object, maximum: int) -> str | None:
     return handle
 
 
-def create_registration_request(email_value: object, requested_ip: bytes | None, user_agent: str | None) -> tuple[str, str] | None:
-    """Create a single-use confirmation request, unless the address already belongs to a user."""
+def create_registration_request(
+    invitation_value: object,
+    email_value: object,
+    requested_ip: bytes | None,
+    user_agent: str | None,
+) -> tuple[str, str] | None:
+    """Claim an administrator invitation and create an email confirmation request."""
+    if not isinstance(invitation_value, str) or not invitation_value.strip():
+        raise RegistrationError("Enter a valid invitation token.")
     email, normalized = normalize_email(email_value)
     token = new_secret()
     token_hash = hash_secret(token)
@@ -90,11 +97,31 @@ def create_registration_request(email_value: object, requested_ip: bytes | None,
     expires_at = now + timedelta(seconds=current_app.config["REGISTRATION_TTL_SECONDS"])
     engine = get_engine()
     with engine.begin() as connection:
+        invitation = connection.execute(
+            text(
+                "SELECT id,status,claimed_email_normalized FROM registration_invitations "
+                "WHERE token_hash=:token_hash AND revoked_at IS NULL AND used_at IS NULL "
+                "AND expires_at>:now FOR UPDATE"
+            ),
+            {"token_hash": hash_secret(invitation_value.strip()), "now": now},
+        ).mappings().first()
+        if not invitation or invitation["status"] not in {"active", "claimed"}:
+            raise RegistrationError("This invitation token is invalid, expired, or unavailable.")
+        if invitation["status"] == "claimed" and invitation["claimed_email_normalized"] != normalized:
+            raise RegistrationError("This invitation token is invalid, expired, or unavailable.")
         existing = connection.execute(
             text("SELECT id FROM users WHERE email_normalized = :email LIMIT 1"), {"email": normalized}
         ).first()
         if existing:
             return None
+        if invitation["status"] == "active":
+            connection.execute(
+                text(
+                    "UPDATE registration_invitations SET status='claimed',"
+                    "claimed_email_normalized=:email,claimed_at=:now,updated_at=:now WHERE id=:id"
+                ),
+                {"email": normalized, "now": now, "id": invitation["id"]},
+            )
         connection.execute(
             text(
                 "UPDATE registration_requests SET consumed_at = :now "
@@ -105,11 +132,13 @@ def create_registration_request(email_value: object, requested_ip: bytes | None,
         connection.execute(
             text(
                 "INSERT INTO registration_requests "
-                "(public_id, email, email_normalized, token_hash, requested_ip, requested_user_agent, expires_at) "
-                "VALUES (:public_id, :email, :normalized, :token_hash, :ip, :agent, :expires_at)"
+                "(public_id, invitation_id, email, email_normalized, token_hash, requested_ip, "
+                "requested_user_agent, expires_at) VALUES (:public_id, :invitation_id, :email, "
+                ":normalized, :token_hash, :ip, :agent, :expires_at)"
             ),
             {
                 "public_id": public_id,
+                "invitation_id": invitation["id"],
                 "email": email,
                 "normalized": normalized,
                 "token_hash": token_hash,
@@ -144,12 +173,22 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
     with engine.begin() as connection:
         request_row = connection.execute(
             text(
-                "SELECT id, email, email_normalized FROM registration_requests "
-                "WHERE token_hash = :token_hash AND consumed_at IS NULL AND expires_at > :now FOR UPDATE"
+                "SELECT r.id,r.invitation_id,r.email,r.email_normalized,i.status AS invitation_status,"
+                "i.claimed_email_normalized,i.expires_at AS invitation_expires_at,i.revoked_at,i.used_at "
+                "FROM registration_requests r JOIN registration_invitations i ON i.id=r.invitation_id "
+                "WHERE r.token_hash=:token_hash AND r.consumed_at IS NULL AND r.expires_at>:now FOR UPDATE"
             ),
             {"token_hash": token_hash, "now": now},
         ).mappings().first()
         if not request_row:
+            raise RegistrationError("This registration link is invalid or expired.")
+        if (
+            request_row["invitation_status"] != "claimed"
+            or request_row["claimed_email_normalized"] != request_row["email_normalized"]
+            or request_row["invitation_expires_at"] <= now
+            or request_row["revoked_at"] is not None
+            or request_row["used_at"] is not None
+        ):
             raise RegistrationError("This registration link is invalid or expired.")
         duplicate = connection.execute(
             text("SELECT id FROM users WHERE email_normalized = :email LIMIT 1 FOR UPDATE"),
@@ -185,6 +224,13 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
         connection.execute(
             text("UPDATE registration_requests SET consumed_at = :now WHERE id = :id"),
             {"now": now, "id": request_row["id"]},
+        )
+        connection.execute(
+            text(
+                "UPDATE registration_invitations SET status='used',used_by_user_id=:user_id,"
+                "used_at=:now,updated_at=:now WHERE id=:id AND status='claimed'"
+            ),
+            {"user_id": user_id, "now": now, "id": request_row["invitation_id"]},
         )
     return create_session(int(user_id), remember=True)
 

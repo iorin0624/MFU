@@ -31,7 +31,9 @@ DELETE /api/v1/auth/sessions/{sessionId}
 GET    /api/v1/auth/me
 ```
 
-登録要求、ログイン、不審操作ではTurnstile tokenを受け取り、バックエンドから検証します。
+登録要求では管理者発行の招待tokenとTurnstile tokenを受け取り、バックエンドから検証します。
+招待tokenは最初の登録要求で正規化メールアドレスへ固定し、登録完了時に同じtransaction内で
+使用済みにします。使用済み、無効、期限切れ、別メールへ割当済みのtokenは受け付けません。
 
 ### 2.1 プロフィール・アカウントAPI
 
@@ -125,6 +127,10 @@ POST   /internal/admin/v1/users/{id}/suspend
 POST   /internal/admin/v1/users/{id}/unsuspend
 POST   /internal/admin/v1/users/{id}/logout-all
 POST   /internal/admin/v1/users/{id}/delete-request
+GET    /internal/admin/v1/registration-invitations
+POST   /internal/admin/v1/registration-invitations
+PATCH  /internal/admin/v1/registration-invitations/{id}
+POST   /internal/admin/v1/registration-invitations/{id}/revoke
 GET    /internal/admin/v1/visits
 DELETE /internal/admin/v1/visits/{id}
 POST   /internal/admin/v1/share-tokens/{id}/revoke
@@ -175,6 +181,7 @@ INPAはUnix socketの接続権限、HMAC、時刻差、nonce未使用を確認�
 - パラメーター化SQLまたはORMを使用
 - パスワードはArgon2id
 - 秘密tokenはSHA-256 + サービス固有pepperで保存
+- 登録招待tokenの平文は発行responseで一度だけ返し、DB・監査ログには保存しない
 - 重要な比較はconstant-time比較
 
 パスワード変更、メールアドレス変更完了、退会申請・取消はセキュリティイベントとして記録し、

@@ -2,6 +2,7 @@ import pytest
 
 from inpa_app import create_app
 from inpa_app.auth.service import RegistrationError, hash_secret, new_public_id, validate_password
+from inpa_app.internal_admin import _invitation_memo
 
 
 @pytest.fixture
@@ -41,3 +42,21 @@ def test_login_does_not_leak_invalid_json_details(app):
 
     assert response.status_code == 401
     assert response.get_json()["error"]["code"] == "login_failed"
+
+
+def test_registration_requires_an_administrator_invitation(app):
+    app.config["TURNSTILE_BYPASS"] = True
+
+    response = app.test_client().post(
+        "/api/v1/auth/register/request", json={"email": "new@example.com"}
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_request"
+
+
+def test_invitation_memo_is_trimmed_and_limited():
+    assert _invitation_memo("  invited guest  ") == "invited guest"
+    assert _invitation_memo("") is None
+    with pytest.raises(ValueError):
+        _invitation_memo("x" * 256)
