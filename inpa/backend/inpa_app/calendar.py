@@ -11,6 +11,7 @@ from sqlalchemy import text
 from .auth.routes import _error, _require_session
 from .auth.service import normalize_connection_id
 from .db import get_engine
+from .holidays import japanese_holidays
 from .privacy import effective_fields, load_matrix, viewer_audience
 from .restrictions import serialize_restriction
 
@@ -131,5 +132,10 @@ def integrated_calendar():
     return jsonify(
         season={"public_id": season["public_id"], "name": season["name"]} if season else None,
         days=result,
+        holidays=[
+            {"date": holiday.isoformat(), "name": name}
+            for holiday, name in japanese_holidays(year).items()
+            if holiday.month == month
+        ],
         restrictions=[serialize_restriction(row) for row in restrictions],
     )

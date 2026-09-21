@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '@/lib/api'
+import { formatJapaneseDate } from '@/lib/date'
 
 const route = useRoute(); const router = useRouter()
 type Season = { public_id: string; name: string; start_date: string; end_date: string }
@@ -53,7 +54,7 @@ async function save() {
   } catch (value) { error.value = errorMessage(value) }
 }
 async function remove(visit: Visit) {
-  if (!confirm(`${visit.visit_date}の予定を削除しますか？`)) return
+  if (!confirm(`${formatJapaneseDate(visit.visit_date)}の予定を削除しますか？`)) return
   try { await api(`/visits/${visit.public_id}`, { method: 'DELETE' }); await load(); notice.value = '予定を削除しました。' }
   catch (value) { error.value = errorMessage(value) }
 }
@@ -72,16 +73,16 @@ watch(() => [form.value.season_public_id, form.value.visit_date, form.value.park
     <p v-if="!seasons.length" class="notice">現在、選択できるシーズンがありません。</p>
     <form v-else class="form-stack" @submit.prevent="save">
       <h2>{{ editing ? '予定を編集' : '予定を追加' }}</h2>
-      <label class="field">シーズン<select v-model="form.season_public_id" required><option v-for="season in seasons" :key="season.public_id" :value="season.public_id">{{ season.name }}（{{ season.start_date }}〜{{ season.end_date }}）</option></select></label>
-      <label class="field">日付<input v-model="form.visit_date" type="date" required></label>
+      <label class="field">シーズン<select v-model="form.season_public_id" required><option v-for="season in seasons" :key="season.public_id" :value="season.public_id">{{ season.name }}（{{ formatJapaneseDate(season.start_date) }}〜{{ formatJapaneseDate(season.end_date) }}）</option></select></label>
+      <label class="field">日付<input v-model="form.visit_date" type="date" required><small v-if="form.visit_date">{{ formatJapaneseDate(form.visit_date) }}</small></label>
       <label class="field">パーク<select v-model="form.park"><option value="undecided">未定</option><option value="land">ランド</option><option value="sea">シー</option><option value="both">両方</option></select></label>
-      <div v-for="warning in warnings" :key="warning.public_id" class="warning-notice"><strong>{{ warning.name }}</strong><p>{{ warning.description || 'この日は対象期間です。内容を確認してください。' }}</p><small>{{ warning.start_date }}〜{{ warning.end_date }}</small></div>
+      <div v-for="warning in warnings" :key="warning.public_id" class="warning-notice"><strong>{{ warning.name }}</strong><p>{{ warning.description || 'この日は対象期間です。内容を確認してください。' }}</p><small>{{ formatJapaneseDate(warning.start_date) }}〜{{ formatJapaneseDate(warning.end_date) }}</small></div>
       <label class="field">到着時刻<input v-model="form.arrival_time" type="time"></label>
       <label class="field">服装<input v-model="form.costume" maxlength="100"></label>
       <label class="field">メモ<textarea v-model="form.memo" maxlength="500" rows="4"></textarea></label>
       <p class="helper">公開する範囲と情報は、プロフィールの「予定の公開設定」がすべての予定に適用されます。</p>
       <div class="actions"><button class="button">{{ editing ? '更新' : '追加' }}</button><button v-if="editing" type="button" class="button secondary" @click="reset">キャンセル</button></div>
     </form>
-    <div class="visit-list"><article v-for="visit in visits" :key="visit.public_id" class="visit-card"><h3>{{ visit.visit_date }} / {{ visit.park ?? '未定' }}</h3><p>{{ visit.season_name }}</p><p v-if="visit.arrival_time">到着 {{ visit.arrival_time }}</p><p v-if="visit.costume">服装 {{ visit.costume }}</p><p v-if="visit.memo">{{ visit.memo }}</p><div class="actions"><button class="button secondary" @click="edit(visit)">編集</button><button class="button danger" @click="remove(visit)">削除</button></div></article></div>
+    <div class="visit-list"><article v-for="visit in visits" :key="visit.public_id" class="visit-card"><h3>{{ formatJapaneseDate(visit.visit_date) }} / {{ visit.park ?? '未定' }}</h3><p>{{ visit.season_name }}</p><p v-if="visit.arrival_time">到着 {{ visit.arrival_time }}</p><p v-if="visit.costume">服装 {{ visit.costume }}</p><p v-if="visit.memo">{{ visit.memo }}</p><div class="actions"><button class="button secondary" @click="edit(visit)">編集</button><button class="button danger" @click="remove(visit)">削除</button></div></article></div>
   </section>
 </template>
