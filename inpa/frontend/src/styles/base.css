@@ -60,6 +60,13 @@ body {
 .notice { padding: .8rem; border-radius: .5rem; background: #f4eee9; }
 .error { color: #a52a2a; }
 .helper { color: #665b55; font-size: .9rem; }
+.privacy-table-wrap { overflow-x: auto; }
+.privacy-table { width: 100%; border-collapse: collapse; text-align: center; }
+.privacy-table th, .privacy-table td { padding: .75rem .55rem; border-bottom: 1px solid #eadfd7; }
+.privacy-table th:first-child { min-width: 11rem; text-align: left; }
+.privacy-table th span, .privacy-table th small { display: block; }
+.privacy-table th small { margin-top: .2rem; color: #665b55; font-weight: 400; }
+.privacy-table input { width: 1.15rem; height: 1.15rem; accent-color: var(--color-accent); }
 
 .welcome {
   margin-top: 20vh;

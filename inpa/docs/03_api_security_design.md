@@ -39,7 +39,6 @@ GET    /api/v1/auth/me
 GET    /api/v1/profile
 PATCH  /api/v1/profile
 PATCH  /api/v1/privacy-defaults
-POST   /api/v1/privacy-defaults/apply-to-visits
 POST   /api/v1/account/password/change
 POST   /api/v1/account/email-change/request
 POST   /api/v1/account/email-change/confirm
@@ -49,8 +48,7 @@ POST   /api/v1/account/deletion/cancel
 ```
 
 - プロフィールAPIは表示名、SNS名、SNSごとの表示許可だけを扱います。
-- 標準公開設定は専用APIで扱い、既存予定への一括反映は対象範囲と件数を確認してから
-  `POST /privacy-defaults/apply-to-visits` で実行します。
+- 公開設定は専用APIで4範囲×4項目のブール値を厳密に検証し、保存後は全予定の閲覧判定に即時適用します。
 - パスワード変更とメール変更要求では現在のパスワードを再確認します。
 - パスワードまたはメールアドレスの変更完了時は全sessionを失効します。
 - メールアドレスは新アドレスの確認が完了するまで変更しません。
@@ -96,22 +94,20 @@ POST   /api/v1/reports
 ## 5. 公開判定
 
 ```text
-所有者本人                  -> 全項目
-private                     -> 本人以外は非表示
-link + 有効なtoken          -> detail_levelに従う
-logged_in + ログイン済み    -> detail_levelに従う
-following + owner→viewer    -> detail_levelに従う
-mutual + 双方向follow       -> detail_levelに従う
+link / 匿名                 -> link行の許可項目
+logged_in                  -> link + logged_in行の許可項目
+mutual / 双方向follow      -> link + logged_in + mutual行の許可項目
+private / 所有者本人     -> 全4行の許可項目
 blockがどちらかに存在       -> 本人以外は非表示
 ```
 
 返却フィールド：
 
 ```text
-date:  visit_date
-park:  visit_date, park
-memo:  visit_date, park, memo
-full:  visit_date, park, arrival_time, costume, memo
+date:     visit_date
+park:     park
+costume:  costume
+memo:     memo
 ```
 
 常に返してよいのは、予定IDそのものではなく画面操作に必要な不透明IDと、許可された表示項目だけです。

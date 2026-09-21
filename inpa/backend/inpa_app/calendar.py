@@ -3,28 +3,17 @@
 from __future__ import annotations
 
 import calendar as month_calendar
-from datetime import date, time, timedelta
+from datetime import date
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
 from .auth.routes import _error, _require_session
 from .db import get_engine
+from .privacy import effective_fields, load_matrix, viewer_audience
 from .restrictions import serialize_restriction
-from .share import VISIBLE_FIELDS, visibility_allows
 
 bp = Blueprint("calendar", __name__, url_prefix="/api/v1")
-
-
-def _time_text(value: time | timedelta | None) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, timedelta):
-        seconds = int(value.total_seconds())
-        hours, remainder = divmod(seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return value.isoformat()
 
 
 @bp.get("/calendar")
@@ -54,7 +43,7 @@ def integrated_calendar():
             text(
                 "SELECT v.user_id,u.public_id AS user_public_id,u.display_name,"
                 "u.x_handle,u.instagram_handle,u.x_handle_visible,u.instagram_handle_visible,"
-                "v.visit_date,v.park,v.arrival_time,v.costume,v.memo,v.visibility,v.detail_level "
+                "v.visit_date,v.park,v.costume,v.memo "
                 "FROM visits v JOIN users u ON u.id=v.user_id "
                 "WHERE v.season_id=:season AND v.visit_date BETWEEN :start AND :end "
                 "AND (v.user_id=:viewer OR ("
@@ -84,6 +73,10 @@ def integrated_calendar():
             ),
             {"season": season["id"], "start": start, "end": end},
         ).mappings().all()
+        privacy_matrices = {
+            owner_id: load_matrix(connection, owner_id)
+            for owner_id in {int(row["user_id"]) for row in rows}
+        }
     follow_pairs = {(int(row[0]), int(row[1])) for row in follows}
     block_pairs = {(int(row[0]), int(row[1])) for row in blocks}
     days: dict[str, list[dict[str, object]]] = {}
@@ -91,18 +84,20 @@ def integrated_calendar():
         owner_id = int(row["user_id"])
         owner = owner_id == viewer_id
         blocked = (owner_id, viewer_id) in block_pairs or (viewer_id, owner_id) in block_pairs
-        if not visibility_allows(
-            row["visibility"], owner=owner, has_link=False, logged_in=True,
+        audience = viewer_audience(
+            owner=owner, logged_in=True,
             owner_follows_viewer=(owner_id, viewer_id) in follow_pairs,
             viewer_follows_owner=(viewer_id, owner_id) in follow_pairs, blocked=blocked,
-        ):
+        )
+        fields = effective_fields(privacy_matrices[owner_id], audience)
+        if "date" not in fields:
             continue
         entry: dict[str, object] = {
             "user_public_id": row["user_public_id"], "display_name": row["display_name"],
         }
-        for key in VISIBLE_FIELDS["full" if owner else row["detail_level"]]:
-            value = row[key]
-            entry[key] = _time_text(value) if key == "arrival_time" else value
+        for key in ("park", "costume", "memo"):
+            if key in fields:
+                entry[key] = row[key]
         if owner or (row["x_handle_visible"] and row["x_handle"]):
             entry["x_handle"] = row["x_handle"]
         if owner or (row["instagram_handle_visible"] and row["instagram_handle"]):

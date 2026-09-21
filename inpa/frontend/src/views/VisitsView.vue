@@ -6,11 +6,10 @@ type Season = { public_id: string; name: string; start_date: string; end_date: s
 type Visit = {
   public_id: string; season_public_id: string; season_name: string; visit_date: string
   park: string | null; arrival_time: string | null; costume: string | null; memo: string | null
-  visibility: string; detail_level: string
 }
 type Form = Omit<Visit, 'public_id' | 'season_name'>
 type Restriction = { public_id: string; name: string; description: string | null; park_scope: string; start_date: string; end_date: string }
-const blank = (): Form => ({ season_public_id: '', visit_date: '', park: 'undecided', arrival_time: null, costume: null, memo: null, visibility: 'link', detail_level: 'park' })
+const blank = (): Form => ({ season_public_id: '', visit_date: '', park: 'undecided', arrival_time: null, costume: null, memo: null })
 const seasons = ref<Season[]>([]); const visits = ref<Visit[]>([]); const form = ref<Form>(blank())
 const editing = ref<string | null>(null); const error = ref(''); const notice = ref('')
 const warnings = ref<Restriction[]>([])
@@ -31,7 +30,7 @@ async function loadWarnings() {
 }
 function edit(visit: Visit) {
   editing.value = visit.public_id
-  form.value = { season_public_id: visit.season_public_id, visit_date: visit.visit_date, park: visit.park, arrival_time: visit.arrival_time, costume: visit.costume, memo: visit.memo, visibility: visit.visibility, detail_level: visit.detail_level }
+  form.value = { season_public_id: visit.season_public_id, visit_date: visit.visit_date, park: visit.park, arrival_time: visit.arrival_time, costume: visit.costume, memo: visit.memo }
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 function reset() { editing.value = null; form.value = blank(); if (seasons.value[0]) form.value.season_public_id = seasons.value[0].public_id }
@@ -66,8 +65,7 @@ watch(() => [form.value.season_public_id, form.value.visit_date, form.value.park
       <label class="field">到着時刻<input v-model="form.arrival_time" type="time"></label>
       <label class="field">服装<input v-model="form.costume" maxlength="100"></label>
       <label class="field">メモ<textarea v-model="form.memo" maxlength="500" rows="4"></textarea></label>
-      <label class="field">公開対象<select v-model="form.visibility"><option value="link">共有リンク</option><option value="logged_in">ログイン利用者</option><option value="following">登録済み</option><option value="mutual">相互登録</option><option value="private">自分のみ</option></select></label>
-      <label class="field">公開情報<select v-model="form.detail_level"><option value="date">日付のみ</option><option value="park">日付・パーク</option><option value="memo">日付・パーク・メモ</option><option value="full">すべて</option></select></label>
+      <p class="helper">公開する範囲と情報は、プロフィールの「予定の公開設定」がすべての予定に適用されます。</p>
       <div class="actions"><button class="button">{{ editing ? '更新' : '追加' }}</button><button v-if="editing" type="button" class="button secondary" @click="reset">キャンセル</button></div>
     </form>
     <div class="visit-list"><article v-for="visit in visits" :key="visit.public_id" class="visit-card"><h3>{{ visit.visit_date }} / {{ visit.park ?? '未定' }}</h3><p>{{ visit.season_name }}</p><p v-if="visit.arrival_time">到着 {{ visit.arrival_time }}</p><p v-if="visit.costume">服装 {{ visit.costume }}</p><p v-if="visit.memo">{{ visit.memo }}</p><div class="actions"><button class="button secondary" @click="edit(visit)">編集</button><button class="button danger" @click="remove(visit)">削除</button></div></article></div>

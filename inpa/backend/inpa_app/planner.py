@@ -11,10 +11,9 @@ from sqlalchemy.exc import IntegrityError
 from .auth.routes import _error, _require_session
 from .auth.service import RegistrationError, new_public_id, verify_csrf
 from .db import get_engine
+from .privacy import load_matrix, save_matrix, validate_matrix
 
 bp = Blueprint("planner", __name__, url_prefix="/api/v1")
-VISIBILITIES = {"link", "logged_in", "following", "mutual", "private"}
-DETAIL_LEVELS = {"date", "park", "memo", "full"}
 PARKS = {"land", "sea", "both", "undecided", None}
 
 
@@ -34,10 +33,11 @@ def _session(*, csrf: bool = False):
     return session, None
 
 
-def _profile(row) -> dict[str, object]:
+def _profile(row, privacy_matrix) -> dict[str, object]:
     result = dict(row)
     result["x_handle_visible"] = bool(result["x_handle_visible"])
     result["instagram_handle_visible"] = bool(result["instagram_handle_visible"])
+    result["privacy_matrix"] = privacy_matrix
     return result
 
 
@@ -50,12 +50,12 @@ def get_profile():
         row = connection.execute(
             text(
                 "SELECT public_id, display_name, x_handle, instagram_handle, "
-                "x_handle_visible, instagram_handle_visible, default_visibility, "
-                "default_detail_level FROM users WHERE id=:id"
+                "x_handle_visible, instagram_handle_visible FROM users WHERE id=:id"
             ),
             {"id": session["user_id"]},
         ).mappings().one()
-    return jsonify(profile=_profile(row))
+        privacy_matrix = load_matrix(connection, int(session["user_id"]))
+    return jsonify(profile=_profile(row, privacy_matrix))
 
 
 def _handle(value: object, maximum: int) -> str | None:
@@ -115,18 +115,12 @@ def patch_privacy_defaults():
         return error
     try:
         data = _payload()
-        visibility = data.get("default_visibility")
-        detail = data.get("default_detail_level")
-        if visibility not in VISIBILITIES or detail not in DETAIL_LEVELS:
-            raise RegistrationError("公開範囲と公開情報を選択してください。")
+        try:
+            matrix = validate_matrix(data.get("privacy_matrix"))
+        except (TypeError, ValueError) as exc:
+            raise RegistrationError(str(exc)) from exc
         with get_engine().begin() as connection:
-            connection.execute(
-                text(
-                    "UPDATE users SET default_visibility=:visibility, "
-                    "default_detail_level=:detail WHERE id=:id"
-                ),
-                {"visibility": visibility, "detail": detail, "id": session["user_id"]},
-            )
+            save_matrix(connection, int(session["user_id"]), matrix)
     except RegistrationError as exc:
         return _error("invalid_request", str(exc), 400)
     return get_profile()
@@ -134,22 +128,13 @@ def patch_privacy_defaults():
 
 @bp.post("/privacy-defaults/apply-to-visits")
 def apply_privacy_defaults():
-    session, error = _session(csrf=True)
+    _session_data, error = _session(csrf=True)
     if error:
         return error
     data = request.get_json(silent=True) or {}
     if data.get("confirmed") is not True:
         return _error("confirmation_required", "既存予定への反映を確認してください。", 400)
-    with get_engine().begin() as connection:
-        result = connection.execute(
-            text(
-                "UPDATE visits v JOIN users u ON u.id=v.user_id "
-                "SET v.visibility=u.default_visibility, v.detail_level=u.default_detail_level "
-                "WHERE v.user_id=:id"
-            ),
-            {"id": session["user_id"]},
-        )
-    return jsonify(updated_count=result.rowcount)
+    return jsonify(updated_count=0, message="プロフィール設定はすべての予定に自動適用されます。")
 
 
 @bp.get("/seasons")
@@ -187,7 +172,7 @@ def _time_text(value: time | timedelta | None) -> str | None:
 
 _VISIT_SELECT = (
     "SELECT v.public_id, s.public_id AS season_public_id, s.name AS season_name, "
-    "v.visit_date, v.park, v.arrival_time, v.costume, v.memo, v.visibility, v.detail_level "
+    "v.visit_date, v.park, v.arrival_time, v.costume, v.memo "
     "FROM visits v JOIN seasons s ON s.id=v.season_id "
 )
 
@@ -227,16 +212,12 @@ def _validate_visit(data: dict[str, object]) -> dict[str, object]:
     season_public_id = data.get("season_public_id")
     visit_date = data.get("visit_date")
     park = data.get("park")
-    visibility = data.get("visibility")
-    detail = data.get("detail_level")
     if not isinstance(season_public_id, str) or not isinstance(visit_date, str) or park not in PARKS:
         raise RegistrationError("シーズン、日付、パークを確認してください。")
     try:
         parsed_date = date.fromisoformat(visit_date)
     except ValueError as exc:
         raise RegistrationError("日付を確認してください。") from exc
-    if visibility not in VISIBILITIES or detail not in DETAIL_LEVELS:
-        raise RegistrationError("公開範囲と公開情報を選択してください。")
     arrival = data.get("arrival_time") or None
     if arrival is not None:
         try:
@@ -251,7 +232,9 @@ def _validate_visit(data: dict[str, object]) -> dict[str, object]:
     return {
         "season_public_id": season_public_id, "visit_date": parsed_date, "park": park,
         "arrival_time": arrival, "costume": costume, "memo": memo,
-        "visibility": visibility, "detail_level": detail,
+        # Legacy columns remain populated until a later destructive schema cleanup.
+        # Profile-level settings are the only source used for disclosure decisions.
+        "visibility": "private", "detail_level": "full",
     }
 
 
