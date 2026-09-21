@@ -119,11 +119,78 @@ def patch_privacy_defaults():
             matrix = validate_matrix(data.get("privacy_matrix"))
         except (TypeError, ValueError) as exc:
             raise RegistrationError(str(exc)) from exc
+        season_public_id = data.get("season_public_id")
         with get_engine().begin() as connection:
+            if season_public_id is not None:
+                if not isinstance(season_public_id, str) or not season_public_id:
+                    raise RegistrationError("シーズンを確認してください。")
+                season_id = connection.execute(
+                    text("SELECT id FROM seasons WHERE public_id=:id AND is_active=1"),
+                    {"id": season_public_id},
+                ).scalar()
+                if not season_id:
+                    raise RegistrationError("シーズンを確認してください。")
+                save_matrix(connection, int(session["user_id"]), matrix, int(season_id))
+                return jsonify(privacy_matrix=matrix, season_public_id=season_public_id)
             save_matrix(connection, int(session["user_id"]), matrix)
     except RegistrationError as exc:
         return _error("invalid_request", str(exc), 400)
     return get_profile()
+
+
+@bp.get("/privacy-defaults")
+def get_privacy_defaults():
+    session, error = _session()
+    if error:
+        return error
+    season_public_id = request.args.get("season_id", "").strip()
+    with get_engine().connect() as connection:
+        season_id = None
+        customized = False
+        if season_public_id:
+            season_id = connection.execute(
+                text("SELECT id FROM seasons WHERE public_id=:id AND is_active=1"),
+                {"id": season_public_id},
+            ).scalar()
+            if not season_id:
+                return _error("invalid_season", "シーズンを確認してください。", 400)
+            customized = bool(connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM user_season_privacy_settings "
+                    "WHERE user_id=:user_id AND season_id=:season_id"
+                ),
+                {"user_id": session["user_id"], "season_id": season_id},
+            ).scalar())
+        matrix = load_matrix(connection, int(session["user_id"]), int(season_id) if season_id else None)
+    return jsonify(
+        privacy_matrix=matrix, season_public_id=season_public_id or None,
+        customized=customized,
+    )
+
+
+@bp.delete("/privacy-defaults/<season_public_id>")
+def reset_season_privacy_defaults(season_public_id: str):
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    with get_engine().begin() as connection:
+        season_id = connection.execute(
+            text("SELECT id FROM seasons WHERE public_id=:id AND is_active=1"),
+            {"id": season_public_id},
+        ).scalar()
+        if not season_id:
+            return _error("invalid_season", "シーズンを確認してください。", 400)
+        connection.execute(
+            text(
+                "DELETE FROM user_season_privacy_settings "
+                "WHERE user_id=:user_id AND season_id=:season_id"
+            ),
+            {"user_id": session["user_id"], "season_id": season_id},
+        )
+        matrix = load_matrix(connection, int(session["user_id"]))
+    return jsonify(
+        privacy_matrix=matrix, season_public_id=season_public_id, customized=False,
+    )
 
 
 @bp.post("/privacy-defaults/apply-to-visits")

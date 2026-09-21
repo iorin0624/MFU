@@ -118,6 +118,19 @@ def _render_visits(owner_id: int, rows, viewer_id: int | None, relationship, pri
     return result
 
 
+def _render_season_visits(
+    owner_id: int, rows, viewer_id: int | None, relationship, privacy_matrices,
+):
+    result = []
+    for row in rows:
+        rendered = _render_visits(
+            owner_id, [row], viewer_id, relationship,
+            privacy_matrices[int(row["season_id"])],
+        )
+        result.extend(rendered)
+    return result
+
+
 @bp.get("/share/<token>")
 def share(token: str):
     token_hash = hash_secret(token)
@@ -144,13 +157,16 @@ def share(token: str):
         ).mappings().one()
         rows = connection.execute(
             text(
-                "SELECT visit_date,park,costume,memo "
+                "SELECT season_id,visit_date,park,costume,memo "
                 "FROM visits WHERE user_id=:id ORDER BY visit_date"
             ),
             {"id": owner_id},
         ).mappings().all()
         relationship = _relationship(connection, owner_id, viewer_id)
-        privacy_matrix = load_matrix(connection, owner_id)
+        privacy_matrices = {
+            season_id: load_matrix(connection, owner_id, season_id)
+            for season_id in {int(row["season_id"]) for row in rows}
+        }
     profile = {
         "public_id": user["public_id"], "connection_id": user["connection_id"],
         "display_name": user["display_name"],
@@ -161,7 +177,9 @@ def share(token: str):
         profile["instagram_handle"] = user["instagram_handle"]
     return jsonify(
         profile=profile,
-        visits=_render_visits(owner_id, rows, viewer_id, relationship, privacy_matrix),
+        visits=_render_season_visits(
+            owner_id, rows, viewer_id, relationship, privacy_matrices,
+        ),
     )
 
 

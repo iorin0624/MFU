@@ -71,7 +71,18 @@ def viewer_audience(
     return "link"
 
 
-def load_matrix(connection, user_id: int) -> dict[str, dict[str, bool]]:
+def load_matrix(connection, user_id: int, season_id: int | None = None) -> dict[str, dict[str, bool]]:
+    if season_id is not None:
+        rows = connection.execute(
+            text(
+                "SELECT audience,show_date,show_park,show_costume,show_memo "
+                "FROM user_season_privacy_settings "
+                "WHERE user_id=:user_id AND season_id=:season_id"
+            ),
+            {"user_id": user_id, "season_id": season_id},
+        ).mappings().all()
+        if len(rows) == len(AUDIENCES):
+            return matrix_from_rows(rows)
     rows = connection.execute(
         text(
             "SELECT audience,show_date,show_park,show_costume,show_memo "
@@ -82,19 +93,25 @@ def load_matrix(connection, user_id: int) -> dict[str, dict[str, bool]]:
     return matrix_from_rows(rows)
 
 
-def save_matrix(connection, user_id: int, matrix: Mapping[str, Mapping[str, bool]]) -> None:
+def save_matrix(
+    connection, user_id: int, matrix: Mapping[str, Mapping[str, bool]],
+    season_id: int | None = None,
+) -> None:
+    table = "user_season_privacy_settings" if season_id is not None else "user_privacy_settings"
+    key_columns = "user_id,season_id,audience" if season_id is not None else "user_id,audience"
+    key_values = ":user_id,:season_id,:audience" if season_id is not None else ":user_id,:audience"
     for audience in AUDIENCES:
         values = {column: int(matrix[audience][field]) for field, column in _COLUMN_BY_FIELD.items()}
         connection.execute(
             text(
-                "INSERT INTO user_privacy_settings "
-                "(user_id,audience,show_date,show_park,show_costume,show_memo) "
-                "VALUES (:user_id,:audience,:show_date,:show_park,:show_costume,:show_memo) "
+                f"INSERT INTO {table} "
+                f"({key_columns},show_date,show_park,show_costume,show_memo) "
+                f"VALUES ({key_values},:show_date,:show_park,:show_costume,:show_memo) "
                 "ON DUPLICATE KEY UPDATE show_date=VALUES(show_date),show_park=VALUES(show_park),"
                 "show_costume=VALUES(show_costume),show_memo=VALUES(show_memo),"
                 "updated_at=UTC_TIMESTAMP(6)"
             ),
-            {"user_id": user_id, "audience": audience, **values},
+            {"user_id": user_id, "season_id": season_id, "audience": audience, **values},
         )
 
 
