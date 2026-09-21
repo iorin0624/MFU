@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
@@ -170,8 +170,19 @@ def list_seasons():
 def _visit(row) -> dict[str, object]:
     value = dict(row)
     value["visit_date"] = value["visit_date"].isoformat()
-    value["arrival_time"] = value["arrival_time"].isoformat() if value["arrival_time"] else None
+    value["arrival_time"] = _time_text(value["arrival_time"])
     return value
+
+
+def _time_text(value: time | timedelta | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        seconds = int(value.total_seconds())
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return value.isoformat()
 
 
 _VISIT_SELECT = (
