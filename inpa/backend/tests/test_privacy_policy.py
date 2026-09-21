@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from inpa_app.privacy import effective_fields, empty_matrix, validate_matrix, viewer_audience
-from inpa_app.share import _render_visits
+from inpa_app.share import _render_season_visits, _render_visits
 
 
 def test_effective_fields_are_cumulative_by_audience():
@@ -72,3 +72,24 @@ def test_shared_visit_uses_profile_matrix_instead_of_visit_level_settings():
         "visit_date": "2030-01-02", "park": "land", "costume": "red", "memo": "owner note",
     }]
     assert _render_visits(1, rows, 2, (True, True, True), matrix) == []
+
+
+def test_shared_visits_use_the_matrix_for_each_season():
+    first = empty_matrix()
+    first["link"]["date"] = True
+    second = empty_matrix()
+    second["link"]["date"] = True
+    second["link"]["park"] = True
+    rows = [
+        {"season_id": 10, "visit_date": date(2030, 9, 1), "park": "land",
+         "costume": None, "memo": None},
+        {"season_id": 20, "visit_date": date(2030, 12, 1), "park": "sea",
+         "costume": None, "memo": None},
+    ]
+
+    assert _render_season_visits(
+        1, rows, None, (False, False, False), {10: first, 20: second},
+    ) == [
+        {"visit_date": "2030-09-01"},
+        {"visit_date": "2030-12-01", "park": "sea"},
+    ]

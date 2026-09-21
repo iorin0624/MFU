@@ -48,16 +48,21 @@ def integrated_calendar():
         season = None
         if season_public_id:
             season = connection.execute(
-                text("SELECT id,public_id,name FROM seasons WHERE public_id=:id AND is_active=1"),
+                text(
+                    "SELECT id,public_id,name,start_date,end_date FROM seasons "
+                    "WHERE public_id=:id AND is_active=1"
+                ),
                 {"id": season_public_id},
             ).mappings().first()
             if not season:
                 return _error("invalid_season", "シーズンを確認してください。", 400)
+            if end < season["start_date"] or start > season["end_date"]:
+                return _error("outside_season", "選択した月はシーズン期間外です。", 400)
         rows = connection.execute(
             text(
                 "SELECT v.user_id,u.public_id AS user_public_id,u.display_name,"
                 "u.x_handle,u.instagram_handle,u.x_handle_visible,u.instagram_handle_visible,"
-                "v.visit_date,v.park,v.costume,v.memo "
+                "v.season_id,v.visit_date,v.park,v.costume,v.memo "
                 "FROM visits v JOIN users u ON u.id=v.user_id JOIN seasons s ON s.id=v.season_id "
                 "WHERE s.is_active=1 AND (:season IS NULL OR v.season_id=:season) "
                 "AND v.visit_date BETWEEN :start AND :end "
@@ -91,8 +96,9 @@ def integrated_calendar():
             {"season": season["id"] if season else None, "start": start, "end": end},
         ).mappings().all()
         privacy_matrices = {
-            owner_id: load_matrix(connection, owner_id)
-            for owner_id in {int(row["user_id"]) for row in rows}
+            (int(row["user_id"]), int(row["season_id"])):
+                load_matrix(connection, int(row["user_id"]), int(row["season_id"]))
+            for row in rows
         }
     follow_pairs = {(int(row[0]), int(row[1])) for row in follows}
     block_pairs = {(int(row[0]), int(row[1])) for row in blocks}
@@ -106,7 +112,9 @@ def integrated_calendar():
             owner_follows_viewer=(owner_id, viewer_id) in follow_pairs,
             viewer_follows_owner=(viewer_id, owner_id) in follow_pairs, blocked=blocked,
         )
-        fields = effective_fields(privacy_matrices[owner_id], audience)
+        fields = effective_fields(
+            privacy_matrices[(owner_id, int(row["season_id"]))], audience,
+        )
         if "date" not in fields:
             continue
         entry: dict[str, object] = {
