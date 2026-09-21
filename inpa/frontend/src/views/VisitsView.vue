@@ -21,7 +21,10 @@ async function load() {
   try {
     const [seasonData, visitData] = await Promise.all([api<{ seasons: Season[] }>('/seasons'), api<{ visits: Visit[] }>('/visits')])
     seasons.value = seasonData.seasons; visits.value = visitData.visits
-    if (!form.value.season_public_id && seasons.value[0]) form.value.season_public_id = seasons.value[0].public_id
+    if (!form.value.season_public_id && seasons.value[0]) {
+      const matching = seasons.value.find(season => form.value.visit_date >= season.start_date && form.value.visit_date <= season.end_date)
+      form.value.season_public_id = (matching ?? seasons.value[0]).public_id
+    }
   } catch (value) { error.value = errorMessage(value) }
 }
 async function loadWarnings() {
