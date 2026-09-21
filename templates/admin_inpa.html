@@ -6,7 +6,7 @@
     <h2>INPA管理</h2><span class="badge bg-secondary">署名付きInternal API</span>
   </div>
   <nav class="nav nav-tabs mb-4">
-    {% for key,label in [('dashboard','概要'),('users','利用者'),('visits','予定'),('reports','通報'),('seasons','シーズン'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
+    {% for key,label in [('dashboard','概要'),('users','利用者'),('invitations','招待'),('visits','予定'),('reports','通報'),('seasons','シーズン'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
       <a class="nav-link {% if section==key %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}</a>
     {% endfor %}
   </nav>
@@ -14,6 +14,35 @@
 
   {% if section == 'dashboard' %}
     <div class="row g-3">{% for key,value in data.items() %}<div class="col-6 col-lg-3"><div class="card"><div class="card-body"><small class="text-muted">{{ key }}</small><div class="fs-3">{{ value }}</div></div></div></div>{% endfor %}</div>
+
+  {% elif section == 'invitations' %}
+    <div class="alert alert-info">招待トークンは一度だけ全文を表示します。安全な方法で登録者へ渡してください。</div>
+    {% if invite_result %}
+      <div class="alert alert-success">
+        <h3 class="h5">招待トークンを発行しました</h3>
+        <label class="form-label w-100">招待URL<input class="form-control" value="{{ invite_result.registration_url }}" readonly onclick="this.select()"></label>
+        <label class="form-label w-100">トークン<input class="form-control" value="{{ invite_result.token }}" readonly onclick="this.select()"></label>
+        <small>この画面を離れると全文は再表示できません。</small>
+      </div>
+    {% endif %}
+    <h3 class="h5">招待トークンを発行</h3>
+    <form method="post" action="{{ url_for('inpa_admin.create_invitation') }}" class="row g-2 mb-4">
+      <div class="col-md-7"><input class="form-control" name="memo" maxlength="255" placeholder="管理用メモ（例：○○さん用）"></div>
+      <div class="col-md-3"><select class="form-select" name="expires_in_days"><option value="1">1日</option><option value="7" selected>7日</option><option value="30">30日</option><option value="90">90日</option></select></div>
+      <div class="col-md-2"><button class="btn btn-primary">発行</button></div>
+    </form>
+    <h3 class="h5">発行済み招待トークン</h3>
+    <div class="table-responsive"><table class="table table-sm table-striped align-middle">
+      <thead><tr><th>末尾</th><th>メモ</th><th>状態</th><th>発行者</th><th>発行日時</th><th>有効期限</th><th>割当メール</th><th>使用日時</th><th>操作</th></tr></thead>
+      <tbody>{% for row in data %}<tr>
+        <td>…{{ row.token_last4 }}</td>
+        <td><form method="post" action="{{ url_for('inpa_admin.update_invitation', public_id=row.public_id) }}" class="d-flex gap-1"><input class="form-control form-control-sm" name="memo" maxlength="255" value="{{ row.memo or '' }}"><button class="btn btn-sm btn-outline-primary">保存</button></form></td>
+        <td>{{ {'active':'有効','claimed':'手続中','used':'使用済み','revoked':'無効','expired':'期限切れ'}.get(row.status,row.status) }}</td>
+        <td>{{ row.created_by }}</td><td>{{ row.created_at }}</td><td>{{ row.expires_at }}</td>
+        <td>{{ row.claimed_email_normalized or '' }}</td><td>{{ row.used_at or '' }}</td>
+        <td>{% if row.status in ['active','claimed'] %}<form method="post" action="{{ url_for('inpa_admin.revoke_invitation', public_id=row.public_id) }}"><button class="btn btn-sm btn-danger" onclick="return confirm('この招待トークンを無効化しますか？')">無効化</button></form>{% endif %}</td>
+      </tr>{% else %}<tr><td colspan="9" class="text-muted">発行済みトークンはありません。</td></tr>{% endfor %}</tbody>
+    </table></div>
 
   {% elif section == 'seasons' %}
     {% set seasons = data.seasons %}

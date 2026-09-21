@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from .admin_auth import require_admin_hmac, require_idempotency, write_audit
-from .auth.service import new_public_id
+from .auth.service import hash_secret, new_public_id, new_secret
 from .db import get_engine
 
 bp = Blueprint("internal_admin", __name__, url_prefix="/internal/admin/v1")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _REPORT_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
+
+
+def _invitation_memo(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value.strip()) > 255:
+        raise ValueError("Invitation memo must be 255 characters or fewer.")
+    return value.strip() or None
 
 
 def _error(message: str, status: int = 400):
@@ -69,10 +77,141 @@ def summary():
             "(SELECT COUNT(*) FROM share_tokens WHERE status='active') AS active_shares,"
             "(SELECT COUNT(*) FROM reports WHERE status IN ('open','in_progress')) AS open_reports,"
             "(SELECT COUNT(*) FROM mail_logs WHERE status='failed') AS failed_mail,"
+            "(SELECT COUNT(*) FROM registration_invitations WHERE status IN ('active','claimed') "
+            "AND expires_at>UTC_TIMESTAMP(6)) AS available_invitations,"
             "(SELECT COUNT(*) FROM security_events WHERE severity IN ('warning','critical') "
             "AND created_at>=UTC_TIMESTAMP()-INTERVAL 24 HOUR) AS security_warnings"
         )).mappings().one()
     return jsonify(summary=_row(counts))
+
+
+@bp.get("/registration-invitations")
+@require_admin_hmac
+def registration_invitations():
+    try:
+        limit, offset = _paging()
+    except ValueError as exc:
+        return _error(str(exc))
+    with get_engine().connect() as connection:
+        rows = connection.execute(text(
+            "SELECT i.public_id,i.token_last4,i.memo,i.status,i.created_by,i.created_at,i.expires_at,"
+            "i.claimed_email_normalized,i.claimed_at,i.used_at,i.revoked_at,i.revoked_by,"
+            "u.public_id AS used_by_user_public_id FROM registration_invitations i "
+            "LEFT JOIN users u ON u.id=i.used_by_user_id ORDER BY i.created_at DESC "
+            "LIMIT :limit OFFSET :offset"
+        ), {"limit": limit, "offset": offset}).mappings().all()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    result = []
+    for row in rows:
+        item = _row(row)
+        expires_at = row["expires_at"]
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if item["status"] in {"active", "claimed"} and expires_at <= now:
+            item["status"] = "expired"
+        result.append(item)
+    return jsonify(invitations=result)
+
+
+@bp.post("/registration-invitations")
+@require_admin_hmac
+def create_registration_invitation():
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise TypeError("JSON body is required.")
+        memo = _invitation_memo(data.get("memo"))
+        days = data.get("expires_in_days", 7)
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
+            raise ValueError("Invitation expiry must be between 1 and 90 days.")
+        token = new_secret()
+        public_id = new_public_id()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        expires_at = now + timedelta(days=days)
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            connection.execute(text(
+                "INSERT INTO registration_invitations "
+                "(public_id,token_hash,token_last4,memo,status,created_by,created_at,updated_at,expires_at) "
+                "VALUES (:public_id,:token_hash,:last4,:memo,'active',:admin,:now,:now,:expires_at)"
+            ), {
+                "public_id": public_id, "token_hash": hash_secret(token), "last4": token[-4:],
+                "memo": memo, "admin": g.inpa_admin, "now": now, "expires_at": expires_at,
+            })
+            write_audit(
+                connection, action="registration_invitation_create",
+                target_type="registration_invitation", target_id=public_id,
+                after={"memo": memo, "token_last4": token[-4:], "expires_at": expires_at},
+                idempotency_key=key,
+            )
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    origin = current_app.config["PUBLIC_ORIGIN"].rstrip("/")
+    return jsonify(
+        public_id=public_id,
+        token=token,
+        registration_url=f"{origin}/register?invite={token}",
+        expires_at=expires_at.isoformat(),
+    ), 201
+
+
+@bp.patch("/registration-invitations/<public_id>")
+@require_admin_hmac
+def update_registration_invitation(public_id: str):
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise TypeError("JSON body is required.")
+        memo = _invitation_memo(data.get("memo"))
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT memo,status FROM registration_invitations WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                return _error("Invitation not found.", 404)
+            connection.execute(text(
+                "UPDATE registration_invitations SET memo=:memo,updated_at=:now WHERE public_id=:id"
+            ), {"memo": memo, "now": datetime.now(UTC).replace(tzinfo=None), "id": public_id})
+            write_audit(
+                connection, action="registration_invitation_update",
+                target_type="registration_invitation", target_id=public_id,
+                before={"memo": before["memo"]}, after={"memo": memo}, idempotency_key=key,
+            )
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, memo=memo)
+
+
+@bp.post("/registration-invitations/<public_id>/revoke")
+@require_admin_hmac
+def revoke_registration_invitation(public_id: str):
+    try:
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT status,token_last4,memo FROM registration_invitations "
+                "WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                return _error("Invitation not found.", 404)
+            if before["status"] == "used":
+                return _error("A used invitation cannot be revoked.", 409)
+            if before["status"] == "revoked":
+                return _error("Invitation is already revoked.", 409)
+            now = datetime.now(UTC).replace(tzinfo=None)
+            connection.execute(text(
+                "UPDATE registration_invitations SET status='revoked',revoked_at=:now,"
+                "revoked_by=:admin,updated_at=:now WHERE public_id=:id"
+            ), {"now": now, "admin": g.inpa_admin, "id": public_id})
+            write_audit(
+                connection, action="registration_invitation_revoke",
+                target_type="registration_invitation", target_id=public_id,
+                before=_row(before), after={"status": "revoked"}, idempotency_key=key,
+            )
+    except (LookupError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(status="revoked")
 
 
 @bp.get("/users")

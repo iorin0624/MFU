@@ -88,7 +88,9 @@ def register_request():
         payload = _payload()
         if not _verify_turnstile(payload.get("turnstile_token")):
             return _error("verification_failed", "We could not verify your request. Please try again.", 400)
-        created = create_registration_request(payload.get("email"), _client_ip(), request.user_agent.string)
+        created = create_registration_request(
+            payload.get("invitation_token"), payload.get("email"), _client_ip(), request.user_agent.string
+        )
         if created:
             queue_registration_email(*created)
     except RegistrationError as exc:
@@ -113,7 +115,9 @@ def resend_registration_email():
         payload = _payload()
         if not _verify_turnstile(payload.get("turnstile_token")):
             return _error("verification_failed", "We could not verify your request. Please try again.", 400)
-        created = create_registration_request(payload.get("email"), _client_ip(), request.user_agent.string)
+        created = create_registration_request(
+            payload.get("invitation_token"), payload.get("email"), _client_ip(), request.user_agent.string
+        )
         if created:
             queue_registration_email(*created)
     except RegistrationError as exc:
