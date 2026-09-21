@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+from datetime import UTC, datetime
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
 from .auth.routes import _error, _require_session
-from .auth.service import verify_csrf
+from .auth.service import normalize_connection_id, verify_csrf
 from .db import get_engine
 
 bp = Blueprint("relationships", __name__, url_prefix="/api/v1")
@@ -24,12 +27,104 @@ def _session(*, csrf: bool = False):
 def _target(connection, public_id: str):
     return connection.execute(
         text(
-            "SELECT id, public_id, display_name, x_handle, instagram_handle, "
+            "SELECT id, public_id, connection_id, display_name, x_handle, instagram_handle, "
             "x_handle_visible, instagram_handle_visible FROM users "
             "WHERE public_id=:public_id AND status='active'"
         ),
         {"public_id": public_id},
     ).mappings().first()
+
+
+def _target_by_connection_id(connection, connection_id: str):
+    return connection.execute(
+        text(
+            "SELECT id, public_id, connection_id, display_name, x_handle, instagram_handle, "
+            "x_handle_visible, instagram_handle_visible FROM users "
+            "WHERE connection_id=:connection_id AND status='active'"
+        ),
+        {"connection_id": connection_id},
+    ).mappings().first()
+
+
+def _consume_lookup_limit(connection, owner_id: int) -> bool:
+    """Allow at most ten connection-ID lookups per user/IP in each minute."""
+    remote = request.remote_addr or "unknown"
+    bucket_key = hashlib.sha256(f"{owner_id}:{remote}".encode()).hexdigest()
+    window = datetime.now(UTC).replace(second=0, microsecond=0, tzinfo=None)
+    params = {
+        "bucket": bucket_key, "action": "connection_lookup", "window": window,
+        "seconds": 60,
+    }
+    if connection.dialect.name == "sqlite":
+        connection.execute(text(
+            "INSERT INTO rate_limit_counters "
+            "(bucket_key,action_name,window_started_at,window_seconds,request_count) "
+            "VALUES (:bucket,:action,:window,:seconds,1) "
+            "ON CONFLICT(bucket_key,action_name,window_started_at) "
+            "DO UPDATE SET request_count=request_count+1"
+        ), params)
+    else:
+        connection.execute(text(
+            "INSERT INTO rate_limit_counters "
+            "(bucket_key,action_name,window_started_at,window_seconds,request_count) "
+            "VALUES (:bucket,:action,:window,:seconds,1) "
+            "ON DUPLICATE KEY UPDATE request_count=request_count+1"
+        ), params)
+    count = connection.execute(text(
+        "SELECT request_count FROM rate_limit_counters WHERE bucket_key=:bucket "
+        "AND action_name=:action AND window_started_at=:window"
+    ), params).scalar_one()
+    return int(count) <= 10
+
+
+def _person_result(connection, owner_id: int, user):
+    target_id = int(user["id"])
+    blocked = connection.execute(
+        text(
+            "SELECT 1 FROM blocks WHERE "
+            "(blocker_user_id=:owner AND blocked_user_id=:target) OR "
+            "(blocker_user_id=:target AND blocked_user_id=:owner) LIMIT 1"
+        ),
+        {"owner": owner_id, "target": target_id},
+    ).first()
+    if blocked:
+        return None
+    follows = connection.execute(
+        text(
+            "SELECT follower_user_id, followed_user_id FROM follows WHERE "
+            "(follower_user_id=:owner AND followed_user_id=:target) OR "
+            "(follower_user_id=:target AND followed_user_id=:owner)"
+        ),
+        {"owner": owner_id, "target": target_id},
+    ).all()
+    pairs = {(int(row[0]), int(row[1])) for row in follows}
+    result = {
+        "public_id": user["public_id"], "connection_id": user["connection_id"],
+        "display_name": user["display_name"],
+        "following": (owner_id, target_id) in pairs, "follows_me": (target_id, owner_id) in pairs,
+    }
+    if user["x_handle_visible"] and user["x_handle"]:
+        result["x_handle"] = user["x_handle"]
+    if user["instagram_handle_visible"] and user["instagram_handle"]:
+        result["instagram_handle"] = user["instagram_handle"]
+    return result
+
+
+@bp.get("/people/by-connection-id/<connection_id>")
+def person_by_connection_id(connection_id: str):
+    session, error = _session()
+    if error:
+        return error
+    normalized = normalize_connection_id(connection_id)
+    owner_id = int(session["user_id"])
+    with get_engine().begin() as connection:
+        if not _consume_lookup_limit(connection, owner_id):
+            return _error("rate_limited", "検索回数が多すぎます。しばらく待ってからお試しください。", 429)
+        user = _target_by_connection_id(connection, normalized) if normalized else None
+        result = _person_result(connection, owner_id, user) if user else None
+    if not result:
+        return _error("not_found", "利用者が見つかりません。", 404)
+    return jsonify(person=result)
 
 
 @bp.get("/people/<public_id>")
@@ -42,34 +137,9 @@ def person(public_id: str):
         user = _target(connection, public_id)
         if not user:
             return _error("not_found", "利用者が見つかりません。", 404)
-        target_id = int(user["id"])
-        blocked = connection.execute(
-            text(
-                "SELECT 1 FROM blocks WHERE "
-                "(blocker_user_id=:owner AND blocked_user_id=:target) OR "
-                "(blocker_user_id=:target AND blocked_user_id=:owner) LIMIT 1"
-            ),
-            {"owner": owner_id, "target": target_id},
-        ).first()
-        if blocked:
+        result = _person_result(connection, owner_id, user)
+        if not result:
             return _error("not_found", "利用者が見つかりません。", 404)
-        follows = connection.execute(
-            text(
-                "SELECT follower_user_id, followed_user_id FROM follows WHERE "
-                "(follower_user_id=:owner AND followed_user_id=:target) OR "
-                "(follower_user_id=:target AND followed_user_id=:owner)"
-            ),
-            {"owner": owner_id, "target": target_id},
-        ).all()
-    pairs = {(int(row[0]), int(row[1])) for row in follows}
-    result = {
-        "public_id": user["public_id"], "display_name": user["display_name"],
-        "following": (owner_id, target_id) in pairs, "follows_me": (target_id, owner_id) in pairs,
-    }
-    if user["x_handle_visible"] and user["x_handle"]:
-        result["x_handle"] = user["x_handle"]
-    if user["instagram_handle_visible"] and user["instagram_handle"]:
-        result["instagram_handle"] = user["instagram_handle"]
     return jsonify(person=result)
 
 
@@ -81,7 +151,7 @@ def list_follows():
     with get_engine().connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT u.public_id,u.display_name,u.x_handle,u.instagram_handle,"
+                "SELECT u.public_id,u.connection_id,u.display_name,u.x_handle,u.instagram_handle,"
                 "u.x_handle_visible,u.instagram_handle_visible,"
                 "EXISTS(SELECT 1 FROM follows reverse_follow "
                 "WHERE reverse_follow.follower_user_id=f.followed_user_id "
@@ -93,7 +163,10 @@ def list_follows():
         ).mappings().all()
     people = []
     for row in rows:
-        item = {"public_id": row["public_id"], "display_name": row["display_name"], "mutual": bool(row["mutual"])}
+        item = {
+            "public_id": row["public_id"], "connection_id": row["connection_id"],
+            "display_name": row["display_name"], "mutual": bool(row["mutual"]),
+        }
         if row["x_handle_visible"] and row["x_handle"]:
             item["x_handle"] = row["x_handle"]
         if row["instagram_handle_visible"] and row["instagram_handle"]:
@@ -155,7 +228,8 @@ def list_blocks():
     with get_engine().connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT u.public_id,u.display_name FROM blocks b JOIN users u ON u.id=b.blocked_user_id "
+                "SELECT u.public_id,u.connection_id,u.display_name FROM blocks b "
+                "JOIN users u ON u.id=b.blocked_user_id "
                 "WHERE b.blocker_user_id=:id ORDER BY u.display_name,u.id"
             ),
             {"id": session["user_id"]},

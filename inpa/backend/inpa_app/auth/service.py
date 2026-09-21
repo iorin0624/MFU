@@ -16,6 +16,7 @@ from ..privacy import create_default_matrix
 
 _PASSWORDS = PasswordHasher()
 _PUBLIC_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_CONNECTION_ID_LENGTH = 8
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
@@ -33,6 +34,33 @@ def _now() -> datetime:
 
 def new_public_id() -> str:
     return "".join(secrets.choice(_PUBLIC_ID_ALPHABET) for _ in range(26))
+
+
+def new_connection_id() -> str:
+    """Return the short, human-entered identifier used for connections."""
+    return "".join(secrets.choice(_PUBLIC_ID_ALPHABET) for _ in range(_CONNECTION_ID_LENGTH))
+
+
+def normalize_connection_id(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = re.sub(r"[-\s]", "", value).upper()
+    if len(normalized) != _CONNECTION_ID_LENGTH:
+        return ""
+    if any(char not in _PUBLIC_ID_ALPHABET for char in normalized):
+        return ""
+    return normalized
+
+
+def _available_connection_id(connection) -> str:
+    for _ in range(10):
+        candidate = new_connection_id()
+        exists = connection.execute(
+            text("SELECT 1 FROM users WHERE connection_id=:id LIMIT 1"), {"id": candidate}
+        ).first()
+        if not exists:
+            return candidate
+    raise RegistrationError("Could not issue a connection ID. Please try again.")
 
 
 def new_secret() -> str:
@@ -219,13 +247,14 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
         connection.execute(
             text(
                 "INSERT INTO users "
-                "(public_id, email, email_normalized, password_hash, display_name, x_handle, instagram_handle, "
+                "(public_id, connection_id, email, email_normalized, password_hash, display_name, x_handle, instagram_handle, "
                 "x_handle_visible, instagram_handle_visible, default_visibility, default_detail_level, email_verified_at) "
-                "VALUES (:public_id, :email, :normalized, :password_hash, :display_name, :x_handle, "
+                "VALUES (:public_id, :connection_id, :email, :normalized, :password_hash, :display_name, :x_handle, "
                 ":instagram_handle, :x_visible, :instagram_visible, :visibility, :detail, :now)"
             ),
             {
                 "public_id": new_public_id(),
+                "connection_id": _available_connection_id(connection),
                 "email": request_row["email"],
                 "normalized": request_row["email_normalized"],
                 "password_hash": _PASSWORDS.hash(password),
@@ -312,7 +341,8 @@ def get_session(token: str | None) -> dict[str, object] | None:
     with get_engine().begin() as connection:
         session = connection.execute(
             text(
-                "SELECT s.id, s.user_id, s.csrf_secret_hash, u.public_id, u.display_name, u.status "
+                "SELECT s.id, s.user_id, s.csrf_secret_hash, u.public_id, u.connection_id, "
+                "u.display_name, u.status "
                 "FROM user_sessions s JOIN users u ON u.id = s.user_id "
                 "WHERE s.token_hash = :token_hash AND s.revoked_at IS NULL "
                 "AND s.expires_at > :now AND s.absolute_expires_at > :now LIMIT 1"

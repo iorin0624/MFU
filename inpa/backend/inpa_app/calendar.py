@@ -9,6 +9,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
 from .auth.routes import _error, _require_session
+from .auth.service import normalize_connection_id
 from .db import get_engine
 from .privacy import effective_fields, load_matrix, viewer_audience
 from .restrictions import serialize_restriction
@@ -36,7 +37,10 @@ def integrated_calendar():
         return _error("invalid_month", "年月を確認してください。", 400)
     end = date(year, month, month_calendar.monthrange(year, month)[1])
     season_public_id = request.args.get("season_id", "").strip()
-    person_public_id = request.args.get("person_id", "")
+    person_value = request.args.get("person_id", "")
+    person_connection_id = normalize_connection_id(person_value) if person_value else ""
+    if person_value and not person_connection_id:
+        return _error("invalid_person", "つながりIDを確認してください。", 400)
     myself_only = request.args.get("myself_only") == "1"
     viewer_id = int(session["user_id"])
     with get_engine().connect() as connection:
@@ -58,10 +62,11 @@ def integrated_calendar():
                 "AND v.visit_date BETWEEN :start AND :end "
                 "AND (v.user_id=:viewer OR ("
                 ":myself_only=0 AND v.user_id IN (SELECT followed_user_id FROM follows WHERE follower_user_id=:viewer))) "
-                "AND (:person_id='' OR u.public_id=:person_id) ORDER BY v.visit_date,u.display_name,v.id"
+                "AND (:person_id='' OR u.connection_id=:person_id) "
+                "ORDER BY v.visit_date,u.display_name,v.id"
             ),
             {"season": season["id"] if season else None, "start": start, "end": end, "viewer": viewer_id,
-             "myself_only": int(myself_only), "person_id": person_public_id},
+             "myself_only": int(myself_only), "person_id": person_connection_id},
         ).mappings().all()
         follows = connection.execute(
             text(
