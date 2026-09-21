@@ -75,3 +75,23 @@ def test_connection_lookup_is_rate_limited(monkeypatch):
 
     assert response.status_code == 429
     assert response.get_json()["error"]["code"] == "rate_limited"
+
+
+def test_followers_lists_people_who_registered_the_current_user(monkeypatch):
+    app = _app(monkeypatch)
+    with app.extensions["inpa_db_engine"].begin() as connection:
+        connection.execute(text(
+            "INSERT INTO follows (follower_user_id,followed_user_id) VALUES (2,1)"
+        ))
+
+    response = app.test_client().get("/api/v1/followers")
+
+    assert response.status_code == 200
+    assert response.get_json()["people"] == [{
+        "public_id": "TARGETPUBLICID0000000000002",
+        "connection_id": "7K3MP9QX",
+        "display_name": "Guest",
+        "mutual": False,
+        "following": False,
+        "follows_me": True,
+    }]
