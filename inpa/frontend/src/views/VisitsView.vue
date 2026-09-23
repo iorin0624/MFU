@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '@/lib/api'
 import { formatJapaneseDate } from '@/lib/date'
+import { parkLabel } from '@/lib/park'
 
 const route = useRoute(); const router = useRouter()
 type Season = { public_id: string; name: string; start_date: string; end_date: string }
@@ -93,7 +94,7 @@ watch(() => form.value.season_public_id, () => {
       <h2>{{ editing ? '予定を編集' : '予定を追加' }}</h2>
       <label class="field">シーズン<select v-model="form.season_public_id" required><option v-for="season in seasons" :key="season.public_id" :value="season.public_id">{{ season.name }}（{{ formatJapaneseDate(season.start_date) }}〜{{ formatJapaneseDate(season.end_date) }}）</option></select></label>
       <label class="field">日付<input v-model="form.visit_date" type="date" :min="selectedSeason?.start_date" :max="selectedSeason?.end_date" required><small v-if="form.visit_date">{{ formatJapaneseDate(form.visit_date) }}</small><small v-if="selectedSeason">登録可能期間：{{ formatJapaneseDate(selectedSeason.start_date) }}〜{{ formatJapaneseDate(selectedSeason.end_date) }}</small></label>
-      <label class="field">パーク<select v-model="form.park"><option value="undecided">未定</option><option value="land">ランド</option><option value="sea">シー</option><option value="both">両方</option></select></label>
+      <label class="field">パーク<select v-model="form.park"><option value="undecided">未定</option><option value="land">🏰TDL</option><option value="sea">🌍TDS</option><option value="both">🏰TDL・🌍TDS</option></select></label>
       <div v-for="warning in warnings" :key="warning.public_id" class="warning-notice"><strong>{{ warning.name }}</strong><p>{{ warning.description || 'この日は対象期間です。内容を確認してください。' }}</p><small>{{ formatJapaneseDate(warning.start_date) }}〜{{ formatJapaneseDate(warning.end_date) }}</small></div>
       <label class="field">到着時刻<input v-model="form.arrival_time" type="time"></label>
       <label class="field">服装<input v-model="form.costume" maxlength="100"></label>
@@ -101,6 +102,6 @@ watch(() => form.value.season_public_id, () => {
       <p class="helper">公開する範囲と情報は、プロフィールで選択したシーズンの公開設定が適用されます。</p>
       <div class="actions"><button class="button" :disabled="!dateIsInSeason">{{ editing ? '更新' : '追加' }}</button><button v-if="editing" type="button" class="button secondary" @click="reset">キャンセル</button></div>
     </form>
-    <div class="visit-list"><article v-for="visit in visits" :key="visit.public_id" class="visit-card"><h3>{{ formatJapaneseDate(visit.visit_date) }} / {{ visit.park ?? '未定' }}</h3><p>{{ visit.season_name }}</p><p v-if="visit.arrival_time">到着 {{ visit.arrival_time }}</p><p v-if="visit.costume">服装 {{ visit.costume }}</p><p v-if="visit.memo">{{ visit.memo }}</p><div class="actions"><button class="button secondary" @click="edit(visit)">編集</button><button class="button danger" @click="remove(visit)">削除</button></div></article></div>
+    <div class="visit-list"><article v-for="visit in visits" :key="visit.public_id" class="visit-card"><h3>{{ formatJapaneseDate(visit.visit_date) }} / {{ parkLabel(visit.park) }}</h3><p>{{ visit.season_name }}</p><p v-if="visit.arrival_time">到着 {{ visit.arrival_time }}</p><p v-if="visit.costume">服装 {{ visit.costume }}</p><p v-if="visit.memo">{{ visit.memo }}</p><div class="actions"><button class="button secondary" @click="edit(visit)">編集</button><button class="button danger" @click="remove(visit)">削除</button></div></article></div>
   </section>
 </template>
