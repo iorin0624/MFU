@@ -17,6 +17,7 @@ from .config import apply_settings
 from .db import init_app as init_db
 from .health import bp as health_bp
 from .internal_admin import bp as internal_admin_bp
+from .legal import bp as legal_bp
 from .planner import bp as planner_bp
 from .public import bp as public_bp
 from .relationships import bp as relationships_bp
@@ -37,6 +38,7 @@ def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
     if role == "public":
         app.register_blueprint(public_bp)
         app.register_blueprint(auth_bp)
+        app.register_blueprint(legal_bp)
         app.register_blueprint(calendar_bp)
         app.register_blueprint(planner_bp)
         app.register_blueprint(relationships_bp)

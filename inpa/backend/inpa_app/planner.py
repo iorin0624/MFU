@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from .auth.routes import _error, _require_session
-from .auth.service import RegistrationError, new_public_id, verify_csrf
+from .auth.service import RegistrationError, new_public_id, normalize_social_handle, verify_csrf
 from .db import get_engine
 from .privacy import load_matrix, save_matrix, validate_matrix
 
@@ -58,17 +58,6 @@ def get_profile():
     return jsonify(profile=_profile(row, privacy_matrix))
 
 
-def _handle(value: object, maximum: int) -> str | None:
-    if value is None or value == "":
-        return None
-    if not isinstance(value, str):
-        raise RegistrationError("SNS名を確認してください。")
-    result = value.strip().lstrip("@")
-    if not result or len(result) > maximum or any(char.isspace() for char in result):
-        raise RegistrationError("SNS名を確認してください。")
-    return result
-
-
 @bp.patch("/profile")
 def patch_profile():
     session, error = _session(csrf=True)
@@ -91,20 +80,41 @@ def patch_profile():
                 raise RegistrationError("表示名は1〜40文字で入力してください。")
             updates["display_name"] = value.strip()
         if "x_handle" in updates:
-            updates["x_handle"] = _handle(updates["x_handle"], 15)
+            updates["x_handle"], updates["x_handle_normalized"] = normalize_social_handle(
+                updates["x_handle"], "x"
+            )
         if "instagram_handle" in updates:
-            updates["instagram_handle"] = _handle(updates["instagram_handle"], 30)
+            updates["instagram_handle"], updates["instagram_handle_normalized"] = normalize_social_handle(
+                updates["instagram_handle"], "instagram"
+            )
         for key in ("x_handle_visible", "instagram_handle_visible"):
             if key in updates and not isinstance(updates[key], bool):
                 raise RegistrationError("表示許可はtrueまたはfalseで指定してください。")
-        sets = ", ".join(f"{key}=:{key}" for key in updates)
         with get_engine().begin() as connection:
+            current = connection.execute(text(
+                "SELECT x_handle,instagram_handle FROM users WHERE id=:id FOR UPDATE"
+            ), {"id": session["user_id"]}).mappings().one()
+            final_x = updates.get("x_handle", current["x_handle"])
+            final_instagram = updates.get("instagram_handle", current["instagram_handle"])
+            if not final_x and not final_instagram:
+                raise RegistrationError("X IDまたはInstagram IDのどちらかは必須です。")
+            for column, value, label in (
+                ("x_handle_normalized", updates.get("x_handle_normalized"), "X ID"),
+                ("instagram_handle_normalized", updates.get("instagram_handle_normalized"), "Instagram ID"),
+            ):
+                if value and connection.execute(text(
+                    f"SELECT 1 FROM users WHERE {column}=:value AND id<>:id LIMIT 1"
+                ), {"value": value, "id": session["user_id"]}).first():
+                    raise RegistrationError(f"この{label}はすでに登録されています。")
+            sets = ", ".join(f"{key}=:{key}" for key in updates)
             connection.execute(
                 text(f"UPDATE users SET {sets} WHERE id=:id"),
                 {**updates, "id": session["user_id"]},
             )
     except RegistrationError as exc:
         return _error("invalid_request", str(exc), 400)
+    except IntegrityError:
+        return _error("duplicate_social_id", "このSNS IDはすでに登録されています。", 409)
     return get_profile()
 
 

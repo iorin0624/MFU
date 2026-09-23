@@ -13,6 +13,7 @@ from inpa_app.auth.service import (
     new_connection_id,
     new_public_id,
     normalize_connection_id,
+    normalize_social_handle,
     validate_password,
 )
 from inpa_app.db import get_engine
@@ -59,6 +60,16 @@ def test_password_policy_requires_twelve_characters():
     with pytest.raises(RegistrationError):
         validate_password("too-short")
     assert validate_password("a-safe-password") == "a-safe-password"
+
+
+def test_social_handles_are_validated_and_normalized_for_uniqueness():
+    assert normalize_social_handle("@Example_User", "x") == ("Example_User", "example_user")
+    assert normalize_social_handle("Travel.Photo", "instagram") == ("Travel.Photo", "travel.photo")
+    assert normalize_social_handle("", "x") == (None, None)
+    with pytest.raises(RegistrationError):
+        normalize_social_handle("invalid handle", "x")
+    with pytest.raises(RegistrationError):
+        normalize_social_handle("x" * 16, "x")
 
 
 def test_login_does_not_leak_invalid_json_details(app):
