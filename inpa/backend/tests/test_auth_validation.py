@@ -17,7 +17,7 @@ from inpa_app.auth.service import (
     validate_password,
 )
 from inpa_app.db import get_engine
-from inpa_app.internal_admin import _invitation_memo
+from inpa_app.internal_admin import _invitation_memo, _legal_values
 
 
 @pytest.fixture
@@ -106,6 +106,15 @@ def test_invitation_memo_is_trimmed_and_limited():
     assert _invitation_memo("") is None
     with pytest.raises(ValueError):
         _invitation_memo("x" * 256)
+
+
+def test_legal_effective_date_is_interpreted_as_jst_midnight():
+    values = _legal_values({
+        "document_type": "terms", "version": "2026-09-24", "title": "Terms",
+        "content_markdown": "Body", "effective_at": "2026-09-24T00:00:00",
+    })
+
+    assert values["effective_at"].isoformat() == "2026-09-23T15:00:00"
 
 
 def test_session_activity_is_updated_only_after_five_minutes(app):

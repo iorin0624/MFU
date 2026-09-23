@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 
 from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import text
@@ -18,6 +18,7 @@ bp = Blueprint("internal_admin", __name__, url_prefix="/internal/admin/v1")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _REPORT_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
 _LEGAL_TYPES = {"terms", "privacy"}
+_JST = timezone(timedelta(hours=9), "JST")
 
 
 def _legal_values(data: object) -> dict[str, object]:
@@ -40,6 +41,10 @@ def _legal_values(data: object) -> dict[str, object]:
         effective_at = datetime.fromisoformat(str(effective)) if effective else None
     except ValueError as exc:
         raise ValueError("Effective date is invalid.") from exc
+    if effective_at is not None:
+        if effective_at.tzinfo is None:
+            effective_at = effective_at.replace(tzinfo=_JST)
+        effective_at = effective_at.astimezone(UTC).replace(tzinfo=None)
     return {
         "document_type": document_type, "version": version.strip(), "title": title.strip(),
         "content_markdown": content, "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
@@ -788,8 +793,19 @@ def legal_documents():
             "FROM legal_documents ORDER BY document_type,created_at DESC"
         )).mappings().all()
     values = [_row(row) for row in rows]
-    for value in values:
+    for value, row in zip(values, rows, strict=True):
         value["requires_reconsent"] = bool(value["requires_reconsent"])
+        effective_at = row["effective_at"]
+        value["effective_date_jst"] = (
+            effective_at.replace(tzinfo=UTC).astimezone(_JST).date().isoformat()
+            if effective_at else None
+        )
+        for key in ("effective_at", "published_at", "created_at", "updated_at"):
+            timestamp = row[key]
+            value[f"{key}_jst"] = (
+                timestamp.replace(tzinfo=UTC).astimezone(_JST).isoformat()
+                if timestamp else None
+            )
     return jsonify(documents=values)
 
 
