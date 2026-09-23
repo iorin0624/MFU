@@ -4,6 +4,7 @@ import ipaddress
 
 import httpx
 from flask import Blueprint, current_app, g, jsonify, request
+from sqlalchemy.exc import IntegrityError
 
 from ..mail_queue import queue_registration_email
 from .service import (
@@ -75,11 +76,20 @@ def _clear_session_cookies(response) -> None:
     response.delete_cookie(current_app.config["CSRF_COOKIE_NAME"], path="/", secure=secure, httponly=False, samesite="Lax")
 
 
-def _require_session():
+def _require_session(*, enforce_legal: bool = True):
     session = get_session(request.cookies.get(current_app.config["SESSION_COOKIE_NAME"]))
     if not session:
         return None, _error("authentication_required", "Sign in to continue.", 401)
     g.inpa_session = session
+    if enforce_legal:
+        from ..db import get_engine
+        from ..legal import missing_consents
+        with get_engine().connect() as connection:
+            missing = missing_consents(connection, int(session["user_id"]))
+        if missing:
+            return None, _error(
+                "legal_consent_required", "更新された利用規約等への同意が必要です。", 428
+            )
     return session, None
 
 
@@ -107,9 +117,13 @@ def register_request():
 @bp.post("/register/complete")
 def register_complete():
     try:
-        _, token, csrf_secret = complete_registration(_payload())
+        _, token, csrf_secret = complete_registration(
+            _payload(), _client_ip(), request.user_agent.string
+        )
     except RegistrationError as exc:
         return _error("registration_invalid", str(exc), 400)
+    except IntegrityError:
+        return _error("registration_duplicate", "メールアドレスまたはSNS IDはすでに登録されています。", 409)
     response = jsonify(message="Registration complete.")
     _set_session_cookies(response, token, csrf_secret, remember=True)
     return response, 201
@@ -145,7 +159,7 @@ def login():
 
 @bp.post("/logout")
 def logout():
-    session, error = _require_session()
+    session, error = _require_session(enforce_legal=False)
     if error:
         return error
     csrf_secret = request.headers.get("X-CSRF-Token")
@@ -159,11 +173,16 @@ def logout():
 
 @bp.get("/me")
 def me():
-    session, error = _require_session()
+    session, error = _require_session(enforce_legal=False)
     if error:
         return error
+    from ..db import get_engine
+    from ..legal import missing_consents
+    with get_engine().connect() as connection:
+        missing = missing_consents(connection, int(session["user_id"]))
     return jsonify(user={
         "public_id": session["public_id"],
         "connection_id": session["connection_id"],
         "display_name": session["display_name"],
+        "legal_consent_required": bool(missing),
     })

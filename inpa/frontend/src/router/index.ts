@@ -10,6 +10,8 @@ import ShareManageView from '@/views/ShareManageView.vue'
 import SharedView from '@/views/SharedView.vue'
 import ConnectionsView from '@/views/ConnectionsView.vue'
 import CalendarView from '@/views/CalendarView.vue'
+import LegalDocumentView from '@/views/LegalDocumentView.vue'
+import LegalConsentView from '@/views/LegalConsentView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -24,6 +26,8 @@ const router = createRouter({
     { path: '/share/:token', name: 'shared', component: SharedView },
     { path: '/connections', name: 'connections', component: ConnectionsView },
     { path: '/calendar', name: 'calendar', component: CalendarView },
+    { path: '/legal/consent', name: 'legal-consent', component: LegalConsentView },
+    { path: '/legal/:type(terms|privacy)', name: 'legal-document', component: LegalDocumentView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

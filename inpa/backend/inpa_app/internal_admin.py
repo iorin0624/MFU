@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -16,6 +17,35 @@ from .db import get_engine
 bp = Blueprint("internal_admin", __name__, url_prefix="/internal/admin/v1")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _REPORT_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
+_LEGAL_TYPES = {"terms", "privacy"}
+
+
+def _legal_values(data: object) -> dict[str, object]:
+    if not isinstance(data, dict):
+        raise TypeError("JSON body is required.")
+    document_type = data.get("document_type")
+    version = data.get("version")
+    title = data.get("title")
+    content = data.get("content_markdown")
+    effective = data.get("effective_at")
+    if document_type not in _LEGAL_TYPES:
+        raise ValueError("Document type must be terms or privacy.")
+    if not isinstance(version, str) or not 1 <= len(version.strip()) <= 40:
+        raise ValueError("Version is required (40 characters maximum).")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= 120:
+        raise ValueError("Title is required (120 characters maximum).")
+    if not isinstance(content, str) or not 1 <= len(content) <= 500_000:
+        raise ValueError("Document content is required (500,000 characters maximum).")
+    try:
+        effective_at = datetime.fromisoformat(str(effective)) if effective else None
+    except ValueError as exc:
+        raise ValueError("Effective date is invalid.") from exc
+    return {
+        "document_type": document_type, "version": version.strip(), "title": title.strip(),
+        "content_markdown": content, "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "requires_reconsent": bool(data.get("requires_reconsent", True)),
+        "effective_at": effective_at,
+    }
 
 
 def _invitation_memo(value: object) -> str | None:
@@ -746,3 +776,99 @@ def audit_logs():
         ))
     except ValueError as exc:
         return _error(str(exc))
+
+
+@bp.get("/legal-documents")
+@require_admin_hmac
+def legal_documents():
+    with get_engine().connect() as connection:
+        rows = connection.execute(text(
+            "SELECT public_id,document_type,version,title,content_markdown,content_sha256,status,"
+            "requires_reconsent,effective_at,published_at,published_by,created_at,updated_at "
+            "FROM legal_documents ORDER BY document_type,created_at DESC"
+        )).mappings().all()
+    values = [_row(row) for row in rows]
+    for value in values:
+        value["requires_reconsent"] = bool(value["requires_reconsent"])
+    return jsonify(documents=values)
+
+
+@bp.post("/legal-documents")
+@require_admin_hmac
+def create_legal_document():
+    try:
+        values = _legal_values(request.get_json(silent=True))
+        values["public_id"] = new_public_id()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            connection.execute(text(
+                "INSERT INTO legal_documents (public_id,document_type,version,title,content_markdown,"
+                "content_sha256,status,requires_reconsent,effective_at,created_at,updated_at) "
+                "VALUES (:public_id,:document_type,:version,:title,:content_markdown,:content_sha256,"
+                "'draft',:requires_reconsent,:effective_at,:now,:now)"
+            ), {**values, "now": now})
+            write_audit(connection, action="legal_document_create", target_type="legal_document",
+                        target_id=str(values["public_id"]), after=values, idempotency_key=key)
+    except (IntegrityError, LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=values["public_id"], status="draft"), 201
+
+
+@bp.patch("/legal-documents/<public_id>")
+@require_admin_hmac
+def update_legal_document(public_id: str):
+    try:
+        values = _legal_values(request.get_json(silent=True))
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT * FROM legal_documents WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                raise LookupError("Legal document was not found.")
+            if before["status"] != "draft":
+                raise LookupError("Published legal documents cannot be edited. Create a new version.")
+            connection.execute(text(
+                "UPDATE legal_documents SET document_type=:document_type,version=:version,title=:title,"
+                "content_markdown=:content_markdown,content_sha256=:content_sha256,"
+                "requires_reconsent=:requires_reconsent,effective_at=:effective_at,updated_at=:now "
+                "WHERE public_id=:public_id"
+            ), {**values, "public_id": public_id, "now": datetime.now(UTC).replace(tzinfo=None)})
+            write_audit(connection, action="legal_document_update", target_type="legal_document",
+                        target_id=public_id, before=_row(before), after=values, idempotency_key=key)
+    except (IntegrityError, LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, status="draft")
+
+
+@bp.post("/legal-documents/<public_id>/publish")
+@require_admin_hmac
+def publish_legal_document(public_id: str):
+    try:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT * FROM legal_documents WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                raise LookupError("Legal document was not found.")
+            if before["status"] != "draft":
+                raise LookupError("Only a draft can be published.")
+            effective_at = before["effective_at"] or now
+            if effective_at <= now:
+                connection.execute(text(
+                    "UPDATE legal_documents SET status='retired',updated_at=:now "
+                    "WHERE document_type=:document_type AND status='published'"
+                ), {"now": now, "document_type": before["document_type"]})
+            connection.execute(text(
+                "UPDATE legal_documents SET status='published',effective_at=:effective_at,"
+                "published_at=:now,published_by=:admin,updated_at=:now WHERE public_id=:id"
+            ), {"effective_at": effective_at, "now": now, "admin": g.inpa_admin, "id": public_id})
+            write_audit(connection, action="legal_document_publish", target_type="legal_document",
+                        target_id=public_id, before=_row(before),
+                        after={"status": "published", "effective_at": effective_at}, idempotency_key=key)
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, status="published")

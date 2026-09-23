@@ -20,6 +20,8 @@ _PUBLIC_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CONNECTION_ID_LENGTH = 8
 _SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_X_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_INSTAGRAM_HANDLE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 
 
 class AuthenticationError(Exception):
@@ -111,15 +113,16 @@ def validate_display_name(value: object) -> str:
     return name
 
 
-def _optional_handle(value: object, maximum: int) -> str | None:
+def normalize_social_handle(value: object, service: str) -> tuple[str | None, str | None]:
     if value is None or value == "":
-        return None
+        return None, None
     if not isinstance(value, str):
-        raise RegistrationError("Enter a valid social handle.")
+        raise RegistrationError("SNS IDを確認してください。")
     handle = value.strip().lstrip("@")
-    if not handle or len(handle) > maximum or any(char.isspace() or ord(char) < 32 for char in handle):
-        raise RegistrationError("Enter a valid social handle.")
-    return handle
+    pattern = _X_HANDLE_RE if service == "x" else _INSTAGRAM_HANDLE_RE
+    if not pattern.fullmatch(handle):
+        raise RegistrationError(f"{'X' if service == 'x' else 'Instagram'} IDを確認してください。")
+    return handle, handle.casefold()
 
 
 def create_registration_request(
@@ -196,16 +199,22 @@ def create_registration_request(
     return email, token
 
 
-def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
+def complete_registration(
+    payload: dict[str, object], requested_ip: bytes | None = None, user_agent: str | None = None
+) -> tuple[int, str, str]:
     token_value = payload.get("token")
     if not isinstance(token_value, str) or not token_value:
         raise RegistrationError("This registration link is invalid or expired.")
     password = validate_password(payload.get("password"))
-    if payload.get("terms_accepted") is not True:
-        raise RegistrationError("You must accept the terms to register.")
+    if payload.get("terms_accepted") is not True or payload.get("privacy_accepted") is not True:
+        raise RegistrationError("利用規約とプライバシーポリシーへの同意が必要です。")
     display_name = validate_display_name(payload.get("display_name"))
-    x_handle = _optional_handle(payload.get("x_handle"), 15)
-    instagram_handle = _optional_handle(payload.get("instagram_handle"), 30)
+    x_handle, x_normalized = normalize_social_handle(payload.get("x_handle"), "x")
+    instagram_handle, instagram_normalized = normalize_social_handle(
+        payload.get("instagram_handle"), "instagram"
+    )
+    if not x_handle and not instagram_handle:
+        raise RegistrationError("X IDまたはInstagram IDのどちらかを入力してください。")
     visibility = payload.get("default_visibility", "link")
     detail = payload.get("default_detail_level", "park")
     if visibility not in {"link", "logged_in", "following", "mutual", "private"}:
@@ -246,13 +255,38 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
         ).first()
         if duplicate:
             raise RegistrationError("This registration link is invalid or expired.")
+        documents = connection.execute(text(
+            "SELECT id,public_id,document_type FROM legal_documents "
+            "WHERE status='published' AND effective_at<=:now AND document_type IN ('terms','privacy') "
+            "ORDER BY effective_at DESC,id DESC FOR UPDATE"
+        ), {"now": now}).mappings().all()
+        current_documents = {}
+        for document in documents:
+            current_documents.setdefault(document["document_type"], document)
+        if (
+            set(current_documents) != {"terms", "privacy"}
+            or payload.get("terms_document_id") != current_documents["terms"]["public_id"]
+            or payload.get("privacy_document_id") != current_documents["privacy"]["public_id"]
+        ):
+            raise RegistrationError("法務文書が更新されました。内容を再確認してください。")
+        for column, value, label in (
+            ("x_handle_normalized", x_normalized, "X ID"),
+            ("instagram_handle_normalized", instagram_normalized, "Instagram ID"),
+        ):
+            if value and connection.execute(
+                text(f"SELECT 1 FROM users WHERE {column}=:value LIMIT 1 FOR UPDATE"),
+                {"value": value},
+            ).first():
+                raise RegistrationError(f"この{label}はすでに登録されています。")
         connection.execute(
             text(
                 "INSERT INTO users "
-                "(public_id, connection_id, email, email_normalized, password_hash, display_name, x_handle, instagram_handle, "
+                "(public_id, connection_id, email, email_normalized, password_hash, display_name, "
+                "x_handle, x_handle_normalized, instagram_handle, instagram_handle_normalized, "
                 "x_handle_visible, instagram_handle_visible, default_visibility, default_detail_level, email_verified_at) "
-                "VALUES (:public_id, :connection_id, :email, :normalized, :password_hash, :display_name, :x_handle, "
-                ":instagram_handle, :x_visible, :instagram_visible, :visibility, :detail, :now)"
+                "VALUES (:public_id, :connection_id, :email, :normalized, :password_hash, :display_name, "
+                ":x_handle, :x_normalized, :instagram_handle, :instagram_normalized, :x_visible, "
+                ":instagram_visible, :visibility, :detail, :now)"
             ),
             {
                 "public_id": new_public_id(),
@@ -262,7 +296,9 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
                 "password_hash": _PASSWORDS.hash(password),
                 "display_name": display_name,
                 "x_handle": x_handle,
+                "x_normalized": x_normalized,
                 "instagram_handle": instagram_handle,
+                "instagram_normalized": instagram_normalized,
                 "x_visible": int(bool(payload.get("x_handle_visible", False))),
                 "instagram_visible": int(bool(payload.get("instagram_handle_visible", False))),
                 "visibility": visibility,
@@ -272,6 +308,15 @@ def complete_registration(payload: dict[str, object]) -> tuple[int, str, str]:
         )
         user_id = connection.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
         create_default_matrix(connection, int(user_id))
+        for document in current_documents.values():
+            connection.execute(text(
+                "INSERT INTO user_legal_consents "
+                "(user_id,legal_document_id,consented_at,consent_method,ip_address,user_agent) "
+                "VALUES (:user_id,:document_id,:now,'registration',:ip,:agent)"
+            ), {
+                "user_id": user_id, "document_id": document["id"], "now": now,
+                "ip": requested_ip, "agent": (user_agent or "")[:512] or None,
+            })
         connection.execute(
             text("UPDATE registration_requests SET consumed_at = :now WHERE id = :id"),
             {"now": now, "id": request_row["id"]},

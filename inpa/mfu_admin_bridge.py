@@ -80,6 +80,7 @@ _SECTIONS = {
     "seasons": ("/internal/admin/v1/seasons", "seasons"),
     "security": ("/internal/admin/v1/security-events", "events"),
     "mail": ("/internal/admin/v1/mail-logs", "logs"),
+    "legal": ("/internal/admin/v1/legal-documents", "documents"),
     "audit": ("/internal/admin/v1/audit-logs", "logs"),
 }
 
@@ -315,3 +316,51 @@ def deactivate_restriction(public_id: str):
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
     return redirect(url_for("inpa_admin.index", section="seasons"))
+
+
+def _legal_payload():
+    effective_date = request.form.get("effective_at", "")
+    return {
+        "document_type": request.form.get("document_type", ""),
+        "version": request.form.get("version", ""),
+        "title": request.form.get("title", ""),
+        "content_markdown": request.form.get("content_markdown", ""),
+        "requires_reconsent": request.form.get("requires_reconsent") == "1",
+        "effective_at": f"{effective_date}T00:00:00" if effective_date else None,
+    }
+
+
+@inpa_admin_bp.post("/admin/inpa/legal-documents")
+@_admin_required
+def create_legal_document():
+    try:
+        call_inpa("POST", "/internal/admin/v1/legal-documents", payload=_legal_payload(),
+                  idempotency_key=secrets.token_urlsafe(24))
+        flash("法務文書の下書きを作成しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="legal"))
+
+
+@inpa_admin_bp.post("/admin/inpa/legal-documents/<public_id>")
+@_admin_required
+def update_legal_document(public_id: str):
+    try:
+        call_inpa("PATCH", f"/internal/admin/v1/legal-documents/{public_id}",
+                  payload=_legal_payload(), idempotency_key=secrets.token_urlsafe(24))
+        flash("法務文書の下書きを更新しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="legal"))
+
+
+@inpa_admin_bp.post("/admin/inpa/legal-documents/<public_id>/publish")
+@_admin_required
+def publish_legal_document(public_id: str):
+    try:
+        call_inpa("POST", f"/internal/admin/v1/legal-documents/{public_id}/publish",
+                  idempotency_key=secrets.token_urlsafe(24))
+        flash("法務文書を公開しました。公開済みの本文は変更できません。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="legal"))

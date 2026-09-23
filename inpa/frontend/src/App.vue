@@ -9,8 +9,11 @@ const logoutPending = ref(false); const logoutError = ref('')
 
 async function refreshAuth() {
   try {
-    await api<{ user: { public_id: string; connection_id: string; display_name: string } }>('/auth/me')
+    const result = await api<{ user: { public_id: string; connection_id: string; display_name: string; legal_consent_required: boolean } }>('/auth/me')
     authenticated.value = true
+    if (result.user.legal_consent_required && route.path !== '/legal/consent' && !route.path.startsWith('/legal/')) {
+      await router.replace({ path: '/legal/consent', query: { next: route.fullPath } })
+    }
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 401) authenticated.value = false
   } finally { authChecked.value = true }
@@ -54,5 +57,6 @@ watch(() => route.fullPath, refreshAuth, { immediate: true })
     </header>
     <p v-if="logoutError" class="error" role="alert">{{ logoutError }}</p>
     <RouterView />
+    <footer class="site-footer"><RouterLink to="/legal/terms">利用規約</RouterLink><RouterLink to="/legal/privacy">プライバシーポリシー</RouterLink></footer>
   </main>
 </template>
