@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '@/lib/api'
 import { formatJapaneseDate } from '@/lib/date'
+import { parkLabel, parkScopeLabel } from '@/lib/park'
 
 type Entry = { user_public_id: string; display_name: string; park?: string; costume?: string; memo?: string }
 type ParkCounts = { both: number; land: number; sea: number; undecided: number }
@@ -34,8 +35,8 @@ const loading = ref(true)
 const error = ref('')
 const weekdays = ['日', '月', '火', '水', '木', '金', '土']
 const parkRows: { key: keyof ParkCounts; label: string }[] = [
-  { key: 'both', label: '両方' }, { key: 'land', label: 'TDL' },
-  { key: 'sea', label: 'TDS' }, { key: 'undecided', label: '未定' },
+  { key: 'both', label: '🏰TDL・🌍TDS' }, { key: 'land', label: '🏰TDL' },
+  { key: 'sea', label: '🌍TDS' }, { key: 'undecided', label: '未定' },
 ]
 
 function isoDate(value: Date) {
@@ -137,12 +138,6 @@ function restrictionStyle(bar: RestrictionBar): Record<string, string> {
     gridColumn: `${bar.startColumn} / ${bar.endColumn + 1}`,
     gridRow: String(bar.week + 2), '--restriction-lane': String(bar.lane),
   }
-}
-function parkLabel(park?: string) {
-  return ({ both: '両方', land: 'TDL', sea: 'TDS', undecided: '未定' } as Record<string, string>)[park ?? ''] ?? '未定'
-}
-function restrictionScopeLabel(scope: string) {
-  return ({ all: '全パーク', land: 'TDL', sea: 'TDS' } as Record<string, string>)[scope] ?? scope
 }
 async function loadCalendar() {
   if (!selectedSeasonId.value) return
@@ -251,7 +246,7 @@ function dateInRange(value: string, season: Season) {
         <article v-for="restriction in selectedRestrictions" :key="restriction.public_id" class="selected-restriction-notice">
           <strong>{{ restriction.name }}</strong>
           <p v-if="restriction.description">{{ restriction.description }}</p>
-          <small>{{ formatJapaneseDate(restriction.start_date) }}〜{{ formatJapaneseDate(restriction.end_date) }} / {{ restrictionScopeLabel(restriction.park_scope) }}</small>
+          <small>{{ formatJapaneseDate(restriction.start_date) }}〜{{ formatJapaneseDate(restriction.end_date) }} / {{ parkScopeLabel(restriction.park_scope) }}</small>
         </article>
       </div>
       <div class="selected-date-heading"><h2>{{ formatJapaneseDate(selectedDate) }}の予定</h2><RouterLink class="button" :to="addLink">この日に予定を追加</RouterLink></div>
