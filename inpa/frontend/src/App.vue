@@ -9,11 +9,8 @@ const logoutPending = ref(false); const logoutError = ref('')
 
 async function refreshAuth() {
   try {
-    const result = await api<{ user: { public_id: string; connection_id: string; display_name: string; legal_consent_required: boolean } }>('/auth/me')
+    await api<{ user: { public_id: string; connection_id: string; display_name: string; legal_consent_required: boolean } }>('/auth/me')
     authenticated.value = true
-    if (result.user.legal_consent_required && route.path !== '/legal/consent' && !route.path.startsWith('/legal/')) {
-      await router.replace({ path: '/legal/consent', query: { next: route.fullPath } })
-    }
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 401) authenticated.value = false
   } finally { authChecked.value = true }

@@ -12,6 +12,7 @@ import ConnectionsView from '@/views/ConnectionsView.vue'
 import CalendarView from '@/views/CalendarView.vue'
 import LegalDocumentView from '@/views/LegalDocumentView.vue'
 import LegalConsentView from '@/views/LegalConsentView.vue'
+import { api } from '@/lib/api'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -30,6 +31,19 @@ const router = createRouter({
     { path: '/legal/:type(terms|privacy)', name: 'legal-document', component: LegalDocumentView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
+})
+
+router.beforeEach(async (to) => {
+  if (to.path === '/legal/consent' || to.path.startsWith('/legal/')) return true
+  try {
+    const result = await api<{ user: { legal_consent_required: boolean } }>('/auth/me')
+    if (result.user.legal_consent_required) {
+      return { path: '/legal/consent', query: { next: to.fullPath }, replace: true }
+    }
+  } catch {
+    // Public routes and each protected API retain their existing authentication handling.
+  }
+  return true
 })
 
 export default router
