@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '@/lib/api'
 import { formatJapaneseDate } from '@/lib/date'
 import { parkLabel, parkScopeLabel } from '@/lib/park'
@@ -16,11 +16,12 @@ type Cell = { key: string; date: string | null; number: number | null; weekday: 
 type RestrictionBar = Restriction & { key: string; week: number; startColumn: number; endColumn: number; lane: number }
 
 const route = useRoute()
+const router = useRouter()
 const person = ref<Person | null>(null)
 const seasons = ref<Season[]>([]); const seasonId = ref('')
 const cursor = ref(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
 const selectedDate = ref(''); const days = ref<Day[]>([]); const holidays = ref<Holiday[]>([]); const restrictions = ref<Restriction[]>([])
-const loading = ref(true); const error = ref('')
+const loading = ref(true); const error = ref(''); const notice = ref(''); const actionPending = ref(false)
 const weekdays = ['日', '月', '火', '水', '木', '金', '土']
 const parkRows: { key: keyof ParkCounts; label: string }[] = [
   { key: 'both', label: '🏰TDL・🌍TDS' }, { key: 'land', label: '🏰TDL' },
@@ -85,6 +86,26 @@ function countsFor(date: string): ParkCounts { return dayMap.value.get(date)?.pa
 function socialUrl(service: 'x' | 'instagram', handle: string) { return service === 'x' ? `https://x.com/${handle}` : `https://www.instagram.com/${handle}/` }
 function cellStyle(cell: Cell): Record<string, string> { return { gridColumn: String(cell.column), gridRow: String(cell.week + 2), '--restriction-lanes': String(restrictionLanes.value.get(cell.week) ?? 0) } }
 function restrictionStyle(bar: RestrictionBar): Record<string, string> { return { gridColumn: `${bar.startColumn} / ${bar.endColumn + 1}`, gridRow: String(bar.week + 2), '--restriction-lane': String(bar.lane) } }
+async function follow() {
+  if (!person.value) return
+  actionPending.value = true; error.value = ''
+  try { await api(`/follows/${person.value.public_id}`, { method: 'POST' }); person.value.following = true; notice.value = 'フォローしました。'; await loadCalendar() }
+  catch (cause) { error.value = cause instanceof ApiError ? cause.message : 'フォローできませんでした。' }
+  finally { actionPending.value = false }
+}
+async function unfollow() {
+  if (!person.value) return
+  actionPending.value = true; error.value = ''
+  try { await api(`/follows/${person.value.public_id}`, { method: 'DELETE' }); person.value.following = false; notice.value = 'フォローを解除しました。'; await loadCalendar() }
+  catch (cause) { error.value = cause instanceof ApiError ? cause.message : '解除できませんでした。' }
+  finally { actionPending.value = false }
+}
+async function block() {
+  if (!person.value || !confirm(`${person.value.display_name}さんをブロックしますか？ 双方のフォローも解除されます。`)) return
+  actionPending.value = true; error.value = ''
+  try { await api(`/blocks/${person.value.public_id}`, { method: 'POST' }); await router.push('/connections') }
+  catch (cause) { error.value = cause instanceof ApiError ? cause.message : 'ブロックできませんでした。'; actionPending.value = false }
+}
 async function loadCalendar() {
   if (!person.value || !seasonId.value) return
   try {
@@ -127,6 +148,8 @@ onMounted(async () => {
         <a v-if="person.x_handle" :href="socialUrl('x', person.x_handle)" target="_blank" rel="noopener noreferrer">X @{{ person.x_handle }}</a>
         <a v-if="person.instagram_handle" :href="socialUrl('instagram', person.instagram_handle)" target="_blank" rel="noopener noreferrer">Instagram @{{ person.instagram_handle }}</a>
       </div>
+      <p v-if="notice" class="notice">{{ notice }}</p>
+      <div class="actions"><button v-if="!person.following" class="button" type="button" :disabled="actionPending" @click="follow">フォローする</button><button v-else class="button secondary" type="button" :disabled="actionPending" @click="unfollow">解除</button><button class="button danger" type="button" :disabled="actionPending" @click="block">ブロック</button></div>
     </div>
     <label v-if="seasons.length" class="field calendar-season">表示シーズン
       <select v-model="seasonId" @change="selectSeason"><option v-for="season in seasons" :key="season.public_id" :value="season.public_id">{{ season.name }}（{{ formatJapaneseDate(season.start_date) }}〜{{ formatJapaneseDate(season.end_date) }}）</option></select>
