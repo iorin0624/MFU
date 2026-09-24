@@ -51,6 +51,11 @@ body {
 .visit-list { display: grid; gap: 1rem; margin-top: 2rem; }
 .visit-card { padding: 1rem; border: 1px solid #eadfd7; border-radius: .7rem; }
 .visit-card h2, .visit-card h3 { margin-top: 0; }
+.person-link { color: var(--color-accent); text-decoration-thickness: .08em; text-underline-offset: .18em; }
+.person-profile { display: grid; gap: 1rem; margin-bottom: 1rem; }
+.person-profile h1 { margin: 0; }
+.person-socials { display: flex; flex-wrap: wrap; gap: .75rem; }
+.person-calendar-toolbar { grid-template-columns: auto 1fr auto; }
 .share-result { display: grid; gap: .7rem; margin: 1rem 0; }
 .share-result input { width: 100%; padding: .75rem; }
 .qr-code { width: min(100%, 20rem); padding: 1rem; background: #fff; }

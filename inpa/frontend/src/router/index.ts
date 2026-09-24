@@ -14,6 +14,7 @@ import LegalDocumentView from '@/views/LegalDocumentView.vue'
 import LegalConsentView from '@/views/LegalConsentView.vue'
 import FeedbackView from '@/views/FeedbackView.vue'
 import UpdatesView from '@/views/UpdatesView.vue'
+import PersonView from '@/views/PersonView.vue'
 import { api } from '@/lib/api'
 
 const router = createRouter({
@@ -28,6 +29,7 @@ const router = createRouter({
     { path: '/share', name: 'share-manage', component: ShareManageView },
     { path: '/share/:token', name: 'shared', component: SharedView },
     { path: '/connections', name: 'connections', component: ConnectionsView },
+    { path: '/people/:publicId', name: 'person', component: PersonView },
     { path: '/calendar', name: 'calendar', component: CalendarView },
     { path: '/feedback', name: 'feedback', component: FeedbackView },
     { path: '/updates', name: 'updates', component: UpdatesView },
