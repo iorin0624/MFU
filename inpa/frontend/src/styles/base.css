@@ -64,7 +64,7 @@ body {
 .qr-code { width: min(100%, 20rem); padding: 1rem; background: #fff; }
 .qr-code svg { display: block; width: 100%; height: auto; }
 .calendar-filters { display: grid; width: 100%; min-width: 0; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); align-items: end; }
-.calendar-filters input[type="month"] { width: -webkit-fill-available; min-width: 0; max-width: 100%; inline-size: -webkit-fill-available; min-inline-size: 0; max-inline-size: 100%; -webkit-appearance: none; appearance: none; }
+.field input[type="date"], .field input[type="time"], .field input[type="month"] { width: -webkit-fill-available; min-width: 0; max-width: 100%; inline-size: -webkit-fill-available; min-inline-size: 0; max-inline-size: 100%; -webkit-appearance: none; appearance: none; }
 .calendar-days { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
 .calendar-day { display: grid; gap: .3rem; padding: .8rem; text-align: left; color: inherit; background: #fff8f4; border: 1px solid #eadfd7; border-radius: .6rem; cursor: pointer; }
 .home-calendar { display: grid; width: 100%; min-width: 0; margin-inline: auto; gap: 1rem; }
