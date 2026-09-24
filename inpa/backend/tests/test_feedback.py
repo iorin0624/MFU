@@ -27,12 +27,15 @@ def _app():
 
 
 def _authenticated(monkeypatch):
+    notifications = []
     monkeypatch.setattr(feedback, "_require_session", lambda: ({"user_id": 1}, None))
     monkeypatch.setattr(feedback, "verify_csrf", lambda session, token: True)
+    monkeypatch.setattr(feedback, "send_feedback_notification", notifications.append)
+    return notifications
 
 
 def test_feedback_uses_server_side_sender_snapshot(monkeypatch):
-    app = _app(); _authenticated(monkeypatch)
+    app = _app(); notifications = _authenticated(monkeypatch)
     response = app.test_client().post("/api/v1/feedback", json={
         "category": "feature", "message": "新しい機能を追加してほしいです。", "source_path": "/calendar?month=10",
         "sender_email": "spoof@example.test",
@@ -48,6 +51,9 @@ def test_feedback_uses_server_side_sender_snapshot(monkeypatch):
     assert row["category"] == "feature"
     assert row["source_path"] == "/calendar?month=10"
     assert row["status"] == "new"
+    assert notifications[0]["event_id"] == response.get_json()["public_id"]
+    assert notifications[0]["sender_email"] == "user@example.test"
+    assert notifications[0]["message"] == "新しい機能を追加してほしいです。"
 
 
 def test_feedback_rate_limit_is_three_per_five_minutes(monkeypatch):

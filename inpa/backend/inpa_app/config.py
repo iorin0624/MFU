@@ -34,6 +34,8 @@ def apply_settings(
         TOKEN_PEPPER=_required("INPA_TOKEN_PEPPER", production=production),
         MAIL_ENCRYPTION_KEY=_required("INPA_MAIL_ENCRYPTION_KEY", production=production),
         INTERNAL_ADMIN_HMAC_SECRET=_required("INPA_INTERNAL_ADMIN_HMAC_SECRET", production=production),
+        MFU_NOTIFICATION_HOST=os.environ.get("INPA_MFU_NOTIFICATION_HOST", "127.0.0.1"),
+        MFU_NOTIFICATION_PORT=int(os.environ.get("INPA_MFU_NOTIFICATION_PORT", "8080")),
         TURNSTILE_SECRET_KEY=_required("INPA_TURNSTILE_SECRET_KEY", production=production),
         TURNSTILE_VERIFY_URL="https://challenges.cloudflare.com/turnstile/v0/siteverify",
         TURNSTILE_BYPASS=not production and os.environ.get("INPA_TURNSTILE_BYPASS") == "1",

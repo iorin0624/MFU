@@ -66,6 +66,78 @@ def _canonical(method: str, path: str, timestamp: str, nonce: str, body: bytes, 
     return f"{method}\n{path}\n{timestamp}\n{nonce}\n{digest}\n{admin}".encode()
 
 
+def _valid_inpa_notification_signature() -> bool:
+    timestamp = request.headers.get("X-INPA-Timestamp", "")
+    nonce = request.headers.get("X-INPA-Nonce", "")
+    sender = request.headers.get("X-INPA-Admin", "")
+    signature = request.headers.get("X-INPA-Signature", "")
+    try:
+        fresh = abs(int(time.time()) - int(timestamp)) <= 60
+    except ValueError:
+        return False
+    if not fresh or sender != "inpa-feedback" or not 16 <= len(nonce) <= 128 or len(signature) != 64:
+        return False
+    secret = os.environ.get("INPA_INTERNAL_ADMIN_HMAC_SECRET", "")
+    if not secret:
+        return False
+    expected = hmac.new(
+        secret.encode(),
+        _canonical(request.method, request.path, timestamp, nonce, request.get_data(cache=True), sender),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+@inpa_admin_bp.post("/api/internal/inpa/feedback-notification")
+def receive_feedback_notification():
+    if not _valid_inpa_notification_signature():
+        return {"error": "authentication_failed"}, 401
+    data = request.get_json(silent=True)
+    required = {
+        "event_id", "sender_public_id", "sender_connection_id", "sender_display_name",
+        "sender_email", "category", "message", "created_at",
+    }
+    if not isinstance(data, dict) or not required.issubset(data):
+        return {"error": "invalid_payload"}, 400
+    category_labels = {
+        "bug": "不具合・エラー", "feature": "機能の要望",
+        "usability": "操作性・使いやすさ", "wording": "文言・表示", "other": "その他",
+    }
+    category = category_labels.get(str(data["category"]))
+    message = str(data["message"]).strip()
+    if not category or not 1 <= len(message) <= 2000:
+        return {"error": "invalid_payload"}, 400
+    connection_id = str(data["sender_connection_id"])
+    connection_display = (
+        f"{connection_id[:4]}-{connection_id[4:]}" if len(connection_id) == 8 else connection_id
+    )
+    payload = {
+        "embeds": [{
+            "title": "📣 INPAフィードバック",
+            "url": "https://mfu.iori0624.jp/admin/inpa/feedback",
+            "description": message,
+            "color": 0xE26D3F,
+            "fields": [
+                {"name": "項目", "value": category, "inline": True},
+                {"name": "表示名", "value": str(data["sender_display_name"])[:40] or "—", "inline": True},
+                {"name": "つながりID", "value": connection_display[:16] or "—", "inline": True},
+                {"name": "メールアドレス", "value": str(data["sender_email"])[:254] or "—", "inline": False},
+                {"name": "送信日時", "value": str(inpa_jst(data["created_at"])), "inline": True},
+                {"name": "送信元", "value": str(data.get("source_path") or "—")[:500], "inline": True},
+            ],
+            "footer": {"text": f"INPA feedback {str(data['event_id'])[:26]}"},
+        }],
+        "allowed_mentions": {"parse": []},
+    }
+    try:
+        from app.discord_notifications.service import post_discord_notification
+
+        delivered = post_discord_notification("inpa_feedback", payload)
+    except Exception:  # noqa: BLE001 - notification integrations have heterogeneous failures.
+        return {"error": "delivery_failed"}, 502
+    return {"delivered": delivered}, 200
+
+
 def call_inpa(method: str, path: str, *, payload: object = None, idempotency_key: str | None = None):
     secret = os.environ.get("INPA_INTERNAL_ADMIN_HMAC_SECRET", "")
     if not secret:
