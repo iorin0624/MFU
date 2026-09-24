@@ -38,11 +38,11 @@ async function submit() {
 <template>
   <section class="panel">
     <h1>フィードバック</h1>
-    <p>不具合やご要望をお寄せください。ログイン中の利用者ID・表示名・メールアドレスと、送信日時・送信元ページ・ブラウザー情報を運営へ送信します。</p>
+    <p>不具合やご要望をお寄せください。</p>
     <p v-if="success" class="notice" role="status">{{ success }}</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <form @submit.prevent="submit">
-      <label>項目
+    <form class="form-stack" @submit.prevent="submit">
+      <label class="field">項目
         <select v-model="category" required>
           <option value="" disabled>選択してください</option>
           <option value="bug">不具合・エラー</option>
@@ -52,7 +52,7 @@ async function submit() {
           <option value="other">その他</option>
         </select>
       </label>
-      <label>内容
+      <label class="field">内容
         <textarea v-model="message" rows="10" minlength="10" maxlength="2000" required placeholder="具体的な状況やご要望を入力してください"></textarea>
       </label>
       <p class="helper">10〜2000文字（残り {{ remaining }} 文字）</p>
