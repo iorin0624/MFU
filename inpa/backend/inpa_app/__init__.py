@@ -15,6 +15,7 @@ from .auth.routes import bp as auth_bp
 from .calendar import bp as calendar_bp
 from .config import apply_settings
 from .db import init_app as init_db
+from .feedback import bp as feedback_bp
 from .health import bp as health_bp
 from .internal_admin import bp as internal_admin_bp
 from .legal import bp as legal_bp
@@ -44,6 +45,7 @@ def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
         app.register_blueprint(relationships_bp)
         app.register_blueprint(restrictions_bp)
         app.register_blueprint(share_bp)
+        app.register_blueprint(feedback_bp)
     else:
         app.register_blueprint(internal_admin_bp)
 

@@ -44,6 +44,7 @@ watch(() => route.fullPath, refreshAuth, { immediate: true })
           <RouterLink to="/calendar">カレンダー</RouterLink>
           <RouterLink to="/share">共有</RouterLink>
           <RouterLink to="/connections">つながり</RouterLink>
+          <RouterLink :to="{ path: '/feedback', query: route.path === '/feedback' ? {} : { from: route.fullPath } }">フィードバック</RouterLink>
           <button class="nav-button" type="button" :disabled="logoutPending" @click="logout">{{ logoutPending ? '処理中…' : 'ログアウト' }}</button>
         </template>
         <template v-else-if="authChecked">

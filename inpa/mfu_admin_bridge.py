@@ -77,6 +77,7 @@ _SECTIONS = {
     "invitations": ("/internal/admin/v1/registration-invitations", "invitations"),
     "visits": ("/internal/admin/v1/visits", "visits"),
     "reports": ("/internal/admin/v1/reports", "reports"),
+    "feedback": ("/internal/admin/v1/feedbacks", "feedbacks"),
     "seasons": ("/internal/admin/v1/seasons", "seasons"),
     "security": ("/internal/admin/v1/security-events", "events"),
     "mail": ("/internal/admin/v1/mail-logs", "logs"),
@@ -95,7 +96,7 @@ def index(section: str = "dashboard"):
         return redirect(url_for("inpa_admin.index", section="seasons"))
     if section not in _SECTIONS:
         section = "dashboard"
-    query = {name: value for name in ("q", "status", "season_id", "user_id", "page") if (value := request.args.get(name))}
+    query = {name: value for name in ("q", "status", "category", "season_id", "user_id", "page") if (value := request.args.get(name))}
     try:
         if section == "seasons":
             seasons = call_inpa("GET", "/internal/admin/v1/seasons").get("seasons", [])
@@ -228,6 +229,24 @@ def action():
         except (OSError, RuntimeError, ValueError) as exc:
             flash(str(exc), "danger")
     return redirect(request.referrer or url_for("inpa_admin.index"))
+
+
+@inpa_admin_bp.post("/admin/inpa/feedbacks/<public_id>")
+@_admin_required
+def update_feedback(public_id: str):
+    try:
+        call_inpa(
+            "PATCH", f"/internal/admin/v1/feedbacks/{public_id}",
+            payload={
+                "status": request.form.get("status", "new"),
+                "admin_memo": request.form.get("admin_memo", ""),
+            },
+            idempotency_key=secrets.token_urlsafe(24),
+        )
+        flash("フィードバックの対応状況を更新しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="feedback"))
 
 
 @inpa_admin_bp.post("/admin/inpa/seasons")
