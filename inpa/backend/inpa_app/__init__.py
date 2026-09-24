@@ -22,6 +22,7 @@ from .legal import bp as legal_bp
 from .planner import bp as planner_bp
 from .public import bp as public_bp
 from .relationships import bp as relationships_bp
+from .releases import bp as releases_bp
 from .restrictions import bp as restrictions_bp
 from .share import bp as share_bp
 
@@ -46,6 +47,7 @@ def create_app(role: str, overrides: Mapping[str, Any] | None = None) -> Flask:
         app.register_blueprint(restrictions_bp)
         app.register_blueprint(share_bp)
         app.register_blueprint(feedback_bp)
+        app.register_blueprint(releases_bp)
     else:
         app.register_blueprint(internal_admin_bp)
 
