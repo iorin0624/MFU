@@ -10,12 +10,36 @@ import os
 import secrets
 import socket
 import time
+from datetime import UTC, date, datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
 inpa_admin_bp = Blueprint("inpa_admin", __name__)
+_JST = timezone(timedelta(hours=9), "JST")
+
+
+@inpa_admin_bp.app_template_filter("inpa_jst")
+def inpa_jst(value):
+    """Render API UTC timestamps consistently in JST; leave other values unchanged."""
+    if value in (None, ""):
+        return ""
+    raw = str(value)
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        try:
+            return date.fromisoformat(raw).strftime("%Y年%m月%d日")
+        except ValueError:
+            return raw
+    if len(raw) < 19 or raw[4] != "-" or raw[7] != "-" or raw[10] not in {"T", " "}:
+        return value
+    try:
+        timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(_JST).strftime("%Y年%m月%d日 %H:%M:%S")
 
 
 class _UnixConnection(http.client.HTTPConnection):
