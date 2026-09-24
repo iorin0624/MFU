@@ -110,6 +110,16 @@ _SECTIONS = {
 }
 
 
+def _open_feedback_count(summary: dict | None = None) -> int:
+    try:
+        values = summary if isinstance(summary, dict) else call_inpa(
+            "GET", "/internal/admin/v1/summary"
+        ).get("summary", {})
+        return max(0, int(values.get("open_feedback", 0)))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return 0
+
+
 @inpa_admin_bp.get("/admin/inpa")
 @inpa_admin_bp.get("/admin/inpa/<section>")
 @_admin_required
@@ -151,8 +161,10 @@ def index(section: str = "dashboard"):
         else:
             data = []
         error = str(exc)
+    feedback_badge_count = _open_feedback_count(data if section == "dashboard" else None)
     return render_template(
-        "admin_inpa.html", section=section, data=data, error=error, invite_result=None
+        "admin_inpa.html", section=section, data=data, error=error, invite_result=None,
+        feedback_badge_count=feedback_badge_count,
     )
 
 
@@ -175,7 +187,7 @@ def create_invitation():
         return render_template(
             "admin_inpa.html", section="invitations",
             data={"invitations": invitations, "settings": settings}, error=None,
-            invite_result=result,
+            invite_result=result, feedback_badge_count=_open_feedback_count(),
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         flash(str(exc), "danger")
