@@ -66,9 +66,9 @@ def integrated_calendar():
                 "FROM visits v JOIN users u ON u.id=v.user_id JOIN seasons s ON s.id=v.season_id "
                 "WHERE s.is_active=1 AND (:season IS NULL OR v.season_id=:season) "
                 "AND v.visit_date BETWEEN :start AND :end "
-                "AND (v.user_id=:viewer OR ("
-                ":myself_only=0 AND v.user_id IN (SELECT followed_user_id FROM follows WHERE follower_user_id=:viewer))) "
-                "AND (:person_id='' OR u.connection_id=:person_id) "
+                "AND ((:person_id='' AND (v.user_id=:viewer OR ("
+                ":myself_only=0 AND v.user_id IN (SELECT followed_user_id FROM follows WHERE follower_user_id=:viewer)))) "
+                "OR (:person_id<>'' AND u.connection_id=:person_id)) "
                 "ORDER BY v.visit_date,u.display_name,v.id"
             ),
             {"season": season["id"] if season else None, "start": start, "end": end, "viewer": viewer_id,
