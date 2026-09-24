@@ -174,6 +174,7 @@ _SECTIONS = {
     "visits": ("/internal/admin/v1/visits", "visits"),
     "reports": ("/internal/admin/v1/reports", "reports"),
     "feedback": ("/internal/admin/v1/feedbacks", "feedbacks"),
+    "updates": ("/internal/admin/v1/releases", "releases"),
     "seasons": ("/internal/admin/v1/seasons", "seasons"),
     "security": ("/internal/admin/v1/security-events", "events"),
     "mail": ("/internal/admin/v1/mail-logs", "logs"),
@@ -216,6 +217,13 @@ def index(section: str = "dashboard"):
                 "GET", "/internal/admin/v1/registration-settings"
             ).get("settings", {"invite_only": True})
             data = {"invitations": invitations, "settings": settings}
+        elif section == "updates":
+            result = call_inpa("GET", "/internal/admin/v1/releases")
+            data = {
+                "releases": result.get("releases", []),
+                "current_version": result.get("current_version"),
+                "suggestions": result.get("suggestions", {}),
+            }
         else:
             path, key = _SECTIONS[section]
             if query:
@@ -230,6 +238,8 @@ def index(section: str = "dashboard"):
             data = {"seasons": [], "restrictions": []}
         elif section == "invitations":
             data = {"invitations": [], "settings": {"invite_only": True}}
+        elif section == "updates":
+            data = {"releases": [], "current_version": None, "suggestions": {}}
         else:
             data = []
         error = str(exc)
@@ -355,6 +365,51 @@ def update_feedback(public_id: str):
     except (OSError, RuntimeError, ValueError) as exc:
         flash(str(exc), "danger")
     return redirect(url_for("inpa_admin.index", section="feedback"))
+
+
+def _release_payload():
+    return {
+        "version": request.form.get("version", ""),
+        "change_type": request.form.get("change_type", "feature"),
+        "title": request.form.get("title", ""),
+        "content_markdown": request.form.get("content_markdown", ""),
+    }
+
+
+@inpa_admin_bp.post("/admin/inpa/releases")
+@_admin_required
+def create_release():
+    try:
+        call_inpa("POST", "/internal/admin/v1/releases", payload=_release_payload(),
+                  idempotency_key=secrets.token_urlsafe(24))
+        flash("アップデート情報の下書きを作成しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="updates"))
+
+
+@inpa_admin_bp.post("/admin/inpa/releases/<public_id>")
+@_admin_required
+def update_release(public_id: str):
+    try:
+        call_inpa("PATCH", f"/internal/admin/v1/releases/{public_id}", payload=_release_payload(),
+                  idempotency_key=secrets.token_urlsafe(24))
+        flash("アップデート情報の下書きを更新しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="updates"))
+
+
+@inpa_admin_bp.post("/admin/inpa/releases/<public_id>/publish")
+@_admin_required
+def publish_release(public_id: str):
+    try:
+        call_inpa("POST", f"/internal/admin/v1/releases/{public_id}/publish",
+                  idempotency_key=secrets.token_urlsafe(24))
+        flash("アップデート情報を公開しました。", "success")
+    except (OSError, RuntimeError, ValueError) as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("inpa_admin.index", section="updates"))
 
 
 @inpa_admin_bp.post("/admin/inpa/seasons")

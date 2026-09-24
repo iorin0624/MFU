@@ -20,6 +20,8 @@ _REPORT_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
 _FEEDBACK_CATEGORIES = {"bug", "feature", "usability", "wording", "other"}
 _FEEDBACK_STATUSES = {"new", "in_progress", "resolved", "dismissed"}
 _LEGAL_TYPES = {"terms", "privacy"}
+_RELEASE_TYPES = {"major", "feature", "fix"}
+_SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _JST = timezone(timedelta(hours=9), "JST")
 
 
@@ -61,6 +63,30 @@ def _invitation_memo(value: object) -> str | None:
     if not isinstance(value, str) or len(value.strip()) > 255:
         raise ValueError("Invitation memo must be 255 characters or fewer.")
     return value.strip() or None
+
+
+def _release_values(data: object) -> dict[str, object]:
+    if not isinstance(data, dict):
+        raise TypeError("JSON body is required.")
+    version = data.get("version")
+    title = data.get("title")
+    content = data.get("content_markdown")
+    change_type = data.get("change_type")
+    match = _SEMVER.fullmatch(version) if isinstance(version, str) else None
+    if not match:
+        raise ValueError("Version must use x.y.z format without leading zeroes.")
+    if change_type not in _RELEASE_TYPES:
+        raise ValueError("Change type must be major, feature, or fix.")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= 120:
+        raise ValueError("Title is required (120 characters maximum).")
+    if not isinstance(content, str) or not 1 <= len(content.strip()) <= 20_000:
+        raise ValueError("Release content is required (20,000 characters maximum).")
+    major, minor, patch = (int(part) for part in match.groups())
+    return {
+        "version": version, "version_major": major, "version_minor": minor,
+        "version_patch": patch, "change_type": change_type,
+        "title": title.strip(), "content_markdown": content.strip(),
+    }
 
 
 def _error(message: str, status: int = 400):
@@ -879,6 +905,120 @@ def audit_logs():
         ))
     except ValueError as exc:
         return _error(str(exc))
+
+
+@bp.get("/releases")
+@require_admin_hmac
+def admin_releases():
+    with get_engine().connect() as connection:
+        rows = connection.execute(text(
+            "SELECT public_id,version,version_major,version_minor,version_patch,change_type,title,"
+            "content_markdown,status,created_by,published_by,published_at,created_at,updated_at "
+            "FROM app_releases ORDER BY version_major DESC,version_minor DESC,version_patch DESC"
+        )).mappings().all()
+    values = [_row(row) for row in rows]
+    for value, row in zip(values, rows, strict=True):
+        for key in ("published_at", "created_at", "updated_at"):
+            timestamp = row[key]
+            value[f"{key}_jst"] = (
+                timestamp.replace(tzinfo=UTC).astimezone(_JST).isoformat() if timestamp else None
+            )
+    current = next((value for value in values if value["status"] == "published"), None)
+    major = int(current["version_major"]) if current else 0
+    minor = int(current["version_minor"]) if current else 0
+    patch = int(current["version_patch"]) if current else 0
+    return jsonify(
+        releases=values, current_version=current["version"] if current else None,
+        suggestions={
+            "major": f"{major + 1}.0.0", "feature": f"{major}.{minor + 1}.0",
+            "fix": f"{major}.{minor}.{patch + 1}",
+        },
+    )
+
+
+@bp.post("/releases")
+@require_admin_hmac
+def create_release():
+    try:
+        values = _release_values(request.get_json(silent=True))
+        public_id = new_public_id()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            connection.execute(text(
+                "INSERT INTO app_releases (public_id,version,version_major,version_minor,version_patch,"
+                "change_type,title,content_markdown,status,created_by,created_at,updated_at) "
+                "VALUES (:public_id,:version,:version_major,:version_minor,:version_patch,:change_type,"
+                ":title,:content_markdown,'draft',:admin,:now,:now)"
+            ), {**values, "public_id": public_id, "admin": g.inpa_admin, "now": now})
+            write_audit(connection, action="release_create", target_type="app_release",
+                        target_id=public_id, after=values, idempotency_key=key)
+    except (IntegrityError, LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, status="draft"), 201
+
+
+@bp.patch("/releases/<public_id>")
+@require_admin_hmac
+def update_release(public_id: str):
+    try:
+        values = _release_values(request.get_json(silent=True))
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT * FROM app_releases WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                raise LookupError("Release was not found.")
+            if before["status"] != "draft":
+                raise LookupError("Published releases cannot be edited. Create a new version.")
+            connection.execute(text(
+                "UPDATE app_releases SET version=:version,version_major=:version_major,"
+                "version_minor=:version_minor,version_patch=:version_patch,change_type=:change_type,"
+                "title=:title,content_markdown=:content_markdown,updated_at=:now WHERE public_id=:id"
+            ), {**values, "now": datetime.now(UTC).replace(tzinfo=None), "id": public_id})
+            write_audit(connection, action="release_update", target_type="app_release",
+                        target_id=public_id, before=_row(before), after=values, idempotency_key=key)
+    except (IntegrityError, LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, status="draft")
+
+
+@bp.post("/releases/<public_id>/publish")
+@require_admin_hmac
+def publish_release(public_id: str):
+    try:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT * FROM app_releases WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                raise LookupError("Release was not found.")
+            if before["status"] != "draft":
+                raise LookupError("Only a draft can be published.")
+            latest = connection.execute(text(
+                "SELECT version_major,version_minor,version_patch FROM app_releases "
+                "WHERE status='published' ORDER BY version_major DESC,version_minor DESC,version_patch DESC LIMIT 1"
+            )).mappings().first()
+            release_tuple = (before["version_major"], before["version_minor"], before["version_patch"])
+            latest_tuple = (
+                (latest["version_major"], latest["version_minor"], latest["version_patch"])
+                if latest else (-1, -1, -1)
+            )
+            if release_tuple <= latest_tuple:
+                raise ValueError("Release version must be newer than the current published version.")
+            connection.execute(text(
+                "UPDATE app_releases SET status='published',published_by=:admin,published_at=:now,"
+                "updated_at=:now WHERE public_id=:id"
+            ), {"admin": g.inpa_admin, "now": now, "id": public_id})
+            write_audit(connection, action="release_publish", target_type="app_release",
+                        target_id=public_id, before=_row(before),
+                        after={"status": "published", "published_at": now}, idempotency_key=key)
+    except (LookupError, TypeError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, status="published")
 
 
 @bp.get("/legal-documents")

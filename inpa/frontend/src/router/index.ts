@@ -13,6 +13,7 @@ import CalendarView from '@/views/CalendarView.vue'
 import LegalDocumentView from '@/views/LegalDocumentView.vue'
 import LegalConsentView from '@/views/LegalConsentView.vue'
 import FeedbackView from '@/views/FeedbackView.vue'
+import UpdatesView from '@/views/UpdatesView.vue'
 import { api } from '@/lib/api'
 
 const router = createRouter({
@@ -29,6 +30,7 @@ const router = createRouter({
     { path: '/connections', name: 'connections', component: ConnectionsView },
     { path: '/calendar', name: 'calendar', component: CalendarView },
     { path: '/feedback', name: 'feedback', component: FeedbackView },
+    { path: '/updates', name: 'updates', component: UpdatesView },
     { path: '/legal/consent', name: 'legal-consent', component: LegalConsentView },
     { path: '/legal/:type(terms|privacy)', name: 'legal-document', component: LegalDocumentView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
