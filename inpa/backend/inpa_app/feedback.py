@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text
 
 from .auth.routes import _error, _require_session
 from .auth.service import new_public_id, verify_csrf
 from .db import get_engine
+from .mfu_notification import send_feedback_notification
 
 bp = Blueprint("feedback", __name__, url_prefix="/api/v1")
 _CATEGORIES = {"bug", "feature", "usability", "wording", "other"}
@@ -77,4 +78,18 @@ def create_feedback():
             "category": category, "message": message.strip(), "source_path": source_path,
             "user_agent": user_agent, "now": now,
         })
+    try:
+        send_feedback_notification({
+            "event_id": public_id,
+            "sender_public_id": sender["public_id"],
+            "sender_connection_id": sender["connection_id"],
+            "sender_display_name": sender["display_name"],
+            "sender_email": sender["email_normalized"],
+            "category": category,
+            "message": message.strip(),
+            "source_path": source_path,
+            "created_at": now.isoformat(),
+        })
+    except Exception:
+        current_app.logger.exception("Could not deliver feedback notification to MFU")
     return jsonify(public_id=public_id, message="フィードバックを送信しました。"), 201

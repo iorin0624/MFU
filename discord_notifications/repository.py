@@ -23,6 +23,7 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("suspicious_access", {"label": "不審アクセス監視", "description": "国外IPなどからの短時間404連続アクセス"}),
         ("paypay_payout_expiry", {"label": "PayPay受取リンク管理", "description": "受取リンクが長期間未処理の場合の警告"}),
         ("instagram_login", {"label": "Instagramログイン", "description": "取得時のログイン切れ・OTP再認証要求"}),
+        ("inpa_feedback", {"label": "INPAフィードバック", "description": "INPAで新しいフィードバックが送信された際の通知"}),
     ]
 )
 
