@@ -17,6 +17,8 @@ from .db import get_engine
 bp = Blueprint("internal_admin", __name__, url_prefix="/internal/admin/v1")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _REPORT_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
+_FEEDBACK_CATEGORIES = {"bug", "feature", "usability", "wording", "other"}
+_FEEDBACK_STATUSES = {"new", "in_progress", "resolved", "dismissed"}
 _LEGAL_TYPES = {"terms", "privacy"}
 _JST = timezone(timedelta(hours=9), "JST")
 
@@ -111,6 +113,7 @@ def summary():
             "(SELECT COUNT(*) FROM visits) AS visits_total,"
             "(SELECT COUNT(*) FROM share_tokens WHERE status='active') AS active_shares,"
             "(SELECT COUNT(*) FROM reports WHERE status IN ('open','in_progress')) AS open_reports,"
+            "(SELECT COUNT(*) FROM feedbacks WHERE status IN ('new','in_progress')) AS open_feedback,"
             "(SELECT COUNT(*) FROM mail_logs WHERE status='failed') AS failed_mail,"
             "(SELECT COUNT(*) FROM registration_invitations WHERE status IN ('active','claimed') "
             "AND expires_at>UTC_TIMESTAMP(6)) AS available_invitations,"
@@ -723,6 +726,101 @@ def update_report(public_id: str):
     except (LookupError, ValueError) as exc:
         return _mutation_error(exc)
     return jsonify(status=status)
+
+
+def _feedback_row(row) -> dict[str, object]:
+    result = _row(row)
+    created_at = row.get("created_at")
+    if isinstance(created_at, datetime):
+        result["created_at_jst"] = created_at.replace(tzinfo=UTC).astimezone(_JST).isoformat()
+    connection_id = str(row.get("sender_connection_id") or "")
+    result["sender_connection_display"] = (
+        f"{connection_id[:4]}-{connection_id[4:]}" if len(connection_id) == 8 else connection_id
+    )
+    return result
+
+
+@bp.get("/feedbacks")
+@require_admin_hmac
+def feedbacks():
+    try:
+        limit, offset = _paging()
+    except ValueError as exc:
+        return _error(str(exc))
+    status = request.args.get("status", "")
+    category = request.args.get("category", "")
+    query = request.args.get("q", "").strip()[:200]
+    if status and status not in _FEEDBACK_STATUSES:
+        return _error("Invalid feedback status.")
+    if category and category not in _FEEDBACK_CATEGORIES:
+        return _error("Invalid feedback category.")
+    with get_engine().connect() as connection:
+        rows = connection.execute(text(
+            "SELECT public_id,sender_public_id,sender_connection_id,sender_display_name,sender_email,"
+            "category,message,source_path,user_agent,status,admin_memo,handled_by,handled_at,created_at,updated_at "
+            "FROM feedbacks WHERE (:status='' OR status=:status) AND (:category='' OR category=:category) "
+            "AND (:query='' OR sender_display_name LIKE :pattern OR sender_email LIKE :pattern "
+            "OR sender_connection_id LIKE :pattern OR message LIKE :pattern) "
+            "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        ), {
+            "status": status, "category": category, "query": query, "pattern": f"%{query}%",
+            "limit": limit, "offset": offset,
+        }).mappings().all()
+    return jsonify(feedbacks=[_feedback_row(row) for row in rows])
+
+
+@bp.get("/feedbacks/<public_id>")
+@require_admin_hmac
+def feedback_detail(public_id: str):
+    with get_engine().connect() as connection:
+        row = connection.execute(text(
+            "SELECT public_id,sender_public_id,sender_connection_id,sender_display_name,sender_email,"
+            "category,message,source_path,user_agent,status,admin_memo,handled_by,handled_at,created_at,updated_at "
+            "FROM feedbacks WHERE public_id=:id"
+        ), {"id": public_id}).mappings().first()
+    if not row:
+        return _error("Feedback not found.", 404)
+    return jsonify(feedback=_feedback_row(row))
+
+
+@bp.patch("/feedbacks/<public_id>")
+@require_admin_hmac
+def update_feedback(public_id: str):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data or set(data) - {"status", "admin_memo"}:
+        return _error("Status and/or admin memo is required.")
+    status = data.get("status")
+    memo = data.get("admin_memo")
+    if status is not None and status not in _FEEDBACK_STATUSES:
+        return _error("Invalid feedback status.")
+    if memo is not None and (not isinstance(memo, str) or len(memo) > 5000):
+        return _error("Admin memo must be 5,000 characters or fewer.")
+    try:
+        with get_engine().begin() as connection:
+            key = require_idempotency(connection)
+            before = connection.execute(text(
+                "SELECT status,admin_memo,handled_by,handled_at FROM feedbacks WHERE public_id=:id FOR UPDATE"
+            ), {"id": public_id}).mappings().first()
+            if not before:
+                return _error("Feedback not found.", 404)
+            final_status = status if status is not None else before["status"]
+            final_memo = memo.strip() or None if memo is not None else before["admin_memo"]
+            handled = final_status != "new"
+            connection.execute(text(
+                "UPDATE feedbacks SET status=:status,admin_memo=:memo,handled_by=:admin,"
+                "handled_at=:handled_at,updated_at=UTC_TIMESTAMP(6) WHERE public_id=:id"
+            ), {
+                "status": final_status, "memo": final_memo,
+                "admin": request.headers["X-INPA-Admin"] if handled else None,
+                "handled_at": datetime.now(UTC).replace(tzinfo=None) if handled else None,
+                "id": public_id,
+            })
+            after = {"status": final_status, "admin_memo": final_memo}
+            write_audit(connection, action="feedback_update", target_type="feedback", target_id=public_id,
+                        before=_row(before), after=after, idempotency_key=key)
+    except (LookupError, ValueError) as exc:
+        return _mutation_error(exc)
+    return jsonify(public_id=public_id, **after)
 
 
 def _event_list(table: str, columns: str, order: str = "created_at"):

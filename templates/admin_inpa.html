@@ -6,7 +6,7 @@
     <h2>INPA管理</h2><span class="badge bg-secondary">署名付きInternal API</span>
   </div>
   <nav class="nav nav-tabs mb-4">
-    {% for key,label in [('dashboard','概要'),('users','利用者'),('invitations','招待'),('visits','予定'),('reports','通報'),('seasons','シーズン'),('legal','法務文書'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
+    {% for key,label in [('dashboard','概要'),('users','利用者'),('invitations','招待'),('visits','予定'),('reports','通報'),('feedback','フィードバック'),('seasons','シーズン'),('legal','法務文書'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
       <a class="nav-link {% if section==key %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}</a>
     {% endfor %}
   </nav>
@@ -125,6 +125,34 @@
     {% else %}
       <p class="text-muted">シーズンを作成すると、その中に禁止・注意期間を設定できます。</p>
     {% endfor %}
+
+  {% elif section == 'feedback' %}
+    <form class="row g-2 mb-4" method="get">
+      <div class="col-md-4"><input class="form-control" name="q" value="{{request.args.get('q','')}}" placeholder="表示名・メール・ID・内容を検索"></div>
+      <div class="col-md-3"><select class="form-select" name="category"><option value="">全項目</option>{% for value,label in [('bug','不具合・エラー'),('feature','機能の要望'),('usability','操作性・使いやすさ'),('wording','文言・表示'),('other','その他')] %}<option value="{{value}}" {% if request.args.get('category')==value %}selected{% endif %}>{{label}}</option>{% endfor %}</select></div>
+      <div class="col-md-3"><select class="form-select" name="status"><option value="">全対応状況</option>{% for value,label in [('new','未対応'),('in_progress','対応中'),('resolved','対応済み'),('dismissed','対応不要')] %}<option value="{{value}}" {% if request.args.get('status')==value %}selected{% endif %}>{{label}}</option>{% endfor %}</select></div>
+      <div class="col-md-2"><button class="btn btn-outline-primary w-100">絞り込み</button></div>
+    </form>
+    {% for row in data %}
+      <section class="card mb-3">
+        <div class="card-header d-flex flex-wrap justify-content-between gap-2">
+          <strong>{{ {'bug':'不具合・エラー','feature':'機能の要望','usability':'操作性・使いやすさ','wording':'文言・表示','other':'その他'}.get(row.category,row.category) }}</strong>
+          <span>{{ {'new':'未対応','in_progress':'対応中','resolved':'対応済み','dismissed':'対応不要'}.get(row.status,row.status) }} / {{ row.created_at_jst }}</span>
+        </div>
+        <div class="card-body">
+          <dl class="row small">
+            <dt class="col-md-2">送信者</dt><dd class="col-md-10">{{row.sender_display_name}} / {{row.sender_connection_display}} / {{row.sender_email}}</dd>
+            <dt class="col-md-2">利用者ID</dt><dd class="col-md-10"><code>{{row.sender_public_id}}</code></dd>
+            <dt class="col-md-2">送信元</dt><dd class="col-md-10">{{row.source_path or '—'}}</dd>
+            <dt class="col-md-2">ブラウザー</dt><dd class="col-md-10 text-break">{{row.user_agent or '—'}}</dd>
+          </dl>
+          <h4 class="h6">内容</h4><p class="border rounded p-3 bg-light" style="white-space:pre-wrap">{{row.message}}</p>
+          <form method="post" action="{{url_for('inpa_admin.update_feedback',public_id=row.public_id)}}">
+            <div class="row g-2 align-items-end"><div class="col-md-3"><label class="form-label">対応状況<select class="form-select" name="status">{% for value,label in [('new','未対応'),('in_progress','対応中'),('resolved','対応済み'),('dismissed','対応不要')] %}<option value="{{value}}" {% if row.status==value %}selected{% endif %}>{{label}}</option>{% endfor %}</select></label></div><div class="col-md-7"><label class="form-label w-100">管理メモ<textarea class="form-control" name="admin_memo" maxlength="5000" rows="2">{{row.admin_memo or ''}}</textarea></label></div><div class="col-md-2"><button class="btn btn-primary w-100">更新</button></div></div>
+          </form>
+        </div>
+      </section>
+    {% else %}<p class="text-muted">該当するフィードバックはありません。</p>{% endfor %}
 
   {% elif section == 'legal' %}
     <div class="alert alert-warning">公開済み文書は改変できません。変更する場合は新しい版を下書きとして作成し、プレビュー後に公開してください。</div>

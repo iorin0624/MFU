@@ -12,6 +12,7 @@ import ConnectionsView from '@/views/ConnectionsView.vue'
 import CalendarView from '@/views/CalendarView.vue'
 import LegalDocumentView from '@/views/LegalDocumentView.vue'
 import LegalConsentView from '@/views/LegalConsentView.vue'
+import FeedbackView from '@/views/FeedbackView.vue'
 import { api } from '@/lib/api'
 
 const router = createRouter({
@@ -27,6 +28,7 @@ const router = createRouter({
     { path: '/share/:token', name: 'shared', component: SharedView },
     { path: '/connections', name: 'connections', component: ConnectionsView },
     { path: '/calendar', name: 'calendar', component: CalendarView },
+    { path: '/feedback', name: 'feedback', component: FeedbackView },
     { path: '/legal/consent', name: 'legal-consent', component: LegalConsentView },
     { path: '/legal/:type(terms|privacy)', name: 'legal-document', component: LegalDocumentView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
