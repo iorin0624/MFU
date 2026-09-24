@@ -7,7 +7,7 @@
   </div>
   <nav class="nav nav-tabs mb-4">
     {% for key,label in [('dashboard','概要'),('users','利用者'),('invitations','招待'),('visits','予定'),('reports','通報'),('feedback','フィードバック'),('seasons','シーズン'),('legal','法務文書'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
-      <a class="nav-link {% if section==key %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}</a>
+      <a class="nav-link {% if section==key %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}{% if key=='feedback' and feedback_badge_count|default(0)|int > 0 %} <span class="badge rounded-pill bg-danger">{{ feedback_badge_count }}</span>{% endif %}</a>
     {% endfor %}
   </nav>
   {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
