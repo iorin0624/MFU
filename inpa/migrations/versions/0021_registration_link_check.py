@@ -1,13 +1,13 @@
 """Publish registration link validation.
 
-Revision ID: 0021_registration_link_validation
+Revision ID: 0021_registration_link_check
 Revises: 0020_onboarding_privacy_defaults
 Create Date: 2026-09-25
 """
 
 from alembic import op
 
-revision = "0021_registration_link_validation"
+revision = "0021_registration_link_check"
 down_revision = "0020_onboarding_privacy_defaults"
 branch_labels = None
 depends_on = None
@@ -20,7 +20,9 @@ def upgrade() -> None:
         "VALUES ('T6JQD9VN45KCP6715RE6G83EKG','1.3.2',1,3,2,'fix',"
         "'使用済み登録リンクを無効化',"
         "'メールアドレス確認後に使用した登録リンクを再度開いても、登録フォームを表示しないようにしました。',"
-        "'published','system','system',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))"
+        "'published','system','system',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) "
+        "ON DUPLICATE KEY UPDATE title=VALUES(title),content_markdown=VALUES(content_markdown),"
+        "status=VALUES(status),updated_at=UTC_TIMESTAMP(6)"
     )
 
 
