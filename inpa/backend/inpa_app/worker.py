@@ -19,34 +19,73 @@ logger = logging.getLogger(__name__)
 
 def _deliver_one() -> bool:
     with get_engine().begin() as connection:
-        row = connection.execute(
-            text(
-                "SELECT id, recipient_ciphertext, template_data_ciphertext FROM mail_logs "
-                "WHERE status IN ('queued', 'retry_wait') AND (next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP(6)) "
-                "ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
+        row = (
+            connection.execute(
+                text(
+                    "SELECT id,mail_type,recipient_ciphertext,template_data_ciphertext FROM mail_logs "
+                    "WHERE status IN ('queued', 'retry_wait') AND (next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP(6)) "
+                    "ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if not row:
             return False
-        connection.execute(text("UPDATE mail_logs SET status = 'sending', attempt_count = attempt_count + 1 WHERE id = :id"), {"id": row["id"]})
+        connection.execute(
+            text(
+                "UPDATE mail_logs SET status = 'sending', attempt_count = attempt_count + 1 WHERE id = :id"
+            ),
+            {"id": row["id"]},
+        )
     try:
-        recipient, template = decrypt_mail(row["recipient_ciphertext"], row["template_data_ciphertext"])
+        recipient, template = decrypt_mail(
+            row["recipient_ciphertext"], row["template_data_ciphertext"]
+        )
         message = EmailMessage()
         message["From"] = current_app.config["MAIL_FROM"]
         message["To"] = recipient
-        message["Subject"] = "INPA メールアドレスの確認"
-        message.set_content(f"次のリンクから登録を完了してください。\n\n{template['registration_url']}\n")
-        with smtplib.SMTP(current_app.config["SMTP_HOST"], current_app.config["SMTP_PORT"], timeout=15) as client:
+        if row["mail_type"] == "security_notification":
+            labels = {
+                "password_changed": "パスワードが変更されました",
+                "passkey_added": "パスキーが追加されました",
+                "passkey_removed": "パスキーが削除されました",
+            }
+            label = labels.get(template.get("event"), "セキュリティ設定が変更されました")
+            message["Subject"] = f"INPA {label}"
+            message.set_content(
+                f"{label}。\n\n心当たりがない場合は、速やかに運営へお問い合わせください。\n"
+            )
+        else:
+            message["Subject"] = "INPA メールアドレスの確認"
+            message.set_content(
+                f"次のリンクから登録を完了してください。\n\n{template['registration_url']}\n"
+            )
+        with smtplib.SMTP(
+            current_app.config["SMTP_HOST"], current_app.config["SMTP_PORT"], timeout=15
+        ) as client:
             client.starttls()
             if current_app.config["SMTP_USERNAME"]:
-                client.login(current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"])
+                client.login(
+                    current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"]
+                )
             client.send_message(message)
         with get_engine().begin() as connection:
-            connection.execute(text("UPDATE mail_logs SET status = 'sent', sent_at = UTC_TIMESTAMP(6), recipient_ciphertext = NULL, template_data_ciphertext = NULL WHERE id = :id"), {"id": row["id"]})
+            connection.execute(
+                text(
+                    "UPDATE mail_logs SET status = 'sent', sent_at = UTC_TIMESTAMP(6), recipient_ciphertext = NULL, template_data_ciphertext = NULL WHERE id = :id"
+                ),
+                {"id": row["id"]},
+            )
     except Exception as exc:
         logger.exception("mail delivery failed")
         with get_engine().begin() as connection:
-            connection.execute(text("UPDATE mail_logs SET status = 'retry_wait', next_attempt_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 5 MINUTE), last_error_code = :error WHERE id = :id"), {"error": type(exc).__name__[:64], "id": row["id"]})
+            connection.execute(
+                text(
+                    "UPDATE mail_logs SET status = 'retry_wait', next_attempt_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 5 MINUTE), last_error_code = :error WHERE id = :id"
+                ),
+                {"error": type(exc).__name__[:64], "id": row["id"]},
+            )
     return True
 
 

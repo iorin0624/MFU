@@ -7,6 +7,17 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from ..mail_queue import queue_registration_email
+from .security import (
+    SecuritySettingsError,
+    begin_passkey_authentication,
+    begin_passkey_registration,
+    change_password,
+    finish_passkey_authentication,
+    finish_passkey_registration,
+    list_passkeys,
+    remove_passkey,
+    rename_passkey,
+)
 from .service import (
     AuthenticationError,
     RegistrationError,
@@ -73,8 +84,20 @@ def _set_session_cookies(response, token: str, csrf_secret: str, remember: bool)
 
 def _clear_session_cookies(response) -> None:
     secure = current_app.config["ENVIRONMENT"] == "production"
-    response.delete_cookie(current_app.config["SESSION_COOKIE_NAME"], path="/", secure=secure, httponly=True, samesite="Lax")
-    response.delete_cookie(current_app.config["CSRF_COOKIE_NAME"], path="/", secure=secure, httponly=False, samesite="Lax")
+    response.delete_cookie(
+        current_app.config["SESSION_COOKIE_NAME"],
+        path="/",
+        secure=secure,
+        httponly=True,
+        samesite="Lax",
+    )
+    response.delete_cookie(
+        current_app.config["CSRF_COOKIE_NAME"],
+        path="/",
+        secure=secure,
+        httponly=False,
+        samesite="Lax",
+    )
 
 
 def _require_session(*, enforce_legal: bool = True):
@@ -85,12 +108,22 @@ def _require_session(*, enforce_legal: bool = True):
     if enforce_legal:
         from ..db import get_engine
         from ..legal import missing_consents
+
         with get_engine().connect() as connection:
             missing = missing_consents(connection, int(session["user_id"]))
         if missing:
             return None, _error(
                 "legal_consent_required", "更新された利用規約等への同意が必要です。", 428
             )
+    return session, None
+
+
+def _require_mutation():
+    session, error = _require_session()
+    if error:
+        return None, error
+    if not verify_csrf(session, request.headers.get("X-CSRF-Token")):
+        return None, _error("csrf_failed", "Your request could not be verified.", 403)
     return session, None
 
 
@@ -109,9 +142,14 @@ def register_request():
     try:
         payload = _payload()
         if not _verify_turnstile(payload.get("turnstile_token")):
-            return _error("verification_failed", "We could not verify your request. Please try again.", 400)
+            return _error(
+                "verification_failed", "We could not verify your request. Please try again.", 400
+            )
         created = create_registration_request(
-            payload.get("invitation_token"), payload.get("email"), _client_ip(), request.user_agent.string
+            payload.get("invitation_token"),
+            payload.get("email"),
+            _client_ip(),
+            request.user_agent.string,
         )
         if created:
             queue_registration_email(*created)
@@ -129,7 +167,9 @@ def register_complete():
     except RegistrationError as exc:
         return _error("registration_invalid", str(exc), 400)
     except IntegrityError:
-        return _error("registration_duplicate", "メールアドレスまたはSNS IDはすでに登録されています。", 409)
+        return _error(
+            "registration_duplicate", "メールアドレスまたはSNS IDはすでに登録されています。", 409
+        )
     response = jsonify(message="Registration complete.")
     _set_session_cookies(response, token, csrf_secret, remember=True)
     return response, 201
@@ -140,9 +180,14 @@ def resend_registration_email():
     try:
         payload = _payload()
         if not _verify_turnstile(payload.get("turnstile_token")):
-            return _error("verification_failed", "We could not verify your request. Please try again.", 400)
+            return _error(
+                "verification_failed", "We could not verify your request. Please try again.", 400
+            )
         created = create_registration_request(
-            payload.get("invitation_token"), payload.get("email"), _client_ip(), request.user_agent.string
+            payload.get("invitation_token"),
+            payload.get("email"),
+            _client_ip(),
+            request.user_agent.string,
         )
         if created:
             queue_registration_email(*created)
@@ -155,11 +200,132 @@ def resend_registration_email():
 def login():
     try:
         payload = _payload()
-        _, token, csrf_secret = authenticate(payload.get("email"), payload.get("password"), bool(payload.get("remember", False)))
+        _, token, csrf_secret = authenticate(
+            payload.get("email"), payload.get("password"), bool(payload.get("remember", False))
+        )
     except (RegistrationError, AuthenticationError):
         return _error("login_failed", "Invalid email address or password.", 401)
     response = jsonify(message="Signed in.")
-    _set_session_cookies(response, token, csrf_secret, remember=bool(payload.get("remember", False)))
+    _set_session_cookies(
+        response, token, csrf_secret, remember=bool(payload.get("remember", False))
+    )
+    return response
+
+
+@bp.patch("/password")
+def password_change():
+    session, error = _require_mutation()
+    if error:
+        return error
+    try:
+        payload = _payload()
+        change_password(
+            int(session["user_id"]),
+            payload.get("current_password"),
+            payload.get("new_password"),
+            _client_ip(),
+            request.user_agent.string,
+        )
+    except (RegistrationError, SecuritySettingsError) as exc:
+        return _error("password_change_failed", str(exc), 400)
+    response = jsonify(message="Password changed. Sign in again.")
+    _clear_session_cookies(response)
+    return response
+
+
+@bp.get("/passkeys")
+def passkeys():
+    session, error = _require_session()
+    if error:
+        return error
+    return jsonify(passkeys=list_passkeys(int(session["user_id"])))
+
+
+@bp.post("/passkeys/registration/options")
+def passkey_registration_options():
+    session, error = _require_mutation()
+    if error:
+        return error
+    try:
+        return jsonify(
+            begin_passkey_registration(int(session["user_id"]), _payload().get("password"))
+        )
+    except SecuritySettingsError as exc:
+        return _error("passkey_registration_failed", str(exc), 400)
+
+
+@bp.post("/passkeys/registration/complete")
+def passkey_registration_complete():
+    session, error = _require_mutation()
+    if error:
+        return error
+    try:
+        payload = _payload()
+        created = finish_passkey_registration(
+            int(session["user_id"]),
+            payload.get("challenge_id"),
+            payload.get("credential"),
+            payload.get("name"),
+            _client_ip(),
+            request.user_agent.string,
+        )
+        return jsonify(passkey=created), 201
+    except SecuritySettingsError as exc:
+        return _error("passkey_registration_failed", str(exc), 400)
+
+
+@bp.patch("/passkeys/<public_id>")
+def passkey_rename(public_id: str):
+    session, error = _require_mutation()
+    if error:
+        return error
+    try:
+        rename_passkey(int(session["user_id"]), public_id, _payload().get("name"))
+        return jsonify(message="Passkey renamed.")
+    except SecuritySettingsError as exc:
+        return _error("passkey_update_failed", str(exc), 400)
+
+
+@bp.delete("/passkeys/<public_id>")
+def passkey_remove(public_id: str):
+    session, error = _require_mutation()
+    if error:
+        return error
+    try:
+        remove_passkey(
+            int(session["user_id"]),
+            public_id,
+            _payload().get("password"),
+            _client_ip(),
+            request.user_agent.string,
+        )
+        return jsonify(message="Passkey removed.")
+    except SecuritySettingsError as exc:
+        return _error("passkey_remove_failed", str(exc), 400)
+
+
+@bp.post("/passkeys/authentication/options")
+def passkey_authentication_options():
+    return jsonify(begin_passkey_authentication())
+
+
+@bp.post("/passkeys/authentication/complete")
+def passkey_authentication_complete():
+    try:
+        payload = _payload()
+        _, token, csrf_secret = finish_passkey_authentication(
+            payload.get("challenge_id"),
+            payload.get("credential"),
+            bool(payload.get("remember", False)),
+            _client_ip(),
+            request.user_agent.string,
+        )
+    except (RegistrationError, SecuritySettingsError):
+        return _error("passkey_login_failed", "パスキーでログインできませんでした。", 401)
+    response = jsonify(message="Signed in.")
+    _set_session_cookies(
+        response, token, csrf_secret, remember=bool(payload.get("remember", False))
+    )
     return response
 
 
@@ -184,11 +350,14 @@ def me():
         return error
     from ..db import get_engine
     from ..legal import missing_consents
+
     with get_engine().connect() as connection:
         missing = missing_consents(connection, int(session["user_id"]))
-    return jsonify(user={
-        "public_id": session["public_id"],
-        "connection_id": session["connection_id"],
-        "display_name": session["display_name"],
-        "legal_consent_required": bool(missing),
-    })
+    return jsonify(
+        user={
+            "public_id": session["public_id"],
+            "connection_id": session["connection_id"],
+            "display_name": session["display_name"],
+            "legal_consent_required": bool(missing),
+        }
+    )
