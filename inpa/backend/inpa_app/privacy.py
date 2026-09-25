@@ -20,6 +20,19 @@ def empty_matrix() -> dict[str, dict[str, bool]]:
     return {audience: {field: False for field in PUBLIC_FIELDS} for audience in AUDIENCES}
 
 
+def recommended_matrix() -> dict[str, dict[str, bool]]:
+    """Return the privacy defaults shown during first-time setup."""
+    matrix = empty_matrix()
+    for field in ("date", "park"):
+        matrix["link"][field] = True
+    for field in ("date", "park", "costume"):
+        matrix["logged_in"][field] = True
+    for audience in ("mutual", "private"):
+        for field in PUBLIC_FIELDS:
+            matrix[audience][field] = True
+    return matrix
+
+
 def matrix_from_rows(rows: Iterable[Mapping[str, object]]) -> dict[str, dict[str, bool]]:
     matrix = empty_matrix()
     for row in rows:
@@ -116,9 +129,4 @@ def save_matrix(
 
 
 def create_default_matrix(connection, user_id: int) -> None:
-    matrix = empty_matrix()
-    matrix["link"]["date"] = True
-    matrix["link"]["park"] = True
-    for field in PUBLIC_FIELDS:
-        matrix["private"][field] = True
-    save_matrix(connection, user_id, matrix)
+    save_matrix(connection, user_id, recommended_matrix())
