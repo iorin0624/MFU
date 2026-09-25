@@ -7,13 +7,78 @@
   </div>
   <nav class="nav nav-tabs mb-4">
     {% for key,label in [('dashboard','概要'),('users','利用者'),('invitations','招待'),('visits','予定'),('reports','通報'),('feedback','フィードバック'),('updates','アップデート'),('seasons','シーズン'),('legal','法務文書'),('security','セキュリティ'),('mail','メール'),('audit','監査')] %}
-      <a class="nav-link {% if section==key %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}{% if key=='feedback' and feedback_badge_count|default(0)|int > 0 %} <span class="badge rounded-pill bg-danger">{{ feedback_badge_count }}</span>{% endif %}</a>
+      <a class="nav-link {% if section==key or (section=='user_detail' and key=='users') %}active{% endif %}" href="{{ url_for('inpa_admin.index', section=key) }}">{{ label }}{% if key=='feedback' and feedback_badge_count|default(0)|int > 0 %} <span class="badge rounded-pill bg-danger">{{ feedback_badge_count }}</span>{% endif %}</a>
     {% endfor %}
   </nav>
   {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
 
   {% if section == 'dashboard' %}
     <div class="row g-3">{% for key,value in data.items() %}<div class="col-6 col-lg-3"><div class="card"><div class="card-body"><small class="text-muted">{{ key }}</small><div class="fs-3">{{ value }}</div></div></div></div>{% endfor %}</div>
+
+  {% elif section == 'users' %}
+    <form class="row g-2 mb-3">
+      <div class="col-md-5"><input class="form-control" name="q" value="{{request.args.get('q','')}}" placeholder="表示名・メール・利用者IDを検索"></div>
+      <div class="col-md-3"><select class="form-select" name="status"><option value="">全状態</option>{% for value,label in [('pending','確認待ち'),('active','有効'),('suspended','停止中'),('deletion_pending','退会予定'),('deleted','削除済み')] %}<option value="{{value}}" {% if request.args.get('status')==value %}selected{% endif %}>{{label}}</option>{% endfor %}</select></div>
+      <div class="col-md-2"><button class="btn btn-outline-primary w-100">絞り込み</button></div>
+    </form>
+    <div class="table-responsive"><table class="table table-sm table-striped align-middle">
+      <thead><tr><th>表示名</th><th>メール</th><th>状態</th><th>メール確認</th><th>登録日時</th><th>更新日時</th><th>操作</th></tr></thead>
+      <tbody>{% for row in data %}<tr>
+        <td><a href="{{url_for('inpa_admin.user_detail',public_id=row.public_id)}}"><strong>{{row.display_name or '（未設定）'}}</strong></a><br><code class="small">{{row.public_id}}</code></td>
+        <td>{{row.email}}</td>
+        <td>{{{'pending':'確認待ち','active':'有効','suspended':'停止中','deletion_pending':'退会予定','deleted':'削除済み'}.get(row.status,row.status)}}</td>
+        <td>{{'確認済み' if row.email_verified_at else '未確認'}}</td>
+        <td>{{row.created_at|inpa_jst}}</td><td>{{row.updated_at|inpa_jst}}</td>
+        <td><form method="post" action="{{url_for('inpa_admin.action')}}" class="d-flex gap-1"><input type="hidden" name="target" value="{{row.public_id}}"><button class="btn btn-sm btn-warning" name="action" value="suspend">停止</button><button class="btn btn-sm btn-success" name="action" value="unsuspend">解除</button><button class="btn btn-sm btn-secondary" name="action" value="logout_all">全ログアウト</button></form></td>
+      </tr>{% else %}<tr><td colspan="7" class="text-muted">該当する利用者はいません。</td></tr>{% endfor %}</tbody>
+    </table></div>
+
+  {% elif section == 'user_detail' %}
+    {% set user = data.user %}
+    {% set audience_labels = {'link':'共有リンク','logged_in':'ログイン利用者','mutual':'相互登録','private':'自分のみ'} %}
+    {% set field_labels = {'date':'日付','park':'パーク','costume':'服装','memo':'メモ'} %}
+    <p><a href="{{url_for('inpa_admin.index',section='users')}}">← 利用者一覧へ戻る</a></p>
+    {% if user %}
+      <div class="card mb-4"><div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between gap-2 mb-3"><h3 class="h4 mb-0">{{user.display_name or '（表示名未設定）'}}</h3><span class="badge bg-secondary align-self-start">読み取り専用</span></div>
+        <dl class="row mb-0">
+          <dt class="col-md-3">メールアドレス</dt><dd class="col-md-9">{{user.email}}</dd>
+          <dt class="col-md-3">つながりID</dt><dd class="col-md-9"><code>{{user.connection_id[:4]}}-{{user.connection_id[4:]}}</code></dd>
+          <dt class="col-md-3">利用者ID</dt><dd class="col-md-9"><code>{{user.public_id}}</code></dd>
+          <dt class="col-md-3">X / Instagram</dt><dd class="col-md-9">{{user.x_handle or '—'}} / {{user.instagram_handle or '—'}}</dd>
+          <dt class="col-md-3">状態・メール確認</dt><dd class="col-md-9">{{{'pending':'確認待ち','active':'有効','suspended':'停止中','deletion_pending':'退会予定','deleted':'削除済み'}.get(user.status,user.status)}} / {{'確認済み' if user.email_verified_at else '未確認'}}</dd>
+          <dt class="col-md-3">登録・更新日時</dt><dd class="col-md-9">{{user.created_at|inpa_jst}} / {{user.updated_at|inpa_jst}}</dd>
+        </dl>
+      </div></div>
+      <div class="alert alert-info">管理上の確認用画面です。利用者の公開範囲にかかわらず、服装・メモを含む予定の全項目を表示しています。この画面から設定や予定は変更できません。</div>
+      <h3 class="h5 mb-3">シーズン別の公開範囲・予定</h3>
+      {% for season in data.seasons %}
+        <details class="card mb-3" {% if loop.first %}open{% endif %}>
+          <summary class="card-header d-flex flex-wrap justify-content-between gap-2" style="cursor:pointer">
+            <strong>{{season.name}}（{{season.start_date|inpa_jst}} 〜 {{season.end_date|inpa_jst}}）</strong>
+            <span><span class="badge {{'bg-primary' if season.customized else 'bg-secondary'}}">{{'シーズン専用設定' if season.customized else '標準設定を継承'}}</span> <span class="badge {{'bg-success' if season.is_active else 'bg-secondary'}}">{{'有効' if season.is_active else '無効'}}</span></span>
+          </summary>
+          <div class="card-body">
+            <h4 class="h6">公開範囲設定</h4>
+            <div class="table-responsive mb-4"><table class="table table-sm table-bordered align-middle text-center">
+              <thead><tr><th class="text-start">公開範囲</th><th>すべて</th>{% for field in ['date','park','costume','memo'] %}<th>{{field_labels[field]}}</th>{% endfor %}<th class="text-start">実際に公開される項目</th></tr></thead>
+              <tbody>{% for audience in ['link','logged_in','mutual','private'] %}{% set selected = season.privacy_matrix[audience] %}<tr>
+                <th class="text-start">{{audience_labels[audience]}}</th>
+                <td>{{'✓' if selected.date and selected.park and selected.costume and selected.memo else '—'}}</td>
+                {% for field in ['date','park','costume','memo'] %}<td>{{'✓' if selected[field] else '—'}}</td>{% endfor %}
+                <td class="text-start">{% for field in season.effective_fields[audience] %}<span class="badge bg-light text-dark border me-1">{{field_labels[field]}}</span>{% else %}<span class="text-muted">なし</span>{% endfor %}</td>
+              </tr>{% endfor %}</tbody>
+            </table></div>
+            <h4 class="h6">登録予定（全項目）</h4>
+            <div class="table-responsive"><table class="table table-sm table-striped align-middle">
+              <thead><tr><th>日付</th><th>パーク</th><th>到着時刻</th><th>服装</th><th>メモ</th><th>登録日時</th><th>更新日時</th></tr></thead>
+              <tbody>{% for visit in season.visits %}<tr><td>{{visit.visit_date|inpa_jst}}</td><td>{{{'land':'🏰TDL','sea':'🌍TDS','both':'🏰TDL・🌍TDS','undecided':'未定'}.get(visit.park,visit.park)}}</td><td>{{visit.arrival_time or '—'}}</td><td style="white-space:pre-wrap">{{visit.costume or '—'}}</td><td style="white-space:pre-wrap">{{visit.memo or '—'}}</td><td>{{visit.created_at|inpa_jst}}</td><td>{{visit.updated_at|inpa_jst}}</td></tr>{% else %}<tr><td colspan="7" class="text-muted">このシーズンの予定はありません。</td></tr>{% endfor %}</tbody>
+            </table></div>
+          </div>
+        </details>
+      {% else %}<p class="text-muted">シーズンはありません。</p>{% endfor %}
+      <details class="card mt-4"><summary class="card-header" style="cursor:pointer"><strong>ログインセッション（{{data.sessions|length}}件）</strong></summary><div class="card-body"><div class="table-responsive"><table class="table table-sm"><thead><tr><th>セッションID</th><th>開始</th><th>最終利用</th><th>期限</th><th>失効</th><th>理由</th></tr></thead><tbody>{% for row in data.sessions %}<tr><td><code>{{row.public_id}}</code></td><td>{{row.created_at|inpa_jst}}</td><td>{{row.last_seen_at|inpa_jst}}</td><td>{{row.expires_at|inpa_jst}}</td><td>{{row.revoked_at|inpa_jst}}</td><td>{{row.revoke_reason or '—'}}</td></tr>{% else %}<tr><td colspan="6" class="text-muted">セッションはありません。</td></tr>{% endfor %}</tbody></table></div></div></details>
+    {% endif %}
 
   {% elif section == 'invitations' %}
     {% set invitations = data.invitations %}

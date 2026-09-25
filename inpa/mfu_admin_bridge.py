@@ -250,6 +250,21 @@ def index(section: str = "dashboard"):
     )
 
 
+@inpa_admin_bp.get("/admin/inpa/users/<public_id>")
+@_admin_required
+def user_detail(public_id: str):
+    try:
+        data = call_inpa("GET", f"/internal/admin/v1/users/{public_id}")
+        error = None
+    except (OSError, RuntimeError, ValueError) as exc:
+        data = {"user": {}, "seasons": [], "sessions": []}
+        error = str(exc)
+    return render_template(
+        "admin_inpa.html", section="user_detail", data=data, error=error,
+        invite_result=None, feedback_badge_count=_open_feedback_count(),
+    )
+
+
 @inpa_admin_bp.post("/admin/inpa/invitations")
 @_admin_required
 def create_invitation():
