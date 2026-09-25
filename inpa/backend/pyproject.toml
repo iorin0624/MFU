@@ -10,13 +10,14 @@ requires-python = ">=3.12,<3.15"
 dependencies = [
   "alembic>=1.14,<2",
   "argon2-cffi>=23.1,<26",
-  "cryptography>=44,<47",
+  "cryptography>=49,<50",
   "Flask>=3.1,<4",
   "gunicorn>=23,<24",
   "PyMySQL>=1.1,<2",
   "segno>=1.6,<2",
   "SQLAlchemy>=2.0,<2.1",
   "httpx>=0.28,<1",
+  "webauthn>=3,<4",
 ]
 
 [project.optional-dependencies]

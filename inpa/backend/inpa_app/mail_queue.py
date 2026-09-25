@@ -27,7 +27,9 @@ def queue_registration_email(recipient: str, registration_token: str) -> None:
     cipher = _cipher()
     recipient_ciphertext = cipher.encrypt(recipient.encode("utf-8"))
     template_ciphertext = cipher.encrypt(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    idempotency_key = hashlib.sha256(f"registration:{hash_secret(registration_token)}".encode()).hexdigest()
+    idempotency_key = hashlib.sha256(
+        f"registration:{hash_secret(registration_token)}".encode()
+    ).hexdigest()
     with get_engine().begin() as connection:
         connection.execute(
             text(
@@ -45,7 +47,34 @@ def queue_registration_email(recipient: str, registration_token: str) -> None:
         )
 
 
-def decrypt_mail(recipient_ciphertext: bytes, template_ciphertext: bytes) -> tuple[str, dict[str, str]]:
+def queue_security_email(recipient: str, user_id: int, event: str, event_id: str) -> None:
+    payload = {"event": event}
+    cipher = _cipher()
+    recipient_ciphertext = cipher.encrypt(recipient.encode("utf-8"))
+    template_ciphertext = cipher.encrypt(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    idempotency_key = hashlib.sha256(f"security:{event}:{event_id}".encode()).hexdigest()
+    with get_engine().begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO mail_logs "
+                "(public_id,user_id,mail_type,recipient_hash,recipient_ciphertext,"
+                "template_data_ciphertext,idempotency_key) VALUES "
+                "(:public_id,:user_id,'security_notification',:recipient_hash,:recipient,:template,:idempotency)"
+            ),
+            {
+                "public_id": new_public_id(),
+                "user_id": user_id,
+                "recipient_hash": hash_secret(recipient.casefold()),
+                "recipient": recipient_ciphertext,
+                "template": template_ciphertext,
+                "idempotency": idempotency_key,
+            },
+        )
+
+
+def decrypt_mail(
+    recipient_ciphertext: bytes, template_ciphertext: bytes
+) -> tuple[str, dict[str, str]]:
     cipher = _cipher()
     recipient = cipher.decrypt(recipient_ciphertext).decode("utf-8")
     template = json.loads(cipher.decrypt(template_ciphertext).decode("utf-8"))

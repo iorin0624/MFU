@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import Flask
 
@@ -24,11 +25,13 @@ def apply_settings(
     production = environment == "production"
     root_dir = Path(__file__).resolve().parents[2]
     session_secret = _required("INPA_SESSION_SECRET", production=production)
+    public_origin = os.environ.get("INPA_PUBLIC_ORIGIN", "http://localhost:5173")
+    webauthn_rp_id = os.environ.get("INPA_WEBAUTHN_RP_ID") or urlsplit(public_origin).hostname
 
     app.config.from_mapping(
         APP_ROLE=role,
         ENVIRONMENT=environment,
-        PUBLIC_ORIGIN=os.environ.get("INPA_PUBLIC_ORIGIN", "http://localhost:5173"),
+        PUBLIC_ORIGIN=public_origin,
         DATABASE_URL=_required("INPA_DATABASE_URL", production=production),
         SECRET_KEY=session_secret,
         TOKEN_PEPPER=_required("INPA_TOKEN_PEPPER", production=production),
@@ -49,6 +52,10 @@ def apply_settings(
         REGISTRATION_TTL_SECONDS=86400,
         SESSION_IDLE_DAYS=30,
         SESSION_ABSOLUTE_DAYS=90,
+        WEBAUTHN_RP_ID=webauthn_rp_id,
+        WEBAUTHN_RP_NAME=os.environ.get("INPA_WEBAUTHN_RP_NAME", "INPA"),
+        WEBAUTHN_ORIGIN=os.environ.get("INPA_WEBAUTHN_ORIGIN", public_origin),
+        WEBAUTHN_CHALLENGE_TTL_SECONDS=300,
         FRONTEND_DIST=root_dir / "frontend" / "dist",
         JSON_SORT_KEYS=False,
     )

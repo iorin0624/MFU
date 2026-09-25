@@ -132,6 +132,12 @@ body {
 .privacy-table th span, .privacy-table th small { display: block; }
 .privacy-table th small { margin-top: .2rem; color: #665b55; font-weight: 400; }
 .privacy-table input { width: 1.15rem; height: 1.15rem; accent-color: var(--color-accent); }
+.security-settings { border: 1px solid #eadfd7; border-radius: 14px; background: #fffaf6; overflow: hidden; }
+.security-settings summary { cursor: pointer; padding: 1rem; display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.security-settings summary span { color: #665b55; font-size: .9rem; font-weight: 400; }
+.security-settings-body { padding: 0 1rem 1rem; }
+.passkey-list { display: grid; gap: .75rem; }
+.passkey-card { border: 1px solid #eadfd7; border-radius: 12px; padding: 1rem; background: white; }
 
 .welcome {
   margin-top: 20vh;
