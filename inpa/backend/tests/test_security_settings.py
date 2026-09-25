@@ -71,9 +71,10 @@ def app(monkeypatch):
         )
         connection.execute(
             text(
-                "CREATE TABLE user_security_events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "public_id VARCHAR(26),user_id INTEGER,event_type VARCHAR(48),target_public_id VARCHAR(26),"
-                "ip_address BLOB,user_agent VARCHAR(512),created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+                "CREATE TABLE security_events (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,"
+                "event_type VARCHAR(64),severity VARCHAR(16),result VARCHAR(16),ip_address BLOB,"
+                "user_agent VARCHAR(512),correlation_id VARCHAR(36),metadata_json TEXT,"
+                "created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
             )
         )
         connection.execute(
@@ -113,7 +114,7 @@ def test_password_change_rehashes_password_and_revokes_every_session(app):
                 .one()
             )
             event = connection.execute(
-                text("SELECT event_type FROM user_security_events WHERE user_id=1")
+                text("SELECT event_type FROM security_events WHERE user_id=1")
             ).scalar_one()
         assert security._PASSWORDS.verify(user["password_hash"], "new-secure-password")
         assert session["revoked_at"] is not None
