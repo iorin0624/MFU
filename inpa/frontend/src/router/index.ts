@@ -49,10 +49,11 @@ router.beforeEach(async (to) => {
       return { path: '/legal/consent', query: { next: to.fullPath }, replace: true }
     }
     const onboarding = await api<{ required: boolean }>('/onboarding')
-    if (onboarding.required && to.path !== '/onboarding' && to.path !== '/register/complete') {
+    if (onboarding.required && to.path !== '/onboarding') {
       return { path: '/onboarding', replace: true }
     }
     if (!onboarding.required && to.path === '/onboarding') return { path: '/', replace: true }
+    if (!onboarding.required && to.path === '/register/complete') return { path: '/', replace: true }
   } catch {
     // Public routes and each protected API retain their existing authentication handling.
   }

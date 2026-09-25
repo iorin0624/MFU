@@ -101,6 +101,47 @@ def test_registration_requires_an_administrator_invitation(app):
     assert settings.get_json()["invite_only"] is True
 
 
+def test_registration_link_validation_rejects_consumed_tokens(app):
+    now = datetime.now(UTC).replace(tzinfo=None)
+    token = "one-time-registration-token"
+    with app.app_context(), get_engine().begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE registration_settings (id INTEGER PRIMARY KEY, invite_only BOOLEAN)"
+        ))
+        connection.execute(text(
+            "INSERT INTO registration_settings (id,invite_only) VALUES (1,0)"
+        ))
+        connection.execute(text(
+            "CREATE TABLE registration_invitations ("
+            "id INTEGER PRIMARY KEY,status VARCHAR(16),claimed_email_normalized VARCHAR(254),"
+            "expires_at DATETIME,revoked_at DATETIME,used_at DATETIME)"
+        ))
+        connection.execute(text(
+            "CREATE TABLE registration_requests ("
+            "id INTEGER PRIMARY KEY,invitation_id INTEGER,email_normalized VARCHAR(254),"
+            "token_hash VARCHAR(64),expires_at DATETIME,consumed_at DATETIME)"
+        ))
+        connection.execute(text(
+            "INSERT INTO registration_requests "
+            "(id,invitation_id,email_normalized,token_hash,expires_at,consumed_at) "
+            "VALUES (1,NULL,'new@example.com',:token_hash,:expires_at,NULL)"
+        ), {"token_hash": hash_secret(token), "expires_at": now + timedelta(hours=1)})
+
+    client = app.test_client()
+    assert client.get(
+        "/api/v1/auth/register/validate", query_string={"token": token}
+    ).get_json() == {"valid": True}
+
+    with app.app_context(), get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE registration_requests SET consumed_at=:now WHERE id=1"), {"now": now}
+        )
+
+    assert client.get(
+        "/api/v1/auth/register/validate", query_string={"token": token}
+    ).get_json() == {"valid": False}
+
+
 def test_invitation_memo_is_trimmed_and_limited():
     assert _invitation_memo("  invited guest  ") == "invited guest"
     assert _invitation_memo("") is None

@@ -88,6 +88,36 @@ def registration_is_invite_only() -> bool:
         return _registration_invite_only(connection)
 
 
+def registration_token_is_valid(token_value: object) -> bool:
+    if not isinstance(token_value, str) or not token_value:
+        return False
+    now = _now()
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT r.invitation_id,i.status AS invitation_status,"
+                "i.claimed_email_normalized,r.email_normalized,"
+                "i.expires_at AS invitation_expires_at,i.revoked_at,i.used_at "
+                "FROM registration_requests r LEFT JOIN registration_invitations i "
+                "ON i.id=r.invitation_id WHERE r.token_hash=:token_hash "
+                "AND r.consumed_at IS NULL AND r.expires_at>:now"
+            ),
+            {"token_hash": hash_secret(token_value), "now": now},
+        ).mappings().first()
+        if not row:
+            return False
+        if row["invitation_id"] is None:
+            return not _registration_invite_only(connection)
+        return bool(
+            row["invitation_status"] == "claimed"
+            and row["claimed_email_normalized"] == row["email_normalized"]
+            and row["invitation_expires_at"] is not None
+            and row["invitation_expires_at"] > now
+            and row["revoked_at"] is None
+            and row["used_at"] is None
+        )
+
+
 def normalize_email(value: object) -> tuple[str, str]:
     if not isinstance(value, str):
         raise RegistrationError("Enter a valid email address.")
