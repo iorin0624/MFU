@@ -46,17 +46,17 @@ def _event(connection, user_id: int, event_type: str, target: str | None, ip, us
     public_id = new_public_id()
     connection.execute(
         text(
-            "INSERT INTO user_security_events "
-            "(public_id,user_id,event_type,target_public_id,ip_address,user_agent) "
-            "VALUES (:public_id,:user_id,:event_type,:target,:ip,:agent)"
+            "INSERT INTO security_events "
+            "(user_id,event_type,severity,result,ip_address,user_agent,correlation_id,metadata_json) "
+            "VALUES (:user_id,:event_type,'info','success',:ip,:agent,:public_id,:metadata)"
         ),
         {
             "public_id": public_id,
             "user_id": user_id,
             "event_type": event_type,
-            "target": target,
             "ip": ip,
             "agent": (user_agent or "")[:512] or None,
+            "metadata": json.dumps({"target_public_id": target}) if target else None,
         },
     )
     return public_id

@@ -15,7 +15,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(
-        "CREATE TABLE user_passkeys ("
+        "CREATE TABLE IF NOT EXISTS user_passkeys ("
         "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
         "public_id CHAR(26) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
         "user_id BIGINT UNSIGNED NOT NULL,"
@@ -30,7 +30,7 @@ def upgrade() -> None:
         "CONSTRAINT chk_passkeys_backed_up CHECK (backed_up IN (0,1))) ENGINE=InnoDB"
     )
     op.execute(
-        "CREATE TABLE webauthn_challenges ("
+        "CREATE TABLE IF NOT EXISTS webauthn_challenges ("
         "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
         "public_id CHAR(26) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
         "user_id BIGINT UNSIGNED NULL,purpose VARCHAR(24) NOT NULL,challenge VARBINARY(64) NOT NULL,"
@@ -43,22 +43,13 @@ def upgrade() -> None:
         "(purpose IN ('registration','authentication'))) ENGINE=InnoDB"
     )
     op.execute(
-        "CREATE TABLE user_security_events ("
-        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
-        "public_id CHAR(26) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
-        "user_id BIGINT UNSIGNED NOT NULL,event_type VARCHAR(48) NOT NULL,target_public_id CHAR(26) NULL,"
-        "ip_address VARBINARY(16) NULL,user_agent VARCHAR(512) NULL,"
-        "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),PRIMARY KEY (id),"
-        "UNIQUE KEY uq_security_events_public_id (public_id),"
-        "KEY ix_security_events_user_created (user_id,created_at),"
-        "CONSTRAINT fk_security_events_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE) ENGINE=InnoDB"
-    )
-    op.execute(
         "INSERT INTO app_releases (public_id,version,version_major,version_minor,version_patch,"
         "change_type,title,content_markdown,status,created_by,published_by,published_at,created_at,updated_at) "
         "VALUES ('M7R6XPQ2G5A9K4V8D3N1T0JHCS','1.4.0',1,4,0,'feature','パスワード変更とパスキーに対応',"
         "'プロフィールからパスワードを変更できるようにし、Face ID・Touch ID・Windows Hello等でログインできるパスキーを追加しました。',"
-        "'published','system','system',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))"
+        "'published','system','system',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) "
+        "ON DUPLICATE KEY UPDATE title=VALUES(title),content_markdown=VALUES(content_markdown),"
+        "status=VALUES(status),updated_at=UTC_TIMESTAMP(6)"
     )
 
 
@@ -67,6 +58,5 @@ def downgrade() -> None:
         "DELETE FROM user_release_dismissals WHERE release_id IN (SELECT id FROM app_releases WHERE version='1.4.0')"
     )
     op.execute("DELETE FROM app_releases WHERE version='1.4.0'")
-    op.execute("DROP TABLE user_security_events")
     op.execute("DROP TABLE webauthn_challenges")
     op.execute("DROP TABLE user_passkeys")
