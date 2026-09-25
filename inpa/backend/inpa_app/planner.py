@@ -33,6 +33,46 @@ def _session(*, csrf: bool = False):
     return session, None
 
 
+@bp.get("/onboarding")
+def onboarding_status():
+    session, error = _session()
+    if error:
+        return error
+    with get_engine().connect() as connection:
+        step = connection.execute(
+            text("SELECT onboarding_step FROM users WHERE id=:id"),
+            {"id": session["user_id"]},
+        ).scalar_one()
+    return jsonify(step=step, required=step != "completed")
+
+
+@bp.patch("/onboarding")
+def advance_onboarding():
+    session, error = _session(csrf=True)
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    requested = data.get("step")
+    if requested not in {"visit", "completed"}:
+        return _error("invalid_step", "初回設定の進行状態を確認できません。", 400)
+    with get_engine().begin() as connection:
+        lock = "" if connection.dialect.name == "sqlite" else " FOR UPDATE"
+        current = connection.execute(
+            text("SELECT onboarding_step FROM users WHERE id=:id" + lock),
+            {"id": session["user_id"]},
+        ).scalar_one()
+        allowed = current == requested or (current, requested) in {
+            ("privacy", "visit"), ("visit", "completed"),
+        }
+        if not allowed:
+            return _error("invalid_transition", "初回設定は順番に完了してください。", 409)
+        connection.execute(
+            text("UPDATE users SET onboarding_step=:step WHERE id=:id"),
+            {"step": requested, "id": session["user_id"]},
+        )
+    return jsonify(step=requested, required=requested != "completed")
+
+
 def _profile(row, privacy_matrix) -> dict[str, object]:
     result = dict(row)
     result["x_handle_visible"] = bool(result["x_handle_visible"])
@@ -77,7 +117,7 @@ def patch_profile():
         if "display_name" in updates:
             value = updates["display_name"]
             if not isinstance(value, str) or not 1 <= len(value.strip()) <= 40:
-                raise RegistrationError("表示名は1〜40文字で入力してください。")
+                raise RegistrationError("ニックネームは1〜40文字で入力してください。")
             updates["display_name"] = value.strip()
         if "x_handle" in updates:
             updates["x_handle"], updates["x_handle_normalized"] = normalize_social_handle(
@@ -349,6 +389,13 @@ def _save_visit(user_id: int, data: dict[str, object], public_id: str | None = N
                 "VALUES (:public_id,:user_id,:season_id,:visit_date,:park,:arrival_time,:costume,:memo,:visibility,:detail_level)"
             ),
             {**values, "public_id": public_id, "user_id": user_id},
+        )
+        connection.execute(
+            text(
+                "UPDATE users SET onboarding_step='completed' "
+                "WHERE id=:id AND onboarding_step='visit'"
+            ),
+            {"id": user_id},
         )
         return public_id
 
