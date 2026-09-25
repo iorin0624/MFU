@@ -2,7 +2,13 @@ from datetime import date
 
 import pytest
 
-from inpa_app.privacy import effective_fields, empty_matrix, validate_matrix, viewer_audience
+from inpa_app.privacy import (
+    effective_fields,
+    empty_matrix,
+    recommended_matrix,
+    validate_matrix,
+    viewer_audience,
+)
 from inpa_app.share import _render_season_visits, _render_visits
 
 
@@ -17,6 +23,15 @@ def test_effective_fields_are_cumulative_by_audience():
     assert effective_fields(matrix, "logged_in") == {"date", "park"}
     assert effective_fields(matrix, "mutual") == {"date", "park", "costume"}
     assert effective_fields(matrix, "private") == {"date", "park", "costume", "memo"}
+
+
+def test_first_time_recommended_matrix_matches_the_wizard_defaults():
+    assert recommended_matrix() == {
+        "link": {"date": True, "park": True, "costume": False, "memo": False},
+        "logged_in": {"date": True, "park": True, "costume": True, "memo": False},
+        "mutual": {"date": True, "park": True, "costume": True, "memo": True},
+        "private": {"date": True, "park": True, "costume": True, "memo": True},
+    }
 
 
 def test_blocked_viewer_has_no_audience_but_owner_still_has_private_audience():
