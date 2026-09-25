@@ -99,11 +99,11 @@ onMounted(load)
     <p v-if="error" class="error">{{ error }}</p><p v-if="notice" class="notice">{{ notice }}</p>
     <template v-if="profile">
       <form class="form-stack" @submit.prevent="saveProfile">
-        <label class="field">表示名<input v-model="profile.display_name" required maxlength="40"></label>
+        <label class="field">ニックネーム<input v-model="profile.display_name" required maxlength="40"></label>
         <label class="field">X<input v-model="profile.x_handle" maxlength="15" placeholder="@なしで入力"></label>
-        <label class="field-check"><input v-model="profile.x_handle_visible" type="checkbox">共有画面にXを表示する</label>
+        <label class="field-check"><input v-model="profile.x_handle_visible" type="checkbox">プロフィールにX IDを表示する</label>
         <label class="field">Instagram<input v-model="profile.instagram_handle" maxlength="30" placeholder="@なしで入力"></label>
-        <label class="field-check"><input v-model="profile.instagram_handle_visible" type="checkbox">共有画面にInstagramを表示する</label>
+        <label class="field-check"><input v-model="profile.instagram_handle_visible" type="checkbox">プロフィールにInstagram IDを表示する</label>
         <button class="button">プロフィールを保存</button>
       </form>
       <hr>

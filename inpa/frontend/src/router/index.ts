@@ -15,6 +15,7 @@ import LegalConsentView from '@/views/LegalConsentView.vue'
 import FeedbackView from '@/views/FeedbackView.vue'
 import UpdatesView from '@/views/UpdatesView.vue'
 import PersonView from '@/views/PersonView.vue'
+import OnboardingView from '@/views/OnboardingView.vue'
 import { api } from '@/lib/api'
 
 const router = createRouter({
@@ -24,6 +25,7 @@ const router = createRouter({
     { path: '/login', name: 'login', component: LoginView },
     { path: '/register', name: 'register', component: RegisterView },
     { path: '/register/complete', name: 'register-complete', component: RegisterCompleteView },
+    { path: '/onboarding', name: 'onboarding', component: OnboardingView },
     { path: '/profile', name: 'profile', component: ProfileView },
     { path: '/visits', name: 'visits', component: VisitsView },
     { path: '/share', name: 'share-manage', component: ShareManageView },
@@ -46,6 +48,11 @@ router.beforeEach(async (to) => {
     if (result.user.legal_consent_required) {
       return { path: '/legal/consent', query: { next: to.fullPath }, replace: true }
     }
+    const onboarding = await api<{ required: boolean }>('/onboarding')
+    if (onboarding.required && to.path !== '/onboarding' && to.path !== '/register/complete') {
+      return { path: '/onboarding', replace: true }
+    }
+    if (!onboarding.required && to.path === '/onboarding') return { path: '/', replace: true }
   } catch {
     // Public routes and each protected API retain their existing authentication handling.
   }

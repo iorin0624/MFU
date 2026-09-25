@@ -106,10 +106,10 @@ def validate_password(value: object) -> str:
 
 def validate_display_name(value: object) -> str:
     if not isinstance(value, str):
-        raise RegistrationError("Enter a display name.")
+        raise RegistrationError("ニックネームを入力してください。")
     name = value.strip()
     if not (1 <= len(name) <= 40) or any(ord(char) < 32 for char in name):
-        raise RegistrationError("Enter a display name between 1 and 40 characters.")
+        raise RegistrationError("ニックネームは1〜40文字で入力してください。")
     return name
 
 
@@ -283,10 +283,11 @@ def complete_registration(
                 "INSERT INTO users "
                 "(public_id, connection_id, email, email_normalized, password_hash, display_name, "
                 "x_handle, x_handle_normalized, instagram_handle, instagram_handle_normalized, "
-                "x_handle_visible, instagram_handle_visible, default_visibility, default_detail_level, email_verified_at) "
+                "x_handle_visible, instagram_handle_visible, default_visibility, default_detail_level, "
+                "email_verified_at, onboarding_step) "
                 "VALUES (:public_id, :connection_id, :email, :normalized, :password_hash, :display_name, "
                 ":x_handle, :x_normalized, :instagram_handle, :instagram_normalized, :x_visible, "
-                ":instagram_visible, :visibility, :detail, :now)"
+                ":instagram_visible, :visibility, :detail, :now, 'privacy')"
             ),
             {
                 "public_id": new_public_id(),
