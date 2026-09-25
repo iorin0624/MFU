@@ -10,13 +10,23 @@ const xHandle = ref(''); const instagramHandle = ref('')
 const xVisible = ref(false); const instagramVisible = ref(false)
 const termsAccepted = ref(false); const privacyAccepted = ref(false)
 const termsId = ref(''); const privacyId = ref(''); const pending = ref(false); const error = ref('')
+const tokenChecked = ref(false); const tokenValid = ref(false); const tokenCheckFailed = ref(false)
 
 onMounted(async () => {
   try {
-    const result = await api<{ documents: Record<string, { public_id: string }> }>('/legal/documents')
+    if (!token.value) { tokenChecked.value = true; return }
+    const [result, validation] = await Promise.all([
+      api<{ documents: Record<string, { public_id: string }> }>('/legal/documents'),
+      api<{ valid: boolean }>(`/auth/register/validate?token=${encodeURIComponent(token.value)}`),
+    ])
     termsId.value = result.documents.terms?.public_id ?? ''
     privacyId.value = result.documents.privacy?.public_id ?? ''
-  } catch { error.value = '利用規約を読み込めませんでした。' }
+    tokenValid.value = validation.valid
+  } catch {
+    tokenCheckFailed.value = true
+    error.value = '登録リンクを確認できませんでした。時間をおいて再読み込みしてください。'
+  }
+  finally { tokenChecked.value = true }
 })
 
 async function submit() {
@@ -40,6 +50,16 @@ async function submit() {
 
 <template>
   <section class="auth-card">
+    <template v-if="tokenChecked && tokenCheckFailed">
+      <h1>登録リンクを確認できません</h1>
+      <p class="error" role="alert">{{ error }}</p>
+    </template>
+    <template v-else-if="tokenChecked && !tokenValid">
+      <h1>この登録リンクは無効です</h1>
+      <p>すでに登録が完了しているか、有効期限が切れています。</p>
+      <RouterLink class="button" to="/login">ログインへ</RouterLink>
+    </template>
+    <template v-else-if="tokenChecked">
     <p class="wizard-progress">初回設定 1 / 3</p>
     <h1>プロフィール作成</h1>
     <p class="helper">最初に、INPAで使用するプロフィールとパスワードを設定します。</p>
@@ -57,5 +77,7 @@ async function submit() {
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <button class="button" :disabled="pending">{{ pending ? '登録中…' : '保存して次へ' }}</button>
     </form>
+    </template>
+    <p v-else class="helper">登録リンクを確認中…</p>
   </section>
 </template>

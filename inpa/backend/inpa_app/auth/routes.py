@@ -15,6 +15,7 @@ from .service import (
     create_registration_request,
     get_session,
     registration_is_invite_only,
+    registration_token_is_valid,
     revoke_session,
     verify_csrf,
 )
@@ -96,6 +97,11 @@ def _require_session(*, enforce_legal: bool = True):
 @bp.get("/registration-settings")
 def registration_settings():
     return jsonify(invite_only=registration_is_invite_only())
+
+
+@bp.get("/register/validate")
+def register_validate():
+    return jsonify(valid=registration_token_is_valid(request.args.get("token")))
 
 
 @bp.post("/register/request")
