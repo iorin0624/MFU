@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from .admin_auth import require_admin_hmac, require_idempotency, write_audit
 from .auth.service import hash_secret, new_public_id, new_secret
 from .db import get_engine
+from .privacy import AUDIENCES, PUBLIC_FIELDS, effective_fields, load_matrix
 
 bp = Blueprint("internal_admin", __name__, url_prefix="/internal/admin/v1")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
@@ -342,24 +343,65 @@ def users():
 @bp.get("/users/<public_id>")
 @require_admin_hmac
 def user_detail(public_id: str):
-    with get_engine().connect() as connection:
+    with get_engine().begin() as connection:
         user = connection.execute(text(
-            "SELECT public_id,email,display_name,x_handle,instagram_handle,status,email_verified_at,"
+            "SELECT id,public_id,connection_id,email,display_name,x_handle,instagram_handle,status,email_verified_at,"
             "created_at,updated_at,deletion_scheduled_at FROM users WHERE public_id=:id"
         ), {"id": public_id}).mappings().first()
         if not user:
             return _error("User not found.", 404)
+        season_rows = connection.execute(text(
+            "SELECT id,public_id,name,start_date,end_date,is_active FROM seasons "
+            "ORDER BY start_date DESC,id DESC"
+        )).mappings().all()
         visits = connection.execute(text(
-            "SELECT v.public_id,s.name AS season_name,v.visit_date,v.park,v.arrival_time,v.visibility,"
-            "v.detail_level FROM visits v JOIN seasons s ON s.id=v.season_id "
-            "JOIN users u ON u.id=v.user_id WHERE u.public_id=:id ORDER BY v.visit_date DESC LIMIT 100"
-        ), {"id": public_id}).mappings().all()
+            "SELECT v.public_id,v.season_id,v.visit_date,v.park,v.arrival_time,v.costume,v.memo,"
+            "v.created_at,v.updated_at FROM visits v WHERE v.user_id=:user_id "
+            "ORDER BY v.visit_date DESC,v.id DESC"
+        ), {"user_id": user["id"]}).mappings().all()
+        visits_by_season: dict[int, list[dict[str, object]]] = {}
+        for visit in visits:
+            visit_result = _row(visit)
+            season_id = int(visit_result.pop("season_id"))
+            visits_by_season.setdefault(season_id, []).append(visit_result)
+        seasons = []
+        for season in season_rows:
+            season_id = int(season["id"])
+            customized = connection.execute(text(
+                "SELECT COUNT(*) FROM user_season_privacy_settings "
+                "WHERE user_id=:user_id AND season_id=:season_id"
+            ), {"user_id": user["id"], "season_id": season_id}).scalar_one() == len(AUDIENCES)
+            matrix = load_matrix(connection, int(user["id"]), season_id)
+            seasons.append({
+                "public_id": season["public_id"],
+                "name": season["name"],
+                "start_date": season["start_date"],
+                "end_date": season["end_date"],
+                "is_active": bool(season["is_active"]),
+                "customized": customized,
+                "privacy_matrix": matrix,
+                "effective_fields": {
+                    audience: [
+                        field
+                        for field in PUBLIC_FIELDS
+                        if field in effective_fields(matrix, audience)
+                    ]
+                    for audience in AUDIENCES
+                },
+                "visits": visits_by_season.get(season_id, []),
+            })
         sessions = connection.execute(text(
             "SELECT us.public_id,us.created_at,us.last_seen_at,us.expires_at,us.revoked_at,us.revoke_reason "
-            "FROM user_sessions us JOIN users u ON u.id=us.user_id WHERE u.public_id=:id "
+            "FROM user_sessions us WHERE us.user_id=:user_id "
             "ORDER BY us.created_at DESC LIMIT 100"
-        ), {"id": public_id}).mappings().all()
-    return jsonify(user=_row(user), visits=[_row(row) for row in visits], sessions=[_row(row) for row in sessions])
+        ), {"user_id": user["id"]}).mappings().all()
+        write_audit(
+            connection, action="user_detail_view", target_type="user", target_id=public_id,
+            after={"season_count": len(seasons), "visit_count": len(visits)},
+        )
+    user_result = _row(user)
+    user_result.pop("id", None)
+    return jsonify(user=user_result, seasons=seasons, sessions=[_row(row) for row in sessions])
 
 
 def _set_user_status(public_id: str, status: str):
