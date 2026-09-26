@@ -51,7 +51,7 @@ from core import (
 
 
 APP_NAME = "MFU写真転送"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 TOKEN_PATH = APP_DIR / "receiver_token.bin"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -140,6 +140,13 @@ class ApiClient:
         response.raise_for_status()
         return response.json()
 
+    def get(self, path: str, timeout: int = 30) -> dict:
+        response = self.session.get(
+            self.base_url + path, headers=self.headers(), timeout=timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
     def post(self, path: str, payload: dict, timeout: int = 30) -> dict:
         response = self.session.post(
             self.base_url + path, headers=self.headers(), json=payload, timeout=timeout
@@ -164,6 +171,8 @@ class ReceiverThread(QThread):
         self.pending: set[int] = set()
         self.pending_lock = threading.Lock()
         self.worker: threading.Thread | None = None
+        self.resync_worker: threading.Thread | None = None
+        self.stop_event = threading.Event()
         self._bind()
 
     def _bind(self) -> None:
@@ -224,6 +233,20 @@ class ReceiverThread(QThread):
             finally:
                 with self.pending_lock:
                     self.pending.discard(file_id)
+
+    def _resync_loop(self) -> None:
+        """Repair a lost WebSocket event or a transient receive failure."""
+        while not self.stop_event.wait(30):
+            try:
+                payload = self.api.get("/desktop/photo-relay/api/queue")
+                for item in payload.get("files") or []:
+                    self.enqueue(item)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 401:
+                    self.authentication_failed.emit()
+            except Exception:
+                # WebSocket status remains authoritative; retry on the next pass.
+                pass
 
     def _report_failure(self, file_id: int, message: str) -> None:
         try:
@@ -291,6 +314,8 @@ class ReceiverThread(QThread):
     def run(self) -> None:
         self.worker = threading.Thread(target=self._work_loop, daemon=True)
         self.worker.start()
+        self.resync_worker = threading.Thread(target=self._resync_loop, daemon=True)
+        self.resync_worker.start()
         self.status_changed.emit("red", "MFUへ接続しています")
         try:
             self.sio.connect(
@@ -304,9 +329,11 @@ class ReceiverThread(QThread):
         except Exception as exc:
             self.error.emit(str(exc))
         finally:
+            self.stop_event.set()
             self.work.put(None)
 
     def stop(self) -> None:
+        self.stop_event.set()
         try:
             if self.sio.connected:
                 self.sio.disconnect()
