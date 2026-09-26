@@ -23,6 +23,10 @@
       {"type": "http", "method": "POST", "url": "${base_url}/files", "bearer": "${api_key}", "form": {"job_uuid": "${job.job_uuid}", "client_file_id": "${client_file_id}", "sequence_index": "${repeat_index}", "capture_at": "${capture_at}", "source_modified_at": "${source_modified_at}", "file": "${repeat_item}"}}
     ]},
     {"type": "http", "method": "POST", "url": "${base_url}/jobs/${job.job_uuid}/done", "bearer": "${api_key}", "json": {}, "save_as": "completed"},
+    {"type": "if", "condition": "${completed.ok} == false", "actions": [
+      {"type": "show_result", "value": "転送未完了\n${completed.message}\n選択: ${completed.expected_count}枚 / 受信: ${completed.uploaded_count}枚"},
+      {"type": "stop"}
+    ]},
     {"type": "wait", "seconds": 2},
     {"type": "http", "method": "GET", "url": "${base_url}/jobs/${job.job_uuid}", "bearer": "${api_key}", "save_as": "status"},
     {"type": "show_result", "value": "${completed.message}\n保存済み: ${status.completed_files}/${status.total_files}枚\n転送待ち: ${status.pending_files}枚"}

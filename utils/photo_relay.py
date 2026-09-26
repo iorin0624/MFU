@@ -869,7 +869,7 @@ def finish_relay_job(job_uuid: str):
                 "uploaded_count": 0,
                 "expected_count": expected_files,
             }
-        ), 422
+        )
     if expected_files and total_files < expected_files:
         return jsonify(
             {
@@ -879,7 +879,7 @@ def finish_relay_job(job_uuid: str):
                 "uploaded_count": total_files,
                 "expected_count": expected_files,
             }
-        ), 409
+        )
     db = get_db()
     cur = db.cursor()
     cur.execute(
