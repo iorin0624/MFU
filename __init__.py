@@ -6675,6 +6675,10 @@ except Exception as exc:
 from app.utils.media_clipboard_auth import media_clipboard_bp
 app.register_blueprint(media_clipboard_bp)
 
+from app.utils.photo_relay import desktop_photo_relay_bp, photo_relay_api_bp
+app.register_blueprint(desktop_photo_relay_bp)
+app.register_blueprint(photo_relay_api_bp)
+
 from app.tickets import tickets_bp
 app.register_blueprint(tickets_bp)
 
