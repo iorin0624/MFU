@@ -27,3 +27,4 @@ tools\mfu_photo_relay\build\build_windows.bat
 
 出力先：`tools\mfu_photo_relay\dist\MFUPhotoRelay\MFUPhotoRelay.exe`
 
+対象PCとの互換性を優先し、ビルド環境はPython 3.10・PySide6 6.8.3へ固定しています。ビルド時にはQtと同じVisual C++ランタイムを配布フォルダー直下へ揃えます。
