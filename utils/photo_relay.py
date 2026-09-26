@@ -333,6 +333,7 @@ def _queued_files(device_id: int) -> list[dict]:
           FROM photo_relay_files f
           JOIN photo_relay_jobs j ON j.id=f.job_id
          WHERE j.device_id=%s AND j.expires_at>UTC_TIMESTAMP()
+           AND j.ready_at IS NOT NULL
            AND f.status IN ('queued','delivering')
          ORDER BY j.created_at, f.sequence_index, f.id
         """,
@@ -760,7 +761,8 @@ def upload_relay_file():
     if existing:
         db.close()
         payload = _file_payload(existing)
-        _emit_file_ready(job["device_uuid"], payload)
+        if job.get("ready_at") and existing.get("status") in {"queued", "delivering"}:
+            _emit_file_ready(job["device_uuid"], payload)
         return jsonify({"ok": True, "already_uploaded": True, "file": payload})
     cur.execute("SELECT COUNT(*) AS count FROM photo_relay_files WHERE job_id=%s", (job["id"],))
     count = int((cur.fetchone() or {}).get("count") or 0)
@@ -829,7 +831,7 @@ def upload_relay_file():
               (job_id, client_file_id, original_filename, stored_filename, mime_type,
                size_bytes, sha256, sequence_index, capture_at, source_modified_at,
                converted_to_jpeg, status, attempts, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'queued',0,UTC_TIMESTAMP())
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'staged',0,UTC_TIMESTAMP())
             """,
             (
                 job["id"], client_file_id, original_name, final_path.name, mime_type,
@@ -857,7 +859,6 @@ def upload_relay_file():
             "converted_to_jpeg": converted,
             "download_path": f"/desktop/photo-relay/api/files/{file_id}/download",
         }
-        _emit_file_ready(job["device_uuid"], payload)
         return jsonify({"ok": True, "already_uploaded": False, "file": payload})
     except ValueError as exc:
         if str(exc) == "file_too_large":
@@ -902,6 +903,11 @@ def finish_relay_job(job_uuid: str):
         )
     db = get_db()
     cur = db.cursor()
+    cur.execute(
+        "UPDATE photo_relay_files SET status='queued' "
+        "WHERE job_id=%s AND status='staged'",
+        (job["id"],),
+    )
     cur.execute(
         """
         UPDATE photo_relay_jobs
