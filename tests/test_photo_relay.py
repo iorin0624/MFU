@@ -126,3 +126,10 @@ def test_receiver_ack_cannot_close_job_before_iphone_done():
     assert 'str(progress[2]) != "receiving"' in source
     assert "ready_at=COALESCE(ready_at, UTC_TIMESTAMP())" in source
     assert 'job.get("status") == "completed" and not job.get("ready_at")' in source
+
+
+def test_server_buffers_every_file_until_iphone_done():
+    source = SERVER_PATH.read_text(encoding="utf-8")
+    assert "'staged',0,UTC_TIMESTAMP()" in source
+    assert "UPDATE photo_relay_files SET status='queued'" in source
+    assert "AND j.ready_at IS NOT NULL" in source
