@@ -523,12 +523,15 @@ def download_windows_receiver():
         return redirect(url_for("login", next=request.url))
     if not WINDOWS_DOWNLOAD_PATH.is_file():
         abort(404)
-    return send_file(
+    response = send_file(
         WINDOWS_DOWNLOAD_PATH,
         mimetype="application/zip",
         as_attachment=True,
         download_name="MFUPhotoRelay.zip",
+        max_age=0,
     )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @desktop_photo_relay_bp.get("/api/files/<int:file_id>/download")

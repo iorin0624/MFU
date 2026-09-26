@@ -51,6 +51,7 @@ from core import (
 
 
 APP_NAME = "MFU写真転送"
+APP_VERSION = "1.0.1"
 TOKEN_PATH = APP_DIR / "receiver_token.bin"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -494,6 +495,9 @@ class PhotoRelayController:
         self.status_action = QAction("🔴 未ログイン", menu)
         self.status_action.setEnabled(False)
         menu.addAction(self.status_action)
+        version = QAction(f"バージョン {APP_VERSION}", menu)
+        version.setEnabled(False)
+        menu.addAction(version)
         login = QAction("MFUへログイン", menu)
         login.triggered.connect(self.login)
         menu.addAction(login)
@@ -519,7 +523,7 @@ class PhotoRelayController:
     def set_status(self, color: str, detail: str) -> None:
         icon = {"green": "🟢", "yellow": "🟡", "red": "🔴"}.get(color, "🔴")
         self.status_action.setText(f"{icon} {detail}")
-        self.tray.setToolTip(f"{APP_NAME}\n{detail}")
+        self.tray.setToolTip(f"{APP_NAME} {APP_VERSION}\n{detail}")
 
     def login(self) -> None:
         dialog = LoginDialog(self.settings)
