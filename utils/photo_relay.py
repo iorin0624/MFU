@@ -599,11 +599,17 @@ def acknowledge_relay_file(file_id: int):
         (row["job_id"], row["job_id"]),
     )
     cur.execute(
-        "SELECT total_files, completed_files FROM photo_relay_jobs WHERE id=%s",
+        "SELECT total_files, completed_files, status, ready_at "
+        "FROM photo_relay_jobs WHERE id=%s",
         (row["job_id"],),
     )
     progress = cur.fetchone()
-    if progress and int(progress[1] or 0) >= int(progress[0] or 0):
+    if (
+        progress
+        and progress[3] is not None
+        and str(progress[2]) != "receiving"
+        and int(progress[1] or 0) >= int(progress[0] or 0)
+    ):
         cur.execute(
             "UPDATE photo_relay_jobs SET status='completed', completed_at=UTC_TIMESTAMP() WHERE id=%s",
             (row["job_id"],),
@@ -727,8 +733,22 @@ def upload_relay_file():
     if not job_uuid or not incoming or not incoming.filename:
         return jsonify({"ok": False, "error": "job_uuid_and_file_required"}), 400
     job = _job_row(job_uuid, username)
-    if not job or job.get("status") not in {"receiving", "queued"}:
+    if not job:
         return jsonify({"ok": False, "error": "job_not_found"}), 404
+    # Older servers could close a job when Windows acknowledged its first file.
+    # Without ready_at, the iPhone has not explicitly completed the upload yet.
+    if job.get("status") == "completed" and not job.get("ready_at"):
+        db = get_db()
+        cur = db.cursor()
+        cur.execute(
+            "UPDATE photo_relay_jobs SET status='receiving', completed_at=NULL WHERE id=%s",
+            (job["id"],),
+        )
+        db.commit()
+        db.close()
+        job["status"] = "receiving"
+    if job.get("status") not in {"receiving", "queued"}:
+        return jsonify({"ok": False, "error": "job_closed"})
     client_file_id = str(request.form.get("client_file_id") or uuid.uuid4().hex)[:128]
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -883,7 +903,19 @@ def finish_relay_job(job_uuid: str):
     db = get_db()
     cur = db.cursor()
     cur.execute(
-        "UPDATE photo_relay_jobs SET status='queued', ready_at=UTC_TIMESTAMP() WHERE id=%s AND status='receiving'",
+        """
+        UPDATE photo_relay_jobs
+           SET ready_at=COALESCE(ready_at, UTC_TIMESTAMP()),
+               status=CASE
+                 WHEN total_files>0 AND completed_files>=total_files THEN 'completed'
+                 ELSE 'queued'
+               END,
+               completed_at=CASE
+                 WHEN total_files>0 AND completed_files>=total_files THEN UTC_TIMESTAMP()
+                 ELSE NULL
+               END
+         WHERE id=%s
+        """,
         (job["id"],),
     )
     db.commit()

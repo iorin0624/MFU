@@ -118,3 +118,11 @@ def test_relay_detects_incomplete_uploads_and_repairs_missed_events():
     assert '@desktop_photo_relay_bp.get("/api/queue")' in server
     assert "self.stop_event.wait(30)" in client
     assert 'self.api.get("/desktop/photo-relay/api/queue")' in client
+
+
+def test_receiver_ack_cannot_close_job_before_iphone_done():
+    source = SERVER_PATH.read_text(encoding="utf-8")
+    assert "progress[3] is not None" in source
+    assert 'str(progress[2]) != "receiving"' in source
+    assert "ready_at=COALESCE(ready_at, UTC_TIMESTAMP())" in source
+    assert 'job.get("status") == "completed" and not job.get("ready_at")' in source
