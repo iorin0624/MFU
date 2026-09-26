@@ -9,6 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CORE_PATH = ROOT / "tools" / "mfu_photo_relay" / "core.py"
 SERVER_PATH = ROOT / "utils" / "photo_relay.py"
+CLIENT_PATH = ROOT / "tools" / "mfu_photo_relay" / "main.py"
+SHORTCUT_PATH = ROOT / "shortcuts" / "MFU写真リアルタイム転送.base.json"
 
 
 def _load_core():
@@ -93,6 +95,9 @@ def test_server_uses_websocket_control_and_authenticated_https_transfer():
     assert '@desktop_photo_relay_bp.post("/api/files/<int:file_id>/ack")' in source
     assert '@photo_relay_api_bp.get("/jobs/<job_uuid>")' in source
     assert '@desktop_photo_relay_bp.get("/download/windows")' in source
+    assert '@desktop_photo_relay_bp.get("/api/queue")' in source
+    assert '"incomplete_upload"' in source
+    assert '"no_files_uploaded"' in source
     assert "TOKEN_SCOPE_IOS" in source
 
 
@@ -101,3 +106,15 @@ def test_server_keeps_png_and_jpeg_and_converts_heic():
     assert 'mime_type not in {"image/jpeg", "image/png", "image/heif-bmff"}' in source
     assert "convert_heif_to_jpeg" in source
     assert 'extension = ".jpg" if mime_type == "image/jpeg" else ".png"' in source
+
+
+def test_relay_detects_incomplete_uploads_and_repairs_missed_events():
+    server = SERVER_PATH.read_text(encoding="utf-8")
+    client = CLIENT_PATH.read_text(encoding="utf-8")
+    shortcut = SHORTCUT_PATH.read_text(encoding="utf-8")
+    assert "expected_file_count" in shortcut
+    assert '"incomplete_upload"' in server
+    assert '"no_files_uploaded"' in server
+    assert '@desktop_photo_relay_bp.get("/api/queue")' in server
+    assert "self.stop_event.wait(30)" in client
+    assert 'self.api.get("/desktop/photo-relay/api/queue")' in client

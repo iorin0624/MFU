@@ -9,9 +9,10 @@
   },
   "actions": [
     {"type": "require_input", "source": "shortcut_input", "fallback": "select_photos", "multiple": true},
+    {"type": "count", "items": "${shortcut_input}", "save_as": "expected_file_count"},
     {"type": "http", "method": "GET", "url": "${base_url}/devices", "bearer": "${api_key}", "save_as": "device_config"},
     {"type": "choose", "items": "${device_config.devices}", "label_key": "label", "value_key": "device_uuid", "save_as": "device_uuid"},
-    {"type": "http", "method": "POST", "url": "${base_url}/jobs", "bearer": "${api_key}", "json": {"device_uuid": "${device_uuid}"}, "save_as": "job"},
+    {"type": "http", "method": "POST", "url": "${base_url}/jobs", "bearer": "${api_key}", "json": {"device_uuid": "${device_uuid}", "expected_file_count": "${expected_file_count}"}, "save_as": "job"},
     {"type": "repeat", "items": "${shortcut_input}", "actions": [
       {"type": "get_file_detail", "item": "${repeat_item}", "detail": "name", "save_as": "filename"},
       {"type": "get_media_detail", "item": "${repeat_item}", "detail": "date_taken", "save_as": "capture_at_raw"},

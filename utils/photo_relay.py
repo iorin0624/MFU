@@ -144,6 +144,7 @@ def _ensure_schema() -> None:
               device_id BIGINT UNSIGNED NOT NULL,
               username VARCHAR(191) NOT NULL,
               status VARCHAR(24) NOT NULL DEFAULT 'receiving',
+              expected_files INT UNSIGNED NULL,
               total_files INT UNSIGNED NOT NULL DEFAULT 0,
               completed_files INT UNSIGNED NOT NULL DEFAULT 0,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -186,6 +187,12 @@ def _ensure_schema() -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        cur.execute("SHOW COLUMNS FROM photo_relay_jobs LIKE 'expected_files'")
+        if not cur.fetchone():
+            cur.execute(
+                "ALTER TABLE photo_relay_jobs "
+                "ADD COLUMN expected_files INT UNSIGNED NULL AFTER status"
+            )
         db.commit()
         db.close()
         SPOOL_ROOT.mkdir(parents=True, exist_ok=True)
@@ -516,6 +523,16 @@ def revoke_receiver():
     return jsonify({"ok": True, "unregistered": unregister})
 
 
+@desktop_photo_relay_bp.get("/api/queue")
+def receiver_queue():
+    """Return the durable queue so the Windows client can repair missed events."""
+    device = _verify_device_token()
+    if not device:
+        return jsonify({"ok": False, "error": "invalid_token"}), 401
+    files = _queued_files(int(device["id"]))
+    return jsonify({"ok": True, "files": files, "count": len(files)})
+
+
 @desktop_photo_relay_bp.get("/download/windows")
 def download_windows_receiver():
     """Provide the signed-in MFU user with the packaged Windows receiver."""
@@ -655,6 +672,12 @@ def create_relay_job():
     device_uuid = _valid_device_uuid(payload.get("device_uuid") or "")
     if not device_uuid:
         return jsonify({"ok": False, "error": "device_uuid_required"}), 400
+    try:
+        expected_files = int(payload.get("expected_file_count") or 0)
+    except (TypeError, ValueError):
+        expected_files = 0
+    if expected_files < 0 or expected_files > MAX_FILES_PER_JOB:
+        return jsonify({"ok": False, "error": "invalid_expected_file_count"}), 400
     _ensure_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -675,10 +698,11 @@ def create_relay_job():
     cur.execute(
         """
         INSERT INTO photo_relay_jobs
-          (job_uuid, device_id, username, status, total_files, completed_files, created_at, expires_at)
-        VALUES (%s, %s, %s, 'receiving', 0, 0, UTC_TIMESTAMP(), %s)
+          (job_uuid, device_id, username, status, expected_files,
+           total_files, completed_files, created_at, expires_at)
+        VALUES (%s, %s, %s, 'receiving', %s, 0, 0, UTC_TIMESTAMP(), %s)
         """,
-        (job_uuid, device["id"], username, expires_at),
+        (job_uuid, device["id"], username, expected_files or None, expires_at),
     )
     db.commit()
     db.close()
@@ -689,6 +713,7 @@ def create_relay_job():
             "job_uuid": job_uuid,
             "device_uuid": device_uuid,
             "device_name": device["label"],
+            "expected_file_count": expected_files or None,
             "expires_at": expires_at.isoformat() + "Z",
         }
     )
@@ -833,6 +858,28 @@ def finish_relay_job(job_uuid: str):
     job = _job_row(normalized, username) if normalized else None
     if not job:
         return jsonify({"ok": False, "error": "job_not_found"}), 404
+    total_files = int(job.get("total_files") or 0)
+    expected_files = int(job.get("expected_files") or 0)
+    if total_files == 0:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "no_files_uploaded",
+                "message": "写真を1枚も受信できなかったため、転送完了にしていません。",
+                "uploaded_count": 0,
+                "expected_count": expected_files,
+            }
+        ), 422
+    if expected_files and total_files < expected_files:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "incomplete_upload",
+                "message": "選択枚数より受信枚数が少ないため、転送完了にしていません。",
+                "uploaded_count": total_files,
+                "expected_count": expected_files,
+            }
+        ), 409
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -847,7 +894,7 @@ def finish_relay_job(job_uuid: str):
             _emit_file_ready(job["device_uuid"], payload)
     socketio.emit(
         "photo_relay_job_ready",
-        {"job_uuid": normalized, "file_count": int(job.get("total_files") or len(files))},
+        {"job_uuid": normalized, "file_count": total_files},
         namespace="/photo-relay",
         to=f"photo-relay:{job['device_uuid']}",
     )
@@ -856,6 +903,8 @@ def finish_relay_job(job_uuid: str):
             "ok": True,
             "job_uuid": normalized,
             "queued_count": len([f for f in files if f["job_uuid"] == normalized]),
+            "uploaded_count": total_files,
+            "expected_count": expected_files or total_files,
             "message": "Windowsへ転送しました。オフラインの場合は再接続後に自動転送します。",
         }
     )
@@ -889,6 +938,7 @@ def relay_job_status(job_uuid: str):
             "job_uuid": normalized,
             "status": "completed" if total > 0 and completed >= total else job.get("status"),
             "total_files": total,
+            "expected_files": int(job.get("expected_files") or total),
             "completed_files": completed,
             "pending_files": max(0, total - completed),
             "counts": counts,

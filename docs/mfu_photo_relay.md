@@ -7,6 +7,7 @@
 3. MFUが`/photo-relay`名前空間のWebSocketへ到着イベントを送る。
 4. Windows常駐アプリが認証付きHTTPSで本体を取得し、SHA-256とサイズを検証して指定フォルダーへ原子的に保存する。
 5. WindowsのACK後、MFUは一時ファイルを削除する。オフライン時は7日間キューに保持する。
+6. Windowsアプリは30秒ごとに未受信キューを再確認し、WebSocket通知の取りこぼしや一時エラーを自動回復する。
 
 ## ショートカットAPI
 
@@ -19,6 +20,8 @@
 - `POST /api/photo-relay/v1/files`
 - `POST /api/photo-relay/v1/jobs/<job_uuid>/done`
 - `GET /api/photo-relay/v1/jobs/<job_uuid>`
+
+ジョブ作成時にiPhoneで選択した枚数を`expected_file_count`として送信し、完了時にサーバー受信枚数と照合する。0枚または不足時は完了応答を返さない。
 
 ## Windows認証
 
