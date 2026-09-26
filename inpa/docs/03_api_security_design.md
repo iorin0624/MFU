@@ -86,6 +86,7 @@ POST   /api/v1/share-token
 POST   /api/v1/share-token/rotate
 DELETE /api/v1/share-token
 GET    /api/v1/people/by-connection-id/{connectionId}
+GET    /api/v1/people/search?q={connectionIdOrSocialId}
 GET    /api/v1/people/{publicId}
 GET    /api/v1/follows
 GET    /api/v1/followers
@@ -100,6 +101,9 @@ POST   /api/v1/reports
 `users.public_id` は既存APIの不変な参照キーとして維持します。利用者が手入力する検索には、
 8文字・大文字Crockford Base32の `users.connection_id` を使用します。DBの一意制約で重複を防ぎ、
 検索は完全一致のみ、1アカウント・IPにつき毎分10回までとします。
+`people/search` はつながりIDに加えてX・Instagram IDを大文字小文字を区別せず検索します。
+SNS IDは該当サービスのプロフィール表示許可が有効な利用者だけを候補とし、非公開IDの存在は返しません。
+同じ文字列が異なるサービスで別利用者に使われている場合は複数候補を返し、ブロック関係は除外します。
 
 `GET /share/{token}` は閲覧者の状態に応じてレスポンス項目を構築し、DB行をそのままJSON化しません。
 共有tokenは1ユーザーにつき同時に1件だけ有効とし、再発行は旧tokenの失効と新tokenの作成を

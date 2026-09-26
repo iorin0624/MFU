@@ -9,7 +9,12 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
 from .auth.routes import _error, _require_session
-from .auth.service import normalize_connection_id, verify_csrf
+from .auth.service import (
+    RegistrationError,
+    normalize_connection_id,
+    normalize_social_handle,
+    verify_csrf,
+)
 from .db import get_engine
 
 bp = Blueprint("relationships", __name__, url_prefix="/api/v1")
@@ -44,6 +49,38 @@ def _target_by_connection_id(connection, connection_id: str):
         ),
         {"connection_id": connection_id},
     ).mappings().first()
+
+
+def _normalize_social_query(value: str) -> str:
+    for service in ("x", "instagram"):
+        try:
+            _, normalized = normalize_social_handle(value, service)
+        except RegistrationError:
+            continue
+        if normalized:
+            return normalized
+    return ""
+
+
+def _search_targets(connection, query: str):
+    connection_id = normalize_connection_id(query)
+    social_id = _normalize_social_query(query)
+    if not connection_id and not social_id:
+        return []
+    return connection.execute(
+        text(
+            "SELECT id,public_id,connection_id,display_name,x_handle,instagram_handle,"
+            "x_handle_visible,instagram_handle_visible FROM users WHERE status='active' AND ("
+            "(:connection_id<>'' AND connection_id=:connection_id) OR "
+            "(:social_id<>'' AND x_handle_visible=1 AND x_handle_normalized=:social_id) OR "
+            "(:social_id<>'' AND instagram_handle_visible=1 "
+            "AND instagram_handle_normalized=:social_id)) "
+            "ORDER BY CASE WHEN connection_id=:connection_id AND :connection_id<>'' THEN 0 "
+            "WHEN x_handle_normalized=:social_id AND x_handle_visible=1 THEN 1 ELSE 2 END,id "
+            "LIMIT 3"
+        ),
+        {"connection_id": connection_id, "social_id": social_id},
+    ).mappings().all()
 
 
 def _consume_lookup_limit(connection, owner_id: int) -> bool:
@@ -125,6 +162,26 @@ def person_by_connection_id(connection_id: str):
     if not result:
         return _error("not_found", "利用者が見つかりません。", 404)
     return jsonify(person=result)
+
+
+@bp.get("/people/search")
+def search_people():
+    session, error = _session()
+    if error:
+        return error
+    query = request.args.get("q", "").strip()
+    if not query:
+        return _error("invalid_query", "検索するIDを入力してください。", 400)
+    owner_id = int(session["user_id"])
+    with get_engine().begin() as connection:
+        if not _consume_lookup_limit(connection, owner_id):
+            return _error("rate_limited", "検索回数が多すぎます。しばらく待ってからお試しください。", 429)
+        people = [
+            result
+            for user in _search_targets(connection, query)
+            if (result := _person_result(connection, owner_id, user)) is not None
+        ]
+    return jsonify(people=people)
 
 
 @bp.get("/people/<public_id>")
