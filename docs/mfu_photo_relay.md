@@ -12,6 +12,8 @@
 
 すべて`Authorization: Bearer mfu_up_...`を使用する。`ios_shortcut_upload`スコープだけを許可する。
 
+撮影日時とファイル更新日時は、ショートカット内でISO 8601形式へ整形して送信する。
+
 - `GET /api/photo-relay/v1/devices`
 - `POST /api/photo-relay/v1/jobs`
 - `POST /api/photo-relay/v1/files`

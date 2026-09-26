@@ -14,8 +14,10 @@
     {"type": "http", "method": "POST", "url": "${base_url}/jobs", "bearer": "${api_key}", "json": {"device_uuid": "${device_uuid}"}, "save_as": "job"},
     {"type": "repeat", "items": "${shortcut_input}", "actions": [
       {"type": "get_file_detail", "item": "${repeat_item}", "detail": "name", "save_as": "filename"},
-      {"type": "get_media_detail", "item": "${repeat_item}", "detail": "date_taken", "save_as": "capture_at"},
-      {"type": "get_file_detail", "item": "${repeat_item}", "detail": "last_modified", "save_as": "source_modified_at"},
+      {"type": "get_media_detail", "item": "${repeat_item}", "detail": "date_taken", "save_as": "capture_at_raw"},
+      {"type": "format_date", "value": "${capture_at_raw}", "format": "ISO8601", "save_as": "capture_at"},
+      {"type": "get_file_detail", "item": "${repeat_item}", "detail": "last_modified", "save_as": "source_modified_at_raw"},
+      {"type": "format_date", "value": "${source_modified_at_raw}", "format": "ISO8601", "save_as": "source_modified_at"},
       {"type": "uuid", "save_as": "client_file_id"},
       {"type": "http", "method": "POST", "url": "${base_url}/files", "bearer": "${api_key}", "form": {"job_uuid": "${job.job_uuid}", "client_file_id": "${client_file_id}", "sequence_index": "${repeat_index}", "capture_at": "${capture_at}", "source_modified_at": "${source_modified_at}", "file": "${repeat_item}"}}
     ]},
