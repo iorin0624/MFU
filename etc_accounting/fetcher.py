@@ -27,6 +27,7 @@ PDF_ROOT = Path(os.environ.get("MFU_ETC_PDF_ROOT", "/mnt/mfu/etc_certificates"))
 PAGE_URL = "/etc/R?funccode=1013000000&nextfunc=1013100000&pageNo={page}"
 PDF_URL = "/etc/R?funccode=1013000000&nextfunc=1013600000"
 _LOGGER = logging.getLogger(__name__)
+MAX_STATEMENT_PAGES = 100
 
 
 class ETCRecordPDFFetchError(RuntimeError):
@@ -139,13 +140,36 @@ def fetch_month(
         with browser_lock_context, browser_context as active_browser:
             active_browser.open_statement_month(statement_month)
             first_page = parse_statement_page(active_browser.html(), statement_month)
-            page_numbers = first_page.page_numbers
-            for page_number in page_numbers:
-                if page_number != 1:
+            pending_page_numbers = sorted({int(value) for value in first_page.page_numbers if int(value) > 0})
+            if 1 not in pending_page_numbers:
+                pending_page_numbers.insert(0, 1)
+            visited_page_numbers: set[int] = set()
+            while pending_page_numbers:
+                page_number = pending_page_numbers.pop(0)
+                if page_number in visited_page_numbers:
+                    continue
+                if len(visited_page_numbers) >= MAX_STATEMENT_PAGES:
+                    raise RuntimeError("ETC利用明細のページ数が上限を超えました。")
+                if page_number == 1:
+                    page = first_page
+                else:
                     active_browser.go_to_page(page_number)
-                page = parse_statement_page(active_browser.html(), statement_month)
+                    page = parse_statement_page(active_browser.html(), statement_month)
+                visited_page_numbers.add(page_number)
+                for discovered_page_number in page.page_numbers:
+                    discovered_page_number = int(discovered_page_number)
+                    if (
+                        discovered_page_number > 0
+                        and discovered_page_number not in visited_page_numbers
+                        and discovered_page_number not in pending_page_numbers
+                    ):
+                        pending_page_numbers.append(discovered_page_number)
+                pending_page_numbers.sort()
                 for record in page.records:
-                    seen_transaction_keys.add(str(record.get("transaction_key") or ""))
+                    transaction_key = str(record.get("transaction_key") or "")
+                    if not transaction_key or transaction_key in seen_transaction_keys:
+                        continue
+                    seen_transaction_keys.add(transaction_key)
                     found += 1
                     stored = upsert_record(record)
                     record_id = int(stored["id"])
