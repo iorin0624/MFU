@@ -117,6 +117,7 @@ from app.utils.message import (
     ensure_notification_message_schema,
     generate_message,
     generate_notification_message,
+    render_message_text,
 )
 from app.utils.storage_info import get_storage_info
 from app.utils.socket_connection_metrics import (
@@ -1547,8 +1548,19 @@ def upload():
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
-    cursor.execute("SELECT mode, label FROM upload_modes WHERE username = %s", (username,))
+    cursor.execute(
+        """
+        SELECT um.mode, um.label, COALESCE(mt.template, '') AS site_template
+          FROM upload_modes um
+          LEFT JOIN message_templates mt
+            ON mt.username = um.username
+           AND mt.mode = COALESCE(NULLIF(um.template_key, ''), um.mode)
+         WHERE um.username = %s
+        """,
+        (username,),
+    )
     modes = cursor.fetchall()
+    site_templates = {str(row["mode"]): str(row.get("site_template") or "") for row in modes}
 
     cursor.execute("SELECT default_mode FROM users WHERE username = %s", (username,))
     user = cursor.fetchone()
@@ -1561,6 +1573,7 @@ def upload():
     return render_template(
         "upload.html",
         modes=modes,
+        site_templates=site_templates,
         default_mode=default_mode,
         storage=storage,
         vcgencmd=vcgencmd,
@@ -1581,12 +1594,17 @@ def submit_upload():
     title = request.form.get("title", "")
     date = request.form.get("date", datetime.now().strftime("%Y-%m-%d"))
     mode = request.form.get("mode", "")
+    site_message_template = request.form.get("site_message_template")
     uploaded_files = request.files.getlist("photos")
     expire_at = (datetime.now() + timedelta(days=60)).date()
     username = session.get("user", "default")
 
     if not uploaded_files:
         return "ファイルが選択されていません", 400
+    if site_message_template is not None and len(site_message_template) > 100_000:
+        return "お知らせ本文が長すぎます。", 400
+    if site_message_template is not None:
+        ensure_notification_message_schema()
 
     # --- モード・ユーザ情報取得 ---
     db = get_db()
@@ -1691,6 +1709,11 @@ def submit_upload():
         (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method, access_token_hash),
     )
     upload_id = cur.lastrowid
+    if site_message_template is not None:
+        cur.execute(
+            "REPLACE INTO upload_site_message_templates (uuid, template) VALUES (%s, %s)",
+            (uid, site_message_template),
+        )
     if filenames:
         cur.executemany(
             "INSERT INTO files (upload_id, filename) VALUES (%s, %s)",
@@ -2001,7 +2024,15 @@ def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = N
             "count": len(filenames or []),
         }
         try:
-            site_message = generate_message(template_key, context, username=username)
+            cur.execute(
+                "SELECT template FROM upload_site_message_templates WHERE uuid = %s LIMIT 1",
+                (uid,),
+            )
+            custom_site_template_row = cur.fetchone()
+            if custom_site_template_row is not None:
+                site_message = render_message_text(custom_site_template_row.get("template") or "", context)
+            else:
+                site_message = generate_message(template_key, context, username=username)
             notification_message = generate_notification_message(template_key, context, username=username)
         except Exception as exc:
             current_app.logger.exception(
@@ -2133,11 +2164,14 @@ def submit_upload_start():
     title = request.form.get("title", "")
     date = request.form.get("date", datetime.now().strftime("%Y-%m-%d"))
     mode = request.form.get("mode", "")
+    site_message_template = request.form.get("site_message_template")
     username = session.get("user", "default")
 
     mode_config, _user_info = _fetch_upload_mode_and_user(username, mode)
     if not mode_config:
         return jsonify({"ok": False, "error": f"未定義のモードです: {mode}"}), 400
+    if site_message_template is not None and len(site_message_template) > 100_000:
+        return jsonify({"ok": False, "error": "お知らせ本文が長すぎます。"}), 400
 
     uid = str(uuid.uuid4())
     expire_at = (datetime.now() + timedelta(days=60)).date()
@@ -2154,6 +2188,7 @@ def submit_upload_start():
     os.chmod(original_dir, 0o750)
     os.chmod(thumb_dir, 0o750)
 
+    ensure_notification_message_schema()
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -2163,6 +2198,11 @@ def submit_upload_start():
         """,
         (uid, title, date, expire_at, mode, username, "", password, password_hash, auth_method, access_token_hash),
     )
+    if site_message_template is not None:
+        cur.execute(
+            "REPLACE INTO upload_site_message_templates (uuid, template) VALUES (%s, %s)",
+            (uid, site_message_template),
+        )
     db.commit()
     db.close()
     return jsonify({"ok": True, "uuid": uid})

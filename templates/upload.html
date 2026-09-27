@@ -150,6 +150,15 @@
     </div>
 
     <div class="mb-3">
+      <label for="site-message-template" class="form-label">今回のサイト内お知らせ</label>
+      <textarea class="form-control" name="site_message_template" id="site-message-template" rows="10"></textarea>
+      <div class="form-text">
+        選択したモードのテンプレートを元に、今回のアップロードだけ自由に編集できます。
+        {{ '{{title}}' }}・{{ '{{date}}' }}・{{ '{{count}}' }}・{{ '{{link}}' }}などは完了時に置換されます。
+      </div>
+    </div>
+
+    <div class="mb-3">
       <label class="form-label">ファイル選択（ドラッグ＆ドロップも可）</label>
       <div id="drop-area" class="border border-secondary rounded p-3 text-center text-muted" style="cursor: pointer;">
         ここにファイルをドロップ、またはクリックして選択
@@ -179,7 +188,23 @@
   const dropArea = document.getElementById("drop-area");
   const fileInput = document.getElementById("fileElem");
   const preview = document.getElementById("preview");
+  const modeSelect = document.getElementById("mode");
+  const siteMessageTemplate = document.getElementById("site-message-template");
+  const baseSiteTemplates = {{ site_templates | tojson }};
+  const siteTemplateDrafts = {};
+  let activeTemplateMode = "";
   const filenameCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
+
+  function loadSiteTemplateForMode() {
+    if (activeTemplateMode) siteTemplateDrafts[activeTemplateMode] = siteMessageTemplate.value;
+    activeTemplateMode = modeSelect.value;
+    siteMessageTemplate.value = Object.prototype.hasOwnProperty.call(siteTemplateDrafts, activeTemplateMode)
+      ? siteTemplateDrafts[activeTemplateMode]
+      : (baseSiteTemplates[activeTemplateMode] || "");
+  }
+
+  modeSelect.addEventListener("change", loadSiteTemplateForMode);
+  loadSiteTemplateForMode();
 
   function filesByName(files) {
     return Array.from(files || []).sort((left, right) => filenameCollator.compare(left.name, right.name));
@@ -299,6 +324,7 @@
       startData.append("title", form.elements.title.value);
       startData.append("date", form.elements.date.value);
       startData.append("mode", form.elements.mode.value);
+      startData.append("site_message_template", siteMessageTemplate.value);
       const started = await requestJson("/submit_upload/start", startData);
       const uuid = started.uuid;
 
