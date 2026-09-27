@@ -49,11 +49,40 @@ def ensure_notification_message_schema():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upload_site_message_templates (
+                    uuid VARCHAR(64) NOT NULL,
+                    template LONGTEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (uuid)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
             db.commit()
             _notification_schema_ready = True
         finally:
             cursor.close()
             db.close()
+
+
+def render_message_text(template, context):
+    """Render one template string with the upload completion context."""
+    template = str(template or "")
+    values = dict(context)
+    if "date" in values:
+        try:
+            d = datetime.strptime(values["date"], "%Y-%m-%d")
+            values["date"] = d.strftime("%Y年%m月%d日")
+        except (TypeError, ValueError):
+            pass
+
+    def repl(match):
+        key = match.group(1)
+        return str(values.get(key, f"{{{{{key}}}}}"))
+
+    return re.sub(r'{{\s*(\w+)\s*}}', repl, template)
 
 
 def _render_template(table, mode, context, username):
@@ -72,19 +101,7 @@ def _render_template(table, mode, context, username):
     if not row:
         return ""
 
-    values = dict(context)
-    if "date" in values:
-        try:
-            d = datetime.strptime(values["date"], "%Y-%m-%d")
-            values["date"] = d.strftime("%Y年%m月%d日")
-        except (TypeError, ValueError):
-            pass
-
-    def repl(match):
-        key = match.group(1)
-        return str(values.get(key, f"{{{{{key}}}}}"))
-
-    return re.sub(r'{{\s*(\w+)\s*}}', repl, row[0])
+    return render_message_text(row[0], context)
 
 def generate_message(mode, context, username="default"):
     """Render the template shown inside the public viewer."""

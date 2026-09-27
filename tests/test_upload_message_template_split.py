@@ -34,3 +34,17 @@ def test_public_viewer_continues_to_use_site_notice_snapshot():
 
     assert '"notice": "" if reply_only_access else str(message_row.get("message") or "").strip()' in source
 
+
+def test_upload_can_customize_site_notice_for_one_upload():
+    source = (ROOT / "__init__.py").read_text(encoding="utf-8")
+    message_source = (ROOT / "utils" / "message.py").read_text(encoding="utf-8")
+    template = (ROOT / "templates" / "upload.html").read_text(encoding="utf-8")
+
+    assert 'id="site-message-template"' in template
+    assert "baseSiteTemplates" in template
+    assert 'startData.append("site_message_template"' in template
+    assert "CREATE TABLE IF NOT EXISTS upload_site_message_templates" in message_source
+    assert "def render_message_text(" in message_source
+    assert "REPLACE INTO upload_site_message_templates" in source
+    assert "SELECT template FROM upload_site_message_templates" in source
+
