@@ -569,7 +569,9 @@
     try {
       const response = await fetch({{ url_for('etc_accounting.browser_status')|tojson }}, {headers:{'Accept':'application/json'}});
       const data = await jsonResponse(response, false);
-      if (retryTransient && !data.loggedIn && String(data.error || '').includes('画面サーバーを起動できません')) {
+      const transientBrowserState = ['画面サーバーを起動できません', 'デバッグポートを使用しています']
+        .some(message => String(data.error || '').includes(message));
+      if (retryTransient && !data.loggedIn && transientBrowserState) {
         status.textContent = 'ETC画面サーバーを起動中…';
         status.className = 'form-control bg-info-subtle';
         showWarning('');
