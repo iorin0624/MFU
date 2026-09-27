@@ -3,7 +3,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 from flask import render_template
 
@@ -286,6 +286,99 @@ class ETCAccountingTest(unittest.TestCase):
         reconcile.assert_called_once_with("202607", {"provisional-key"})
         release_lock.assert_called_once_with(lock)
         self.assertEqual(registration_eligibility(stored, company_id=1, mapping={}, check_pdf_file=False), (False, "\u6599\u91d1\u78ba\u8a8d\u4e2d"))
+
+    def test_fetch_month_discovers_additional_pages_while_traversing(self):
+        def record(key, day):
+            return {
+                "transaction_key": key,
+                "statement_month": "202609",
+                "used_at": datetime(2026, 9, day, 12, 0),
+                "entry_ic": "入口",
+                "exit_ic": "出口",
+                "amount": 100,
+                "vehicle_type": "5",
+                "card_mask": "********2159",
+                "remarks": "確定",
+            }
+
+        records = [record("page-1", 1), record("page-2", 2), record("page-3", 3)]
+        pages = [
+            Mock(records=[records[0]], page_numbers=[1, 2], form_token="token-1"),
+            Mock(records=[records[1]], page_numbers=[1, 3], form_token="token-2"),
+            Mock(records=[records[2]], page_numbers=[2, 3], form_token="token-3"),
+        ]
+        browser = MagicMock()
+        browser.html.return_value = "statement"
+        stored = [
+            {**item, "id": index, "pdf_path": "/tmp/existing.pdf", "_details_changed": False}
+            for index, item in enumerate(records, start=1)
+        ]
+        reconciliation = {
+            "checked": 3, "present": 3, "missing": 0,
+            "newly_deleted": 0, "already_deleted": 0,
+        }
+
+        with (
+            patch("app.etc_accounting.fetcher.acquire_fetch_lock", return_value=Mock()),
+            patch("app.etc_accounting.fetcher.release_fetch_lock"),
+            patch("app.etc_accounting.fetcher.start_run", return_value=11),
+            patch("app.etc_accounting.fetcher.finish_run") as finish_run,
+            patch("app.etc_accounting.fetcher.parse_statement_page", side_effect=pages),
+            patch("app.etc_accounting.fetcher.upsert_record", side_effect=stored),
+            patch("app.etc_accounting.fetcher._stored_pdf_is_readable", return_value=True),
+            patch("app.etc_accounting.fetcher.enrich_record_tollgate", return_value={"status": "reference_unavailable"}),
+            patch("app.etc_accounting.fetcher.reconcile_source_records", return_value=reconciliation) as reconcile,
+        ):
+            result = fetch_month("202609", browser=browser)
+
+        self.assertEqual(result["found"], 3)
+        self.assertEqual(browser.go_to_page.call_args_list, [call(2), call(3)])
+        reconcile.assert_called_once_with("202609", {"page-1", "page-2", "page-3"})
+        finish_run.assert_called_once_with(11, status="success", found=3, downloaded=0, skipped=3, error=None)
+
+    def test_fetch_month_does_not_reconcile_when_later_page_authentication_fails(self):
+        record = {
+            "transaction_key": "page-1",
+            "statement_month": "202609",
+            "used_at": datetime(2026, 9, 1, 12, 0),
+            "entry_ic": "入口",
+            "exit_ic": "出口",
+            "amount": 100,
+            "vehicle_type": "5",
+            "card_mask": "********2159",
+            "remarks": "確定",
+        }
+        first_page = Mock(records=[record], page_numbers=[1, 2], form_token="token-1")
+        browser = MagicMock()
+        browser.html.return_value = "statement"
+        stored = {**record, "id": 1, "pdf_path": "/tmp/existing.pdf", "_details_changed": False}
+
+        with (
+            patch("app.etc_accounting.fetcher.acquire_fetch_lock", return_value=Mock()),
+            patch("app.etc_accounting.fetcher.release_fetch_lock"),
+            patch("app.etc_accounting.fetcher.start_run", return_value=12),
+            patch("app.etc_accounting.fetcher.finish_run") as finish_run,
+            patch(
+                "app.etc_accounting.fetcher.parse_statement_page",
+                side_effect=[first_page, ETCAuthenticationRequired("expired")],
+            ),
+            patch("app.etc_accounting.fetcher.upsert_record", return_value=stored),
+            patch("app.etc_accounting.fetcher._stored_pdf_is_readable", return_value=True),
+            patch("app.etc_accounting.fetcher.enrich_record_tollgate", return_value={"status": "reference_unavailable"}),
+            patch("app.etc_accounting.fetcher.reconcile_source_records") as reconcile,
+            self.assertRaisesRegex(ETCAuthenticationRequired, "expired"),
+        ):
+            fetch_month("202609", browser=browser)
+
+        reconcile.assert_not_called()
+        finish_run.assert_called_once_with(
+            12,
+            status="auth_required",
+            found=1,
+            downloaded=0,
+            skipped=1,
+            error="expired",
+        )
 
     def test_provisional_pdf_can_be_saved_before_invoice_metadata_is_final(self):
         record = {"transaction_key": "provisional-key", "remarks": "\u78ba\u8a8d\u4e2d"}
