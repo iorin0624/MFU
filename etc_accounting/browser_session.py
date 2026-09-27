@@ -284,6 +284,26 @@ def _running_browser_pid() -> int:
     return pid
 
 
+def _debug_browser_owner(timeout: float = 1.5) -> tuple[bool, int]:
+    """Return debug-port readiness and its ETC Chromium PID.
+
+    Chromium can briefly answer the DevTools endpoint while its process table
+    and listening socket are still settling (or while an old process is being
+    replaced).  Retry ownership detection before treating the listener as an
+    unrelated browser.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if not _browser_debug_ready():
+            return False, 0
+        pid = _running_browser_pid()
+        if pid:
+            return True, pid
+        if time.monotonic() >= deadline:
+            return True, 0
+        time.sleep(0.1)
+
+
 def _remove_duplicate_browser_processes(keep_pid: int) -> None:
     for pid in _matching_processes(_component_tokens("chromium"), _component_forbidden_tokens("chromium")):
         if pid != keep_pid:
@@ -388,8 +408,7 @@ def _start_etc_browser_locked() -> dict:
         os.chmod(path, 0o700)
 
     vnc_password = _vnc_password()
-    debug_ready = _browser_debug_ready()
-    chromium_pid = _running_browser_pid() if debug_ready else 0
+    debug_ready, chromium_pid = _debug_browser_owner()
     if debug_ready and not chromium_pid:
         raise RuntimeError("ETC用ではないChromiumがデバッグポートを使用しています。")
 
@@ -437,7 +456,7 @@ def _start_etc_browser_locked() -> dict:
             env=env,
         )
     else:
-        chromium_pid = _running_browser_pid()
+        _debug_ready, chromium_pid = _debug_browser_owner()
         if not chromium_pid:
             raise RuntimeError("ETC用ではないChromiumがデバッグポートを使用しています。")
 

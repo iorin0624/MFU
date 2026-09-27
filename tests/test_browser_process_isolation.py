@@ -91,6 +91,38 @@ def test_etc_browser_process_match_excludes_renderer_children():
         assert not etc_browser._process_matches(201, tokens, forbidden)
 
 
+def test_etc_debug_browser_owner_retries_transient_process_discovery():
+    with (
+        patch.object(etc_browser, "_browser_debug_ready", return_value=True),
+        patch.object(etc_browser, "_running_browser_pid", side_effect=[0, 0, 202]) as running_pid,
+        patch.object(etc_browser.time, "sleep"),
+    ):
+        assert etc_browser._debug_browser_owner(timeout=1) == (True, 202)
+
+    assert running_pid.call_count == 3
+
+
+def test_etc_debug_browser_owner_does_not_claim_persistent_foreign_listener():
+    with (
+        patch.object(etc_browser, "_browser_debug_ready", return_value=True),
+        patch.object(etc_browser, "_running_browser_pid", return_value=0),
+    ):
+        assert etc_browser._debug_browser_owner(timeout=0) == (True, 0)
+
+
+def test_etc_status_page_retries_transient_debug_port_warning():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "etc_accounting"
+        / "templates"
+        / "etc_accounting"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "transientBrowserState" in template
+    assert "デバッグポートを使用しています" in template
+
+
 def test_instagram_page_target_is_activated_before_use():
     response = Mock()
     response.json.return_value = [
