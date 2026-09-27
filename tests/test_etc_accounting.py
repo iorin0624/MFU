@@ -310,7 +310,13 @@ class ETCAccountingTest(unittest.TestCase):
         browser = MagicMock()
         browser.html.return_value = "statement"
         stored = [
-            {**item, "id": index, "pdf_path": "/tmp/existing.pdf", "_details_changed": False}
+            {
+                **item,
+                "id": index,
+                "pdf_path": "/tmp/existing.pdf",
+                "invoice_registration_number": "T1234567890123",
+                "_details_changed": False,
+            }
             for index, item in enumerate(records, start=1)
         ]
         reconciliation = {
@@ -351,7 +357,13 @@ class ETCAccountingTest(unittest.TestCase):
         first_page = Mock(records=[record], page_numbers=[1, 2], form_token="token-1")
         browser = MagicMock()
         browser.html.return_value = "statement"
-        stored = {**record, "id": 1, "pdf_path": "/tmp/existing.pdf", "_details_changed": False}
+        stored = {
+            **record,
+            "id": 1,
+            "pdf_path": "/tmp/existing.pdf",
+            "invoice_registration_number": "T1234567890123",
+            "_details_changed": False,
+        }
 
         with (
             patch("app.etc_accounting.fetcher.acquire_fetch_lock", return_value=Mock()),
