@@ -255,9 +255,13 @@ def get_layer_reply_summary(upload_id: int, *, db_factory=get_db) -> dict:
     try:
         cur.execute(
             """
-            SELECT COUNT(*) AS folder_count, MAX(posted_at) AS latest_mtime
-              FROM layer_upload_replies
-             WHERE upload_id=%s
+            SELECT COUNT(DISTINCT reply.id) AS folder_count,
+                   COUNT(file.id) AS reply_file_count,
+                   MAX(reply.posted_at) AS latest_mtime
+              FROM layer_upload_replies AS reply
+              LEFT JOIN layer_upload_reply_files AS file
+                ON file.reply_id=reply.id AND file.file_kind='image'
+             WHERE reply.upload_id=%s
             """,
             (int(upload_id),),
         )
@@ -266,6 +270,7 @@ def get_layer_reply_summary(upload_id: int, *, db_factory=get_db) -> dict:
         return {
             "has_layer_upload": folder_count > 0,
             "folder_count": folder_count,
+            "reply_file_count": int(summary.get("reply_file_count") or 0),
             "latest_mtime": summary.get("latest_mtime"),
         }
     finally:
