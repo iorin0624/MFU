@@ -13,7 +13,7 @@
       <button type="button" class="btn btn-primary btn-sm layer-zip-download"
               data-reply-uuid="" data-status-target="layer-zip-status-all">UUID一括ZIPダウンロード</button>
       {% endif %}
-      <a href="{{ url_for('upload_history.layer_upload_list') }}" class="btn btn-outline-secondary btn-sm">一覧へ戻る</a>
+      <a href="{{ url_for('upload_history.upload_list', group='reply-only') }}#reply-only" class="btn btn-outline-secondary btn-sm">統合一覧へ戻る</a>
     </div>
   </div>
 

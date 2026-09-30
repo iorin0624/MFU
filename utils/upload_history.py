@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import uuid as uuidlib
+from datetime import date, datetime
 
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
@@ -55,6 +56,104 @@ def _fetch_uploads_for_user(username: str, *, scope: str):
     uploads = cursor.fetchall()
     db.close()
     return uploads
+
+
+def _fetch_unified_uploads_for_user(username: str):
+    """Return upload rows that still have a normal or layer-side scope."""
+
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    owner_filter = "" if _is_admin(username) else "AND upload.username = %s"
+    params = () if _is_admin(username) else (username,)
+    cursor.execute(
+        f"""
+        SELECT upload.*,
+               COALESCE(mode.enable_layer_upload_url, 0) AS reply_enabled,
+               (SELECT COUNT(*) FROM files WHERE files.upload_id=upload.id) AS file_count
+          FROM uploads AS upload
+          LEFT JOIN upload_modes AS mode
+            ON mode.username = upload.username
+           AND mode.mode = upload.mode
+         WHERE (upload.upload_deleted_at IS NULL OR upload.layer_deleted_at IS NULL)
+               {owner_filter}
+         ORDER BY upload.created_at DESC, upload.id DESC
+        """,
+        params,
+    )
+    uploads = cursor.fetchall()
+    db.close()
+    return uploads
+
+
+def _protection_label(upload: dict) -> str:
+    method = str(upload.get("auth_method") or "").strip().lower()
+    if method == "password" or (
+        not method and (upload.get("password_hash") or upload.get("password"))
+    ):
+        return "PW"
+    if method == "access_token":
+        return "アクセストークン"
+    if method == "email_otp":
+        return "メールOTP認証"
+    return "なし"
+
+
+def _format_japanese_date(value) -> str:
+    if value in (None, ""):
+        return "－"
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = date.fromisoformat(value[:10])
+        except ValueError:
+            return value
+    if isinstance(parsed, (date, datetime)):
+        return f"{parsed.year}年{parsed.month}月{parsed.day}日"
+    return str(value)
+
+
+def _format_japanese_datetime(value) -> str:
+    if value in (None, ""):
+        return "－"
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if isinstance(parsed, datetime):
+        return f"{parsed.year}年{parsed.month}月{parsed.day}日 {parsed.hour}:{parsed.minute:02d}"
+    return _format_japanese_date(parsed)
+
+
+def _format_expire_at(value) -> str:
+    if isinstance(value, str) and len(value.strip()) == 10:
+        return f"{_format_japanese_date(value)} 23:59"
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return f"{_format_japanese_date(value)} 23:59"
+    return _format_japanese_datetime(value)
+
+
+def _build_unified_upload_groups(uploads: list[dict]) -> tuple[list[dict], list[dict]]:
+    normal_uploads: list[dict] = []
+    reply_only_uploads: list[dict] = []
+    for upload in uploads:
+        row = {**upload, **_layer_summary(upload["id"])}
+        row["protection_label"] = _protection_label(row)
+        row["normal_active"] = row.get("upload_deleted_at") is None
+        row["layer_active"] = row.get("layer_deleted_at") is None
+        row["reply_enabled"] = bool(row.get("reply_enabled")) and row["layer_active"]
+        row["has_reply_scope"] = row["layer_active"] and (
+            row["reply_enabled"] or row["has_layer_upload"]
+        )
+        row["date_display"] = _format_japanese_date(row.get("date"))
+        row["expire_at_display"] = _format_expire_at(row.get("expire_at"))
+        row["created_at_display"] = _format_japanese_datetime(row.get("created_at"))
+        if row["normal_active"]:
+            normal_uploads.append(row)
+        elif row["has_reply_scope"]:
+            reply_only_uploads.append(row)
+    return normal_uploads, reply_only_uploads
 
 
 def _fetch_upload_by_uuid(uuid: str, *, scope: str | None = None):
@@ -112,9 +211,15 @@ def upload_list():
         return redirect(url_for("login"))
 
     username = session["user"]
-    uploads = _fetch_uploads_for_user(username, scope="upload")
+    uploads = _fetch_unified_uploads_for_user(username)
+    normal_uploads, reply_only_uploads = _build_unified_upload_groups(uploads)
 
-    return render_template("upload_list.html", uploads=uploads, is_admin=_is_admin(username))
+    return render_template(
+        "upload_list.html",
+        normal_uploads=normal_uploads,
+        reply_only_uploads=reply_only_uploads,
+        is_admin=_is_admin(username),
+    )
 
 
 @upload_history_bp.route("/layer_upload_list")
@@ -122,14 +227,7 @@ def layer_upload_list():
     if "user" not in session:
         return redirect(url_for("login"))
 
-    username = session["user"]
-    uploads = _fetch_uploads_for_user(username, scope="layer")
-
-    rows = []
-    for upload in uploads:
-        rows.append({**upload, **_layer_summary(upload["id"])})
-
-    return render_template("layer_upload_list.html", uploads=rows)
+    return redirect(url_for("upload_history.upload_list", group="reply-only") + "#reply-only")
 
 
 @upload_history_bp.route("/layer_upload_list/<uuid>")
@@ -322,4 +420,56 @@ def layer_upload_delete(uuid):
     if layer_dir.exists() and layer_dir.is_dir():
         shutil.rmtree(layer_dir)
 
-    return redirect(url_for("upload_history.layer_upload_list"))
+    return redirect(url_for("upload_history.upload_list", group="reply-only") + "#reply-only")
+
+
+@upload_history_bp.route("/upload_delete_all/<uuid>", methods=["POST"])
+def upload_delete_all(uuid):
+    """Delete both file scopes while preserving the parent UUID ledger row."""
+
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM uploads WHERE uuid=%s", (uuid,))
+    upload = cursor.fetchone()
+    db.close()
+    if not upload:
+        return abort(404)
+    if not _is_admin(username) and upload["username"] != username:
+        return abort(403)
+
+    guard = require_admin_passkey(f"upload_delete_all:{uuid}")
+    if guard:
+        return guard
+
+    if upload.get("upload_deleted_at") is None:
+        delete_normal_upload(
+            upload_id=upload["id"],
+            uuid=uuid,
+            storage_root=_storage_root(),
+        )
+
+    if upload.get("layer_deleted_at") is None:
+        db = get_db()
+        cursor = db.cursor()
+        try:
+            delete_layer_replies(upload["id"], db=db, cursor=cursor)
+            cursor.execute(
+                "UPDATE uploads SET layer_deleted_at=COALESCE(layer_deleted_at, NOW()) WHERE id=%s",
+                (upload["id"],),
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+        layer_dir = _layer_root() / secure_filename(uuid)
+        if layer_dir.exists() and layer_dir.is_dir():
+            shutil.rmtree(layer_dir)
+
+    return redirect(url_for("upload_history.upload_list"))

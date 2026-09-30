@@ -1,61 +1,136 @@
 {% extends "base.html" %}
-{% block title %}アップロード履歴{% endblock %}
+{% block title %}アップロード・折り返し管理{% endblock %}
+
+{% macro upload_card(item, reply_only=false) %}
+<article class="upload-history-card">
+  <div class="upload-history-card__head">
+    <div class="min-w-0">
+      <h3 class="upload-history-card__title">{{ item.title or '（タイトルなし）' }}</h3>
+      {% if is_admin %}<div class="small text-muted">{{ item.username }}</div>{% endif %}
+    </div>
+    <div class="upload-history-card__badges">
+      {% if item.normal_active %}
+      <span class="badge text-bg-primary">元ファイル {{ item.file_count or 0 }}件</span>
+      {% else %}
+      <span class="badge text-bg-secondary">元ファイル削除済み</span>
+      {% endif %}
+      {% if item.reply_enabled %}
+      <span class="badge text-bg-success">折り返し受付中</span>
+      {% elif item.has_layer_upload %}
+      <span class="badge text-bg-warning">折り返し受付停止中</span>
+      {% endif %}
+      {% if item.has_layer_upload %}
+      <span class="badge text-bg-info">折り返し {{ item.folder_count }}回／{{ item.reply_file_count }}枚</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <dl class="upload-history-card__meta">
+    <div><dt>撮影日</dt><dd>{{ item.date_display }}</dd></div>
+    <div><dt>有効期限</dt><dd>{{ item.expire_at_display }}</dd></div>
+    <div><dt>アップロード日時</dt><dd>{{ item.created_at_display }}</dd></div>
+    <div><dt>閲覧保護タイプ</dt><dd>{{ item.protection_label }}</dd></div>
+  </dl>
+
+  <div class="upload-history-card__actions">
+    {% if item.normal_active or item.reply_enabled %}
+    <a href="{{ url_for('view_upload', uuid=item.uuid) }}" class="btn btn-sm btn-primary" target="_blank" rel="noopener">表示</a>
+    {% else %}
+    <button type="button" class="btn btn-sm btn-outline-secondary" disabled>表示不可</button>
+    {% endif %}
+
+    {% if item.normal_active %}
+    <a href="{{ url_for('view_upload_download_history', uuid=item.uuid) }}" class="btn btn-sm btn-outline-secondary">ダウンロード履歴</a>
+    {% else %}
+    <button type="button" class="btn btn-sm btn-outline-secondary" disabled>履歴なし</button>
+    {% endif %}
+
+    {% if item.has_reply_scope %}
+    <a href="{{ url_for('upload_history.layer_upload_detail', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary">折り返し</a>
+    {% endif %}
+  </div>
+
+  <div class="upload-history-card__danger">
+    {% if item.normal_active %}
+    <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post"
+          data-admin-passkey-action="upload_delete:{{ item.uuid }}"
+          onsubmit="return confirm('元の写真・動画、サムネイル、ZIP、ダウンロード履歴を削除します。折り返し側は残します。実行しますか？');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+      <button class="btn btn-sm btn-outline-danger">アップロードファイル削除</button>
+    </form>
+    {% endif %}
+
+    {% if item.has_reply_scope %}
+    <form action="{{ url_for('upload_history.layer_upload_delete', uuid=item.uuid) }}" method="post"
+          data-admin-passkey-action="layer_upload_delete:{{ item.uuid }}"
+          onsubmit="return confirm('折り返し受付データと折り返しアップロード済みファイルを削除します。元の写真・動画は残します。実行しますか？');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+      <button class="btn btn-sm btn-outline-danger">折り返し削除</button>
+    </form>
+    {% endif %}
+
+    {% if item.normal_active and item.has_reply_scope %}
+    <form action="{{ url_for('upload_history.upload_delete_all', uuid=item.uuid) }}" method="post"
+          data-admin-passkey-action="upload_delete_all:{{ item.uuid }}"
+          onsubmit="return confirm('元ファイルと折り返し側の両方を削除します。UUID台帳は追跡用に残ります。この操作を実行しますか？');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+      <button class="btn btn-sm btn-danger">両方削除</button>
+    </form>
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
 
 {% block content %}
 <style>
-  td, th {
-    white-space: normal !important;
-    word-break: break-word;
-    max-width: 200px;
+  .upload-history-page { max-width: 1500px; }
+  .upload-history-group { border: 1px solid #dbe4f0; border-radius: 18px; background: #f7f9fc; margin-bottom: 1.25rem; overflow: hidden; }
+  .upload-history-group > summary { align-items: center; cursor: pointer; display: flex; font-size: 1.15rem; font-weight: 700; gap: .6rem; justify-content: space-between; list-style: none; padding: 1rem 1.2rem; }
+  .upload-history-group > summary::-webkit-details-marker { display: none; }
+  .upload-history-group > summary::after { content: "⌄"; color: #64748b; }
+  .upload-history-group[open] > summary::after { content: "⌃"; }
+  .upload-history-count { background: #e7eef9; border-radius: 999px; color: #34445f; font-size: .82rem; margin-left: auto; padding: .25rem .65rem; }
+  .upload-history-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 390px), 1fr)); padding: 0 1rem 1rem; }
+  .upload-history-card { background: #fff; border: 1px solid #dbe4f0; border-radius: 14px; box-shadow: 0 4px 14px rgba(35, 50, 75, .05); display: flex; flex-direction: column; gap: .9rem; min-width: 0; padding: 1rem; }
+  .upload-history-card__head { display: flex; gap: .8rem; justify-content: space-between; }
+  .upload-history-card__title { font-size: 1.1rem; font-weight: 700; margin: 0; overflow-wrap: anywhere; }
+  .upload-history-card__badges { align-content: flex-start; display: flex; flex-wrap: wrap; gap: .35rem; justify-content: flex-end; }
+  .upload-history-card__meta { display: grid; gap: .55rem; grid-template-columns: 1fr 1fr; margin: 0; }
+  .upload-history-card__meta > div { min-width: 0; }
+  .upload-history-card__meta dt { color: #64748b; font-size: .78rem; font-weight: 600; }
+  .upload-history-card__meta dd { font-size: .94rem; margin: .12rem 0 0; overflow-wrap: anywhere; }
+  .upload-history-card__actions, .upload-history-card__danger { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .upload-history-card__danger { border-top: 1px solid #e5eaf1; margin-top: auto; padding-top: .8rem; }
+  .upload-history-empty { color: #64748b; grid-column: 1 / -1; padding: 1.5rem; text-align: center; }
+  @media (max-width: 575.98px) {
+    .upload-history-card__head { flex-direction: column; }
+    .upload-history-card__badges { justify-content: flex-start; }
+    .upload-history-card__meta { grid-template-columns: 1fr; }
+    .upload-history-card__actions .btn, .upload-history-card__danger form, .upload-history-card__danger .btn { width: 100%; }
   }
 </style>
 
-<div class="container mt-4">
-  <h2 class="mb-4">アップロード履歴</h2>
-  <div class="table-responsive">
-    <table class="table table-sm table-striped table-bordered text-nowrap align-middle">
-      <thead class="table-light">
-        <tr>
-          <th style="width: 10%;">UUID</th>
-          <th>ユーザー名</th>
-          <th>タイトル</th>
-          <th>撮影日</th>
-          <th>有効期限</th>
-          <th>アップロード日時</th>
-          <th>閲覧保護</th>
-          <th>リンク</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-<tbody>
-  {% for item in uploads %}
-  <tr>
-    <td title="{{ item.uuid }}">{{ item.uuid[:8] }}...</td>
-    <td>{{ item.username }}</td>
-    <td>{{ item.title }}</td>
-    <td>{{ item.date }}</td>
-    <td>{{ item.expire_at }}</td>
-    <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
-    <td>{{ '有効' if item.password_hash else 'なし' }}</td>
-    <td>
-      <div class="d-flex flex-wrap gap-1">
-        <a href="{{ url_for('view_upload', uuid=item.uuid) }}"
-           class="btn btn-sm btn-outline-primary"
-           target="_blank">表示</a>
-        <a href="{{ url_for('view_upload_download_history', uuid=item.uuid) }}"
-           class="btn btn-sm btn-outline-secondary">ダウンロード履歴</a>
-      </div>
-    </td>
-    <td>
-      <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post" data-admin-passkey-action="upload_delete:{{ item.uuid }}" onsubmit="return confirm('本当に削除しますか？');">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
-        <button class="btn btn-sm btn-danger">削除</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-</tbody>
-    </table>
+<div class="container-fluid upload-history-page mt-4 px-3 px-md-4">
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+      <h2 class="mb-1">アップロード・折り返し管理</h2>
+      <p class="text-muted mb-0">元ファイルと折り返し受付をまとめて管理します。</p>
+    </div>
+    <a href="{{ url_for('upload') }}" class="btn btn-outline-secondary btn-sm">アップロード画面へ戻る</a>
   </div>
+
+  <details class="upload-history-group" id="with-files" open>
+    <summary><span>アップロードファイルあり</span><span class="upload-history-count">{{ normal_uploads|length }}件</span></summary>
+    <div class="upload-history-grid">
+      {% for item in normal_uploads %}{{ upload_card(item) }}{% else %}<div class="upload-history-empty">アップロードファイルはありません。</div>{% endfor %}
+    </div>
+  </details>
+
+  <details class="upload-history-group" id="reply-only" open>
+    <summary><span>折り返し受付のみ</span><span class="upload-history-count">{{ reply_only_uploads|length }}件</span></summary>
+    <div class="upload-history-grid">
+      {% for item in reply_only_uploads %}{{ upload_card(item, true) }}{% else %}<div class="upload-history-empty">折り返し受付のみのデータはありません。</div>{% endfor %}
+    </div>
+  </details>
 </div>
 {% endblock %}
