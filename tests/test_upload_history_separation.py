@@ -40,6 +40,12 @@ class UploadHistorySeparationTest(unittest.TestCase):
         source = function_source(ROOT / "utils" / "upload_security.py", "fetch_upload_access_record")
         self.assertIn("upload_deleted_at IS NULL", source)
 
+    def test_reply_only_view_is_not_restricted_to_legacy_layer_mode(self):
+        source = function_source(ROOT / "utils" / "upload_security.py", "fetch_layer_reply_access_record")
+        self.assertIn("layer_deleted_at IS NULL", source)
+        self.assertIn("enable_layer_upload_url", source)
+        self.assertNotIn("mode='layer'", source)
+
 
 if __name__ == "__main__":
     unittest.main()

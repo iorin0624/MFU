@@ -665,7 +665,7 @@ def fetch_layer_reply_access_record(uuid: str) -> Optional[dict]:
         cur.execute(
             """
             SELECT * FROM uploads
-             WHERE uuid=%s AND mode='layer' AND layer_deleted_at IS NULL
+             WHERE uuid=%s AND layer_deleted_at IS NULL
              LIMIT 1
             """,
             (uuid,),
