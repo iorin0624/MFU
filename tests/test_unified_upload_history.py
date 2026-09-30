@@ -49,7 +49,10 @@ def test_protection_labels_cover_every_public_auth_mode():
 
 def test_reply_summary_includes_batches_and_file_count():
     source = (ROOT / "utils" / "layer_reply_store.py").read_text(encoding="utf-8")
+    history_source = (ROOT / "utils" / "upload_history.py").read_text(encoding="utf-8")
 
     assert "COUNT(DISTINCT reply.id) AS folder_count" in source
     assert "COUNT(file.id) AS reply_file_count" in source
     assert '"reply_file_count"' in source
+    assert "AS reply_summary ON reply_summary.upload_id=upload.id" in history_source
+    assert 'row = {**upload, **_layer_summary' not in history_source

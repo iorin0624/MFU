@@ -69,11 +69,24 @@ def _fetch_unified_uploads_for_user(username: str):
         f"""
         SELECT upload.*,
                COALESCE(mode.enable_layer_upload_url, 0) AS reply_enabled,
-               (SELECT COUNT(*) FROM files WHERE files.upload_id=upload.id) AS file_count
+               (SELECT COUNT(*) FROM files WHERE files.upload_id=upload.id) AS file_count,
+               COALESCE(reply_summary.folder_count, 0) AS folder_count,
+               COALESCE(reply_summary.reply_file_count, 0) AS reply_file_count,
+               reply_summary.latest_mtime
           FROM uploads AS upload
           LEFT JOIN upload_modes AS mode
             ON mode.username = upload.username
            AND mode.mode = upload.mode
+          LEFT JOIN (
+                SELECT reply.upload_id,
+                       COUNT(DISTINCT reply.id) AS folder_count,
+                       COUNT(file.id) AS reply_file_count,
+                       MAX(reply.posted_at) AS latest_mtime
+                  FROM layer_upload_replies AS reply
+                  LEFT JOIN layer_upload_reply_files AS file
+                    ON file.reply_id=reply.id AND file.file_kind='image'
+                 GROUP BY reply.upload_id
+          ) AS reply_summary ON reply_summary.upload_id=upload.id
          WHERE (upload.upload_deleted_at IS NULL OR upload.layer_deleted_at IS NULL)
                {owner_filter}
          ORDER BY upload.created_at DESC, upload.id DESC
@@ -138,7 +151,10 @@ def _build_unified_upload_groups(uploads: list[dict]) -> tuple[list[dict], list[
     normal_uploads: list[dict] = []
     reply_only_uploads: list[dict] = []
     for upload in uploads:
-        row = {**upload, **_layer_summary(upload["id"])}
+        row = dict(upload)
+        row["folder_count"] = int(row.get("folder_count") or 0)
+        row["reply_file_count"] = int(row.get("reply_file_count") or 0)
+        row["has_layer_upload"] = row["folder_count"] > 0
         row["protection_label"] = _protection_label(row)
         row["normal_active"] = row.get("upload_deleted_at") is None
         row["layer_active"] = row.get("layer_deleted_at") is None
