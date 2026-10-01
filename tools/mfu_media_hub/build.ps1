@@ -3,7 +3,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $entry = Join-Path $PSScriptRoot "main.py"
 $dist = Join-Path $PSScriptRoot "dist"
 $work = Join-Path $PSScriptRoot "build"
-python -m PyInstaller --noconfirm --clean --windowed --onedir `
+$venvPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+$python = if (Test-Path $venvPython) { $venvPython } else { "python" }
+& $python -m PyInstaller --noconfirm --clean --windowed --onedir `
   --name "MFU Media Hub" `
   --paths $root `
   --distpath $dist `
