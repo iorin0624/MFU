@@ -248,6 +248,7 @@ function openItem(item: MediaItem) {
       sort: model.value.sort,
       offset: folderData.value.offset,
       total: folderData.value.total,
+      version: folderData.value.version,
       groupBy: model.value.groupBy,
       groupUnit: model.value.groupUnit,
     });
