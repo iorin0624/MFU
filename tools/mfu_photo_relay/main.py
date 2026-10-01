@@ -37,17 +37,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core import (
-    APP_DIR,
-    NAMING_DATETIME,
-    NAMING_ORIGINAL,
-    NAMING_SEQUENCE,
-    choose_output_path,
-    load_history,
-    load_settings,
-    save_history,
-    save_settings,
-)
+try:
+    from .core import (
+        APP_DIR, NAMING_DATETIME, NAMING_ORIGINAL, NAMING_SEQUENCE,
+        choose_output_path, load_history, load_settings, save_history, save_settings,
+    )
+except ImportError:
+    from core import (
+        APP_DIR, NAMING_DATETIME, NAMING_ORIGINAL, NAMING_SEQUENCE,
+        choose_output_path, load_history, load_settings, save_history, save_settings,
+    )
 
 
 APP_NAME = "MFU写真転送"
@@ -160,11 +159,13 @@ class ReceiverThread(QThread):
     file_saved = Signal(str)
     error = Signal(str)
     authentication_failed = Signal()
+    media_progress = Signal(dict)
 
-    def __init__(self, settings: dict, token: str) -> None:
+    def __init__(self, settings: dict, token: str, media_token: str = "") -> None:
         super().__init__()
         self.settings = settings
         self.token = token
+        self.media_token = media_token
         self.api = ApiClient(settings, token)
         self.sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
         self.work: queue.Queue[dict | None] = queue.Queue()
@@ -173,6 +174,7 @@ class ReceiverThread(QThread):
         self.worker: threading.Thread | None = None
         self.resync_worker: threading.Thread | None = None
         self.stop_event = threading.Event()
+        self.media_call_lock = threading.Lock()
         self._bind()
 
     def _bind(self) -> None:
@@ -205,6 +207,11 @@ class ReceiverThread(QThread):
         def file_ready(data):
             if isinstance(data, dict):
                 self.enqueue(data)
+
+        @self.sio.on("media_clipboard_progress", namespace="/media-clipboard")
+        def media_progress(data):
+            if isinstance(data, dict):
+                self.media_progress.emit(data)
 
     def enqueue(self, payload: dict) -> None:
         file_id = int(payload.get("id") or 0)
@@ -318,10 +325,13 @@ class ReceiverThread(QThread):
         self.resync_worker.start()
         self.status_changed.emit("red", "MFUへ接続しています")
         try:
+            namespaces = ["/photo-relay"]
+            if self.media_token:
+                namespaces.append("/media-clipboard")
             self.sio.connect(
                 self.api.base_url,
-                auth={"token": self.token},
-                namespaces=["/photo-relay"],
+                auth={"photo_token": self.token, "media_token": self.media_token},
+                namespaces=namespaces,
                 transports=["websocket", "polling"],
                 wait_timeout=20,
             )
@@ -331,6 +341,21 @@ class ReceiverThread(QThread):
         finally:
             self.stop_event.set()
             self.work.put(None)
+
+    def media_call(self, operation: str, payload: dict | None = None, timeout: int = 1900) -> dict:
+        if not self.media_token or "/media-clipboard" not in self.sio.namespaces:
+            raise RuntimeError("Media Clipboard WebSocketに接続していません。")
+        request_id = secrets.token_urlsafe(12)
+        with self.media_call_lock:
+            result = self.sio.call(
+                "media_clipboard_request",
+                {"operation": operation, "payload": payload or {}, "request_id": request_id},
+                namespace="/media-clipboard",
+                timeout=timeout,
+            )
+        if not isinstance(result, dict):
+            raise RuntimeError("WebSocketから不正な応答が返りました。")
+        return result
 
     def stop(self) -> None:
         self.stop_event.set()

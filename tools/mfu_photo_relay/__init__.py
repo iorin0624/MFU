@@ -1,0 +1,1 @@
+"""MFU photo relay client."""
