@@ -130,14 +130,84 @@ _OPERATIONS = {
 }
 
 
-def _job_path(operation: str, data: dict) -> str:
+def _direct_job_status(operation: str, data: dict) -> dict:
+    """Read the in-process worker state without issuing nested Flask requests.
+
+    The job starter and this Socket.IO handler run in the same Gunicorn worker,
+    so reading the worker's synchronized job store is both reliable and avoids
+    consuming a database connection on every progress tick.
+    """
+    from app.image_viewer.routes import (
+        _read_instagram_job,
+        _read_video_job,
+        _read_video_save_job,
+    )
+
     if operation in {"fetch_images", "fetch_video_frames"}:
-        return f"/image_viewer/api/instagram/jobs/{data.get('jobId')}"
+        job_id = str(data.get("jobId") or "")
+        job = _read_instagram_job(job_id) if job_id else {}
+        if not job:
+            return {"ok": False, "status": "error", "error": "取得ジョブが見つかりません。"}
+        images = []
+        for item in job.get("images") or []:
+            if not isinstance(item, dict):
+                continue
+            next_item = dict(item)
+            next_item.pop("previewCache", None)
+            index = int(next_item.get("index") or 0)
+            next_item["previewUrl"] = f"/image_viewer/api/instagram/jobs/{job_id}/preview/{index}"
+            images.append(next_item)
+        status = str(job.get("status") or "pending")
+        return {
+            "ok": status not in {"error"},
+            "status": status,
+            "source": job.get("source") or "instagram",
+            "shortcode": job.get("shortcode"),
+            "loginRequired": status == "login_required",
+            "error": job.get("error"),
+            "total": int(job.get("total") or len(images)),
+            "processed": int(job.get("processed") or 0),
+            "downloaded": int(job.get("downloaded") or 0),
+            "failed": int(job.get("failed") or 0),
+            "images": images,
+        }
     if operation == "fetch_videos":
-        return f"/image_viewer/api/video/jobs/{data.get('jobId')}"
+        job_id = str(data.get("jobId") or "")
+        job = _read_video_job(job_id) if job_id else {}
+        if not job:
+            return {"ok": False, "status": "error", "error": "取得ジョブが見つかりません。"}
+        status = str(job.get("status") or "pending")
+        videos = job.get("videos") or []
+        return {
+            "ok": status not in {"error"},
+            "status": status,
+            "source": job.get("source") or "instagram",
+            "identifier": job.get("identifier"),
+            "loginRequired": status == "login_required",
+            "error": job.get("error"),
+            "total": int(job.get("total") or len(videos)),
+            "processed": int(job.get("processed") or len(videos)),
+            "downloaded": int(job.get("downloaded") or len(videos)),
+            "failed": int(job.get("failed") or 0),
+            "videos": videos,
+        }
     if operation == "save_videos":
-        return f"/image_viewer/api/video/save-jobs/{data.get('saveJobId')}"
-    return ""
+        job_id = str(data.get("saveJobId") or "")
+        job = _read_video_save_job(job_id) if job_id else {}
+        if not job:
+            return {"ok": False, "status": "error", "error": "動画保存ジョブが見つかりません。"}
+        status = str(job.get("status") or "pending")
+        return {
+            "ok": status != "error",
+            "status": status,
+            "error": job.get("error"),
+            "processed": int(job.get("processed") or 0),
+            "total": int(job.get("total") or 0),
+            "saved": job.get("saved") or [],
+            "duplicates": job.get("duplicates") or [],
+            "errors": job.get("errors") or [],
+        }
+    return data
 
 
 @socketio.on("connect", namespace="/media-clipboard")
@@ -169,14 +239,14 @@ def media_clipboard_request(payload=None):
         path += "?" + encode_query(params)
     data = _internal_request(token, method, path, params if method == "POST" else None)
     data["request_id"] = request_id
-    job_path = _job_path(operation, data)
-    if not data.get("ok") or not job_path or job_path.endswith("/None"):
+    is_background_job = operation in {"fetch_images", "fetch_video_frames", "fetch_videos", "save_videos"}
+    if not data.get("ok") or not is_background_job:
         return data
 
     attempts = 1800 if operation == "save_videos" else 180
     for _ in range(attempts):
         socketio.sleep(1)
-        current = _internal_request(token, "GET", job_path)
+        current = _direct_job_status(operation, data)
         current.update({"request_id": request_id, "operation": operation})
         emit("media_clipboard_progress", current)
         if str(current.get("status") or "") in {"done", "error", "cancelled", "login_required"}:
