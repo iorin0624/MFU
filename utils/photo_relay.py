@@ -987,7 +987,7 @@ def relay_job_status(job_uuid: str):
 @socketio.on("connect", namespace="/photo-relay")
 def photo_relay_socket_connect(auth=None):
     auth = auth if isinstance(auth, dict) else {}
-    device = _verify_device_token(str(auth.get("token") or ""))
+    device = _verify_device_token(str(auth.get("photo_token") or auth.get("token") or ""))
     if not device:
         return False
     _cleanup_expired_jobs()

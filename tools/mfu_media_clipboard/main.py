@@ -243,6 +243,8 @@ class ApiClient:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": f"{APP_NAME}/1.0"})
         self.session.cookies = self._cookie_jar()
+        self.websocket_rpc = None
+        self.websocket_progress: Signal | None = None
 
     def _load_base_url(self) -> str:
         try:
@@ -274,8 +276,10 @@ class ApiClient:
         settings[key] = value
         self._save_settings(settings)
 
-    def set_token(self, token: str) -> None:
+    def set_token(self, token: str, *, persist: bool = True) -> None:
         self.token = token.strip()
+        if not persist:
+            return
         settings = self._load_settings()
         settings["base_url"] = self.base_url
         settings["api_token"] = self.token
@@ -344,25 +348,27 @@ class ApiClient:
         return self._json(res)
 
     def ensure_login(self) -> None:
-        data = self.get("/desktop/media-clipboard/api/session")
+        data = self._ws_call("session", {}) if self.websocket_rpc else self.get("/desktop/media-clipboard/api/session")
         if not data.get("authenticated"):
             raise ApiError("MFUにログインしていません。トレイメニューの「ログイン」からログインしてください。")
 
     def image_next_number(self, folder: str) -> int:
-        data = self.get("/image_viewer/api/instagram/next-number", folder=folder)
+        data = self._ws_call("next_number", {"folder": folder}) if self.websocket_rpc else self.get("/image_viewer/api/instagram/next-number", folder=folder)
         return int(data.get("nextNumber") or 1)
 
     def start_instagram_browser(self) -> dict[str, Any]:
-        return self.post_json("/image_viewer/api/instagram/browser/start", {}, timeout=90)
+        return self._ws_call("instagram_browser_start", {}) if self.websocket_rpc else self.post_json("/image_viewer/api/instagram/browser/start", {}, timeout=90)
 
     def folders(self) -> list[str]:
-        data = self.get("/image_viewer/api/images")
+        data = self._ws_call("folders", {}) if self.websocket_rpc else self.get("/image_viewer/api/images")
         folders = data.get("folders") or []
         values = [str(folder) for folder in folders if isinstance(folder, str)]
         values.append("")
         return sorted(set(values), key=folder_sort_key)
 
     def fetch_images(self, source_url: str, progress: Signal) -> dict[str, Any]:
+        if self.websocket_rpc:
+            return self._ws_call("fetch_images", {"url": source_url}, progress)
         data = self.post_json("/image_viewer/api/instagram/fetch", {"url": source_url})
         job_id = str(data.get("jobId") or "")
         if not job_id:
@@ -372,6 +378,8 @@ class ApiClient:
         return result
 
     def fetch_videos(self, source_url: str, progress: Signal) -> dict[str, Any]:
+        if self.websocket_rpc:
+            return self._ws_call("fetch_videos", {"url": source_url}, progress)
         data = self.post_json("/image_viewer/api/video/fetch", {"url": source_url})
         job_id = str(data.get("jobId") or "")
         if not job_id:
@@ -381,6 +389,8 @@ class ApiClient:
         return result
 
     def fetch_video_frames(self, source_url: str, progress: Signal) -> dict[str, Any]:
+        if self.websocket_rpc:
+            return self._ws_call("fetch_video_frames", {"url": source_url}, progress)
         data = self.post_json("/image_viewer/api/video/frames/fetch", {"url": source_url})
         job_id = str(data.get("jobId") or "")
         if not job_id:
@@ -413,16 +423,37 @@ class ApiClient:
         processed = int(data.get("processed") or 0)
         downloaded = int(data.get("downloaded") or 0)
         failed = int(data.get("failed") or 0)
+        current = max(processed, downloaded, len(data.get("images") or []), len(data.get("videos") or []))
         if total:
             if downloaded or failed:
-                return f"{action_label}... {processed}/{total}  成功:{downloaded}  失敗:{failed}"
-            return f"{action_label}... {processed}/{total}"
-        return f"{action_label}..."
+                return f"{action_label}... {current}/{total}枚  成功:{downloaded}  失敗:{failed}"
+            return f"{action_label}... {current}/{total}枚"
+        if current:
+            return f"{action_label}... {current}枚取得"
+        return f"{action_label}... 0枚取得"
+
+    def _ws_call(self, operation: str, payload: dict[str, Any], progress: Signal | None = None) -> dict[str, Any]:
+        self.websocket_progress = progress
+        try:
+            data = self.websocket_rpc(operation, payload)
+        finally:
+            self.websocket_progress = None
+        if not isinstance(data, dict) or data.get("ok") is False:
+            raise ApiError(str((data or {}).get("error") or "WebSocket通信に失敗しました。"))
+        return data
+
+    def handle_websocket_progress(self, data: dict[str, Any]) -> None:
+        progress = self.websocket_progress
+        if progress is not None:
+            label = "動画を保存中" if data.get("operation") == "save_videos" else "画像を取得中"
+            progress.emit(self._progress_text(data, action_label=label))
 
     def save_images(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.post_json("/image_viewer/api/instagram/save", payload, timeout=180)
+        return self._ws_call("save_images", payload) if self.websocket_rpc else self.post_json("/image_viewer/api/instagram/save", payload, timeout=180)
 
     def save_videos(self, payload: dict[str, Any], progress: Signal) -> dict[str, Any]:
+        if self.websocket_rpc:
+            return self._ws_call("save_videos", payload, progress)
         data = self.post_json("/image_viewer/api/video/save-async", payload, timeout=30)
         save_job_id = str(data.get("saveJobId") or "")
         if not save_job_id:
@@ -1468,7 +1499,8 @@ class MediaClipboardApp(QObject):
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(qt_app.style().standardIcon(QStyle.SP_DriveNetIcon))
         self.tray.setToolTip(APP_NAME)
-        self.tray.messageClicked.connect(self._open_pending_confirmation)
+        self.notification_action = None
+        self.tray.messageClicked.connect(self._on_notification_clicked)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.setContextMenu(self._build_menu())
         self.tray.show()
@@ -1594,12 +1626,7 @@ class MediaClipboardApp(QObject):
         if omitted:
             message += f"\n上限を超えた{omitted}件は対象外です。"
         message += "\nクリックして取得確認を開きます。"
-        self.tray.showMessage(
-            APP_NAME,
-            message,
-            QSystemTrayIcon.Information,
-            10000,
-        )
+        self.show_notification(message, QSystemTrayIcon.Information, 10000, self._open_pending_confirmation)
 
     def _open_manual_url(self) -> None:
         dialog = ManualUrlDialog()
@@ -1745,6 +1772,19 @@ class MediaClipboardApp(QObject):
     def _set_progress_text(self, text: str) -> None:
         if self.progress:
             self.progress.setLabelText(f"{self.batch_index + 1}/{len(self.batch_urls)}  {text}")
+        self.tray.setToolTip(f"{APP_NAME}\nURL {self.batch_index + 1}/{len(self.batch_urls)}  {text}")
+
+    def _on_notification_clicked(self) -> None:
+        action = self.notification_action
+        self.notification_action = None
+        if callable(action):
+            action()
+            return
+        self._open_pending_confirmation()
+
+    def show_notification(self, message: str, icon=QSystemTrayIcon.Information, timeout: int = 5000, action=None) -> None:
+        self.notification_action = action
+        self.tray.showMessage(APP_NAME, message, icon, timeout)
 
     def _cancel_batch(self) -> None:
         self.batch_cancel_requested = True
@@ -1840,6 +1880,8 @@ class MediaClipboardApp(QObject):
         }
 
     def _finish_batch(self) -> None:
+        if getattr(self, "tray", None):
+            self.tray.setToolTip(APP_NAME)
         total_urls = len(self.batch_urls)
         kinds = list(self.batch_kinds)
         results = list(self.batch_results)

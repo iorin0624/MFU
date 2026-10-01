@@ -1,0 +1,1 @@
+"""MFU Media Clipboard client."""
