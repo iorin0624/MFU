@@ -23,6 +23,8 @@ const settingsOpen = ref(false);
 const wheelNavigationCooldownMs = ref(loadWheelNavigationCooldown());
 const wheelNavigationCooldownDraft = ref(wheelNavigationCooldownMs.value);
 let wheelNavigationAllowedAt = 0;
+let versionTimer = 0;
+let refreshingSequence = false;
 
 const item = computed(() => props.win.media!);
 const sequence = computed(() => props.win.sequence || []);
@@ -52,6 +54,70 @@ function adjacentImage(entries: MediaItem[], start: number, direction: -1 | 1) {
     if (entries[index]?.mediaType === 'image') return entries[index];
   }
   return undefined;
+}
+
+function nearestImage(entries: MediaItem[], start: number) {
+  if (!entries.length) return undefined;
+  const safeStart = Math.min(entries.length - 1, Math.max(0, start));
+  if (entries[safeStart]?.mediaType === 'image') return entries[safeStart];
+  for (let distance = 1; distance < entries.length; distance += 1) {
+    const after = entries[safeStart + distance];
+    if (after?.mediaType === 'image') return after;
+    const before = entries[safeStart - distance];
+    if (before?.mediaType === 'image') return before;
+  }
+  return undefined;
+}
+
+async function refreshSequenceIfChanged(force = false) {
+  const context = props.win.sequenceContext;
+  if (!context || document.hidden || moving.value || refreshingSequence) return;
+  refreshingSequence = true;
+  try {
+    const revision = await imageViewerApi.version(context.folder);
+    if (!force && context.version && revision.version === context.version) return;
+
+    const oldLocalIndex = Math.max(0, currentIndex.value);
+    const oldGlobalIndex = Math.max(0, context.offset + oldLocalIndex);
+    const currentPath = item.value.path;
+    const payload = await imageViewerApi.list(
+      context.folder, context.sort, 1, 1000, oldGlobalIndex,
+      context.groupBy || 'none', context.groupUnit || 'day',
+    );
+    const entries = payload.images || [];
+    const offset = Number(payload.pagination?.offset || 0);
+    const total = Number(payload.pagination?.total ?? entries.length);
+    const retained = entries.find((entry) => entry.path === currentPath);
+
+    props.win.sequence = entries;
+    props.win.sequenceContext = {
+      ...context,
+      offset,
+      total,
+      version: String(payload.version || revision.version || ''),
+    };
+
+    if (retained) {
+      // Keep the same image selected while refreshing its metadata and URL.
+      props.win.media = retained;
+      props.win.title = retained.name;
+      return;
+    }
+
+    // The displayed file was removed. Continue from the closest remaining
+    // position instead of leaving the viewer on a stale, unnavigable item.
+    const replacement = nearestImage(entries, oldGlobalIndex - offset);
+    if (replacement) show(replacement);
+  } catch {
+    // A transient network failure is retried by the next poll. Avoid covering
+    // the image with repeated error notifications while the viewer is open.
+  } finally {
+    refreshingSequence = false;
+  }
+}
+
+function visibilityChanged() {
+  if (!document.hidden) void refreshSequenceIfChanged();
 }
 
 async function loadAdjacentWindow(direction: -1 | 1) {
@@ -158,11 +224,15 @@ function keydown(event: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener('keydown', keydown);
+  document.addEventListener('visibilitychange', visibilityChanged);
   window.addEventListener(VIEWER_SETTINGS_CHANGED_EVENT, syncSettings);
+  versionTimer = window.setInterval(() => { void refreshSequenceIfChanged(); }, 5000);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', keydown);
+  document.removeEventListener('visibilitychange', visibilityChanged);
   window.removeEventListener(VIEWER_SETTINGS_CHANGED_EVENT, syncSettings);
+  window.clearInterval(versionTimer);
 });
 </script>
 

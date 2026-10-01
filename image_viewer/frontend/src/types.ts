@@ -144,6 +144,7 @@ export interface DesktopWindow {
     sort: SortDirection;
     offset: number;
     total: number;
+    version?: string;
     groupBy?: GroupBy;
     groupUnit?: GroupUnit;
   };
