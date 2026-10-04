@@ -196,3 +196,115 @@ def test_batch_queue_is_sequential_and_supports_retry_and_cancellation():
 
     assert "def _cancel_batch(self)" in source
     assert 'box.addButton("失敗したURLだけ再試行"' in source
+
+
+def test_batch_result_dialog_combines_media_from_every_url():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+
+    class FakeApi:
+        def get_setting(self, _key, default=""):
+            return default
+
+        def folders(self):
+            return [""]
+
+        def image_next_number(self, _folder):
+            return 12
+
+    results = [
+        {
+            "url": "https://x.com/example/status/1",
+            "fetch": {
+                "images": {
+                    "jobId": "image-job",
+                    "images": [{"index": 1, "filename": "one.jpg"}],
+                },
+                "videos": None,
+                "errors": [],
+            },
+            "errors": [],
+        },
+        {
+            "url": "https://x.com/example/status/2",
+            "fetch": {
+                "images": None,
+                "videos": {
+                    "jobId": "video-job",
+                    "videos": [{"index": 2, "filename": "two.mp4"}],
+                },
+                "errors": [],
+            },
+            "errors": [],
+        },
+    ]
+
+    dialog = module.BatchMediaSelectionDialog(FakeApi(), results)
+    app.processEvents()
+
+    assert dialog.tabs.count() == 2
+    assert len(dialog.image_entries) == 1
+    assert len(dialog.video_entries) == 1
+    assert dialog.image_start.value() == 12
+    assert all(entry["checkbox"].isChecked() for entry in dialog.image_entries + dialog.video_entries)
+    dialog.close()
+
+
+def test_manual_url_dialog_suppresses_clipboard_toasts_until_closed():
+    module = _load_module()
+    controller = module.MediaClipboardApp.__new__(module.MediaClipboardApp)
+    module.QObject.__init__(controller)
+    controller.manual_url_dialog_open = True
+    controller.notification_action = None
+
+    class FakeTray:
+        calls = []
+
+        def showMessage(self, *args):
+            self.calls.append(args)
+
+    controller.tray = FakeTray()
+    controller.show_notification("表示しない")
+
+    assert controller.tray.calls == []
+    assert controller.notification_action is None
+
+
+def test_batch_save_worker_keeps_image_numbering_continuous_across_urls():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+
+    class FakeApi:
+        image_payloads = []
+        video_payloads = []
+
+        def save_images(self, payload):
+            self.image_payloads.append(payload)
+            return {"saved": list(payload["selected"]), "duplicates": [], "errors": []}
+
+        def save_videos(self, payload, _progress):
+            self.video_payloads.append(payload)
+            return {"saved": list(payload["selected"]), "duplicates": [], "errors": []}
+
+    api = FakeApi()
+    outcomes = [
+        {"url": "one", "shown": True, "saved": 0, "duplicates": 0, "skipped": 0, "empty": False, "errors": []},
+        {"url": "two", "shown": True, "saved": 0, "duplicates": 0, "skipped": 0, "empty": False, "errors": []},
+    ]
+    image_groups = [
+        {"row_index": 0, "job": {"jobId": "a", "images": []}, "selected": [1, 2]},
+        {"row_index": 1, "job": {"jobId": "b", "images": []}, "selected": [3]},
+    ]
+    video_groups = [
+        {"row_index": 1, "job": {"jobId": "v", "videos": []}, "selected": [8]},
+    ]
+    finished = []
+    worker = module.BatchSaveWorker(api, outcomes, image_groups, video_groups, "photos", 7, 5, "video")
+    worker.signals.finished.connect(finished.append)
+    worker.run()
+    app.processEvents()
+
+    assert [payload["startNumber"] for payload in api.image_payloads] == [7, 9]
+    assert api.video_payloads[0]["folder"] == "video"
+    assert finished[0]["outcomes"][0]["saved"] == 2
+    assert finished[0]["outcomes"][1]["saved"] == 2
