@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 
@@ -248,6 +250,51 @@ def test_batch_result_dialog_combines_media_from_every_url():
     assert dialog.image_start.value() == 12
     assert all(entry["checkbox"].isChecked() for entry in dialog.image_entries + dialog.video_entries)
     dialog.close()
+
+
+def test_thumbnail_downloads_are_bounded_and_retry_transient_failures():
+    module = _load_module()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    attempts: dict[str, int] = {}
+    loaded: list[tuple[int, bytes]] = []
+
+    class FakeApi:
+        def download_bytes(self, url):
+            nonlocal active, max_active
+            with lock:
+                attempts[url] = attempts.get(url, 0) + 1
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.02)
+                if url == "preview://retry" and attempts[url] < 3:
+                    raise RuntimeError("temporary failure")
+                return url.encode()
+            finally:
+                with lock:
+                    active -= 1
+
+    class FakeLoaded:
+        def emit(self, index, data):
+            with lock:
+                loaded.append((index, data))
+
+    class FakeSignals:
+        loaded = FakeLoaded()
+
+    urls = [f"preview://{index}" for index in range(18)] + ["preview://retry"]
+    workers = [module.ThumbWorker(FakeApi(), index, url, FakeSignals()) for index, url in enumerate(urls)]
+    futures = [worker.start() for worker in workers]
+    for future in futures:
+        future.result(timeout=5)
+
+    assert max_active <= module.THUMBNAIL_MAX_WORKERS
+    assert max_active > 1
+    assert attempts["preview://retry"] == 3
+    assert len(loaded) == len(urls)
+    assert loaded[-1][1] == b"preview://retry"
 
 
 def test_manual_url_dialog_suppresses_clipboard_toasts_until_closed():

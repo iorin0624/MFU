@@ -102,7 +102,10 @@ _video_save_jobs: dict[str, dict] = {}
 _video_save_jobs_lock = threading.Lock()
 _ai_jobs: dict[str, dict] = {}
 _ai_jobs_lock = threading.Lock()
-_INSTAGRAM_JOB_TTL_SECONDS = 15 * 60
+# A desktop batch can fetch many source URLs sequentially and then display all
+# previews in one selection dialog. Keep completed jobs long enough for that
+# review/save step instead of expiring the early URLs while later ones fetch.
+_INSTAGRAM_JOB_TTL_SECONDS = 6 * 60 * 60
 _AI_JOB_TTL_SECONDS = 6 * 60 * 60
 _INSTAGRAM_PREVIEW_WORKERS = 4
 _INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT = int(os.environ.get("INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT", "120"))
@@ -3038,7 +3041,8 @@ def _cleanup_incomplete_instagram_job_files() -> None:
         created_at = float(job.get("created_at") or job_dir.stat().st_mtime)
         stale_incomplete = status in {"pending", "downloading"} and now - created_at > 10 * 60
         finished = status in {"done", "error", "cancelled", "login_required"}
-        if finished or stale_incomplete:
+        expired_finished = finished and now - created_at > _INSTAGRAM_JOB_TTL_SECONDS
+        if expired_finished or stale_incomplete:
             shutil.rmtree(job_dir, ignore_errors=True)
             with _instagram_jobs_lock:
                 _instagram_jobs.pop(job_dir.name, None)
