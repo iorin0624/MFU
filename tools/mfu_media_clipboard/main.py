@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from http.cookiejar import MozillaCookieJar
@@ -631,19 +632,40 @@ class ThumbSignals(QObject):
     loaded = Signal(int, bytes)
 
 
-class ThumbWorker(threading.Thread):
+THUMBNAIL_MAX_WORKERS = 6
+_thumbnail_executor = ThreadPoolExecutor(
+    max_workers=THUMBNAIL_MAX_WORKERS,
+    thread_name_prefix="mfu-thumbnail",
+)
+
+
+class ThumbWorker:
     def __init__(self, api: ApiClient, index: int, url: str, signals: ThumbSignals) -> None:
-        super().__init__(daemon=True)
         self.api = api
         self.index = index
         self.url = url
         self.signals = signals
+        self.future: Future[None] | None = None
+
+    def start(self) -> Future[None]:
+        # A batch can contain several hundred images. Starting one OS thread and
+        # one HTTP request per thumbnail exhausts requests' connection pool and
+        # leaves the earlier URL groups blank. Keep preview traffic bounded.
+        self.future = _thumbnail_executor.submit(self.run)
+        return self.future
 
     def run(self) -> None:
-        try:
-            self.signals.loaded.emit(self.index, self.api.download_bytes(self.url))
-        except Exception:
-            self.signals.loaded.emit(self.index, b"")
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                self.signals.loaded.emit(self.index, self.api.download_bytes(self.url))
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+        logging.warning("thumbnail download failed after retries: %s (%s)", self.url, last_error)
+        self.signals.loaded.emit(self.index, b"")
 
 
 def _qt_cookie_to_cookie(qt_cookie: QNetworkCookie, base_host: str) -> Cookie:
