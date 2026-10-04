@@ -106,6 +106,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -119,6 +120,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -538,6 +540,89 @@ class VideoSaveWorker(threading.Thread):
         try:
             result = self.api.save_videos(self.payload, self.signals.progress)
             self.signals.finished.emit(result)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class BatchSaveWorker(threading.Thread):
+    def __init__(
+        self,
+        api: ApiClient,
+        outcomes: list[dict[str, Any]],
+        image_groups: list[dict[str, Any]],
+        video_groups: list[dict[str, Any]],
+        image_folder: str,
+        image_start: int,
+        image_digits: int,
+        video_folder: str,
+    ) -> None:
+        super().__init__(daemon=True)
+        self.api = api
+        self.outcomes = outcomes
+        self.image_groups = image_groups
+        self.video_groups = video_groups
+        self.image_folder = image_folder
+        self.image_start = image_start
+        self.image_digits = image_digits
+        self.video_folder = video_folder
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        try:
+            total = len(self.image_groups) + len(self.video_groups)
+            current = 0
+            next_number = self.image_start
+            for group in self.image_groups:
+                current += 1
+                row = self.outcomes[int(group["row_index"])]
+                selected = list(group["selected"])
+                self.signals.progress.emit(f"{current}/{total} 画像を保存しています...")
+                try:
+                    job = group["job"]
+                    data = self.api.save_images(
+                        {
+                            "shortcode": job.get("shortcode") or "",
+                            "jobId": job.get("jobId") or "",
+                            "images": job.get("images") or [],
+                            "selected": selected,
+                            "folder": self.image_folder,
+                            "startNumber": next_number,
+                            "digits": self.image_digits,
+                        }
+                    )
+                    row["saved"] += len(data.get("saved") or [])
+                    row["duplicates"] += len(data.get("duplicates") or [])
+                    failed = len(data.get("errors") or [])
+                    if failed:
+                        row["errors"].append(f"画像保存: {failed}件失敗")
+                except Exception as exc:
+                    row["errors"].append(f"画像保存: {exc}")
+                next_number += len(selected)
+
+            for group in self.video_groups:
+                current += 1
+                row = self.outcomes[int(group["row_index"])]
+                selected = list(group["selected"])
+                self.signals.progress.emit(f"{current}/{total} 動画を保存しています...")
+                try:
+                    job = group["job"]
+                    data = self.api.save_videos(
+                        {
+                            "jobId": job.get("jobId") or "",
+                            "videos": job.get("videos") or [],
+                            "selected": selected,
+                            "folder": self.video_folder,
+                        },
+                        self.signals.progress,
+                    )
+                    row["saved"] += len(data.get("saved") or [])
+                    row["duplicates"] += len(data.get("duplicates") or [])
+                    failed = len(data.get("errors") or [])
+                    if failed:
+                        row["errors"].append(f"動画保存: {failed}件失敗")
+                except Exception as exc:
+                    row["errors"].append(f"動画保存: {exc}")
+            self.signals.finished.emit({"outcomes": self.outcomes})
         except Exception as exc:
             self.signals.failed.emit(str(exc))
 
@@ -1273,6 +1358,396 @@ class VideoSelectionDialog(QDialog):
         QMessageBox.critical(self, APP_NAME, f"動画保存に失敗しました。\n{error}")
 
 
+class BatchMediaSelectionDialog(QDialog):
+    CARD_WIDTH = 168
+    THUMB_SIZE = 140
+
+    def __init__(
+        self,
+        api: ApiClient,
+        results: list[dict[str, Any]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.api = api
+        self.results = results
+        self.outcomes = self._initial_outcomes()
+        self.save_outcomes: list[dict[str, Any]] | None = None
+        self.image_entries: list[dict[str, Any]] = []
+        self.video_entries: list[dict[str, Any]] = []
+        self.thumb_signals = ThumbSignals()
+        self.thumb_signals.loaded.connect(self._apply_thumb)
+        self.thumb_workers: list[ThumbWorker] = []
+        self.save_worker: BatchSaveWorker | None = None
+        self.save_progress: QProgressDialog | None = None
+
+        self.setWindowTitle("一括取得結果から保存")
+        self.resize(1120, 780)
+        layout = QVBoxLayout(self)
+        summary = self._summary_text()
+        if summary:
+            label = QLabel(summary)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        notes = self._result_notes()
+        if notes:
+            note_box = QPlainTextEdit()
+            note_box.setReadOnly(True)
+            note_box.setMaximumHeight(110)
+            note_box.setPlainText(notes)
+            layout.addWidget(note_box)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_image_tab(), "画像")
+        self.tabs.addTab(self._build_video_tab(), "動画")
+        layout.addWidget(self.tabs, 1)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Save).setText("選択したメディアを保存")
+        self.buttons.accepted.connect(self._save)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+        if self.image_entries:
+            self._refresh_next_number()
+        elif self.video_entries:
+            self.tabs.setCurrentIndex(1)
+
+    def _initial_outcomes(self) -> list[dict[str, Any]]:
+        outcomes: list[dict[str, Any]] = []
+        for row in self.results:
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            errors = [str(value) for value in (row.get("errors") or [])]
+            for value in fetch.get("errors") or []:
+                text = str(value)
+                if text not in errors:
+                    errors.append(text)
+            image_job = fetch.get("images") if isinstance(fetch.get("images"), dict) else {}
+            video_job = fetch.get("videos") if isinstance(fetch.get("videos"), dict) else {}
+            shown = bool(image_job.get("images") or video_job.get("videos"))
+            outcomes.append(
+                {
+                    "url": str(row.get("url") or ""),
+                    "shown": shown,
+                    "saved": 0,
+                    "duplicates": 0,
+                    "skipped": 0,
+                    "empty": not shown and not errors,
+                    "errors": errors,
+                }
+            )
+        return outcomes
+
+    def _summary_text(self) -> str:
+        image_count = 0
+        video_count = 0
+        failed_urls = 0
+        for row in self.results:
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            image_job = fetch.get("images") if isinstance(fetch.get("images"), dict) else {}
+            video_job = fetch.get("videos") if isinstance(fetch.get("videos"), dict) else {}
+            image_count += len(image_job.get("images") or [])
+            video_count += len(video_job.get("videos") or [])
+            if row.get("errors") or fetch.get("errors"):
+                failed_urls += 1
+        text = f"{len(self.results)}件のURLから 画像{image_count}件・動画{video_count}件を取得しました。"
+        if failed_urls:
+            text += f" 取得エラー: {failed_urls}件"
+        return text
+
+    def _result_notes(self) -> str:
+        notes: list[str] = []
+        for index, row in enumerate(self.results, start=1):
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            image_job = fetch.get("images") if isinstance(fetch.get("images"), dict) else {}
+            video_job = fetch.get("videos") if isinstance(fetch.get("videos"), dict) else {}
+            has_media = bool(image_job.get("images") or video_job.get("videos"))
+            errors = [str(value) for value in (row.get("errors") or [])]
+            for value in fetch.get("errors") or []:
+                text = str(value)
+                if text not in errors:
+                    errors.append(text)
+            if errors:
+                notes.append(f"{index}. ⚠ {row.get('url') or ''}\n   " + " / ".join(errors))
+            elif not has_media:
+                notes.append(f"{index}. ℹ メディアなし: {row.get('url') or ''}")
+        return "\n".join(notes)
+
+    def _folder_combo(self, current: str) -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)
+        try:
+            folders = self.api.folders()
+        except Exception:
+            folders = [""]
+        for folder in folders:
+            combo.addItem("(ルート)" if folder == "" else folder, folder)
+        match = combo.findData(current)
+        if match < 0 and current:
+            combo.insertItem(0, current, current)
+            match = 0
+        combo.setCurrentIndex(max(0, match))
+        return combo
+
+    @staticmethod
+    def _folder_text(combo: QComboBox) -> str:
+        data = combo.currentData()
+        if isinstance(data, str) and combo.currentText() in {"(ルート)", data}:
+            return data
+        return combo.currentText().strip()
+
+    def _selection_actions(self, entries: list[dict[str, Any]]) -> QHBoxLayout:
+        actions = QHBoxLayout()
+        for label, checked in (("全選択", True), ("全解除", False)):
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda _=False, values=entries, state=checked: [
+                    entry["checkbox"].setChecked(state) for entry in values
+                ]
+            )
+            actions.addWidget(button)
+        invert = QPushButton("反転")
+        invert.clicked.connect(
+            lambda _=False, values=entries: [
+                entry["checkbox"].setChecked(not entry["checkbox"].isChecked())
+                for entry in values
+            ]
+        )
+        actions.addWidget(invert)
+        actions.addStretch(1)
+        return actions
+
+    def _build_image_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        form = QFormLayout()
+        self.image_folder = self._folder_combo(self.api.get_setting("last_image_folder"))
+        self.image_start = QSpinBox()
+        self.image_start.setRange(1, 999999)
+        self.image_digits = QSpinBox()
+        self.image_digits.setRange(1, 6)
+        self.image_digits.setValue(3)
+        form.addRow("保存先フォルダー", self.image_folder)
+        form.addRow("開始番号", self.image_start)
+        form.addRow("桁数", self.image_digits)
+        layout.addLayout(form)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        holder = QWidget()
+        groups_layout = QVBoxLayout(holder)
+        for row_index, row in enumerate(self.results):
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            job = fetch.get("images") if isinstance(fetch.get("images"), dict) else {}
+            items = [item for item in (job.get("images") or []) if isinstance(item, dict)]
+            if not items:
+                continue
+            group = QGroupBox(f"{row_index + 1}. {row.get('url') or ''}")
+            group_layout = QVBoxLayout(group)
+            group_actions = QHBoxLayout()
+            grid = QGridLayout()
+            row_entries: list[dict[str, Any]] = []
+            for pos, item in enumerate(items):
+                card = ImageCardWidget()
+                card.setObjectName("mediaCard")
+                card.setFixedWidth(self.CARD_WIDTH)
+                card_layout = QVBoxLayout(card)
+                thumb = QLabel("Loading...")
+                thumb.setFixedSize(self.THUMB_SIZE, self.THUMB_SIZE)
+                thumb.setAlignment(Qt.AlignCenter)
+                thumb.setStyleSheet("border:1px solid #4b5563; background:transparent;")
+                checkbox = QCheckBox(str(item.get("filename") or item.get("index") or pos))
+                checkbox.setChecked(True)
+                card_layout.addWidget(thumb)
+                card_layout.addWidget(checkbox)
+                entry = {
+                    "row_index": row_index,
+                    "job": job,
+                    "item": item,
+                    "checkbox": checkbox,
+                    "thumb": thumb,
+                    "card": card,
+                }
+                row_entries.append(entry)
+                self.image_entries.append(entry)
+                card.clicked.connect(lambda value=checkbox: value.setChecked(not value.isChecked()))
+                checkbox.toggled.connect(lambda _=False, value=card: self._style_batch_card(value))
+                self._style_batch_card(card)
+                grid.addWidget(card, pos // 5, pos % 5, Qt.AlignTop | Qt.AlignLeft)
+                preview_url = str(item.get("previewUrl") or item.get("url") or "")
+                if preview_url:
+                    worker = ThumbWorker(self.api, len(self.image_entries) - 1, preview_url, self.thumb_signals)
+                    self.thumb_workers.append(worker)
+                    worker.start()
+            for label, checked in (("このURLを全選択", True), ("このURLを全解除", False)):
+                button = QPushButton(label)
+                button.clicked.connect(
+                    lambda _=False, values=row_entries, state=checked: [
+                        entry["checkbox"].setChecked(state) for entry in values
+                    ]
+                )
+                group_actions.addWidget(button)
+            group_actions.addStretch(1)
+            group_layout.addLayout(group_actions)
+            group_layout.addLayout(grid)
+            groups_layout.addWidget(group)
+        if not self.image_entries:
+            groups_layout.addWidget(QLabel("取得できた画像はありません。"))
+        groups_layout.addStretch(1)
+        scroll.setWidget(holder)
+        layout.addLayout(self._selection_actions(self.image_entries))
+        layout.addWidget(scroll, 1)
+        self.image_number_status = QLabel("")
+        layout.addWidget(self.image_number_status)
+        self.image_folder.activated.connect(lambda _=None: self._refresh_next_number())
+        line_edit = self.image_folder.lineEdit()
+        if line_edit:
+            line_edit.editingFinished.connect(self._refresh_next_number)
+        return page
+
+    def _build_video_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        form = QFormLayout()
+        self.video_folder = self._folder_combo(self.api.get_setting("last_video_folder", "video"))
+        form.addRow("保存先フォルダー", self.video_folder)
+        layout.addLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        holder = QWidget()
+        groups_layout = QVBoxLayout(holder)
+        for row_index, row in enumerate(self.results):
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            job = fetch.get("videos") if isinstance(fetch.get("videos"), dict) else {}
+            items = [item for item in (job.get("videos") or []) if isinstance(item, dict)]
+            if not items:
+                continue
+            group = QGroupBox(f"{row_index + 1}. {row.get('url') or ''}")
+            group_layout = QVBoxLayout(group)
+            row_entries: list[dict[str, Any]] = []
+            for item in items:
+                checkbox = QCheckBox(str(item.get("filename") or item.get("index") or "video"))
+                checkbox.setChecked(True)
+                entry = {"row_index": row_index, "job": job, "item": item, "checkbox": checkbox}
+                row_entries.append(entry)
+                self.video_entries.append(entry)
+                group_layout.addWidget(checkbox)
+            actions = QHBoxLayout()
+            for label, checked in (("このURLを全選択", True), ("このURLを全解除", False)):
+                button = QPushButton(label)
+                button.clicked.connect(
+                    lambda _=False, values=row_entries, state=checked: [
+                        entry["checkbox"].setChecked(state) for entry in values
+                    ]
+                )
+                actions.addWidget(button)
+            actions.addStretch(1)
+            group_layout.addLayout(actions)
+            groups_layout.addWidget(group)
+        if not self.video_entries:
+            groups_layout.addWidget(QLabel("取得できた動画はありません。"))
+        groups_layout.addStretch(1)
+        scroll.setWidget(holder)
+        layout.addLayout(self._selection_actions(self.video_entries))
+        layout.addWidget(scroll, 1)
+        return page
+
+    @staticmethod
+    def _style_batch_card(card: QWidget) -> None:
+        checkbox = card.findChild(QCheckBox)
+        selected = bool(checkbox and checkbox.isChecked())
+        card.setProperty("selected", selected)
+        card.setStyleSheet(
+            "QWidget#mediaCard {border:3px solid #4b5563;border-radius:6px;background:#1f2933;}"
+            "QWidget#mediaCard[selected='true'] {border-color:#38bdf8;background:#0f3a55;}"
+            "QWidget#mediaCard QCheckBox {color:#f8fafc;font-weight:600;}"
+        )
+
+    def _apply_thumb(self, index: int, data: bytes) -> None:
+        if index < 0 or index >= len(self.image_entries):
+            return
+        label = self.image_entries[index]["thumb"]
+        pixmap = QPixmap()
+        if data and pixmap.loadFromData(data):
+            label.setPixmap(pixmap.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            label.setText("Previewなし")
+
+    def _refresh_next_number(self) -> None:
+        try:
+            self.image_start.setValue(self.api.image_next_number(self._folder_text(self.image_folder)))
+            self.image_number_status.setText("")
+        except Exception as exc:
+            self.image_number_status.setText(f"次番号を取得できませんでした: {exc}")
+
+    @staticmethod
+    def _selected_groups(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        groups: dict[tuple[int, int], dict[str, Any]] = {}
+        for entry in entries:
+            if not entry["checkbox"].isChecked():
+                continue
+            key = (int(entry["row_index"]), id(entry["job"]))
+            group = groups.setdefault(
+                key,
+                {"row_index": entry["row_index"], "job": entry["job"], "selected": []},
+            )
+            group["selected"].append(int(entry["item"].get("index") or 0))
+        return list(groups.values())
+
+    def _save(self) -> None:
+        image_groups = self._selected_groups(self.image_entries)
+        video_groups = self._selected_groups(self.video_entries)
+        if not image_groups and not video_groups:
+            QMessageBox.warning(self, APP_NAME, "保存する画像または動画を選択してください。")
+            return
+        selected_rows = {int(group["row_index"]) for group in image_groups + video_groups}
+        for index, outcome in enumerate(self.outcomes):
+            if outcome["shown"] and index not in selected_rows:
+                outcome["skipped"] = 1
+        self.buttons.setEnabled(False)
+        self.save_progress = QProgressDialog("一括保存を開始しています...", "", 0, 0, self)
+        self.save_progress.setWindowTitle(APP_NAME)
+        self.save_progress.setCancelButton(None)
+        self.save_progress.setWindowModality(Qt.WindowModal)
+        self.save_progress.show()
+        self.save_worker = BatchSaveWorker(
+            self.api,
+            self.outcomes,
+            image_groups,
+            video_groups,
+            self._folder_text(self.image_folder),
+            self.image_start.value(),
+            self.image_digits.value(),
+            self._folder_text(self.video_folder),
+        )
+        self.save_worker.signals.progress.connect(self._save_progress_changed)
+        self.save_worker.signals.finished.connect(self._save_finished)
+        self.save_worker.signals.failed.connect(self._save_failed)
+        self.save_worker.start()
+
+    def _save_progress_changed(self, message: str) -> None:
+        if self.save_progress:
+            self.save_progress.setLabelText(message)
+
+    def _finish_save_progress(self) -> None:
+        if self.save_progress:
+            self.save_progress.close()
+            self.save_progress.deleteLater()
+            self.save_progress = None
+        self.buttons.setEnabled(True)
+
+    def _save_finished(self, data: dict[str, Any]) -> None:
+        self._finish_save_progress()
+        self.save_outcomes = list(data.get("outcomes") or self.outcomes)
+        self.api.set_setting("last_image_folder", self._folder_text(self.image_folder))
+        self.api.set_setting("last_video_folder", self._folder_text(self.video_folder))
+        self.accept()
+
+    def _save_failed(self, message: str) -> None:
+        self._finish_save_progress()
+        QMessageBox.critical(self, APP_NAME, f"一括保存に失敗しました。\n{message}")
+
+
 class ManualUrlDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1493,6 +1968,7 @@ class MediaClipboardApp(QObject):
         self.batch_index = 0
         self.batch_cancel_requested = False
         self.current_url = ""
+        self.manual_url_dialog_open = False
         self.last_timer_tick = time.monotonic()
         self.resume_recovery_running = False
 
@@ -1609,6 +2085,12 @@ class MediaClipboardApp(QObject):
         if not urls:
             return
         fingerprint = tuple(urls)
+        if getattr(self, "manual_url_dialog_open", False):
+            # ManualUrlDialog itself imports copied URLs into its text box.
+            # Mark them as seen so the same URLs do not produce a delayed toast
+            # immediately after the dialog is closed.
+            self.last_seen_urls = fingerprint
+            return
         if fingerprint == self.last_seen_urls:
             return
         self.last_seen_urls = fingerprint
@@ -1630,7 +2112,12 @@ class MediaClipboardApp(QObject):
 
     def _open_manual_url(self) -> None:
         dialog = ManualUrlDialog()
-        if dialog.exec() != QDialog.Accepted:
+        self.manual_url_dialog_open = True
+        try:
+            accepted = dialog.exec() == QDialog.Accepted
+        finally:
+            self.manual_url_dialog_open = False
+        if not accepted:
             return
         urls = dialog.urls()
         if not urls:
@@ -1783,6 +2270,8 @@ class MediaClipboardApp(QObject):
         self._open_pending_confirmation()
 
     def show_notification(self, message: str, icon=QSystemTrayIcon.Information, timeout: int = 5000, action=None) -> None:
+        if getattr(self, "manual_url_dialog_open", False):
+            return
         self.notification_action = action
         self.tray.showMessage(APP_NAME, message, icon, timeout)
 
@@ -1801,11 +2290,7 @@ class MediaClipboardApp(QObject):
         self.batch_results.append(
             {
                 "url": self.current_url,
-                "shown": False,
-                "saved": 0,
-                "duplicates": 0,
-                "skipped": 0,
-                "empty": False,
+                "fetch": None,
                 "errors": [str(message)],
             }
         )
@@ -1816,11 +2301,13 @@ class MediaClipboardApp(QObject):
         QTimer.singleShot(0, self._start_next_batch_item)
 
     def _batch_fetch_finished(self, result: dict[str, Any]) -> None:
-        if self.progress:
-            self.progress.hide()
-        outcome = self._show_selection_dialogs(result)
-        outcome["url"] = self.current_url
-        self.batch_results.append(outcome)
+        self.batch_results.append(
+            {
+                "url": self.current_url,
+                "fetch": result,
+                "errors": [str(value) for value in (result.get("errors") or [])],
+            }
+        )
         self.worker = None
         self.batch_index += 1
         QTimer.singleShot(0, self._start_next_batch_item)
@@ -1900,9 +2387,68 @@ class MediaClipboardApp(QObject):
         self.current_url = ""
 
         if total_urls == 1:
-            self._show_single_result(results[0] if results else None)
+            row = results[0] if results else None
+            if not row:
+                return
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else None
+            if fetch:
+                outcome = self._show_selection_dialogs(fetch)
+                outcome["url"] = str(row.get("url") or "")
+                for value in row.get("errors") or []:
+                    text = str(value)
+                    if text not in outcome["errors"]:
+                        outcome["errors"].append(text)
+            else:
+                outcome = self._batch_outcomes(results)[0]
+            self._show_single_result(outcome)
             return
-        self._show_batch_summary(results, cancelled_count, kinds)
+
+        outcomes = self._batch_outcomes(results)
+        if self._batch_has_selectable_media(results):
+            dialog = BatchMediaSelectionDialog(self.api, results)
+            if dialog.exec() == QDialog.Accepted and dialog.save_outcomes is not None:
+                outcomes = dialog.save_outcomes
+            else:
+                for outcome in outcomes:
+                    if outcome.get("shown"):
+                        outcome["skipped"] = 1
+        self._show_batch_summary(outcomes, cancelled_count, kinds)
+
+    @staticmethod
+    def _batch_has_selectable_media(results: list[dict[str, Any]]) -> bool:
+        for row in results:
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            image_job = fetch.get("images") if isinstance(fetch.get("images"), dict) else {}
+            video_job = fetch.get("videos") if isinstance(fetch.get("videos"), dict) else {}
+            if image_job.get("images") or video_job.get("videos"):
+                return True
+        return False
+
+    @staticmethod
+    def _batch_outcomes(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        outcomes: list[dict[str, Any]] = []
+        for row in results:
+            fetch = row.get("fetch") if isinstance(row.get("fetch"), dict) else {}
+            image_job = fetch.get("images") if isinstance(fetch.get("images"), dict) else {}
+            video_job = fetch.get("videos") if isinstance(fetch.get("videos"), dict) else {}
+            shown = bool(image_job.get("images") or video_job.get("videos"))
+            errors = [str(value) for value in (row.get("errors") or [])]
+            for value in fetch.get("errors") or []:
+                text = str(value)
+                if text not in errors:
+                    errors.append(text)
+            outcomes.append(
+                {
+                    "url": str(row.get("url") or ""),
+                    "shown": shown,
+                    "saved": 0,
+                    "duplicates": 0,
+                    "skipped": 0,
+                    "empty": not shown and not errors,
+                    "errors": errors,
+                }
+            )
+        return outcomes
 
     def _show_single_result(self, result: dict[str, Any] | None) -> None:
         if not result:
