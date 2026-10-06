@@ -46,13 +46,12 @@ class BlockedCallNotifyTest(unittest.TestCase):
         self.assertEqual(embed["title"], "📞 ホワイトリスト外からの着信")
         self.assertEqual(
             [field["name"] for field in embed["fields"]],
-            ["日時", "相手", "名称", "着信先　｜　処理"],
+            ["日時", "相手", "名称", "着信先", "処理"],
         )
-        self.assertFalse(embed["fields"][3]["inline"])
-        self.assertEqual(
-            embed["fields"][3]["value"],
-            "05068741025　｜　VoiceMail_Announceへ転送",
-        )
+        self.assertTrue(embed["fields"][3]["inline"])
+        self.assertTrue(embed["fields"][4]["inline"])
+        self.assertEqual(embed["fields"][3]["value"], "05068741025")
+        self.assertEqual(embed["fields"][4]["value"], "VoiceMail_Announceへ転送")
         buttons = payload["components"][0]["components"]
         self.assertEqual(len(buttons), 4)
         self.assertTrue(all(button["style"] == 5 for button in buttons))
