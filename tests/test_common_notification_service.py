@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib.util
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,6 +102,37 @@ def test_raspberry_pi_bridge_preserves_discord_payloads_and_retries():
     assert "pending_discord_payloads" in source
     assert "bridge.drain()" in source
     assert "os.chmod(path, 0o600)" in source
+
+
+def test_raspberry_pi_bridge_converts_discord_text_attachments_to_cards():
+    spec = importlib.util.spec_from_file_location("mfu_notification_bridge", BRIDGE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    boundary = "----mfu-test-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="payload_json"\r\n'
+        "Content-Type: application/json\r\n\r\n"
+        '{"content":"Debian自動更新の詳細"}\r\n'
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="files[0]"; filename="updates.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\n"
+        "host-a: 3 packages updated\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("utf-8")
+    payloads = module.parse_discord_payloads(f"multipart/form-data; boundary={boundary}", body)
+    assert payloads[0]["content"] == "Debian自動更新の詳細"
+    assert payloads[0]["embeds"][0]["title"] == "📎 updates.txt"
+    assert "3 packages updated" in payloads[0]["embeds"][0]["description"]
+
+
+def test_web_notifications_follow_windows_card_layout():
+    source = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
+    assert "const hasCards = Array.isArray(content.cards)" in source
+    assert "${hasCards ? '' :" in source
+    assert '<div class="notification-actions"><button' in source
+    assert ".notification-field { min-width:0; }" in source
 
 
 def test_raspberry_pi_notification_features_are_registered():
