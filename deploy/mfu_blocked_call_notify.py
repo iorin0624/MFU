@@ -272,11 +272,8 @@ def build_discord_payload(
                     },
                     {"name": "相手", "value": display_caller, "inline": True},
                     {"name": "名称", "value": display_name, "inline": True},
-                    {
-                        "name": "着信先　｜　処理",
-                        "value": f"{display_did}　｜　{display_process}",
-                        "inline": False,
-                    },
+                    {"name": "着信先", "value": display_did, "inline": True},
+                    {"name": "処理", "value": display_process, "inline": True},
                 ],
             }
         ]
