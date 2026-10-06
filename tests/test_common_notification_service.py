@@ -6,6 +6,8 @@ SERVICE = ROOT / "utils" / "notification_service.py"
 NOTIFICATIONS = ROOT / "external_login_user" / "notifications.py"
 DISCORD = ROOT / "discord_notifications" / "service.py"
 SENDER = ROOT / "tools" / "mfu_notification_sender" / "mfu_notify.py"
+BRIDGE = ROOT / "tools" / "mfu_notification_sender" / "mfu_notification_bridge.py"
+RPI_MIGRATION = ROOT / "tools" / "mfu_notification_sender" / "migrate_raspberry_pi_discord.py"
 
 
 def test_common_notification_schema_keeps_rich_content_and_muted_history():
@@ -82,3 +84,30 @@ def test_linux_sender_has_durable_retry_queue():
     assert "sqlite3" in source
     assert "pending_notifications" in source
     assert 'parser.add_argument("--drain"' in source
+
+
+def test_raspberry_pi_bridge_preserves_discord_payloads_and_retries():
+    source = BRIDGE.read_text(encoding="utf-8")
+    assert "ThreadingHTTPServer" in source
+    assert 'removeprefix("/discord/")' in source
+    assert "pending_discord_payloads" in source
+    assert "bridge.drain()" in source
+
+
+def test_raspberry_pi_notification_features_are_registered():
+    repository = (ROOT / "discord_notifications" / "repository.py").read_text(encoding="utf-8")
+    for feature in (
+        "earthquake_early_warning", "ichihara_disaster_radio", "chiba_police_incidents",
+        "mail_summary", "mail_spam_report", "host_health", "debian_updates", "backup_status",
+    ):
+        assert feature in repository
+
+
+def test_raspberry_pi_migration_covers_all_active_discord_producers():
+    source = RPI_MIGRATION.read_text(encoding="utf-8")
+    for feature in (
+        "earthquake_early_warning", "ichihara_disaster_radio", "chiba_police_incidents",
+        "mail_summary", "mail_spam_report", "host_health", "debian_updates", "backup_status",
+    ):
+        assert f'"{feature}"' in source
+    assert 'parsed.hostname == "127.0.0.1"' in source
