@@ -7,7 +7,7 @@
     {% endif %}
 
     <div class="d-flex align-items-center gap-2 ms-auto">
-      <a class="nav-link position-relative p-2" href="{{ '/mfu-notifications/' if notification_scope == 'mfu' else '/notifications' }}" aria-label="通知" id="navNotifBell">
+      <a class="nav-link position-relative p-2 {{ 'd-none' if notification_scope == 'mfu' else '' }}" href="{{ '/mfu-notifications/' if notification_scope == 'mfu' else '/notifications' }}" aria-label="通知" id="navNotifBell">
         <span class="fs-5">🔔</span>
         <span id="navNotifBadge"
               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>

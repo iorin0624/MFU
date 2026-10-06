@@ -2,7 +2,7 @@
 {% block title %}{{ 'MFU 通知センター' if notification_scope == 'mfu' else '通知一覧 | Mimoria' }}{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="notification-toolbar d-flex justify-content-between align-items-center mb-4">
   <h1 class="h4 mb-0">{{ 'MFU 通知センター' if notification_scope == 'mfu' else '通知一覧' }}</h1>
   <div class="d-flex gap-2">
     {% if notification_scope == 'mfu' %}
@@ -18,34 +18,38 @@
 </div>
 
 <style>
+  html { color-scheme:light; }
+  body { background:#f4f7fb; color:#172033; }
+  .container-narrow { max-width:1180px; }
+  .navbar { background:#fff !important; color:#172033; box-shadow:0 1px 0 rgba(15,23,42,.05); }
+  .navbar-brand { color:#172033; font-weight:700; }
+  .notification-toolbar { gap:1rem; }
+  .notification-toolbar > div { flex-wrap:wrap; align-items:center; justify-content:flex-end; }
   .notification-list { display: grid; gap: .9rem; }
-  .notification-entry { --notice-color:#2563eb; border:1px solid #d6deea; border-left:6px solid var(--notice-color); border-radius:.75rem; background:#fff; padding:1rem; box-shadow:0 .15rem .6rem rgba(15,23,42,.07); }
-  .notification-entry.is-unread { background:#f8fbff; }
+  .notification-entry { --notice-color:#2563eb; border:1px solid #cfd8e6; border-left:6px solid var(--notice-color); border-radius:.85rem; background:#fff; color:#172033; padding:1.15rem; box-shadow:0 .2rem .8rem rgba(15,23,42,.08); }
+  .notification-entry.is-unread { background:#f5f9ff; box-shadow:0 .25rem 1rem rgba(37,99,235,.12); }
   .notification-entry-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:.65rem; }
+  .notification-entry-head h2 { color:#0f172a; font-size:1.15rem; line-height:1.45; }
   .notification-lead { white-space:normal; margin:.25rem 0 .75rem; }
   .notification-card-stack { display:grid; gap:.75rem; }
-  .notification-card { --card-color:var(--notice-color); border:1px solid #d8dee9; border-left:4px solid var(--card-color); border-radius:.55rem; padding:.8rem .9rem; background:#f8fafc; }
-  .notification-card-title { font-weight:700; font-size:1rem; margin-bottom:.35rem; }
+  .notification-card { --card-color:var(--notice-color); border:1px solid #d8dee9; border-left:4px solid var(--card-color); border-radius:.65rem; padding:.9rem 1rem; background:#f8fafc; color:#172033; }
+  .notification-card-title { color:#0f172a; font-weight:700; font-size:1.05rem; margin-bottom:.4rem; }
   .notification-card-description { margin-bottom:.55rem; }
   .notification-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.5rem .75rem; }
-  .notification-field { background:#fff; border-radius:.4rem; padding:.45rem .55rem; min-width:0; }
+  .notification-field { background:#fff; border:1px solid #e4e9f1; border-radius:.45rem; padding:.55rem .65rem; min-width:0; }
   .notification-field:not(.is-inline) { grid-column:1/-1; }
   .notification-field-name { font-size:.78rem; color:#64748b; font-weight:700; }
   .notification-field-value { overflow-wrap:anywhere; }
-  .notification-card-footer,.notification-meta { color:#64748b; font-size:.78rem; margin-top:.55rem; }
+  .notification-card-footer,.notification-meta { color:#5b687a; font-size:.82rem; margin-top:.6rem; }
   .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
+  #emptyState { color:#64748b !important; font-size:1rem; }
   @media (max-width:575.98px) {
+    .container-narrow { padding-left:.85rem; padding-right:.85rem; }
+    .notification-toolbar { align-items:flex-start !important; flex-direction:column; }
+    .notification-toolbar > div { justify-content:flex-start; width:100%; }
     .notification-fields { grid-template-columns:1fr; }
     .notification-field { grid-column:1/-1; }
     .notification-entry { padding:.8rem; }
-  }
-  @media (prefers-color-scheme:dark) {
-    body { background:#0b1220; color:#e5e7eb; }
-    .navbar,.notification-entry { background:#111827 !important; color:#f8fafc; border-color:#334155; }
-    .notification-entry.is-unread { background:#111d31; }
-    .notification-card { background:#172033; border-color:#374151; }
-    .notification-field { background:#111827; }
-    .notification-field-name,.notification-card-footer,.notification-meta { color:#9ca3af; }
   }
 </style>
 

@@ -94,5 +94,7 @@ def test_notification_center_pwa_is_separate_from_mimoria_pwa():
     assert '@mfu_notifications_bp.get("/mfu-notifications/sw.js")' in notifications
     assert 'notificationPushBtn' in template
     assert "content.cards" in template
+    assert "background:#f4f7fb" in template
+    assert "prefers-color-scheme:dark" not in template
     assert "/mfu-notifications/manifest.webmanifest" in base
     assert 'required_scope = "/mfu-notifications/"' in chat
