@@ -203,13 +203,14 @@ def _count_push_subscriptions(actor_type: str, actor_id: str) -> int:
             actor_ids.extend(["admin", "1"])
         actor_ids = list(dict.fromkeys([x for x in actor_ids if x]))
         placeholders = ",".join(["%s"] * len(actor_ids))
+        required_scope = "/mfu-notifications/" if actor_type in {"admin", "acl"} else "/"
         cur.execute(
             f"""
             SELECT COUNT(*) AS cnt
               FROM chat_push_subscriptions
-             WHERE actor_type=%s AND actor_id IN ({placeholders})
+             WHERE actor_type=%s AND actor_id IN ({placeholders}) AND sw_scope=%s
             """,
-            (actor_type, *actor_ids),
+            (actor_type, *actor_ids, required_scope),
         )
         return int((cur.fetchone() or {}).get("cnt") or 0)
     except Exception:
@@ -261,7 +262,13 @@ def _deliver_web_push(request_data: PushRequest, notification_id: int | None) ->
         "feature_key": request_data.feature_key,
         "severity": request_data.severity,
         "topic_key": request_data.topic_key,
-        "content": request_data.content,
+        # Full Discord-compatible cards remain in the notification API and the
+        # Media Hub socket payload. Web Push has a small encrypted payload limit.
+        "content": {
+            key: value
+            for key, value in (request_data.content or {}).items()
+            if key not in {"cards", "fields", "lead_text"}
+        },
     }
     metrics: dict[str, Any] = {}
     sent_count = int(_send_push_to_actor(actor_type, actor_id, payload, metrics) or 0)

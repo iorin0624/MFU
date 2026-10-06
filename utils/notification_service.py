@@ -281,6 +281,8 @@ def publish_common_notification(
     title: str,
     description: str,
     fields: list[dict[str, Any]] | None = None,
+    cards: list[dict[str, Any]] | None = None,
+    lead_text: str = "",
     image_url: str = "",
     footer: str = "",
     target_url: str = "/mfu-notifications",
@@ -297,6 +299,8 @@ def publish_common_notification(
     muted = _is_muted(preference)
     content = {
         "fields": [row for row in (fields or []) if isinstance(row, dict)][:30],
+        "cards": [row for row in (cards or []) if isinstance(row, dict)][:10],
+        "lead_text": str(lead_text or "")[:2000],
         "image_url": (image_url or "")[:1000],
         "footer": (footer or "")[:255],
         "sound_enabled": bool(preference.get("sound_enabled")),
@@ -377,6 +381,30 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
     footer_data = embed.get("footer") if isinstance(embed.get("footer"), dict) else {}
     image_data = embed.get("image") if isinstance(embed.get("image"), dict) else {}
     target_url = _common_notification_target_url(embed.get("url"))
+    cards: list[dict[str, Any]] = []
+    for raw_card in embeds[:10]:
+        if not isinstance(raw_card, dict):
+            continue
+        card_fields = []
+        for row in raw_card.get("fields") or []:
+            if isinstance(row, dict):
+                card_fields.append({
+                    "name": str(row.get("name") or "")[:255],
+                    "value": str(row.get("value") or "")[:2000],
+                    "inline": bool(row.get("inline")),
+                })
+        card_footer = raw_card.get("footer") if isinstance(raw_card.get("footer"), dict) else {}
+        card_image = raw_card.get("image") if isinstance(raw_card.get("image"), dict) else {}
+        cards.append({
+            "title": str(raw_card.get("title") or "")[:255],
+            "description": str(raw_card.get("description") or "")[:4000],
+            "url": _common_notification_target_url(raw_card.get("url")),
+            "color": int(raw_card.get("color") or 0),
+            "fields": card_fields[:25],
+            "footer": str(card_footer.get("text") or "")[:255],
+            "timestamp": str(raw_card.get("timestamp") or "")[:64],
+            "image_url": str(card_image.get("url") or "")[:1000],
+        })
     return {
         "feature_key": feature_key,
         "kind": str(payload.get("kind") or feature_key)[:64],
@@ -384,6 +412,8 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
         "title": title[:255],
         "description": description,
         "fields": fields,
+        "cards": cards,
+        "lead_text": str(payload.get("content") or "")[:2000],
         "image_url": str(image_data.get("url") or "")[:1000],
         "footer": str(footer_data.get("text") or payload.get("username") or "MFU")[:255],
         "target_url": target_url,

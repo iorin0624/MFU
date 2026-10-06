@@ -1,10 +1,13 @@
 {% extends "base_extlogin.html" %}
-{% block title %}通知一覧 | Mimoria{% endblock %}
+{% block title %}{{ 'MFU 通知センター' if notification_scope == 'mfu' else '通知一覧 | Mimoria' }}{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h4 mb-0">通知一覧</h1>
+  <h1 class="h4 mb-0">{{ 'MFU 通知センター' if notification_scope == 'mfu' else '通知一覧' }}</h1>
   <div class="d-flex gap-2">
+    {% if notification_scope == 'mfu' %}
+    <button id="notificationPushBtn" class="btn btn-outline-success btn-sm" type="button">通知を有効にする</button>
+    {% endif %}
     <div class="form-check form-switch">
       <input class="form-check-input" type="checkbox" id="onlyUnread" checked>
       <label class="form-check-label" for="onlyUnread">未読のみ</label>
@@ -14,7 +17,39 @@
   </div>
 </div>
 
-<div id="notificationList" class="list-group"></div>
+<style>
+  .notification-list { display: grid; gap: .9rem; }
+  .notification-entry { --notice-color:#2563eb; border:1px solid #d6deea; border-left:6px solid var(--notice-color); border-radius:.75rem; background:#fff; padding:1rem; box-shadow:0 .15rem .6rem rgba(15,23,42,.07); }
+  .notification-entry.is-unread { background:#f8fbff; }
+  .notification-entry-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:.65rem; }
+  .notification-lead { white-space:normal; margin:.25rem 0 .75rem; }
+  .notification-card-stack { display:grid; gap:.75rem; }
+  .notification-card { --card-color:var(--notice-color); border:1px solid #d8dee9; border-left:4px solid var(--card-color); border-radius:.55rem; padding:.8rem .9rem; background:#f8fafc; }
+  .notification-card-title { font-weight:700; font-size:1rem; margin-bottom:.35rem; }
+  .notification-card-description { margin-bottom:.55rem; }
+  .notification-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.5rem .75rem; }
+  .notification-field { background:#fff; border-radius:.4rem; padding:.45rem .55rem; min-width:0; }
+  .notification-field:not(.is-inline) { grid-column:1/-1; }
+  .notification-field-name { font-size:.78rem; color:#64748b; font-weight:700; }
+  .notification-field-value { overflow-wrap:anywhere; }
+  .notification-card-footer,.notification-meta { color:#64748b; font-size:.78rem; margin-top:.55rem; }
+  .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
+  @media (max-width:575.98px) {
+    .notification-fields { grid-template-columns:1fr; }
+    .notification-field { grid-column:1/-1; }
+    .notification-entry { padding:.8rem; }
+  }
+  @media (prefers-color-scheme:dark) {
+    body { background:#0b1220; color:#e5e7eb; }
+    .navbar,.notification-entry { background:#111827 !important; color:#f8fafc; border-color:#334155; }
+    .notification-entry.is-unread { background:#111d31; }
+    .notification-card { background:#172033; border-color:#374151; }
+    .notification-field { background:#111827; }
+    .notification-field-name,.notification-card-footer,.notification-meta { color:#9ca3af; }
+  }
+</style>
+
+<div id="notificationList" class="notification-list"></div>
 <div id="emptyState" class="text-muted py-5 text-center d-none">通知はありません。</div>
 <div class="d-flex justify-content-center mt-3">
   <button id="loadMoreBtn" class="btn btn-outline-primary d-none">もっと見る</button>
@@ -44,6 +79,7 @@
     const markAllReadBtn = document.getElementById('markAllReadBtn');
     const refreshBtn = document.getElementById('refreshBtn');
     const onlyUnread = document.getElementById('onlyUnread');
+    const notificationPushBtn = document.getElementById('notificationPushBtn');
 
     let page = 1;
     let hasNext = false;
@@ -85,6 +121,58 @@
       return div.innerHTML;
     };
 
+    const safeLink = (value) => {
+      try {
+        const url = new URL(String(value || ''), window.location.origin);
+        return url.origin === window.location.origin || ['http:', 'https:'].includes(url.protocol) ? url.href : '#';
+      } catch (_e) { return '#'; }
+    };
+
+    const discordText = (value) => {
+      const links = [];
+      const raw = String(value || '').replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_all, label, url) => {
+        const index = links.push({label, url}) - 1;
+        return `@@MFU_LINK_${index}@@`;
+      });
+      let text = escapeHtml(raw);
+      text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      text = text.replace(/@@MFU_LINK_(\d+)@@/g, (_all, rawIndex) => {
+        const link = links[Number(rawIndex)] || {};
+        return `<a href="${escapeHtml(safeLink(link.url))}" target="_blank" rel="noopener">${escapeHtml(link.label || link.url || '')}</a>`;
+      });
+      return text.replace(/\n/g, '<br>');
+    };
+
+    const colorHex = (raw, fallback = '#2563eb') => {
+      const value = Number(raw);
+      return Number.isFinite(value) && value > 0 ? `#${Math.min(value, 0xffffff).toString(16).padStart(6, '0')}` : fallback;
+    };
+
+    const renderFields = (fields) => {
+      if (!Array.isArray(fields) || !fields.length) return '';
+      return `<div class="notification-fields">${fields.map((field) => `
+        <div class="notification-field ${field?.inline ? 'is-inline' : ''}">
+          <div class="notification-field-name">${escapeHtml(field?.name || '')}</div>
+          <div class="notification-field-value">${discordText(field?.value || '')}</div>
+        </div>`).join('')}</div>`;
+    };
+
+    const renderCards = (item) => {
+      const content = item?.content && typeof item.content === 'object' ? item.content : {};
+      const cards = Array.isArray(content.cards) ? content.cards : [];
+      if (!cards.length) {
+        return `<div class="notification-card-description">${discordText(item.body || '')}</div>${renderFields(content.fields)}`;
+      }
+      const lead = content.lead_text ? `<div class="notification-lead">${discordText(content.lead_text)}</div>` : '';
+      return `${lead}<div class="notification-card-stack">${cards.map((card) => `
+        <section class="notification-card" style="--card-color:${colorHex(card?.color)}">
+          ${card?.title ? `<div class="notification-card-title">${discordText(card.title)}</div>` : ''}
+          ${card?.description ? `<div class="notification-card-description">${discordText(card.description)}</div>` : ''}
+          ${renderFields(card?.fields)}
+          ${card?.footer ? `<div class="notification-card-footer">${discordText(card.footer)}</div>` : ''}
+        </section>`).join('')}</div>`;
+    };
+
     const formatDate = (iso) => {
       if (!iso) return '';
       const d = new Date(iso);
@@ -104,27 +192,26 @@
     };
 
     const createItem = (item) => {
-      const a = document.createElement('a');
+      const a = document.createElement('article');
       const targetUrl = (typeof item?.target_url === 'string' && item.target_url.trim())
         ? item.target_url.trim()
         : '/external-login/';
-      a.href = targetUrl;
       a.dataset.notificationId = String(item.id);
       a.dataset.targetUrl = targetUrl;
       const isRead = !!(item.read_at || item.is_read);
-      a.className = `list-group-item list-group-item-action ${isRead ? '' : 'list-group-item-warning'}`;
+      const severityColor = ({success:'#16a34a', warning:'#d97706', error:'#dc2626', critical:'#991b1b'})[item.severity] || '#2563eb';
+      a.className = `notification-entry ${isRead ? '' : 'is-unread'}`;
+      a.style.setProperty('--notice-color', severityColor);
       a.innerHTML = `
-        <div class="d-flex w-100 justify-content-between align-items-start">
-          <div class="me-3">
-            <h2 class="h6 mb-1">${escapeHtml(item.title || 'お知らせ')}</h2>
-            <p class="mb-1">${escapeHtml(item.body || '')}</p>
-            <small class="text-muted">${formatDate(item.created_at)}</small>
-          </div>
+        <div class="notification-entry-head">
+          <div><h2 class="h6 mb-1">${escapeHtml(item.title || 'お知らせ')}</h2></div>
           <span class="badge ${isRead ? 'bg-secondary' : 'bg-danger'}">${isRead ? '既読' : '未読'}</span>
         </div>
+        ${renderCards(item)}
+        <div class="notification-meta">${escapeHtml(item.feature_key || 'general')} ・ ${formatDate(item.created_at)}</div>
+        <div class="notification-actions"><button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button></div>
       `;
-      a.addEventListener('click', async (e) => {
-        e.preventDefault();
+      a.querySelector('[data-open]').addEventListener('click', async () => {
         try {
           const res = await fetch(getReadUrl(item.id), {
             method: 'POST',
@@ -338,6 +425,83 @@
       if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
     });
 
+    const toUint8 = (base64String) => {
+      const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw = window.atob(base64);
+      return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
+    };
+
+    const setPushButton = (enabled, disabled = false) => {
+      if (!notificationPushBtn) return;
+      notificationPushBtn.disabled = disabled;
+      notificationPushBtn.textContent = enabled ? '通知は有効です' : '通知を有効にする';
+      notificationPushBtn.classList.toggle('btn-success', enabled);
+      notificationPushBtn.classList.toggle('btn-outline-success', !enabled);
+      notificationPushBtn.dataset.enabled = enabled ? '1' : '0';
+    };
+
+    const notificationPushContext = { registration:null, bootstrap:null };
+    const prepareNotificationPush = async () => {
+      if (!notificationPushBtn) return;
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        notificationPushBtn.textContent = 'この端末はPush通知に対応していません';
+        notificationPushBtn.disabled = true;
+        return;
+      }
+      try {
+        const response = await fetch('/chat/api/push/bootstrap', {credentials:'same-origin', cache:'no-store'});
+        if (!response.ok) throw new Error('push bootstrap failed');
+        notificationPushContext.bootstrap = await response.json();
+        notificationPushContext.registration = await navigator.serviceWorker.register(
+          '/mfu-notifications/sw.js', {scope:'/mfu-notifications/'}
+        );
+        const subscription = await notificationPushContext.registration.pushManager.getSubscription();
+        setPushButton(Boolean(subscription));
+      } catch (error) {
+        console.error(error);
+        notificationPushBtn.textContent = '通知設定を読み込めません';
+        notificationPushBtn.disabled = true;
+      }
+    };
+
+    notificationPushBtn?.addEventListener('click', async () => {
+      const registration = notificationPushContext.registration;
+      const bootstrap = notificationPushContext.bootstrap || {};
+      if (!registration) return;
+      notificationPushBtn.disabled = true;
+      try {
+        const existing = await registration.pushManager.getSubscription();
+        if (existing) {
+          setPushButton(true);
+          return;
+        }
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') throw new Error('通知の許可が必要です');
+        if (!bootstrap.vapid_public_key) throw new Error('VAPID公開鍵が未設定です');
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly:true,
+          applicationServerKey:toUint8(bootstrap.vapid_public_key),
+        });
+        const saveResponse = await fetch('/chat/api/push/subscribe', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          credentials:'same-origin',
+          body:JSON.stringify({
+            csrf_token:bootstrap.csrf_token,
+            sw_scope:'/mfu-notifications/',
+            ...subscription.toJSON(),
+          }),
+        });
+        if (!saveResponse.ok) throw new Error('通知購読を保存できません');
+        setPushButton(true);
+      } catch (error) {
+        console.error(error);
+        window.alert(error instanceof Error ? error.message : '通知設定に失敗しました');
+        setPushButton(false);
+      }
+    });
+
     if (typeof window.io === 'function') {
       const notifSocket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
       notifSocket.on('connect', () => { notifSocketConnected = true; stopPolling(); });
@@ -359,6 +523,7 @@
       await refreshUnreadCount();
       await syncAppBadgeSafe();
     });
+    prepareNotificationPush();
   })();
 </script>
 {% endblock %}

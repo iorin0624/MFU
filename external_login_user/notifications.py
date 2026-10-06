@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
-from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
+from flask import Blueprint, Response, abort, current_app, jsonify, redirect, render_template, request, session
 
 from . import bp
 from .utils import _require_ext_login
@@ -1506,6 +1506,7 @@ def notifications_unified_page():
 
 
 @mfu_notifications_bp.get("/mfu-notifications")
+@mfu_notifications_bp.get("/mfu-notifications/")
 def mfu_notifications_page():
     _ensure_notification_schema()
     username, error = _require_mfu_admin_acl()
@@ -1518,6 +1519,90 @@ def mfu_notifications_page():
         notification_api_map=_resolve_notification_api_mode_for_session(),
         mfu_notification_user=username,
     )
+
+
+@mfu_notifications_bp.get("/mfu-notifications/manifest.webmanifest")
+def mfu_notifications_manifest():
+    _username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    response = jsonify({
+        "id": "/mfu-notifications/",
+        "name": "MFU 通知センター",
+        "short_name": "MFU通知",
+        "description": "MFU管理機能の共通通知センター",
+        "start_url": "/mfu-notifications/",
+        "scope": "/mfu-notifications/",
+        "display": "standalone",
+        "background_color": "#0b1220",
+        "theme_color": "#111827",
+        "icons": [
+            {"src": "/static/icons/image-size192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/static/icons/image-size512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+        ],
+    })
+    response.mimetype = "application/manifest+json"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@mfu_notifications_bp.get("/mfu-notifications/sw.js")
+def mfu_notifications_service_worker():
+    script = r"""
+const SW_VERSION = 'mfu-notifications-2026-10-06-01';
+const BADGE_URL = '/api/mfu-notifications/unread-count';
+
+async function syncBadge() {
+  try {
+    const response = await fetch(BADGE_URL, {credentials:'include', cache:'no-store'});
+    if (!response.ok) return;
+    const data = await response.json();
+    const count = Math.max(0, Number(data.count ?? data.unread_count ?? 0));
+    if (count > 0 && self.navigator?.setAppBadge) await self.navigator.setAppBadge(count);
+    else if (self.navigator?.clearAppBadge) await self.navigator.clearAppBadge();
+  } catch (_e) {}
+}
+
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(clients.claim()));
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; } catch (_e) {}
+  const target = new URL(payload.target_url || payload.url || '/mfu-notifications/', self.location.origin);
+  if (target.origin !== self.location.origin) target.href = `${self.location.origin}/mfu-notifications/`;
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(payload.title || 'MFU 通知センター', {
+      body: payload.body || '新しい通知があります',
+      data: {url: target.toString()},
+      tag: payload.dedup_key || `mfu-${payload.notification_id || Date.now()}`,
+    }),
+    syncBadge(),
+  ]));
+});
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = event.notification?.data?.url || `${self.location.origin}/mfu-notifications/`;
+  event.waitUntil((async () => {
+    const windows = await clients.matchAll({type:'window', includeUncontrolled:true});
+    const app = windows.find((client) => {
+      try { return new URL(client.url).pathname.startsWith('/mfu-notifications'); } catch (_e) { return false; }
+    });
+    if (app) {
+      if ('navigate' in app) await app.navigate(target);
+      if ('focus' in app) await app.focus();
+      return;
+    }
+    if (clients.openWindow) await clients.openWindow(target);
+  })());
+});
+self.addEventListener('message', (event) => {
+  if (event?.data?.type === 'SYNC_BADGE') event.waitUntil(syncBadge());
+});
+"""
+    response = Response(script, mimetype="application/javascript")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Service-Worker-Allowed"] = "/mfu-notifications/"
+    return response
 
 
 @mfu_notifications_bp.get("/api/mfu-notifications/unread-count")
