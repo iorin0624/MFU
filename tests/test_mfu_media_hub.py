@@ -81,6 +81,9 @@ def test_media_hub_has_realtime_notification_center_and_mute_controls():
     assert '"/desktop/media-hub/api/notifications/mute"' in client
     assert 'content.get("cards")' in client
     assert 'setObjectName("NotificationEmbed")' in client
+    assert 'setObjectName("NotificationField")' in client
+    assert "QGridLayout" in client
+    assert "NotificationCard(item, field_columns=1)" in client
     assert "_discord_rich_text" in client
 
 

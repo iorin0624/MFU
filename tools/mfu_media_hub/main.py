@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -51,7 +52,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -219,8 +220,53 @@ def _rich_label(value: object, *, color: str = "#f8fafc") -> QLabel:
     return label
 
 
+def _add_notification_fields(layout: QVBoxLayout, fields: object, *, columns: int = 2) -> None:
+    if not isinstance(fields, list) or not fields:
+        return
+    column_count = 1 if columns <= 1 else 2
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(8)
+    for column in range(column_count):
+        grid.setColumnStretch(column, 1)
+    grid_row = 0
+    grid_column = 0
+    for row in fields[:25]:
+        if not isinstance(row, dict):
+            continue
+        inline = bool(row.get("inline")) and column_count > 1
+        if not inline and grid_column:
+            grid_row += 1
+            grid_column = 0
+        field = QFrame()
+        field.setObjectName("NotificationField")
+        field.setStyleSheet(
+            "QFrame#NotificationField{background:#111827;border:1px solid #374151;border-radius:6px;}"
+        )
+        field_layout = QVBoxLayout(field)
+        field_layout.setContentsMargins(9, 7, 9, 7)
+        field_layout.setSpacing(2)
+        name = QLabel(f"<b>{html.escape(str(row.get('name') or ''))}</b>")
+        name.setTextFormat(Qt.RichText)
+        name.setStyleSheet("color:#9ca3af;font-size:12px;")
+        field_layout.addWidget(name)
+        value = _rich_label(row.get("value") or "", color="#f8fafc")
+        field_layout.addWidget(value)
+        if inline:
+            grid.addWidget(field, grid_row, grid_column)
+            grid_column += 1
+            if grid_column >= column_count:
+                grid_row += 1
+                grid_column = 0
+        else:
+            grid.addWidget(field, grid_row, 0, 1, column_count)
+            grid_row += 1
+    layout.addLayout(grid)
+
+
 class NotificationCard(QFrame):
-    def __init__(self, item: dict, *, compact: bool = False, parent=None) -> None:
+    def __init__(self, item: dict, *, compact: bool = False, field_columns: int = 2, parent=None) -> None:
         super().__init__(parent)
         self.item = item
         severity = str(item.get("severity") or "info")
@@ -259,18 +305,7 @@ class NotificationCard(QFrame):
                 if description:
                     embed_layout.addWidget(_rich_label(description))
                 fields = card_data.get("fields") if isinstance(card_data.get("fields"), list) else []
-                for row in fields[:25]:
-                    if not isinstance(row, dict):
-                        continue
-                    field = QLabel(
-                        f"<b>{html.escape(str(row.get('name') or ''))}</b><br>{_discord_rich_text(row.get('value') or '')}"
-                    )
-                    field.setTextFormat(Qt.RichText)
-                    field.setTextInteractionFlags(Qt.TextBrowserInteraction)
-                    field.setOpenExternalLinks(True)
-                    field.setWordWrap(True)
-                    field.setStyleSheet("color:#d1d5db;")
-                    embed_layout.addWidget(field)
+                _add_notification_fields(embed_layout, fields, columns=field_columns)
                 footer = str(card_data.get("footer") or "")
                 if footer:
                     footer_label = _rich_label(footer, color="#9ca3af")
@@ -286,11 +321,7 @@ class NotificationCard(QFrame):
                 layout.addWidget(_rich_label(body))
             fields = content.get("fields") if isinstance(content.get("fields"), list) else []
             if fields and not compact:
-                field_text = "\n".join(
-                    f"{str(row.get('name') or '')}: {str(row.get('value') or '')}"
-                    for row in fields[:12] if isinstance(row, dict)
-                )
-                layout.addWidget(_rich_label(field_text, color="#d1d5db"))
+                _add_notification_fields(layout, fields, columns=field_columns)
         feature_key = str(item.get("feature_key") or "general")
         feature_label = str(item.get("feature_label") or feature_key)
         meta = QLabel(f"# {feature_label}  {str(item.get('created_at') or '')}")
@@ -311,7 +342,7 @@ class NotificationPopup(QDialog):
         self.setFixedWidth(390)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        card = NotificationCard(item)
+        card = NotificationCard(item, field_columns=1)
         layout.addWidget(card)
         detail = QPushButton("詳細を見る")
         detail.clicked.connect(lambda: controller._open_notification(item))
