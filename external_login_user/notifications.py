@@ -14,6 +14,7 @@ from flask import Blueprint, Response, abort, current_app, jsonify, redirect, re
 
 from . import bp
 from .utils import _require_ext_login
+from app.discord_notifications.repository import FEATURE_DEFINITIONS
 from app.utils.db import get_db
 from app.utils.mail import EXTERNAL_UNREAD_REMINDER_BODY, EXTERNAL_UNREAD_REMINDER_SUBJECT, send_mail
 
@@ -144,6 +145,61 @@ def _notification_category_sql(category: str) -> str:
     return "1=1"
 
 
+def _mfu_notification_channels() -> list[dict[str, str]]:
+    channels = [
+        {"key": str(key), "label": str(definition.get("label") or key)}
+        for key, definition in FEATURE_DEFINITIONS.items()
+    ]
+    channels.append({"key": "other", "label": "その他"})
+    return channels
+
+
+def _normalize_mfu_notification_channel(value: Any) -> str:
+    channel = str(value or "all").strip().lower()
+    if channel in FEATURE_DEFINITIONS or channel == "other":
+        return channel
+    return "all"
+
+
+def _mfu_notification_channel_sql(channel: str) -> tuple[str, list[Any]]:
+    normalized = _normalize_mfu_notification_channel(channel)
+    if normalized == "all":
+        return "1=1", []
+    if normalized == "other":
+        keys = list(FEATURE_DEFINITIONS.keys())
+        placeholders = ",".join(["%s"] * len(keys))
+        return f"COALESCE(NULLIF(feature_key,''),'general') NOT IN ({placeholders})", keys
+    return "feature_key=%s", [normalized]
+
+
+def _compute_mfu_channel_unread_counts(username: str) -> dict[str, int]:
+    counts = {str(key): 0 for key in FEATURE_DEFINITIONS}
+    counts["other"] = 0
+    recipient = str(username or "").strip()
+    if not recipient:
+        return counts
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT COALESCE(NULLIF(feature_key,''),'general') AS feature_key, COUNT(*) AS cnt
+              FROM mfu_notifications
+             WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
+             GROUP BY COALESCE(NULLIF(feature_key,''),'general')
+            """,
+            (recipient,),
+        )
+        for row in cur.fetchall() or []:
+            key = str(row.get("feature_key") or "general")
+            target = key if key in counts and key != "other" else "other"
+            counts[target] = int(counts.get(target) or 0) + int(row.get("cnt") or 0)
+        return counts
+    finally:
+        cur.close()
+        db.close()
+
+
 def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
     scope = _resolve_notification_scope_for_session()
     if scope == "external":
@@ -160,6 +216,7 @@ def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
     if scope == "mfu":
         return {
             "scope": "mfu",
+            "channels": _mfu_notification_channels(),
             "urls": {
                 "list": "/api/mfu-notifications",
                 "unreadCount": "/api/mfu-notifications/unread-count",
@@ -1534,8 +1591,8 @@ def mfu_notifications_manifest():
         "start_url": "/mfu-notifications/",
         "scope": "/mfu-notifications/",
         "display": "standalone",
-        "background_color": "#0b1220",
-        "theme_color": "#111827",
+        "background_color": "#f4f7fb",
+        "theme_color": "#ffffff",
         "icons": [
             {"src": "/static/icons/image-size192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
             {"src": "/static/icons/image-size512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
@@ -1549,7 +1606,7 @@ def mfu_notifications_manifest():
 @mfu_notifications_bp.get("/mfu-notifications/sw.js")
 def mfu_notifications_service_worker():
     script = r"""
-const SW_VERSION = 'mfu-notifications-2026-10-06-01';
+const SW_VERSION = 'mfu-notifications-2026-10-06-02';
 const BADGE_URL = '/api/mfu-notifications/unread-count';
 
 async function syncBadge() {
@@ -1612,7 +1669,13 @@ def api_mfu_notifications_unread_count():
     if error:
         return error
     counts = _compute_unread_counts_mfu(username)
-    return jsonify({"ok": True, "count": counts["total"], "unread_count": counts["total"], **counts})
+    return jsonify({
+        "ok": True,
+        "count": counts["total"],
+        "unread_count": counts["total"],
+        "channel_unread": _compute_mfu_channel_unread_counts(username),
+        **counts,
+    })
 
 
 def _fetch_mfu_notifications(
@@ -1623,6 +1686,7 @@ def _fetch_mfu_notifications(
     since_id: int = 0,
     unread_only: bool = False,
     category: str = "all",
+    channel: str = "all",
 ) -> tuple[list[dict[str, Any]], int | None, int]:
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -1632,6 +1696,9 @@ def _fetch_mfu_notifications(
         if unread_only:
             where_sql += " AND read_at IS NULL"
         where_sql += f" AND {_notification_category_sql(category)}"
+        channel_sql, channel_params = _mfu_notification_channel_sql(channel)
+        where_sql += f" AND {channel_sql}"
+        params.extend(channel_params)
         if since_id > 0:
             where_sql += " AND id > %s"
             params.append(int(since_id))
@@ -1675,6 +1742,7 @@ def api_mfu_notifications_list():
         return error
     unread_only = _to_unread_only(request.args.get("unread"), default=False)
     category = _notification_category(request.args.get("category"))
+    channel = _normalize_mfu_notification_channel(request.args.get("channel"))
     page = max(int(request.args.get("page") or 1), 1)
     per_page = 20
     items, latest_id, total = _fetch_mfu_notifications(
@@ -1684,14 +1752,17 @@ def api_mfu_notifications_list():
         since_id=0,
         unread_only=unread_only,
         category=category,
+        channel=channel,
     )
     counts = _compute_unread_counts_mfu(username)
-    current_app.logger.info("mfu notifications list user=%s unread_only=%s category=%s page=%s", username, unread_only, category, page)
+    current_app.logger.info("mfu notifications list user=%s unread_only=%s category=%s channel=%s page=%s", username, unread_only, category, channel, page)
     return jsonify({
         "ok": True,
         "items": items,
         "unread_count": counts["total"],
         "unread": counts,
+        "channel_unread": _compute_mfu_channel_unread_counts(username),
+        "selected_channel": channel,
         "latest_id": latest_id,
         "pagination": {"page": page, "per_page": per_page, "total": total, "has_next": page * per_page < total},
     })
@@ -1706,13 +1777,18 @@ def api_mfu_notifications_updates():
     since_id = max(int(request.args.get("since_id") or 0), 0)
     unread_only = _to_unread_only(request.args.get("unread"), default=False)
     category = _notification_category(request.args.get("category"))
-    items, latest_id, _total = _fetch_mfu_notifications(username, limit=20, since_id=since_id, unread_only=unread_only, category=category)
+    channel = _normalize_mfu_notification_channel(request.args.get("channel"))
+    items, latest_id, _total = _fetch_mfu_notifications(
+        username, limit=20, since_id=since_id, unread_only=unread_only, category=category, channel=channel
+    )
     counts = _compute_unread_counts_mfu(username)
     return jsonify({
         "ok": True,
         "items": items,
         "unread_count": counts["total"],
         "unread": counts,
+        "channel_unread": _compute_mfu_channel_unread_counts(username),
+        "selected_channel": channel,
         "latest_id": latest_id or since_id,
     })
 
@@ -1751,22 +1827,31 @@ def api_mfu_notifications_mark_all_read():
     username, error = _require_mfu_admin_acl()
     if error:
         return error
+    payload = request.get_json(silent=True) or {}
+    channel = _normalize_mfu_notification_channel(payload.get("channel") or request.args.get("channel"))
+    channel_sql, channel_params = _mfu_notification_channel_sql(channel)
     db = get_db()
     cur = db.cursor()
     try:
         cur.execute(
-            """
+            f"""
             UPDATE mfu_notifications
                SET read_at=%s
               WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
                AND COALESCE(kind,'') NOT IN ('chat_message', 'event_chat', 'dm')
+               AND {channel_sql}
             """,
-            (datetime.utcnow(), username),
+            tuple([datetime.utcnow(), username, *channel_params]),
         )
         updated = int(cur.rowcount or 0)
         db.commit()
         _emit_notif_unread_mfu(username, reason="read_all")
-        return jsonify({"ok": True, "updated": updated})
+        return jsonify({
+            "ok": True,
+            "updated": updated,
+            "selected_channel": channel,
+            "channel_unread": _compute_mfu_channel_unread_counts(username),
+        })
     finally:
         cur.close()
         db.close()

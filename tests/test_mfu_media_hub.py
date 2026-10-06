@@ -98,3 +98,18 @@ def test_notification_center_pwa_is_separate_from_mimoria_pwa():
     assert "prefers-color-scheme:dark" not in template
     assert "/mfu-notifications/manifest.webmanifest" in base
     assert 'required_scope = "/mfu-notifications/"' in chat
+
+
+def test_notification_centers_share_feature_channels_and_unread_counts():
+    notifications = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8")
+    template = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
+    server = (ROOT / "utils" / "notification_service.py").read_text(encoding="utf-8")
+    client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
+    assert "def _mfu_notification_channels" in notifications
+    assert "def _compute_mfu_channel_unread_counts" in notifications
+    assert 'request.args.get("channel")' in notifications
+    assert 'data-channel-count' in template
+    assert "mfuNotificationChannel" in template
+    assert 'channel_unread' in server
+    assert "すべてのチャンネル" in client
+    assert "_mark_notification_channel_read" in client
