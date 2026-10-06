@@ -31,6 +31,8 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("mail_spam_report", {"label": "迷惑メール集計", "description": "SpamAssassinの検出件数と対象メール", "group": "メール"}),
         ("debian_updates", {"label": "Debian自動更新", "description": "端末別の更新結果・失敗・再起動状況", "group": "システム"}),
         ("backup_status", {"label": "バックアップ結果", "description": "メールサーバーのバックアップ異常", "group": "システム"}),
+        ("freepbx_calls", {"label": "FreePBX着信通知", "description": "全着信の分類・発信元・処理結果", "group": "電話"}),
+        ("voicemail_transcription", {"label": "留守番電話文字起こし", "description": "留守番電話の文字起こし・要約", "group": "電話"}),
     ]
 )
 

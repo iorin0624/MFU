@@ -412,6 +412,19 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
             "timestamp": str(raw_card.get("timestamp") or "")[:64],
             "image_url": str(card_image.get("url") or "")[:1000],
         })
+    actions = payload.get("actions") if isinstance(payload.get("actions"), list) else []
+    if not actions:
+        actions = []
+        for component_row in payload.get("components") or []:
+            if not isinstance(component_row, dict):
+                continue
+            for component in component_row.get("components") or []:
+                if not isinstance(component, dict) or int(component.get("type") or 0) != 2:
+                    continue
+                label = str(component.get("label") or "").strip()
+                url = str(component.get("url") or "").strip()
+                if label and url:
+                    actions.append({"label": label[:80], "url": url[:1000]})
     return {
         "feature_key": feature_key,
         "kind": str(payload.get("kind") or feature_key)[:64],
@@ -425,7 +438,7 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
         "footer": str(footer_data.get("text") or payload.get("username") or "MFU")[:255],
         "target_url": target_url,
         "topic_key": str(payload.get("topic_key") or "")[:191],
-        "actions": payload.get("actions") if isinstance(payload.get("actions"), list) else [],
+        "actions": actions[:8],
     }
 
 
@@ -783,6 +796,8 @@ def _accept_source_event(source: dict[str, Any], event: dict[str, Any], raw: byt
         title=str(event.get("title") or "お知らせ")[:255],
         description=str(event.get("description") or event.get("body") or ""),
         fields=event.get("fields") if isinstance(event.get("fields"), list) else [],
+        cards=event.get("cards") if isinstance(event.get("cards"), list) else [],
+        lead_text=str(event.get("lead_text") or ""),
         image_url=str(event.get("image_url") or ""),
         footer=str(event.get("footer") or source.get("source_name") or "MFU"),
         target_url=str(event.get("target_url") or "/mfu-notifications"),
@@ -797,16 +812,52 @@ def _accept_source_event(source: dict[str, Any], event: dict[str, Any], raw: byt
     if source.get("discord_enabled") and not result.get("muted"):
         try:
             from app.discord_notifications.service import post_discord_notification
-            discord_payload = {
-                "embeds": [{
-                    "title": str(event.get("title") or "お知らせ")[:255],
-                    "description": str(event.get("description") or event.get("body") or "")[:4000],
-                    "fields": event.get("fields") if isinstance(event.get("fields"), list) else [],
-                    "footer": {"text": str(event.get("footer") or source.get("source_name") or "MFU")[:255]},
-                }],
+            raw_cards = event.get("cards") if isinstance(event.get("cards"), list) else []
+            embeds = []
+            for raw_card in raw_cards[:10]:
+                if not isinstance(raw_card, dict):
+                    continue
+                card: dict[str, Any] = {
+                    "title": str(raw_card.get("title") or "")[:255],
+                    "description": str(raw_card.get("description") or "")[:4000],
+                    "color": int(raw_card.get("color") or 0),
+                    "fields": raw_card.get("fields") if isinstance(raw_card.get("fields"), list) else [],
+                }
+                if raw_card.get("footer"):
+                    card["footer"] = {"text": str(raw_card.get("footer"))[:255]}
+                if raw_card.get("image_url"):
+                    card["image"] = {"url": str(raw_card.get("image_url"))[:1000]}
+                if str(raw_card.get("url") or "").startswith(("http://", "https://")):
+                    card["url"] = str(raw_card.get("url"))[:1000]
+                if raw_card.get("timestamp"):
+                    card["timestamp"] = str(raw_card.get("timestamp"))[:64]
+                embeds.append(card)
+            if not embeds:
+                embeds = [{
+                "title": str(event.get("title") or "お知らせ")[:255],
+                "description": str(event.get("description") or event.get("body") or "")[:4000],
+                "fields": event.get("fields") if isinstance(event.get("fields"), list) else [],
+                "footer": {"text": str(event.get("footer") or source.get("source_name") or "MFU")[:255]},
+                }]
+            discord_payload: dict[str, Any] = {
+                "content": str(event.get("lead_text") or "")[:2000],
+                "embeds": embeds,
                 "allowed_mentions": {"parse": []},
             }
-            post_discord_notification(requested_feature, discord_payload, mirror=False)
+            event_actions = event.get("actions") if isinstance(event.get("actions"), list) else []
+            components = [
+                {"type": 2, "style": 5, "label": str(row.get("label") or "")[:80], "url": str(row.get("url") or "")[:1000]}
+                for row in event_actions[:5]
+                if isinstance(row, dict) and row.get("label") and row.get("url")
+            ]
+            if components:
+                discord_payload["components"] = [{"type": 1, "components": components}]
+            post_discord_notification(
+                requested_feature,
+                discord_payload,
+                mirror=False,
+                params={"with_components": "true"} if components else None,
+            )
         except Exception:
             current_app.logger.warning("notification ingress Discord forwarding failed source_id=%s", source["id"], exc_info=True)
     return jsonify({"ok": True, "status": status, "notification_id": notification_id}), 202
