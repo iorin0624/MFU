@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -131,8 +132,9 @@ class Bridge:
 def handler_for(bridge: Bridge):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
-            feature = self.path.removeprefix("/discord/").strip("/")
-            if not feature or self.path == feature:
+            request_path = urllib.parse.urlsplit(self.path).path
+            feature = request_path.removeprefix("/discord/").strip("/")
+            if not feature or request_path == feature:
                 self.send_error(404)
                 return
             try:

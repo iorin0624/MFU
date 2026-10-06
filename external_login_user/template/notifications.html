@@ -308,6 +308,17 @@
         </section>`).join('')}</div>`;
     };
 
+    const renderNotificationActions = (item) => {
+      const content = item?.content && typeof item.content === 'object' ? item.content : {};
+      const actions = Array.isArray(content.actions) ? content.actions : [];
+      return actions.slice(0, 8).map((action) => {
+        const label = String(action?.label || '').trim();
+        const url = String(action?.url || '').trim();
+        if (!label || !url) return '';
+        return `<a class="btn btn-sm btn-outline-primary" href="${escapeHtml(safeLink(url))}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+      }).join('');
+    };
+
     const formatDate = (iso) => {
       if (!iso) return '';
       const d = new Date(iso);
@@ -344,7 +355,7 @@
         </div>
         ${renderCards(item)}
         <div class="notification-meta"># ${escapeHtml(channelLabel(normalizedItemChannel(item)))} ・ ${formatDate(item.created_at)}</div>
-        <div class="notification-actions"><button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button></div>
+        <div class="notification-actions">${renderNotificationActions(item)}<button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button></div>
       `;
       a.querySelector('[data-open]').addEventListener('click', async () => {
         try {

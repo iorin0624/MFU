@@ -8,6 +8,7 @@ DISCORD = ROOT / "discord_notifications" / "service.py"
 SENDER = ROOT / "tools" / "mfu_notification_sender" / "mfu_notify.py"
 BRIDGE = ROOT / "tools" / "mfu_notification_sender" / "mfu_notification_bridge.py"
 RPI_MIGRATION = ROOT / "tools" / "mfu_notification_sender" / "migrate_raspberry_pi_discord.py"
+FREEPBX_MIGRATION = ROOT / "tools" / "mfu_notification_sender" / "migrate_freepbx_discord.py"
 
 
 def test_common_notification_schema_keeps_rich_content_and_muted_history():
@@ -120,3 +121,18 @@ def test_raspberry_pi_migration_covers_all_active_discord_producers():
         assert f'"{feature}"' in source
     assert '127.0.0.1' in source
     assert 'parsed.port == 8765' in source
+
+
+def test_freepbx_migration_separates_calls_and_voicemail():
+    source = FREEPBX_MIGRATION.read_text(encoding="utf-8")
+    assert "/discord/freepbx_calls" in source
+    assert "/discord/voicemail_transcription" in source
+    assert "MFU_VOICEMAIL_NOTIFICATION_WEBHOOK_URL" in source
+
+
+def test_discord_ingress_preserves_cards_lead_text_and_link_buttons():
+    source = SERVICE.read_text(encoding="utf-8")
+    assert 'cards=event.get("cards")' in source
+    assert 'lead_text=str(event.get("lead_text")' in source
+    assert 'payload.get("components")' in source
+    assert 'params={"with_components": "true"}' in source
