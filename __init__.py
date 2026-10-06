@@ -374,6 +374,8 @@ _CSRF_PROTECTED_PREFIXES = (
     "/admin/ios-shortcut-upload",
     "/admin/maintenance",
     "/admin/settings/inapp-browser",
+    "/admin/notification-sources",
+    "/admin/notification-settings",
     "/admin/ticket-price",
     "/tdr/admin",
     "/admin/restart",
@@ -6717,6 +6719,18 @@ app.register_blueprint(media_clipboard_bp)
 
 from app.utils.media_hub import media_hub_bp
 app.register_blueprint(media_hub_bp)
+
+from app.utils.notification_service import (
+    ensure_notification_service_nav_item,
+    ensure_notification_service_schema,
+    notification_service_bp,
+)
+app.register_blueprint(notification_service_bp)
+try:
+    ensure_notification_service_schema()
+    ensure_notification_service_nav_item()
+except Exception as exc:
+    app.logger.warning("Notification service schema/nav init skipped: %s", exc)
 
 from app.utils.photo_relay import desktop_photo_relay_bp, photo_relay_api_bp
 app.register_blueprint(desktop_photo_relay_bp)

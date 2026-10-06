@@ -41,6 +41,12 @@ class PushRequest:
     chat_room_id: str | None
     create_in_app: bool
     send_web_push: bool
+    feature_key: str
+    severity: str
+    topic_key: str | None
+    content: dict[str, Any]
+    source_id: int | None
+    muted_at: datetime | None
 
 
 """
@@ -151,6 +157,12 @@ def _normalize_request(**kwargs: Any) -> PushRequest:
     chat_room_id = _normalize_text(kwargs.get("chat_room_id"), limit=64) or None
     event_id = _normalize_optional_int(kwargs.get("event_id"), field_name="event_id")
     chat_event_id = _normalize_optional_int(kwargs.get("chat_event_id"), field_name="chat_event_id")
+    source_id = _normalize_optional_int(kwargs.get("source_id"), field_name="source_id")
+    feature_key = _normalize_text(kwargs.get("feature_key") or kind, limit=64) or kind
+    severity = _normalize_text(kwargs.get("severity") or "info", limit=24) or "info"
+    topic_key = _normalize_text(kwargs.get("topic_key"), limit=191) or None
+    content = kwargs.get("content") if isinstance(kwargs.get("content"), dict) else {}
+    muted_at = kwargs.get("muted_at") if isinstance(kwargs.get("muted_at"), datetime) else None
 
     if kind == "chat_message" and not chat_room_id:
         raise PushDispatchError("chat_room_id_required")
@@ -173,6 +185,12 @@ def _normalize_request(**kwargs: Any) -> PushRequest:
         chat_room_id=chat_room_id,
         create_in_app=create_in_app,
         send_web_push=send_web_push,
+        feature_key=feature_key,
+        severity=severity,
+        topic_key=topic_key,
+        content=content,
+        source_id=source_id,
+        muted_at=muted_at,
     )
 
 
@@ -240,6 +258,10 @@ def _deliver_web_push(request_data: PushRequest, notification_id: int | None) ->
         "chat_room_id": request_data.chat_room_id,
         "room_type": request_data.room_type,
         "room_id": request_data.room_id,
+        "feature_key": request_data.feature_key,
+        "severity": request_data.severity,
+        "topic_key": request_data.topic_key,
+        "content": request_data.content,
     }
     metrics: dict[str, Any] = {}
     sent_count = int(_send_push_to_actor(actor_type, actor_id, payload, metrics) or 0)
@@ -266,6 +288,12 @@ def send_push(
     chat_room_id: str | None = None,
     create_in_app: bool = True,
     send_web_push: bool = True,
+    feature_key: str | None = None,
+    severity: str = "info",
+    topic_key: str | None = None,
+    content: dict[str, Any] | None = None,
+    source_id: int | None = None,
+    muted_at: datetime | None = None,
 ) -> dict[str, Any]:
     from app.external_login_user.notifications import (
         _has_notification_delivery_attempt,
@@ -290,6 +318,12 @@ def send_push(
         chat_room_id=chat_room_id,
         create_in_app=create_in_app,
         send_web_push=send_web_push,
+        feature_key=feature_key,
+        severity=severity,
+        topic_key=topic_key,
+        content=content,
+        source_id=source_id,
+        muted_at=muted_at,
     )
 
     result: dict[str, Any] = {
@@ -315,6 +349,12 @@ def send_push(
             event_id=req.event_id,
             chat_event_id=req.chat_event_id,
             chat_room_id=req.chat_room_id,
+            feature_key=req.feature_key,
+            severity=req.severity,
+            topic_key=req.topic_key,
+            content=req.content,
+            source_id=req.source_id,
+            muted_at=req.muted_at,
         )
         if not create_result.get("ok"):
             raise PushDispatchError(str(create_result.get("reason") or "notification_create_failed"), status_code=500)

@@ -14,7 +14,16 @@ def post_discord_notification(
     legacy_webhook: str | None = None,
     timeout: int = 10,
     params: dict[str, Any] | None = None,
+    mirror: bool = True,
 ) -> bool:
+    if mirror:
+        try:
+            from app.utils.notification_service import mirror_discord_payload
+
+            mirror_discord_payload(feature_key, payload)
+        except Exception:
+            # Discord delivery must remain available during staged migration.
+            pass
     webhook = get_discord_webhook(feature_key, legacy_webhook)
     if not webhook:
         return False
