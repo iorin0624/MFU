@@ -133,6 +133,7 @@ def test_web_notifications_follow_windows_card_layout():
     assert "${hasCards ? '' :" in source
     assert '<div class="notification-actions"><button' in source
     assert ".notification-field { min-width:0; }" in source
+    assert "white-space:pre-wrap; overflow-wrap:anywhere;" in source
 
 
 def test_raspberry_pi_notification_features_are_registered():
