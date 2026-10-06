@@ -14,7 +14,6 @@ SETTINGS = (
     (Path("/etc/default/ichihara_bousai_watcher"), "ICHIHARA_DISCORD_WEBHOOK_URL", "ichihara_disaster_radio"),
     (Path("/etc/default/mail_summary_watcher"), "DISCORD_WEBHOOK_URL", "mail_summary"),
     (Path("/etc/default/mail_spam_monitor"), "MAIL_SPAM_MONITOR_DISCORD_WEBHOOK_URL", "mail_spam_report"),
-    (Path("/etc/host_watch.env"), "WEBHOOK_URL", "host_health"),
     (Path("/usr/local/bin/update_all_debian.conf"), "DISCORD_WEBHOOK_URL", "debian_updates"),
     (Path("/etc/default/mfu-notify"), "DISCORD_WEBHOOK_URL_HARDCODE", "backup_status"),
 )

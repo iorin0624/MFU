@@ -29,7 +29,6 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("chiba_police_incidents", {"label": "千葉県警事件・事故情報", "description": "千葉県警の新着事件・事故情報", "group": "地域情報"}),
         ("mail_summary", {"label": "メール要約", "description": "受信メールの内容とAI要約", "group": "メール"}),
         ("mail_spam_report", {"label": "迷惑メール集計", "description": "SpamAssassinの検出件数と対象メール", "group": "メール"}),
-        ("host_health", {"label": "サーバー死活監視", "description": "障害発生・継続・復旧", "group": "システム"}),
         ("debian_updates", {"label": "Debian自動更新", "description": "端末別の更新結果・失敗・再起動状況", "group": "システム"}),
         ("backup_status", {"label": "バックアップ結果", "description": "メールサーバーのバックアップ異常", "group": "システム"}),
     ]
