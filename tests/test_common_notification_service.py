@@ -132,7 +132,8 @@ def test_web_notifications_follow_windows_card_layout():
     assert "const hasCards = Array.isArray(content.cards)" in source
     assert "${hasCards ? '' :" in source
     assert '<div class="notification-actions"><button' in source
-    assert ".notification-field { min-width:0; }" in source
+    assert ".notification-field { background:#fff; border:1px solid #e4e9f1;" in source
+    assert ".notification-field:not(.is-inline) { grid-column:1/-1; }" in source
     assert "white-space:pre-wrap; overflow-wrap:anywhere;" in source
 
 

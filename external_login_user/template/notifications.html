@@ -54,9 +54,10 @@
   .notification-card { --card-color:var(--notice-color); border:1px solid #d8dee9; border-left:4px solid var(--card-color); border-radius:.65rem; padding:.9rem 1rem; background:#f8fafc; color:#172033; }
   .notification-card-title { color:#0f172a; font-weight:700; font-size:1.05rem; margin-bottom:.4rem; }
   .notification-card-description { margin-bottom:.55rem; }
-  .notification-fields { display:grid; gap:.5rem; }
-  .notification-field { min-width:0; }
-  .notification-field-name { color:#334155; font-weight:700; }
+  .notification-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.5rem .75rem; }
+  .notification-field { background:#fff; border:1px solid #e4e9f1; border-radius:.45rem; padding:.55rem .65rem; min-width:0; }
+  .notification-field:not(.is-inline) { grid-column:1/-1; }
+  .notification-field-name { font-size:.78rem; color:#64748b; font-weight:700; }
   .notification-field-value { overflow-wrap:anywhere; }
   .notification-card-footer,.notification-meta { color:#5b687a; font-size:.82rem; margin-top:.6rem; }
   .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
@@ -68,6 +69,8 @@
     .notification-shell { display:block; }
     .notification-sidebar { display:none; }
     .notification-mobile-channel { display:block; }
+    .notification-fields { grid-template-columns:1fr; }
+    .notification-field { grid-column:1/-1; }
     .notification-entry { padding:.8rem; }
   }
 </style>
