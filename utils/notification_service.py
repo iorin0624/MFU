@@ -147,21 +147,28 @@ def ensure_notification_service_nav_item() -> None:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT id FROM mfu_nav_items WHERE url=%s LIMIT 1", ("/admin/notification-sources",))
-        if cur.fetchone():
-            return
         cur.execute(
             "SELECT id FROM mfu_nav_items WHERE parent_id IS NULL AND (label LIKE %s OR label LIKE %s) ORDER BY id LIMIT 1",
             ("%システム系%", "%通知%"),
         )
         parent = cur.fetchone()
         parent_id = int(parent["id"]) if parent else None
-        cur.execute("SELECT COALESCE(MAX(order_no),0) AS max_order FROM mfu_nav_items WHERE parent_id <=> %s", (parent_id,))
-        order_no = int((cur.fetchone() or {}).get("max_order") or 0) + 10
-        cur.execute(
-            "INSERT INTO mfu_nav_items (parent_id,label,url,order_no,is_enabled,feature_key,open_in_new_tab,is_external) VALUES (%s,%s,%s,%s,1,NULL,0,0)",
-            (parent_id, "外部通知元", "/admin/notification-sources", order_no),
-        )
+        for label, url in (
+            ("外部通知元", "/admin/notification-sources"),
+            ("共通通知設定", "/admin/notification-settings"),
+        ):
+            cur.execute("SELECT id,parent_id FROM mfu_nav_items WHERE url=%s LIMIT 1", (url,))
+            existing = cur.fetchone()
+            if existing:
+                if existing.get("parent_id") != parent_id:
+                    cur.execute("UPDATE mfu_nav_items SET parent_id=%s WHERE id=%s", (parent_id, existing["id"]))
+                continue
+            cur.execute("SELECT COALESCE(MAX(order_no),0) AS max_order FROM mfu_nav_items WHERE parent_id <=> %s", (parent_id,))
+            order_no = int((cur.fetchone() or {}).get("max_order") or 0) + 10
+            cur.execute(
+                "INSERT INTO mfu_nav_items (parent_id,label,url,order_no,is_enabled,feature_key,open_in_new_tab,is_external) VALUES (%s,%s,%s,%s,1,NULL,0,0)",
+                (parent_id, label, url, order_no),
+            )
         db.commit()
     finally:
         cur.close()

@@ -29,6 +29,13 @@ def test_external_ingress_supports_native_and_discord_compatible_requests():
     assert "mfu_notification_ingress_audit" in source
 
 
+def test_common_notification_admin_pages_are_added_to_system_navigation():
+    source = SERVICE.read_text(encoding="utf-8")
+    assert '("外部通知元", "/admin/notification-sources")' in source
+    assert '("共通通知設定", "/admin/notification-settings")' in source
+    assert "UPDATE mfu_nav_items SET parent_id=%s" in source
+
+
 def test_discord_same_site_absolute_links_are_normalized_for_common_notifications():
     source = SERVICE.read_text(encoding="utf-8")
     assert "def _common_notification_target_url(" in source
