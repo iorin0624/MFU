@@ -32,6 +32,8 @@
   .notification-sidebar { position:sticky; top:1rem; background:#fff; border:1px solid #d7dfeb; border-radius:.85rem; padding:.65rem; box-shadow:0 .15rem .65rem rgba(15,23,42,.06); }
   .notification-sidebar-title { color:#64748b; font-size:.78rem; font-weight:700; letter-spacing:.05em; padding:.35rem .6rem .55rem; }
   .notification-channel-list { display:grid; gap:.2rem; }
+  .notification-channel-group { color:#64748b; font-size:.72rem; font-weight:800; letter-spacing:.06em; padding:.75rem .65rem .2rem; }
+  .notification-channel-group:first-child { padding-top:.2rem; }
   .notification-channel { width:100%; display:flex; align-items:center; gap:.55rem; border:0; border-radius:.55rem; background:transparent; color:#334155; padding:.58rem .65rem; text-align:left; }
   .notification-channel:hover { background:#f1f5f9; }
   .notification-channel.is-active { background:#e8f1ff; color:#0b57d0; font-weight:700; }
@@ -131,7 +133,7 @@
     const feedTitleEl = document.getElementById('notificationFeedTitle');
 
     const configuredChannels = scope === 'mfu' && Array.isArray(cfg.channels) ? cfg.channels : [];
-    const channels = [{key:'all', label:'すべて'}, ...configuredChannels];
+    const channels = [{key:'all', label:'すべて', group:''}, ...configuredChannels];
     const channelKeys = new Set(channels.map((channel) => String(channel.key || '')));
     const queryChannel = new URLSearchParams(window.location.search).get('channel') || '';
     const savedChannel = scope === 'mfu' ? (window.localStorage.getItem('mfuNotificationChannel') || '') : '';
@@ -169,19 +171,34 @@
     const updateChannelNavigation = () => {
       if (scope !== 'mfu') return;
       if (channelListEl && !channelListEl.children.length) {
-        channelListEl.innerHTML = channels.map((channel) => `
+        let previousGroup = '';
+        channelListEl.innerHTML = channels.map((channel) => {
+          const group = String(channel.group || 'その他');
+          const groupHeading = channel.key !== 'all' && group !== previousGroup
+            ? `<div class="notification-channel-group">${escapeHtml(group)}</div>` : '';
+          if (channel.key !== 'all') previousGroup = group;
+          return `${groupHeading}
           <button type="button" class="notification-channel" data-channel="${escapeHtml(channel.key)}">
             <span class="notification-channel-hash">#</span>
             <span class="notification-channel-label">${escapeHtml(channel.label)}</span>
             <span class="notification-channel-count is-zero" data-channel-count="${escapeHtml(channel.key)}">0</span>
-          </button>`).join('');
+          </button>`;
+        }).join('');
         channelListEl.querySelectorAll('[data-channel]').forEach((button) => {
           button.addEventListener('click', () => selectChannel(button.dataset.channel || 'all'));
         });
       }
       if (channelSelectEl && !channelSelectEl.options.length) {
-        channelSelectEl.innerHTML = channels.map((channel) =>
-          `<option value="${escapeHtml(channel.key)}"># ${escapeHtml(channel.label)}</option>`
+        const grouped = new Map();
+        for (const channel of configuredChannels) {
+          const group = String(channel.group || 'その他');
+          if (!grouped.has(group)) grouped.set(group, []);
+          grouped.get(group).push(channel);
+        }
+        channelSelectEl.innerHTML = `<option value="all"># すべて</option>` + [...grouped.entries()].map(([group, rows]) =>
+          `<optgroup label="${escapeHtml(group)}">${rows.map((channel) =>
+            `<option value="${escapeHtml(channel.key)}"># ${escapeHtml(channel.label)}</option>`
+          ).join('')}</optgroup>`
         ).join('');
         channelSelectEl.addEventListener('change', () => selectChannel(channelSelectEl.value || 'all'));
       }

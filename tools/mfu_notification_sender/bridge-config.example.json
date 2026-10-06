@@ -1,0 +1,6 @@
+{
+  "base_url": "https://mfu.iori0624.jp/api/notification-ingress/discord",
+  "tokens": {
+    "earthquake_early_warning": "mfu_ns_REPLACE_ME"
+  }
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=MFU common notification bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mfu-notify
+Group=mfu-notify
+ExecStart=/usr/local/lib/mfu-notification-bridge/mfu_notification_bridge.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mfu-notification-bridge
+
+[Install]
+WantedBy=multi-user.target

@@ -389,10 +389,20 @@ class NotificationCenterDialog(QDialog):
         self.feature.blockSignals(True)
         self.feature.clear()
         self.feature.addItem("すべてのチャンネル", "")
+        previous_group = ""
         for channel in configured:
             key = str(channel.get("key") or "")
             if not key or key == "other":
                 continue
+            group = str(channel.get("group") or "その他")
+            if group != previous_group:
+                self.feature.insertSeparator(self.feature.count())
+                self.feature.addItem(f"── {group} ──")
+                group_index = self.feature.count() - 1
+                item = self.feature.model().item(group_index)
+                if item is not None:
+                    item.setEnabled(False)
+                previous_group = group
             count = int(self.controller.notification_channel_unread.get(key) or 0)
             suffix = f"（未読{count}件）" if count else ""
             self.feature.addItem(f"# {str(channel.get('label') or key)}{suffix}", key)

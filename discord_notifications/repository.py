@@ -24,6 +24,14 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("paypay_payout_expiry", {"label": "PayPay受取リンク管理", "description": "受取リンクが長期間未処理の場合の警告"}),
         ("instagram_login", {"label": "Instagramログイン", "description": "取得時のログイン切れ・OTP再認証要求"}),
         ("inpa_feedback", {"label": "INPAフィードバック", "description": "INPAで新しいフィードバックが送信された際の通知"}),
+        ("earthquake_early_warning", {"label": "緊急地震速報", "description": "P2P地震速報の発表・更新・取消", "group": "防災"}),
+        ("ichihara_disaster_radio", {"label": "市原市防災行政無線", "description": "防災行政無線の放送・解除情報", "group": "防災"}),
+        ("chiba_police_incidents", {"label": "千葉県警事件・事故情報", "description": "千葉県警の新着事件・事故情報", "group": "地域情報"}),
+        ("mail_summary", {"label": "メール要約", "description": "受信メールの内容とAI要約", "group": "メール"}),
+        ("mail_spam_report", {"label": "迷惑メール集計", "description": "SpamAssassinの検出件数と対象メール", "group": "メール"}),
+        ("host_health", {"label": "サーバー死活監視", "description": "障害発生・継続・復旧", "group": "システム"}),
+        ("debian_updates", {"label": "Debian自動更新", "description": "端末別の更新結果・失敗・再起動状況", "group": "システム"}),
+        ("backup_status", {"label": "バックアップ結果", "description": "メールサーバーのバックアップ異常", "group": "システム"}),
     ]
 )
 

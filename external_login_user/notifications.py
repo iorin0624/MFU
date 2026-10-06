@@ -147,10 +147,14 @@ def _notification_category_sql(category: str) -> str:
 
 def _mfu_notification_channels() -> list[dict[str, str]]:
     channels = [
-        {"key": str(key), "label": str(definition.get("label") or key)}
+        {
+            "key": str(key),
+            "label": str(definition.get("label") or key),
+            "group": str(definition.get("group") or "その他"),
+        }
         for key, definition in FEATURE_DEFINITIONS.items()
     ]
-    channels.append({"key": "other", "label": "その他"})
+    channels.append({"key": "other", "label": "その他", "group": "その他"})
     return channels
 
 
