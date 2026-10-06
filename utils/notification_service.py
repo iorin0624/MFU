@@ -5,6 +5,7 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template_string, request, session, url_for
 from flask_socketio import disconnect, emit, join_room
@@ -335,6 +336,23 @@ def publish_common_notification(
     return result
 
 
+def _common_notification_target_url(value: Any) -> str:
+    """Convert same-site Discord links to safe app-relative notification links."""
+    raw = str(value or "").strip()
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw[:512]
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return "/mfu-notifications"
+    if parsed.scheme.lower() in {"http", "https"} and (parsed.hostname or "").lower() == "mfu.iori0624.jp":
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+        return target[:512]
+    return "/mfu-notifications"
+
+
 def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     embeds = payload.get("embeds") if isinstance(payload.get("embeds"), list) else []
     embed = embeds[0] if embeds and isinstance(embeds[0], dict) else {}
@@ -358,7 +376,7 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
         severity = "error"
     footer_data = embed.get("footer") if isinstance(embed.get("footer"), dict) else {}
     image_data = embed.get("image") if isinstance(embed.get("image"), dict) else {}
-    target_url = str(embed.get("url") or "/mfu-notifications")
+    target_url = _common_notification_target_url(embed.get("url"))
     return {
         "feature_key": feature_key,
         "kind": str(payload.get("kind") or feature_key)[:64],
@@ -368,7 +386,7 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
         "fields": fields,
         "image_url": str(image_data.get("url") or "")[:1000],
         "footer": str(footer_data.get("text") or payload.get("username") or "MFU")[:255],
-        "target_url": target_url[:512],
+        "target_url": target_url,
         "topic_key": str(payload.get("topic_key") or "")[:191],
         "actions": payload.get("actions") if isinstance(payload.get("actions"), list) else [],
     }
