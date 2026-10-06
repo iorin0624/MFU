@@ -40,6 +40,7 @@ class Store:
                 next_attempt_at INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(feature_key, payload))"""
             )
+        os.chmod(path, 0o600)
 
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=30)
