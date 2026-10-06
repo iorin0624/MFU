@@ -4771,13 +4771,14 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
             actor_ids.extend(["admin", "1"])
         actor_ids = list(dict.fromkeys([x for x in actor_ids if x]))
         placeholders = ",".join(["%s"] * len(actor_ids))
+        required_scope = "/mfu-notifications/" if notification_scope == "mfu" else "/"
         cur.execute(
             f"""
-            SELECT id, endpoint, p256dh, auth
+            SELECT id, endpoint, p256dh, auth, sw_scope
               FROM chat_push_subscriptions
-             WHERE actor_type=%s AND actor_id IN ({placeholders})
+             WHERE actor_type=%s AND actor_id IN ({placeholders}) AND sw_scope=%s
             """,
-            (actor_type, *actor_ids),
+            (actor_type, *actor_ids, required_scope),
         )
         subs = cur.fetchall() or []
         if metrics is not None:

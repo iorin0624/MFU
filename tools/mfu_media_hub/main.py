@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import html
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -49,7 +51,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -196,38 +198,99 @@ SEVERITY_COLORS = {
 }
 
 
+def _discord_rich_text(value: object) -> str:
+    text = html.escape(str(value or ""))
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)]+)\)",
+        r'<a style="color:#60a5fa" href="\2">\1</a>',
+        text,
+    )
+    return text.replace("\n", "<br>")
+
+
+def _rich_label(value: object, *, color: str = "#f8fafc") -> QLabel:
+    label = QLabel(_discord_rich_text(value))
+    label.setTextFormat(Qt.RichText)
+    label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+    label.setOpenExternalLinks(True)
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color:{color};")
+    return label
+
+
 class NotificationCard(QFrame):
     def __init__(self, item: dict, *, compact: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.item = item
         severity = str(item.get("severity") or "info")
         color = SEVERITY_COLORS.get(severity, SEVERITY_COLORS["info"])
+        self.setObjectName("NotificationEntry")
         self.setStyleSheet(
-            f"QFrame{{background:#111827;border:1px solid #374151;border-left:5px solid {color};border-radius:8px;}}"
-            "QLabel{border:0;background:transparent;color:#f8fafc;} QPushButton{padding:5px 10px;}"
+            f"QFrame#NotificationEntry{{background:#111827;border:1px solid #374151;border-left:5px solid {color};border-radius:8px;}}"
+            "QFrame#NotificationEntry QLabel{border:0;background:transparent;color:#f8fafc;} QFrame#NotificationEntry QPushButton{padding:5px 10px;}"
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
-        title = QLabel(str(item.get("title") or "お知らせ"))
-        title.setStyleSheet("font-weight:700;font-size:14px;")
-        title.setWordWrap(True)
-        layout.addWidget(title)
-        body = str(item.get("body") or "")
-        if body:
-            description = QLabel(body)
-            description.setWordWrap(True)
-            layout.addWidget(description)
         content = item.get("content") if isinstance(item.get("content"), dict) else {}
-        fields = content.get("fields") if isinstance(content.get("fields"), list) else []
-        if fields and not compact:
-            field_text = "\n".join(
-                f"{str(row.get('name') or '')}: {str(row.get('value') or '')}"
-                for row in fields[:12] if isinstance(row, dict)
-            )
-            field_label = QLabel(field_text)
-            field_label.setWordWrap(True)
-            field_label.setStyleSheet("color:#d1d5db;")
-            layout.addWidget(field_label)
+        cards = content.get("cards") if isinstance(content.get("cards"), list) else []
+        if cards and not compact:
+            lead_text = str(content.get("lead_text") or "")
+            if lead_text:
+                layout.addWidget(_rich_label(lead_text))
+            for card_data in cards[:10]:
+                if not isinstance(card_data, dict):
+                    continue
+                card_color_value = int(card_data.get("color") or 0)
+                card_color = f"#{min(card_color_value, 0xFFFFFF):06x}" if card_color_value > 0 else color
+                embed = QFrame()
+                embed.setObjectName("NotificationEmbed")
+                embed.setStyleSheet(
+                    f"QFrame#NotificationEmbed{{background:#172033;border:1px solid #374151;border-left:4px solid {card_color};border-radius:6px;}}"
+                )
+                embed_layout = QVBoxLayout(embed)
+                embed_layout.setContentsMargins(10, 8, 10, 8)
+                card_title = str(card_data.get("title") or "")
+                if card_title:
+                    title = _rich_label(card_title)
+                    title.setStyleSheet("font-weight:700;font-size:14px;color:#f8fafc;")
+                    embed_layout.addWidget(title)
+                description = str(card_data.get("description") or "")
+                if description:
+                    embed_layout.addWidget(_rich_label(description))
+                fields = card_data.get("fields") if isinstance(card_data.get("fields"), list) else []
+                for row in fields[:25]:
+                    if not isinstance(row, dict):
+                        continue
+                    field = QLabel(
+                        f"<b>{html.escape(str(row.get('name') or ''))}</b><br>{_discord_rich_text(row.get('value') or '')}"
+                    )
+                    field.setTextFormat(Qt.RichText)
+                    field.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                    field.setOpenExternalLinks(True)
+                    field.setWordWrap(True)
+                    field.setStyleSheet("color:#d1d5db;")
+                    embed_layout.addWidget(field)
+                footer = str(card_data.get("footer") or "")
+                if footer:
+                    footer_label = _rich_label(footer, color="#9ca3af")
+                    footer_label.setStyleSheet("color:#9ca3af;font-size:11px;")
+                    embed_layout.addWidget(footer_label)
+                layout.addWidget(embed)
+        else:
+            title = _rich_label(str(item.get("title") or "お知らせ"))
+            title.setStyleSheet("font-weight:700;font-size:14px;color:#f8fafc;")
+            layout.addWidget(title)
+            body = str(item.get("body") or "")
+            if body:
+                layout.addWidget(_rich_label(body))
+            fields = content.get("fields") if isinstance(content.get("fields"), list) else []
+            if fields and not compact:
+                field_text = "\n".join(
+                    f"{str(row.get('name') or '')}: {str(row.get('value') or '')}"
+                    for row in fields[:12] if isinstance(row, dict)
+                )
+                layout.addWidget(_rich_label(field_text, color="#d1d5db"))
         meta = QLabel(f"{str(item.get('feature_key') or 'general')}  {str(item.get('created_at') or '')}")
         meta.setStyleSheet("color:#9ca3af;font-size:11px;")
         layout.addWidget(meta)

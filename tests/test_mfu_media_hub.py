@@ -79,3 +79,20 @@ def test_media_hub_has_realtime_notification_center_and_mute_controls():
     assert '"notification_new"' in receiver
     assert "NotificationCenterDialog" in client
     assert '"/desktop/media-hub/api/notifications/mute"' in client
+    assert 'content.get("cards")' in client
+    assert 'setObjectName("NotificationEmbed")' in client
+    assert "_discord_rich_text" in client
+
+
+def test_notification_center_pwa_is_separate_from_mimoria_pwa():
+    notifications = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8")
+    template = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
+    base = (ROOT / "external_login_user" / "template" / "base_extlogin.html").read_text(encoding="utf-8")
+    chat = (ROOT / "chat" / "__init__.py").read_text(encoding="utf-8")
+    assert '"id": "/mfu-notifications/"' in notifications
+    assert '"scope": "/mfu-notifications/"' in notifications
+    assert '@mfu_notifications_bp.get("/mfu-notifications/sw.js")' in notifications
+    assert 'notificationPushBtn' in template
+    assert "content.cards" in template
+    assert "/mfu-notifications/manifest.webmanifest" in base
+    assert 'required_scope = "/mfu-notifications/"' in chat

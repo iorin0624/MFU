@@ -14,6 +14,9 @@ def test_common_notification_schema_keeps_rich_content_and_muted_history():
         assert column in source
     assert "read_at" in source
     assert "if inserted and muted_at is None" in source
+    common = SERVICE.read_text(encoding="utf-8")
+    assert '"cards": [row for row in (cards or [])' in common
+    assert '"lead_text": str(lead_text or "")' in common
 
 
 def test_external_ingress_supports_native_and_discord_compatible_requests():
