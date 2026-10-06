@@ -366,9 +366,9 @@ def discord_test():
     _require_csrf()
     try:
         sent_count = send_test_notification()
-        flash(f"Discordへ最新のETC利用明細{sent_count}件をテスト通知しました。", "success")
+        flash(f"共通通知基盤から最新のETC利用明細{sent_count}件をテスト通知しました。", "success")
     except Exception as exc:
-        flash(f"Discordテスト通知に失敗しました: {exc}", "danger")
+        flash(f"共通通知テストに失敗しました: {exc}", "danger")
     return redirect(url_for("etc_accounting.index"))
 
 

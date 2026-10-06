@@ -17,13 +17,15 @@ def post_discord_notification(
     mirror: bool = True,
 ) -> bool:
     if mirror:
-        try:
-            from app.utils.notification_service import mirror_discord_payload
-
-            mirror_discord_payload(feature_key, payload)
-        except Exception:
-            # Discord delivery must remain available during staged migration.
-            pass
+        from app.utils.notification_service import dispatch_discord_notification
+        result = dispatch_discord_notification(
+            feature_key,
+            payload,
+            legacy_webhook=legacy_webhook,
+            timeout=timeout,
+            params=params,
+        )
+        return str((result.get("delivery") or {}).get("discord") or "") == "sent"
     webhook = get_discord_webhook(feature_key, legacy_webhook)
     if not webhook:
         return False

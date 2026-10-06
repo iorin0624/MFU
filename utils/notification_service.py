@@ -329,6 +329,9 @@ def publish_common_notification(
     )
     result["muted"] = muted
     result["preference"] = preference
+    result.setdefault("delivery", {})["media_hub"] = (
+        "muted" if muted else ("queued" if preference.get("media_hub_enabled") else "disabled")
+    )
     return result
 
 
@@ -381,6 +384,42 @@ def mirror_discord_payload(feature_key: str, payload: dict[str, Any]) -> dict[st
         dedup_key=dedup,
         **event,
     )
+
+
+def dispatch_discord_notification(
+    feature_key: str,
+    payload: dict[str, Any],
+    *,
+    recipient_username: str = DEFAULT_RECIPIENT,
+    legacy_webhook: str | None = None,
+    timeout: int = 10,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Register once in the common store, then fan out to every enabled channel."""
+    event = discord_payload_to_event(feature_key, payload)
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    bucket = datetime.utcnow().strftime("%Y%m%d%H%M")
+    result = publish_common_notification(
+        recipient_username=recipient_username,
+        dedup_key=f"dispatch:{feature_key}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:32]}:{bucket}",
+        **event,
+    )
+    preference = result.get("preference") if isinstance(result.get("preference"), dict) else {}
+    discord_status = "muted" if result.get("muted") else "disabled"
+    if not result.get("muted") and preference.get("discord_enabled", True):
+        from app.discord_notifications.service import post_discord_notification
+        delivered = post_discord_notification(
+            feature_key,
+            payload,
+            legacy_webhook=legacy_webhook,
+            timeout=timeout,
+            params=params,
+            mirror=False,
+        )
+        discord_status = "sent" if delivered else "disabled"
+    result.setdefault("delivery", {})["discord"] = discord_status
+    result["ok"] = bool(result.get("ok"))
+    return result
 
 
 def mirror_discord_payload_best_effort(feature_key: str, payload: dict[str, Any]) -> None:

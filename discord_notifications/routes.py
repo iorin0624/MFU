@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
 
 from .repository import FEATURE_DEFINITIONS, list_discord_settings, update_discord_setting
-from .service import post_discord_notification
 
 
 discord_notifications_bp = Blueprint(
@@ -62,20 +61,28 @@ def test(feature_key: str):
     definition = FEATURE_DEFINITIONS[feature_key]
     payload = {
         "embeds": [{
-            "title": "✅ Discord通知テスト",
+            "title": "✅ 共通通知テスト",
             "color": 0x2ECC71,
             "fields": [
                 {"name": "通知機能", "value": definition["label"], "inline": False},
                 {"name": "送信日時", "value": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"), "inline": False},
             ],
-            "footer": {"text": "この通知先は正常に利用できます。"},
+            "footer": {"text": "共通通知基盤から各有効チャネルへ配信しました。"},
         }],
         "allowed_mentions": {"parse": []},
     }
     try:
-        if not post_discord_notification(feature_key, payload):
+        from app.utils.notification_service import dispatch_discord_notification
+        result = dispatch_discord_notification(feature_key, payload)
+        delivery = result.get("delivery") or {}
+        if delivery.get("discord") != "sent":
             raise RuntimeError("通知が無効、またはWebhook URLが未設定です。")
-        flash(f"{definition['label']}のテスト通知を送信しました。", "success")
+        flash(
+            f"{definition['label']}の共通通知テストを送信しました。 "
+            f"履歴:{delivery.get('in_app', '-')} / Media Hub:{delivery.get('media_hub', '-')} / "
+            f"Web Push:{delivery.get('web_push', '-')} / Discord:{delivery.get('discord', '-')}",
+            "success",
+        )
     except Exception as exc:
         flash(f"テスト通知に失敗しました: {exc}", "danger")
     return redirect(url_for("discord_notifications.index") + f"#{feature_key}")

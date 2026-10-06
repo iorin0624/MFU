@@ -197,7 +197,7 @@ def shipment_tracking_test_discord(id: int):
 
     try:
         send_test_discord_notification(id)
-        flash("Discord通知テストを送信しました", "success")
+        flash("共通通知基盤から配送追跡のテスト通知を送信しました", "success")
     except ShipmentTrackingError as exc:
         flash(str(exc), "danger")
     except Exception:
@@ -205,6 +205,6 @@ def shipment_tracking_test_discord(id: int):
             "[shipment_tracking] discord test notify failed target_id=%s",
             id,
         )
-        flash("Discord通知テストに失敗しました", "danger")
+        flash("共通通知テストに失敗しました", "danger")
 
     return redirect(url_for("shipment_tracking.shipment_tracking_detail", id=id))

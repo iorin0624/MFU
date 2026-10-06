@@ -223,14 +223,14 @@
         <div class="uber-summary-tile"><span class="text-muted small">1km当たり</span><strong class="uber-average-median"><span data-uber-summary="net_yen_per_km" data-format="optional-yen">{{ ('¥' ~ (selected_activity_summary.net_yen_per_km|fmt_yen)) if selected_activity_summary.net_yen_per_km is not none else '-' }}</span><small data-uber-summary="net_per_km_median" data-format="median-yen">／ {{ ('¥' ~ (selected_activity_summary.net_per_km_median|fmt_yen)) if selected_activity_summary.net_per_km_median is not none else '-' }}</small></strong></div>
       </div>
     </div>
-    <form class="d-flex justify-content-end mt-3" method="post" action="{{ url_for('records.uber_discord_summary_test') }}" onsubmit="return confirm('現在表示している集計結果をDiscordへテスト送信しますか？');">
+    <form class="d-flex justify-content-end mt-3" method="post" action="{{ url_for('records.uber_discord_summary_test') }}" onsubmit="return confirm('現在表示している集計結果で共通通知テストを送信しますか？');">
       <input type="hidden" name="csrf_token" value="{{ uber_browser_csrf }}">
       <input type="hidden" name="summary_mode" value="{{ activity_summary_mode }}" data-uber-summary-state="mode">
       <input type="hidden" name="summary_from" value="{{ activity_summary_from }}" data-uber-summary-state="from">
       <input type="hidden" name="summary_to" value="{{ activity_summary_to }}" data-uber-summary-state="to">
       <input type="hidden" name="activity_from" value="{{ activity_history_from }}">
       <input type="hidden" name="activity_to" value="{{ activity_history_to }}">
-      <button class="btn btn-sm btn-outline-primary" type="submit">Discordテスト通知</button>
+      <button class="btn btn-sm btn-outline-primary" type="submit">共通通知テスト</button>
     </form>
   </div>
 </div>

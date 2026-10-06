@@ -24,14 +24,15 @@ def test_external_ingress_supports_native_and_discord_compatible_requests():
     assert "mfu_notification_ingress_audit" in source
 
 
-def test_existing_discord_delivery_is_mirrored_without_creating_a_loop():
+def test_existing_discord_delivery_uses_common_dispatcher_without_creating_a_loop():
     service = DISCORD.read_text(encoding="utf-8")
     common = SERVICE.read_text(encoding="utf-8")
-    assert "mirror_discord_payload(feature_key, payload)" in service
+    assert "dispatch_discord_notification" in service
+    assert "def dispatch_discord_notification(" in common
     assert "mirror=False" in common
 
 
-def test_legacy_feature_senders_are_mirrored_without_replacing_discord_delivery():
+def test_legacy_feature_senders_use_common_notification_delivery():
     paths = (
         "utils/upload_notifications.py",
         "etc_accounting/notifications.py",
@@ -46,7 +47,24 @@ def test_legacy_feature_senders_are_mirrored_without_replacing_discord_delivery(
     )
     for relative in paths:
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert "mirror_discord_payload_best_effort" in source, relative
+        assert (
+            "post_discord_notification" in source
+            or "dispatch_discord_notification" in source
+            or "mirror_discord_payload_best_effort" in source
+        ), relative
+
+
+def test_feature_notification_tests_are_labeled_as_common_notifications():
+    paths = (
+        "discord_notifications/templates/discord_notifications/index.html",
+        "etc_accounting/templates/etc_accounting/index.html",
+        "shipment_tracking/template/admin/shipment_tracking/detail.html",
+        "signage/templates/signage/train_alert_settings.html",
+        "records/templates/records/uber/list.html",
+    )
+    for relative in paths:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "共通通知テスト" in source, relative
 
 
 def test_linux_sender_has_durable_retry_queue():

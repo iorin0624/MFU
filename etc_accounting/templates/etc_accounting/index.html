@@ -50,9 +50,9 @@
     <span class="badge {{ 'bg-success' if freee_connected else 'bg-danger' }} align-self-center">freee {{ '接続済み' if freee_connected else '未接続' }}</span>
     <a class="btn btn-outline-secondary" href="{{ url_for('etc_accounting.settings') }}">freee・自動ログイン設定</a>
     {% if is_admin %}
-    <form method="post" action="{{ url_for('etc_accounting.discord_test') }}" onsubmit="return confirm('管理者に設定されているDiscord Webhookへテスト通知を1通送信します。よろしいですか？');">
+    <form method="post" action="{{ url_for('etc_accounting.discord_test') }}" onsubmit="return confirm('ETC利用証明書の共通通知テストを送信します。よろしいですか？');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="btn btn-outline-info" type="submit">Discordテスト通知</button>
+      <button class="btn btn-outline-info" type="submit">共通通知テスト</button>
     </form>
     {% endif %}
     <button class="btn btn-outline-primary" type="button" id="etcLoginButton">ETCブラウザー（VNC）</button>

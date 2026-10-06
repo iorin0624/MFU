@@ -401,11 +401,12 @@ def alert_settings():
                 flash("adminアカウントのDiscord Webhookが未設定です。", "danger")
             else:
                 try:
-                    send_test_alert(webhook_url, f"{PUBLIC_BASE_URL}/train-status")
-                    flash("Discordへ鉄道運行情報のテストカードを送信しました。", "success")
+                    if not send_test_alert(webhook_url, f"{PUBLIC_BASE_URL}/train-status"):
+                        raise RuntimeError("Discord通知が無効、またはWebhook URLが未設定です。")
+                    flash("共通通知基盤から鉄道運行情報のテストカードを送信しました。", "success")
                 except Exception as exc:
                     current_app.logger.exception("鉄道運行情報のテスト通知に失敗しました。")
-                    flash(f"Discordテスト通知に失敗しました：{exc}", "danger")
+                    flash(f"共通通知テストに失敗しました：{exc}", "danger")
             return redirect(url_for("train_status.alert_settings"))
 
         if action != "save_alert_config":

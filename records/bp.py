@@ -1877,9 +1877,9 @@ def uber_discord_summary_test():
 
         if not send_uber_summary_notification(date_from, date_to, test=True):
             raise RuntimeError("通知が無効、またはWebhook URLが未設定です。")
-        flash("現在表示している集計をDiscordへテスト送信しました。", "success")
+        flash("現在表示している集計を共通通知基盤からテスト送信しました。", "success")
     except Exception as exc:
-        flash(f"Discordテスト通知に失敗しました: {exc}", "danger")
+        flash(f"共通通知テストに失敗しました: {exc}", "danger")
     return redirect(url_for(
         "records.uber_list",
         tab="overview",
