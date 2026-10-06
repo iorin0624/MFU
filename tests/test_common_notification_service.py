@@ -24,6 +24,13 @@ def test_external_ingress_supports_native_and_discord_compatible_requests():
     assert "mfu_notification_ingress_audit" in source
 
 
+def test_discord_same_site_absolute_links_are_normalized_for_common_notifications():
+    source = SERVICE.read_text(encoding="utf-8")
+    assert "def _common_notification_target_url(" in source
+    assert '== "mfu.iori0624.jp"' in source
+    assert 'return "/mfu-notifications"' in source
+
+
 def test_existing_discord_delivery_uses_common_dispatcher_without_creating_a_loop():
     service = DISCORD.read_text(encoding="utf-8")
     common = SERVICE.read_text(encoding="utf-8")
