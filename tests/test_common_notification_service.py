@@ -92,6 +92,7 @@ def test_raspberry_pi_bridge_preserves_discord_payloads_and_retries():
     assert 'removeprefix("/discord/")' in source
     assert "pending_discord_payloads" in source
     assert "bridge.drain()" in source
+    assert "os.chmod(path, 0o600)" in source
 
 
 def test_raspberry_pi_notification_features_are_registered():
