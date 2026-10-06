@@ -4,8 +4,6 @@ import logging
 import hashlib
 from datetime import datetime
 
-import requests
-
 from app.utils.db import get_db
 from app.discord_notifications.repository import get_discord_webhook
 from app.discord_notifications.repository import record_discord_delivery
@@ -183,18 +181,16 @@ def _discord_batches(
 def _post_discord(webhook_url: str, payload: dict) -> None:
     if not webhook_url:
         raise RuntimeError("管理者のDiscord Webhookが設定されていません。")
-    from app.utils.notification_service import mirror_discord_payload_best_effort
-    mirror_discord_payload_best_effort("etc_accounting", payload)
-    response = requests.post(
-        webhook_url,
+    from app.utils.notification_service import dispatch_discord_notification
+    result = dispatch_discord_notification(
+        "etc_accounting",
+        payload,
+        legacy_webhook=webhook_url,
         params={"wait": "true"},
-        json=payload,
         timeout=10,
     )
-    if not response.ok:
-        detail = (response.text or "").replace("\n", " ")[:300]
-        raise RuntimeError(f"Discord通知に失敗しました（HTTP {response.status_code}: {detail}）")
-    record_discord_delivery("etc_accounting", success=True)
+    if (result.get("delivery") or {}).get("discord") != "sent":
+        raise RuntimeError("Discord通知が無効、またはWebhook URLが未設定です。")
 
 
 def _fetch_failure_error_code(item: dict) -> str:

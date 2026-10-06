@@ -43,7 +43,7 @@
       <form method="post" class="m-0">
         <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
         <input type="hidden" name="action" value="test_notification">
-        <button type="submit" class="btn btn-outline-primary btn-sm"{% if not discord_configured %} disabled{% endif %}>Discordテスト通知</button>
+        <button type="submit" class="btn btn-outline-primary btn-sm"{% if not discord_configured %} disabled{% endif %}>共通通知テスト</button>
       </form>
     </div>
     <div class="row g-3" id="alert-status-grid">

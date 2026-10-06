@@ -517,17 +517,26 @@ def send_discord_embeds(webhook_url: str, embeds: list[dict]) -> bool:
 def send_test_alert(webhook_url: str, page_url: str) -> bool:
     payload = {
         "title": "🧪 鉄道運行情報：テスト通知",
-        "description": "Discordカード通知は正常に設定されています。",
+        "description": "共通通知基盤のカード通知は正常に設定されています。",
         "url": page_url,
         "color": 0x3498DB,
         "fields": [
             {"name": "確認間隔", "value": "10分", "inline": True},
-            {"name": "通知形式", "value": "Discord Embed", "inline": True},
+            {"name": "通知形式", "value": "共通カード", "inline": True},
         ],
         "footer": {"text": "MFU 鉄道運行情報通知"},
         "timestamp": now_iso(),
     }
-    return send_discord_embeds(webhook_url, [payload])
+    from app.utils.notification_service import dispatch_discord_notification
+
+    result = dispatch_discord_notification(
+        "train_status",
+        {"embeds": [payload], "allowed_mentions": {"parse": []}},
+        legacy_webhook=webhook_url,
+        params={"wait": "true"},
+        timeout=15,
+    )
+    return str((result.get("delivery") or {}).get("discord") or "") == "sent"
 
 
 def run_train_alert(
