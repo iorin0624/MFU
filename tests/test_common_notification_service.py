@@ -111,4 +111,5 @@ def test_raspberry_pi_migration_covers_all_active_discord_producers():
         "mail_summary", "mail_spam_report", "host_health", "debian_updates", "backup_status",
     ):
         assert f'"{feature}"' in source
-    assert 'parsed.hostname == "127.0.0.1"' in source
+    assert '127.0.0.1' in source
+    assert 'parsed.port == 8765' in source
