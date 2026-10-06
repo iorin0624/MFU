@@ -383,6 +383,20 @@ def mirror_discord_payload(feature_key: str, payload: dict[str, Any]) -> dict[st
     )
 
 
+def mirror_discord_payload_best_effort(feature_key: str, payload: dict[str, Any]) -> None:
+    """Mirror a legacy direct-Discord sender without changing its delivery path."""
+    try:
+        mirror_discord_payload(feature_key, payload)
+    except Exception:
+        # A common-notification outage must never suppress the original alert.
+        try:
+            current_app.logger.warning(
+                "legacy Discord notification mirror failed feature=%s", feature_key, exc_info=True
+            )
+        except Exception:
+            pass
+
+
 def _serialize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from app.external_login_user.notifications import _serialize_mfu_notification_item
     return [_serialize_mfu_notification_item(row) for row in rows]

@@ -476,7 +476,10 @@ def _discord_notify(webhook_url, *, title, description, fields=(), color=0x2ECC7
             "color": color,
             "fields": [{"name": n, "value": v, "inline": inh} for (n, v, inh) in fields]
         }]
-        requests.post(webhook_url, json={"embeds": embeds}, timeout=10)
+        payload = {"embeds": embeds}
+        from app.utils.notification_service import mirror_discord_payload_best_effort
+        mirror_discord_payload_best_effort("square_payment", payload)
+        requests.post(webhook_url, json=payload, timeout=10)
     except Exception:
         logging.exception("discord notify failed")
 
@@ -598,7 +601,10 @@ def _notify_tip_payment_completion(
         amount_text = f"{amount_int:,}"
         msg = f"[投げ銭] {event_title} / {amount_text}円 / {disp_name or '(不明)'}({disp_id}) / token={payment_token or ''}"
         try:
-            requests.post(webhook, json={"content": msg}, timeout=10)
+            payload = {"content": msg}
+            from app.utils.notification_service import mirror_discord_payload_best_effort
+            mirror_discord_payload_best_effort("square_payment", payload)
+            requests.post(webhook, json=payload, timeout=10)
         except Exception:
             logging.exception("tip discord notify failed")
 

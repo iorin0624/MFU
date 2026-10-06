@@ -183,6 +183,8 @@ def _discord_batches(
 def _post_discord(webhook_url: str, payload: dict) -> None:
     if not webhook_url:
         raise RuntimeError("管理者のDiscord Webhookが設定されていません。")
+    from app.utils.notification_service import mirror_discord_payload_best_effort
+    mirror_discord_payload_best_effort("etc_accounting", payload)
     response = requests.post(
         webhook_url,
         params={"wait": "true"},

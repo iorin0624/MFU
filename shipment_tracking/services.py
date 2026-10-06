@@ -242,7 +242,10 @@ def _build_shipment_tracking_discord_embed(
 
 
 def _send_shipment_tracking_discord_notification(webhook_url: str, embed: dict[str, Any]) -> None:
-    requests.post(webhook_url, json={"embeds": [embed]}, timeout=10).raise_for_status()
+    payload = {"embeds": [embed]}
+    from app.utils.notification_service import mirror_discord_payload_best_effort
+    mirror_discord_payload_best_effort("shipment_tracking", payload)
+    requests.post(webhook_url, json=payload, timeout=10).raise_for_status()
 
 
 def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:

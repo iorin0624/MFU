@@ -464,11 +464,14 @@ def _notification_batches(changes: list[dict], page_url: str, timestamp: str):
 def send_discord_embeds(webhook_url: str, embeds: list[dict]) -> bool:
     if not webhook_url or not embeds:
         return False
+    payload = {"embeds": embeds, "allowed_mentions": {"parse": []}}
+    from app.utils.notification_service import mirror_discord_payload_best_effort
+    mirror_discord_payload_best_effort("train_status", payload)
     for attempt in range(DISCORD_RATE_LIMIT_RETRIES + 1):
         response = requests.post(
             webhook_url,
             params={"wait": "true"},
-            json={"embeds": embeds, "allowed_mentions": {"parse": []}},
+            json=payload,
             timeout=15,
         )
         if response.status_code != 429:

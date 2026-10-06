@@ -523,7 +523,10 @@ def send_discord_alert(
         ],
         "allowed_mentions": {"parse": []},
     }
+    from app.utils.notification_service import mirror_discord_payload_best_effort
+    mirror_discord_payload_best_effort("rain_alert", payload)
     response = requests.post(
+        # Keep the attachment delivery on Discord while the card is mirrored above.
         webhook_url,
         data={"payload_json": json.dumps(payload, ensure_ascii=False)},
         files={"files[0]": ("rain-point.png", image_bytes, "image/png")},

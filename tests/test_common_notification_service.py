@@ -31,6 +31,24 @@ def test_existing_discord_delivery_is_mirrored_without_creating_a_loop():
     assert "mirror=False" in common
 
 
+def test_legacy_feature_senders_are_mirrored_without_replacing_discord_delivery():
+    paths = (
+        "utils/upload_notifications.py",
+        "etc_accounting/notifications.py",
+        "shipment_tracking/services.py",
+        "bank_account/routes.py",
+        "invoice/services.py",
+        "payment/__init__.py",
+        "signage/train_alert.py",
+        "signage/rain_alert.py",
+        "utils/admin_auth.py",
+        "utils/logs.py",
+    )
+    for relative in paths:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "mirror_discord_payload_best_effort" in source, relative
+
+
 def test_linux_sender_has_durable_retry_queue():
     source = SENDER.read_text(encoding="utf-8")
     assert "sqlite3" in source
