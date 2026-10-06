@@ -47,7 +47,7 @@ def test_server_limits_websocket_to_explicit_media_operations():
 def test_integrated_client_uses_one_receiver_and_context_aware_notification_click():
     source = HUB_CLIENT_PATH.read_text(encoding="utf-8")
     clipboard_source = CLIPBOARD_PATH.read_text(encoding="utf-8")
-    assert "ReceiverThread(self.photo_settings, self.photo_token, self.media_token)" in source
+    assert "self.notification_token," in source
     assert "self.photo_receiver.media_progress.connect(self.api.handle_websocket_progress)" in source
     assert "self.api.websocket_rpc = self.photo_receiver.media_call" in source
     assert "self._open_saved_folder(value)" in source
@@ -55,12 +55,27 @@ def test_integrated_client_uses_one_receiver_and_context_aware_notification_clic
     assert "URL {self.batch_index + 1}/{len(self.batch_urls)}" in clipboard_source
 
 
-def test_unified_login_issues_both_scoped_tokens_and_dpapi_store_is_used():
+def test_unified_login_issues_three_scoped_tokens_and_dpapi_store_is_used():
     server = HUB_SERVER_PATH.read_text(encoding="utf-8")
     client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
     assert "_issue_device_token" in server
     assert "issue_media_clipboard_token" in server
+    assert "issue_notification_token" in server
     assert '"photo_token": photo_token' in server
     assert '"media_token": media_token' in server
+    assert '"notification_token": notification_token' in server
+    assert '"/api/notification-token"' in server
+    assert "self._upgrade_notification_token()" in client
     assert "CryptProtectData" in client
     assert "CryptUnprotectData" in client
+
+
+def test_media_hub_has_realtime_notification_center_and_mute_controls():
+    server = (ROOT / "utils" / "notification_service.py").read_text(encoding="utf-8")
+    client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
+    receiver = (ROOT / "tools" / "mfu_photo_relay" / "main.py").read_text(encoding="utf-8")
+    assert 'namespace="/media-hub-notifications"' in server
+    assert 'emit("notification_connected"' in server
+    assert '"notification_new"' in receiver
+    assert "NotificationCenterDialog" in client
+    assert '"/desktop/media-hub/api/notifications/mute"' in client

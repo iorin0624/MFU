@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import uuid
 from datetime import datetime, time, timedelta, timezone
@@ -488,6 +489,12 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
   user_id BIGINT UNSIGNED NOT NULL,
   recipient_key VARCHAR(191) NULL,
   kind VARCHAR(64) NOT NULL,
+  feature_key VARCHAR(64) NOT NULL DEFAULT 'general',
+  severity VARCHAR(16) NOT NULL DEFAULT 'info',
+  topic_key VARCHAR(191) NULL,
+  content_json LONGTEXT NULL,
+  source_id BIGINT UNSIGNED NULL,
+  muted_at DATETIME NULL,
   title VARCHAR(255) NOT NULL,
   body TEXT NULL,
   target_url VARCHAR(512) NOT NULL,
@@ -582,6 +589,18 @@ def _ensure_notification_schema() -> None:
             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_id VARCHAR(64) NULL AFTER room_type")
         if "sender_label" not in existing:
             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN sender_label VARCHAR(255) NULL AFTER room_id")
+        if "feature_key" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN feature_key VARCHAR(64) NOT NULL DEFAULT 'general' AFTER kind")
+        if "severity" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN severity VARCHAR(16) NOT NULL DEFAULT 'info' AFTER feature_key")
+        if "topic_key" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN topic_key VARCHAR(191) NULL AFTER severity")
+        if "content_json" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN content_json LONGTEXT NULL AFTER topic_key")
+        if "source_id" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN source_id BIGINT UNSIGNED NULL AFTER content_json")
+        if "muted_at" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN muted_at DATETIME NULL AFTER source_id")
 
         cur.execute(
             """
@@ -910,6 +929,12 @@ def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int |
             {"count": counts["total"], **counts, "latest_id": latest_id, "reason": reason, "scope": "mfu"},
             room=f"mfu_user:{recipient}",
         )
+        socketio.emit(
+            "notification_unread",
+            {"count": counts["total"], **counts, "latest_id": latest_id, "reason": reason},
+            namespace="/media-hub-notifications",
+            room=f"media-hub-notifications:{recipient}",
+        )
     except Exception:
         current_app.logger.warning(
             "mfu notifications emit failed username=%s reason=%s latest_id=%s",
@@ -927,9 +952,21 @@ def _serialize_mfu_notification_item(row: dict[str, Any]) -> dict[str, Any]:
     read_at = row.get("read_at")
     if read_at and read_at.tzinfo is None:
         read_at = read_at.replace(tzinfo=timezone.utc)
+    content = row.get("content_json")
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (TypeError, ValueError):
+            content = {}
+    if not isinstance(content, dict):
+        content = {}
     return {
         "id": int(row.get("id") or 0),
         "kind": row.get("kind") or "general",
+        "feature_key": row.get("feature_key") or "general",
+        "severity": row.get("severity") or "info",
+        "topic_key": row.get("topic_key") or "",
+        "content": content,
         "title": row.get("title") or "お知らせ",
         "body": row.get("body") or "",
         "target_url": row.get("target_url") or "/",
@@ -954,24 +991,39 @@ def _emit_notif_new_mfu(
     sender_label: str,
     room_type: str | None,
     room_id: str | None,
+    feature_key: str = "general",
+    severity: str = "info",
+    topic_key: str = "",
+    content_json: dict[str, Any] | None = None,
 ) -> None:
     if socketio is None or not recipient:
         return
+    item = _serialize_mfu_notification_item({
+        "id": notification_id,
+        "kind": kind,
+        "feature_key": feature_key,
+        "severity": severity,
+        "topic_key": topic_key,
+        "content_json": content_json or {},
+        "title": title,
+        "body": body,
+        "target_url": target_url,
+        "sender_label": sender_label,
+        "room_type": room_type,
+        "room_id": room_id,
+        "read_at": None,
+        "created_at": _now_utc(),
+    })
     socketio.emit(
         "notif_new",
-        {"item": _serialize_mfu_notification_item({
-            "id": notification_id,
-            "kind": kind,
-            "title": title,
-            "body": body,
-            "target_url": target_url,
-            "sender_label": sender_label,
-            "room_type": room_type,
-            "room_id": room_id,
-            "read_at": None,
-            "created_at": _now_utc(),
-        })},
+        {"item": item},
         room=f"mfu_user:{recipient}",
+    )
+    socketio.emit(
+        "notification_new",
+        {"item": item},
+        namespace="/media-hub-notifications",
+        room=f"media-hub-notifications:{recipient}",
     )
 
 
@@ -986,6 +1038,10 @@ def _emit_notif_new_external(
     sender_label: str,
     room_type: str | None,
     room_id: str | None,
+    feature_key: str = "general",
+    severity: str = "info",
+    topic_key: str = "",
+    content_json: dict[str, Any] | None = None,
 ) -> None:
     if socketio is None or int(user_id) <= 0:
         return
@@ -994,6 +1050,10 @@ def _emit_notif_new_external(
         {"item": _serialize_mfu_notification_item({
             "id": notification_id,
             "kind": kind,
+            "feature_key": feature_key,
+            "severity": severity,
+            "topic_key": topic_key,
+            "content_json": content_json or {},
             "title": title,
             "body": body,
             "target_url": target_url,
@@ -1109,6 +1169,12 @@ def _create_notification_core(
     room_type: str | None = None,
     room_id: str | None = None,
     sender_label: str = "",
+    feature_key: str = "general",
+    severity: str = "info",
+    topic_key: str = "",
+    content: dict[str, Any] | None = None,
+    source_id: int | None = None,
+    muted_at: datetime | None = None,
 ) -> dict[str, Any]:
     _ensure_notification_schema()
     normalized_kind = (kind or "").strip() or "general"
@@ -1122,6 +1188,12 @@ def _create_notification_core(
     if normalized_kind in _CHAT_NOTIFICATION_KINDS and not normalized_chat_room_id:
         normalized_chat_room_id = normalized_room_id
     normalized_sender_label = (sender_label or "").strip()[:255]
+    normalized_feature_key = (feature_key or "general").strip()[:64] or "general"
+    normalized_severity = (severity or "info").strip().lower()[:16]
+    if normalized_severity not in {"info", "success", "warning", "error", "critical"}:
+        normalized_severity = "info"
+    normalized_topic_key = (topic_key or "").strip()[:191] or None
+    normalized_content = json.dumps(content or {}, ensure_ascii=False, separators=(",", ":"))
     dedup = (dedup_key or "").strip()[:191]
     if not dedup:
         return {"ok": False, "reason": "dedup_key_required"}
@@ -1134,11 +1206,13 @@ def _create_notification_core(
         cur.execute(
             """
             INSERT INTO mfu_notifications (
-              user_kind, user_id, recipient_key, kind, title, body, target_url,
+              user_kind, user_id, recipient_key, kind, feature_key, severity,
+              topic_key, content_json, source_id, muted_at, title, body, target_url,
               event_id, chat_event_id, chat_room_id, room_type, room_id, sender_label,
               dedup_key, created_at, read_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
             """,
             (
@@ -1146,6 +1220,12 @@ def _create_notification_core(
                 storage_user_id,
                 normalized_recipient_key or None,
                 normalized_kind,
+                normalized_feature_key,
+                normalized_severity,
+                normalized_topic_key,
+                normalized_content,
+                int(source_id) if source_id else None,
+                muted_at,
                 (title or "").strip()[:255] or "お知らせ",
                 (body or "").strip(),
                 (target_url or "").strip() or "/",
@@ -1157,6 +1237,7 @@ def _create_notification_core(
                 normalized_sender_label or None,
                 dedup,
                 datetime.utcnow(),
+                muted_at,
             ),
         )
         inserted = cur.rowcount == 1
@@ -1165,7 +1246,7 @@ def _create_notification_core(
         if inserted and user_kind == "external":
             deleted_old_read = _prune_old_read_notifications(cur, int(storage_user_id))
         db.commit()
-        if inserted:
+        if inserted and muted_at is None:
             if user_kind == "external":
                 _emit_notif_unread(int(storage_user_id), reason="created", latest_id=notification_id)
                 _emit_notif_new_external(
@@ -1178,6 +1259,10 @@ def _create_notification_core(
                     sender_label=normalized_sender_label,
                     room_type=normalized_room_type,
                     room_id=normalized_room_id,
+                    feature_key=normalized_feature_key,
+                    severity=normalized_severity,
+                    topic_key=normalized_topic_key or "",
+                    content_json=content or {},
                 )
             elif user_kind == "mfu" and normalized_recipient_key:
                 _emit_notif_unread_mfu(normalized_recipient_key, reason="created", latest_id=notification_id)
@@ -1191,6 +1276,10 @@ def _create_notification_core(
                     sender_label=normalized_sender_label,
                     room_type=normalized_room_type,
                     room_id=normalized_room_id,
+                    feature_key=normalized_feature_key,
+                    severity=normalized_severity,
+                    topic_key=normalized_topic_key or "",
+                    content_json=content or {},
                 )
         current_app.logger.info(
             "notifications core user_kind=%s recipient_key=%s storage_user_id=%s kind=%s dedup_key=%s inserted=%s notification_id=%s pruned_read=%s",
@@ -1244,6 +1333,12 @@ def create_notification_dispatch_result(
     event_id: int | None = None,
     chat_event_id: int | None = None,
     chat_room_id: str | None = None,
+    feature_key: str = "general",
+    severity: str = "info",
+    topic_key: str = "",
+    content: dict[str, Any] | None = None,
+    source_id: int | None = None,
+    muted_at: datetime | None = None,
 ) -> dict[str, Any]:
     if recipient_type == "external_user_id":
         return _create_notification_core(
@@ -1261,6 +1356,12 @@ def create_notification_dispatch_result(
             room_type=room_type,
             room_id=room_id,
             sender_label=sender_label,
+            feature_key=feature_key,
+            severity=severity,
+            topic_key=topic_key,
+            content=content,
+            source_id=source_id,
+            muted_at=muted_at,
         )
     if recipient_type == "mfu_username":
         return _create_notification_core(
@@ -1278,6 +1379,12 @@ def create_notification_dispatch_result(
             room_type=room_type,
             room_id=room_id,
             sender_label=sender_label,
+            feature_key=feature_key,
+            severity=severity,
+            topic_key=topic_key,
+            content=content,
+            source_id=source_id,
+            muted_at=muted_at,
         )
     return {"ok": False, "reason": "unsupported_recipient_type"}
 
@@ -1448,7 +1555,8 @@ def _fetch_mfu_notifications(
             order_sql = "ORDER BY id DESC"
         cur.execute(
             f"""
-            SELECT id, kind, title, body, target_url, sender_label, room_type, room_id,
+            SELECT id, kind, feature_key, severity, topic_key, content_json,
+                   title, body, target_url, sender_label, room_type, room_id,
                    event_id, chat_event_id, chat_room_id, created_at, read_at
               FROM mfu_notifications
              WHERE {where_sql}

@@ -160,12 +160,16 @@ class ReceiverThread(QThread):
     error = Signal(str)
     authentication_failed = Signal()
     media_progress = Signal(dict)
+    notification_received = Signal(dict)
+    notification_snapshot = Signal(dict)
+    notification_unread = Signal(dict)
 
-    def __init__(self, settings: dict, token: str, media_token: str = "") -> None:
+    def __init__(self, settings: dict, token: str, media_token: str = "", notification_token: str = "") -> None:
         super().__init__()
         self.settings = settings
         self.token = token
         self.media_token = media_token
+        self.notification_token = notification_token
         self.api = ApiClient(settings, token)
         self.sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
         self.work: queue.Queue[dict | None] = queue.Queue()
@@ -212,6 +216,31 @@ class ReceiverThread(QThread):
         def media_progress(data):
             if isinstance(data, dict):
                 self.media_progress.emit(data)
+
+        @self.sio.on("notification_connected", namespace="/media-hub-notifications")
+        def notification_connected(data):
+            if isinstance(data, dict):
+                self.notification_snapshot.emit(data)
+
+        @self.sio.on("notification_new", namespace="/media-hub-notifications")
+        def notification_new(data):
+            item = data.get("item") if isinstance(data, dict) else None
+            if not isinstance(item, dict):
+                return
+            self.notification_received.emit(item)
+            try:
+                self.sio.emit(
+                    "notification_received",
+                    {"notification_id": int(item.get("id") or 0)},
+                    namespace="/media-hub-notifications",
+                )
+            except Exception:
+                pass
+
+        @self.sio.on("notification_unread", namespace="/media-hub-notifications")
+        def notification_unread(data):
+            if isinstance(data, dict):
+                self.notification_unread.emit(data)
 
     def enqueue(self, payload: dict) -> None:
         file_id = int(payload.get("id") or 0)
@@ -328,9 +357,15 @@ class ReceiverThread(QThread):
             namespaces = ["/photo-relay"]
             if self.media_token:
                 namespaces.append("/media-clipboard")
+            if self.notification_token:
+                namespaces.append("/media-hub-notifications")
             self.sio.connect(
                 self.api.base_url,
-                auth={"photo_token": self.token, "media_token": self.media_token},
+                auth={
+                    "photo_token": self.token,
+                    "media_token": self.media_token,
+                    "notification_token": self.notification_token,
+                },
                 namespaces=namespaces,
                 transports=["websocket", "polling"],
                 wait_timeout=20,

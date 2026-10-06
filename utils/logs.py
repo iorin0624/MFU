@@ -137,6 +137,9 @@ SKIP_PREFIXES = [
     # ジョブ開始操作（POST /records/uber/import-jobs）は引き続き記録する。
     "/records/uber/import-jobs/",
     "/api/speedtest/",  # ping/upload/resultは測定中に大量発生するためDBへ記録しない
+    # The compatibility endpoint contains a per-device secret in its path.
+    # Ingress activity is written to the dedicated audit table instead.
+    "/api/notification-ingress/",
     "/api/timer/status",
     "/apple-touch-icon",  # ← これを追加（*.png / *-120x120 など全部まとめて対象）
 ]

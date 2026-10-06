@@ -24,6 +24,7 @@ from app.utils.media_clipboard_auth import (
     verify_media_clipboard_token,
 )
 from app.utils.photo_relay import _issue_device_token, _valid_device_uuid
+from app.utils.notification_service import issue_notification_token
 
 
 media_hub_bp = Blueprint("media_hub", __name__, url_prefix="/desktop/media-hub")
@@ -66,8 +67,8 @@ def login_start():
         h1{font-size:22px;margin:0 0 14px}p{line-height:1.7}.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}
         button,a{font:inherit}button{background:#0b63dd;color:#fff;border:0;border-radius:7px;padding:10px 16px;cursor:pointer}a{color:#4b5563;text-decoration:none;padding:10px 12px}
         </style></head><body><main><h1>MFU Media Hub を許可しますか？</h1>
-        <p><strong>{{ username }}</strong> として、Windows端末 <strong>{{ device_name }}</strong> に写真転送とMedia Clipboardの取得・保存を許可します。</p>
-        <p>ChromeのCookieやパスワードはアプリへ渡されません。両機能の専用トークンを一度に発行します。</p>
+        <p><strong>{{ username }}</strong> として、Windows端末 <strong>{{ device_name }}</strong> に写真転送、Media Clipboard、MFU通知の受信を許可します。</p>
+        <p>ChromeのCookieやパスワードはアプリへ渡されません。3機能の専用トークンを一度に発行します。</p>
         <form method="post" action="{{ url_for('media_hub.login_approve') }}" class="actions">
         <input type="hidden" name="callback" value="{{ callback }}"><input type="hidden" name="state" value="{{ state }}">
         <input type="hidden" name="device_uuid" value="{{ device_uuid }}"><input type="hidden" name="device_name" value="{{ device_name }}">
@@ -95,12 +96,29 @@ def login_approve():
                                 device_uuid=device_uuid, device_name=device_name))
     photo_token = _issue_device_token(username, device_uuid, device_name)
     media_token = issue_media_clipboard_token(username, "MFU Media Hub")
+    notification_token = issue_notification_token(username, device_uuid, device_name)
     separator = "&" if "?" in callback else "?"
     return redirect(callback + separator + urlencode({
         "photo_token": photo_token,
         "media_token": media_token,
+        "notification_token": notification_token,
         "state": state,
     }))
+
+
+@media_hub_bp.post("/api/notification-token")
+def notification_token_upgrade():
+    """Upgrade an existing Media Hub install without another browser login."""
+    media_row = verify_media_clipboard_token()
+    if not media_row:
+        return jsonify({"ok": False, "error": "invalid_token"}), 401
+    body = request.get_json(silent=True) or {}
+    device_uuid = _valid_device_uuid(str(body.get("device_uuid") or ""))
+    device_name = str(body.get("device_name") or "Windows PC").strip()[:120]
+    if not device_uuid:
+        return jsonify({"ok": False, "error": "invalid_device_uuid"}), 400
+    token = issue_notification_token(str(media_row["username"]), device_uuid, device_name)
+    return jsonify({"ok": True, "notification_token": token})
 
 
 def _internal_request(token: str, method: str, path: str, payload: dict | None = None):
