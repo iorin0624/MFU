@@ -161,7 +161,8 @@ def _establish_login(username: str, *, tag: str) -> None:
             )
             send_payload = {"content": message}
             import requests
-
+            from app.utils.notification_service import mirror_discord_payload_best_effort
+            mirror_discord_payload_best_effort("admin_login", send_payload)
             requests.post(user["webhook_url"], json=send_payload)
         except Exception:
             pass

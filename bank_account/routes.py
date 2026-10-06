@@ -190,6 +190,8 @@ def _post_discord_webhook(webhook_url: str, *, title: str, description: str, fie
             }
         ]
     }
+    from app.utils.notification_service import mirror_discord_payload_best_effort
+    mirror_discord_payload_best_effort("paypay_payout_expiry", payload)
     response = requests.post(webhook_url, json=payload, timeout=10)
     response.raise_for_status()
     return True

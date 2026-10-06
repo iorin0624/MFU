@@ -2309,7 +2309,10 @@ def send_invoice_payment_discord_embed(*, webhook_url: str, fields: list[tuple[s
             "color": 0x2ECC71,
             "fields": [{"name": n, "value": v, "inline": i} for (n, v, i) in fields],
         }]
-        requests.post(webhook_url, json={"embeds": embeds}, timeout=10)
+        payload = {"embeds": embeds}
+        from app.utils.notification_service import mirror_discord_payload_best_effort
+        mirror_discord_payload_best_effort("invoice_payment", payload)
+        requests.post(webhook_url, json=payload, timeout=10)
     except Exception:
         logging.exception("invoice discord notify failed")
 

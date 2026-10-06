@@ -604,7 +604,10 @@ def _post_discord(webhook_url: str | None, content: str) -> None:
     if not webhook_url:
         return
     try:
-        requests.post(webhook_url, json={"content": content}, timeout=5)
+        payload = {"content": content}
+        from app.utils.notification_service import mirror_discord_payload_best_effort
+        mirror_discord_payload_best_effort("event_management", payload)
+        requests.post(webhook_url, json=payload, timeout=5)
     except Exception:
         current_app.logger.exception("discord notify failed")
 
