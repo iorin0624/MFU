@@ -13,6 +13,9 @@
       <label class="form-check-label" for="onlyUnread">未読のみ</label>
     </div>
     <button id="refreshBtn" class="btn btn-outline-primary btn-sm">更新</button>
+    {% if notification_scope == 'mfu' %}
+    <button id="markChannelReadBtn" class="btn btn-outline-secondary btn-sm d-none">このチャンネルを既読</button>
+    {% endif %}
     <button id="markAllReadBtn" class="btn btn-outline-secondary btn-sm">すべて既読にする</button>
   </div>
 </div>
@@ -25,6 +28,20 @@
   .navbar-brand { color:#172033; font-weight:700; }
   .notification-toolbar { gap:1rem; }
   .notification-toolbar > div { flex-wrap:wrap; align-items:center; justify-content:flex-end; }
+  .notification-shell { display:grid; grid-template-columns:250px minmax(0,1fr); gap:1.25rem; align-items:start; }
+  .notification-sidebar { position:sticky; top:1rem; background:#fff; border:1px solid #d7dfeb; border-radius:.85rem; padding:.65rem; box-shadow:0 .15rem .65rem rgba(15,23,42,.06); }
+  .notification-sidebar-title { color:#64748b; font-size:.78rem; font-weight:700; letter-spacing:.05em; padding:.35rem .6rem .55rem; }
+  .notification-channel-list { display:grid; gap:.2rem; }
+  .notification-channel { width:100%; display:flex; align-items:center; gap:.55rem; border:0; border-radius:.55rem; background:transparent; color:#334155; padding:.58rem .65rem; text-align:left; }
+  .notification-channel:hover { background:#f1f5f9; }
+  .notification-channel.is-active { background:#e8f1ff; color:#0b57d0; font-weight:700; }
+  .notification-channel-hash { color:#94a3b8; font-weight:700; }
+  .notification-channel-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .notification-channel-count { min-width:1.6rem; border-radius:999px; background:#dc2626; color:#fff; font-size:.72rem; font-weight:700; line-height:1.35rem; padding:0 .35rem; text-align:center; }
+  .notification-channel-count.is-zero { visibility:hidden; }
+  .notification-mobile-channel { display:none; margin-bottom:1rem; }
+  .notification-feed-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }
+  .notification-feed-title { margin:0; color:#334155; font-size:1rem; font-weight:700; }
   .notification-list { display: grid; gap: .9rem; }
   .notification-entry { --notice-color:#2563eb; border:1px solid #cfd8e6; border-left:6px solid var(--notice-color); border-radius:.85rem; background:#fff; color:#172033; padding:1.15rem; box-shadow:0 .2rem .8rem rgba(15,23,42,.08); }
   .notification-entry.is-unread { background:#f5f9ff; box-shadow:0 .25rem 1rem rgba(37,99,235,.12); }
@@ -43,20 +60,44 @@
   .notification-card-footer,.notification-meta { color:#5b687a; font-size:.82rem; margin-top:.6rem; }
   .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
   #emptyState { color:#64748b !important; font-size:1rem; }
-  @media (max-width:575.98px) {
+  @media (max-width:767.98px) {
     .container-narrow { padding-left:.85rem; padding-right:.85rem; }
     .notification-toolbar { align-items:flex-start !important; flex-direction:column; }
     .notification-toolbar > div { justify-content:flex-start; width:100%; }
+    .notification-shell { display:block; }
+    .notification-sidebar { display:none; }
+    .notification-mobile-channel { display:block; }
     .notification-fields { grid-template-columns:1fr; }
     .notification-field { grid-column:1/-1; }
     .notification-entry { padding:.8rem; }
   }
 </style>
 
-<div id="notificationList" class="notification-list"></div>
-<div id="emptyState" class="text-muted py-5 text-center d-none">通知はありません。</div>
-<div class="d-flex justify-content-center mt-3">
-  <button id="loadMoreBtn" class="btn btn-outline-primary d-none">もっと見る</button>
+{% if notification_scope == 'mfu' %}
+<div class="notification-mobile-channel">
+  <label class="form-label fw-bold" for="notificationChannelSelect">チャンネル</label>
+  <select id="notificationChannelSelect" class="form-select"></select>
+</div>
+{% endif %}
+<div class="{{ 'notification-shell' if notification_scope == 'mfu' else '' }}">
+  {% if notification_scope == 'mfu' %}
+  <aside class="notification-sidebar" aria-label="通知チャンネル">
+    <div class="notification-sidebar-title">通知チャンネル</div>
+    <div id="notificationChannelList" class="notification-channel-list"></div>
+  </aside>
+  {% endif %}
+  <section class="notification-feed">
+    {% if notification_scope == 'mfu' %}
+    <div class="notification-feed-head">
+      <h2 id="notificationFeedTitle" class="notification-feed-title"># すべて</h2>
+    </div>
+    {% endif %}
+    <div id="notificationList" class="notification-list"></div>
+    <div id="emptyState" class="text-muted py-5 text-center d-none">通知はありません。</div>
+    <div class="d-flex justify-content-center mt-3">
+      <button id="loadMoreBtn" class="btn btn-outline-primary d-none">もっと見る</button>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -84,6 +125,20 @@
     const refreshBtn = document.getElementById('refreshBtn');
     const onlyUnread = document.getElementById('onlyUnread');
     const notificationPushBtn = document.getElementById('notificationPushBtn');
+    const markChannelReadBtn = document.getElementById('markChannelReadBtn');
+    const channelListEl = document.getElementById('notificationChannelList');
+    const channelSelectEl = document.getElementById('notificationChannelSelect');
+    const feedTitleEl = document.getElementById('notificationFeedTitle');
+
+    const configuredChannels = scope === 'mfu' && Array.isArray(cfg.channels) ? cfg.channels : [];
+    const channels = [{key:'all', label:'すべて'}, ...configuredChannels];
+    const channelKeys = new Set(channels.map((channel) => String(channel.key || '')));
+    const queryChannel = new URLSearchParams(window.location.search).get('channel') || '';
+    const savedChannel = scope === 'mfu' ? (window.localStorage.getItem('mfuNotificationChannel') || '') : '';
+    let currentChannel = channelKeys.has(queryChannel)
+      ? queryChannel
+      : (channelKeys.has(savedChannel) ? savedChannel : 'all');
+    let channelUnread = {};
 
     let page = 1;
     let hasNext = false;
@@ -102,6 +157,65 @@
       if (apiMap.readOneBase) return `${apiMap.readOneBase}/${id}/read`;
       if (apiMap.read) return String(apiMap.read).replace('{id}', id);
       return '';
+    };
+
+    const channelLabel = (key) => channels.find((channel) => channel.key === key)?.label || 'その他';
+    const normalizedItemChannel = (item) => {
+      const key = String(item?.feature_key || 'general');
+      return channelKeys.has(key) && key !== 'all' ? key : 'other';
+    };
+    const itemMatchesCurrentChannel = (item) => currentChannel === 'all' || normalizedItemChannel(item) === currentChannel;
+
+    const updateChannelNavigation = () => {
+      if (scope !== 'mfu') return;
+      if (channelListEl && !channelListEl.children.length) {
+        channelListEl.innerHTML = channels.map((channel) => `
+          <button type="button" class="notification-channel" data-channel="${escapeHtml(channel.key)}">
+            <span class="notification-channel-hash">#</span>
+            <span class="notification-channel-label">${escapeHtml(channel.label)}</span>
+            <span class="notification-channel-count is-zero" data-channel-count="${escapeHtml(channel.key)}">0</span>
+          </button>`).join('');
+        channelListEl.querySelectorAll('[data-channel]').forEach((button) => {
+          button.addEventListener('click', () => selectChannel(button.dataset.channel || 'all'));
+        });
+      }
+      if (channelSelectEl && !channelSelectEl.options.length) {
+        channelSelectEl.innerHTML = channels.map((channel) =>
+          `<option value="${escapeHtml(channel.key)}"># ${escapeHtml(channel.label)}</option>`
+        ).join('');
+        channelSelectEl.addEventListener('change', () => selectChannel(channelSelectEl.value || 'all'));
+      }
+      channelListEl?.querySelectorAll('[data-channel]').forEach((button) => {
+        button.classList.toggle('is-active', button.dataset.channel === currentChannel);
+      });
+      if (channelSelectEl) channelSelectEl.value = currentChannel;
+      if (feedTitleEl) feedTitleEl.textContent = `# ${channelLabel(currentChannel)}`;
+      markChannelReadBtn?.classList.toggle('d-none', currentChannel === 'all');
+      for (const channel of channels) {
+        const count = channel.key === 'all'
+          ? Number(currentUnreadCount || 0)
+          : Number(channelUnread[channel.key] || 0);
+        const badge = channelListEl?.querySelector(`[data-channel-count="${channel.key}"]`);
+        if (!badge) continue;
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.classList.toggle('is-zero', count <= 0);
+      }
+    };
+
+    const selectChannel = async (key) => {
+      const next = channelKeys.has(key) ? key : 'all';
+      if (next === currentChannel) return;
+      currentChannel = next;
+      window.localStorage.setItem('mfuNotificationChannel', currentChannel);
+      const url = new URL(window.location.href);
+      if (currentChannel === 'all') url.searchParams.delete('channel');
+      else url.searchParams.set('channel', currentChannel);
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      updateChannelNavigation();
+      page = 1;
+      hasNext = false;
+      await load({append:false});
+      startPolling();
     };
 
     const updateEmptyState = () => {
@@ -212,7 +326,7 @@
           <span class="badge ${isRead ? 'bg-secondary' : 'bg-danger'}">${isRead ? '既読' : '未読'}</span>
         </div>
         ${renderCards(item)}
-        <div class="notification-meta">${escapeHtml(item.feature_key || 'general')} ・ ${formatDate(item.created_at)}</div>
+        <div class="notification-meta"># ${escapeHtml(channelLabel(normalizedItemChannel(item)))} ・ ${formatDate(item.created_at)}</div>
         <div class="notification-actions"><button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button></div>
       `;
       a.querySelector('[data-open]').addEventListener('click', async () => {
@@ -225,8 +339,7 @@
             if (onlyUnread.checked && removeItemById(item.id)) {
               console.debug('[notifications] unread item removed after read', { id: item.id, scope });
             }
-            currentUnreadCount = Math.max(0, Number(currentUnreadCount || 0) - 1);
-            await applyCounts(currentUnreadCount);
+            await refreshUnreadCount();
             await syncAppBadgeSafe();
           }
         } catch (_e) {
@@ -258,6 +371,12 @@
         await window.clearAppBadgeSafe();
       }
       if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
+      updateChannelNavigation();
+    };
+
+    const applyChannelCounts = (counts) => {
+      channelUnread = counts && typeof counts === 'object' ? counts : {};
+      updateChannelNavigation();
     };
 
     const prependNewItems = (items) => {
@@ -293,7 +412,9 @@
       loading = true;
       try {
         const unread = onlyUnread.checked ? '1' : '0';
-        const res = await fetch(`${getListUrl()}?unread=${unread}&page=${page}`, {
+        const query = new URLSearchParams({unread, page:String(page)});
+        if (scope === 'mfu') query.set('channel', currentChannel);
+        const res = await fetch(`${getListUrl()}?${query.toString()}`, {
           credentials: 'same-origin',
           cache: 'no-store',
         });
@@ -304,6 +425,7 @@
         if (Number.isFinite(Number(data?.unread_count))) {
           await applyCounts(Number(data.unread_count));
         }
+        applyChannelCounts(data?.channel_unread);
         if (!append) {
           await syncAppBadgeSafe();
         }
@@ -324,6 +446,7 @@
         const data = await res.json();
         const count = Number(data?.unread_count ?? data?.count ?? 0);
         await applyCounts(count);
+        applyChannelCounts(data?.channel_unread);
       } catch (_e) {
         // noop
       }
@@ -333,7 +456,9 @@
       if (document.hidden) return;
       if (onlyUnread.checked) return;
       try {
-        const res = await fetch(`${getUpdatesUrl()}?since_id=${lastId}&limit=50&unread=0`, {
+        const query = new URLSearchParams({since_id:String(lastId), limit:'50', unread:'0'});
+        if (scope === 'mfu') query.set('channel', currentChannel);
+        const res = await fetch(`${getUpdatesUrl()}?${query.toString()}`, {
           credentials: 'same-origin',
           cache: 'no-store',
         });
@@ -342,6 +467,7 @@
         prependNewItems(data.items || []);
         lastId = Math.max(lastId, Number(data?.latest_id || 0));
         await applyCounts(Number(data?.unread_count ?? 0));
+        applyChannelCounts(data?.channel_unread);
       } catch (_e) {
         // noop
       }
@@ -381,14 +507,19 @@
       await syncAppBadgeSafe();
     });
 
-    markAllReadBtn.addEventListener('click', async () => {
-      markAllReadBtn.disabled = true;
+    const markRead = async (channel = 'all', button = markAllReadBtn) => {
+      button.disabled = true;
       try {
-        const res = await fetch(getReadAllUrl(), {
+        const requestOptions = {
           method: 'POST',
           credentials: 'same-origin',
-        });
-        if (res.ok && typeof window.clearAppBadgeSafe === 'function') {
+        };
+        if (scope === 'mfu') {
+          requestOptions.headers = {'Content-Type':'application/json'};
+          requestOptions.body = JSON.stringify({channel});
+        }
+        const res = await fetch(getReadAllUrl(), requestOptions);
+        if (res.ok && channel === 'all' && typeof window.clearAppBadgeSafe === 'function') {
           await window.clearAppBadgeSafe();
           if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
         }
@@ -397,7 +528,6 @@
           knownIds.clear();
           hasNext = false;
           updateEmptyState();
-          await applyCounts(0);
         }
         page = 1;
         await load({ append: false });
@@ -405,9 +535,12 @@
         await refreshUnreadCount();
         await syncAppBadgeSafe();
       } finally {
-        markAllReadBtn.disabled = false;
+        button.disabled = false;
       }
-    });
+    };
+
+    markAllReadBtn.addEventListener('click', () => markRead('all', markAllReadBtn));
+    markChannelReadBtn?.addEventListener('click', () => markRead(currentChannel, markChannelReadBtn));
 
     const refreshCurrentHead = async () => {
       await pollUpdatesOnce();
@@ -514,13 +647,15 @@
       });
       notifSocket.on('notif_new', async (payload) => {
         const item = payload?.item;
-        if (item && !onlyUnread.checked) prependNewItems([item]);
+        if (item && itemMatchesCurrentChannel(item)) prependNewItems([item]);
         if (item?.id) lastId = Math.max(lastId, Number(item.id));
+        await refreshUnreadCount();
       });
       notifSocket.on('disconnect', () => { notifSocketConnected = false; startPolling(); });
       notifSocket.on('connect_error', () => { notifSocketConnected = false; startPolling(); });
     }
 
+    updateChannelNavigation();
     load({ append: false }).then(async () => {
       if (typeof window.io !== 'function') startPolling();
       await pollUpdatesOnce();

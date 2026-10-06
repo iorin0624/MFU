@@ -51,7 +51,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -291,7 +291,9 @@ class NotificationCard(QFrame):
                     for row in fields[:12] if isinstance(row, dict)
                 )
                 layout.addWidget(_rich_label(field_text, color="#d1d5db"))
-        meta = QLabel(f"{str(item.get('feature_key') or 'general')}  {str(item.get('created_at') or '')}")
+        feature_key = str(item.get("feature_key") or "general")
+        feature_label = str(item.get("feature_label") or feature_key)
+        meta = QLabel(f"# {feature_label}  {str(item.get('created_at') or '')}")
         meta.setStyleSheet("color:#9ca3af;font-size:11px;")
         layout.addWidget(meta)
         self.actions = QHBoxLayout()
@@ -350,9 +352,12 @@ class NotificationCenterDialog(QDialog):
         self.search.setPlaceholderText("通知を検索")
         read_all = QPushButton("すべて既読")
         read_all.clicked.connect(controller._mark_all_notifications_read)
+        self.read_channel = QPushButton("このチャンネルを既読")
+        self.read_channel.clicked.connect(self._mark_current_channel_read)
         top.addWidget(self.mode)
         top.addWidget(self.feature)
         top.addWidget(self.search, 1)
+        top.addWidget(self.read_channel)
         top.addWidget(read_all)
         layout.addLayout(top)
         self.scroll = QScrollArea()
@@ -368,17 +373,37 @@ class NotificationCenterDialog(QDialog):
         self.refresh_features()
         self.refresh()
 
+    def _mark_current_channel_read(self) -> None:
+        channel = str(self.feature.currentData() or "all")
+        self.controller._mark_notification_channel_read(channel)
+
     def refresh_features(self) -> None:
         selected = self.feature.currentData()
-        features = sorted({str(row.get("feature_key") or "general") for row in self.controller.notifications})
+        configured = list(self.controller.notification_channels)
+        configured_keys = {str(row.get("key") or "") for row in configured}
+        unknown = {
+            str(row.get("feature_key") or "general")
+            for row in self.controller.notifications
+            if str(row.get("feature_key") or "general") not in configured_keys
+        }
         self.feature.blockSignals(True)
         self.feature.clear()
-        self.feature.addItem("すべての機能", "")
-        for feature in features:
-            self.feature.addItem(feature, feature)
+        self.feature.addItem("すべてのチャンネル", "")
+        for channel in configured:
+            key = str(channel.get("key") or "")
+            if not key or key == "other":
+                continue
+            count = int(self.controller.notification_channel_unread.get(key) or 0)
+            suffix = f"（未読{count}件）" if count else ""
+            self.feature.addItem(f"# {str(channel.get('label') or key)}{suffix}", key)
+        if unknown or any(str(row.get("key") or "") == "other" for row in configured):
+            count = int(self.controller.notification_channel_unread.get("other") or 0)
+            suffix = f"（未読{count}件）" if count else ""
+            self.feature.addItem(f"# その他{suffix}", "other")
         index = self.feature.findData(selected)
         self.feature.setCurrentIndex(max(index, 0))
         self.feature.blockSignals(False)
+        self.read_channel.setEnabled(bool(self.feature.currentData()))
 
     def refresh(self) -> None:
         while self.cards.count() > 1:
@@ -387,13 +412,21 @@ class NotificationCenterDialog(QDialog):
                 item.widget().deleteLater()
         mode = str(self.mode.currentData() or "all")
         feature = str(self.feature.currentData() or "")
+        self.read_channel.setEnabled(bool(feature))
         query = self.search.text().strip().lower()
         for row in self.controller.notifications:
             if mode == "unread" and row.get("is_read"):
                 continue
             if mode == "important" and row.get("severity") not in {"warning", "error", "critical"}:
                 continue
-            if feature and str(row.get("feature_key") or "") != feature:
+            row_feature = str(row.get("feature_key") or "general")
+            if feature == "other" and row_feature in {
+                str(item.get("key") or "")
+                for item in self.controller.notification_channels
+                if str(item.get("key") or "") != "other"
+            }:
+                continue
+            if feature and feature != "other" and row_feature != feature:
                 continue
             haystack = f"{row.get('title','')} {row.get('body','')} {row.get('feature_key','')}".lower()
             if query and query not in haystack:
@@ -418,6 +451,8 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         self.photo_receiver: ReceiverThread | None = None
         self.last_saved_path = ""
         self.notifications: list[dict] = []
+        self.notification_channels: list[dict] = []
+        self.notification_channel_unread: dict[str, int] = {}
         self.notification_popups: list[NotificationPopup] = []
         self.notification_center: NotificationCenterDialog | None = None
         tokens = load_tokens()
@@ -630,12 +665,23 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         return {"Authorization": f"Bearer {self.notification_token}"}
 
     def _notification_snapshot(self, payload: dict) -> None:
+        channels = payload.get("channels") if isinstance(payload, dict) else []
+        if isinstance(channels, list):
+            self.notification_channels = [dict(row) for row in channels if isinstance(row, dict)]
+        counts = payload.get("channel_unread") if isinstance(payload, dict) else {}
+        if isinstance(counts, dict):
+            self.notification_channel_unread = {str(key): int(value or 0) for key, value in counts.items()}
         items = payload.get("items") if isinstance(payload, dict) else []
         for item in reversed(items or []):
             self._store_notification(item, popup=False)
         self._update_notification_count(payload.get("unread_count") if isinstance(payload, dict) else None)
 
     def _notification_received(self, item: dict) -> None:
+        if isinstance(item, dict) and not item.get("is_read"):
+            feature_key = str(item.get("feature_key") or "general")
+            known = {str(row.get("key") or "") for row in self.notification_channels}
+            channel_key = feature_key if feature_key in known and feature_key != "other" else "other"
+            self.notification_channel_unread[channel_key] = int(self.notification_channel_unread.get(channel_key) or 0) + 1
         self._store_notification(item, popup=True)
 
     def _store_notification(self, item: dict, *, popup: bool) -> None:
@@ -643,15 +689,22 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             return
         notification_id = int(item.get("id") or 0)
         self.notifications = [row for row in self.notifications if int(row.get("id") or 0) != notification_id]
-        self.notifications.insert(0, dict(item))
+        stored = dict(item)
+        feature_key = str(stored.get("feature_key") or "general")
+        labels = {
+            str(row.get("key") or ""): str(row.get("label") or "")
+            for row in self.notification_channels
+        }
+        stored["feature_label"] = labels.get(feature_key) or ("その他" if labels else feature_key)
+        self.notifications.insert(0, stored)
         self.notifications = self.notifications[:500]
         self._update_notification_count()
         if self.notification_center:
             self.notification_center.refresh_features()
             self.notification_center.refresh()
-        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        content = stored.get("content") if isinstance(stored.get("content"), dict) else {}
         if popup and content.get("media_hub_enabled", True):
-            self._show_notification_popup(item)
+            self._show_notification_popup(stored)
 
     def _update_notification_count(self, explicit: int | None = None) -> None:
         unread = int(explicit) if explicit is not None else sum(1 for row in self.notifications if not row.get("is_read"))
@@ -731,9 +784,18 @@ class MediaHubApp(clipboard.MediaClipboardApp):
                 timeout=15,
             )
             response.raise_for_status()
+            was_unread = not item.get("is_read")
             item["is_read"] = True
+            if was_unread:
+                feature_key = str(item.get("feature_key") or "general")
+                known = {str(row.get("key") or "") for row in self.notification_channels}
+                channel_key = feature_key if feature_key in known and feature_key != "other" else "other"
+                self.notification_channel_unread[channel_key] = max(
+                    0, int(self.notification_channel_unread.get(channel_key) or 0) - 1
+                )
             self._update_notification_count()
             if self.notification_center:
+                self.notification_center.refresh_features()
                 self.notification_center.refresh()
         except Exception as exc:
             self.show_notification(f"通知を既読にできませんでした。\n{exc}", QSystemTrayIcon.Warning, 5000)
@@ -752,11 +814,44 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             response.raise_for_status()
             for item in self.notifications:
                 item["is_read"] = True
+            self.notification_channel_unread = {
+                str(key): 0 for key in self.notification_channel_unread
+            }
             self._update_notification_count(0)
             if self.notification_center:
+                self.notification_center.refresh_features()
                 self.notification_center.refresh()
         except Exception as exc:
             self.show_notification(f"通知を既読にできませんでした。\n{exc}", QSystemTrayIcon.Warning, 5000)
+
+    def _mark_notification_channel_read(self, channel: str) -> None:
+        if not self.notification_token or not channel or channel == "all":
+            return
+        try:
+            import requests
+            response = requests.post(
+                self.api.url("/desktop/media-hub/api/notifications/read-all"),
+                headers=self._notification_headers(),
+                json={"channel": channel},
+                timeout=15,
+            )
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+            for item in self.notifications:
+                feature_key = str(item.get("feature_key") or "general")
+                known = {str(row.get("key") or "") for row in self.notification_channels}
+                item_channel = feature_key if feature_key in known and feature_key != "other" else "other"
+                if item_channel == channel:
+                    item["is_read"] = True
+            counts = data.get("channel_unread") if isinstance(data, dict) else {}
+            if isinstance(counts, dict):
+                self.notification_channel_unread = {str(key): int(value or 0) for key, value in counts.items()}
+            self._update_notification_count()
+            if self.notification_center:
+                self.notification_center.refresh_features()
+                self.notification_center.refresh()
+        except Exception as exc:
+            self.show_notification(f"チャンネルを既読にできませんでした。\n{exc}", QSystemTrayIcon.Warning, 5000)
 
     def _mute_notification(self, item: dict, *, minutes: int = 0, forever: bool = False) -> None:
         if not self.notification_token:

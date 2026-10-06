@@ -490,6 +490,11 @@ def _serialize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _desktop_notifications(row: dict[str, Any], since_id: int = 0, limit: int = 100) -> dict[str, Any]:
+    from app.external_login_user.notifications import (
+        _compute_mfu_channel_unread_counts,
+        _mfu_notification_channels,
+    )
+
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -514,7 +519,13 @@ def _desktop_notifications(row: dict[str, Any], since_id: int = 0, limit: int = 
             (str(row["username"]),),
         )
         unread = int((cur.fetchone() or {}).get("cnt") or 0)
-        return {"ok": True, "items": items, "unread_count": unread}
+        return {
+            "ok": True,
+            "items": items,
+            "unread_count": unread,
+            "channels": _mfu_notification_channels(),
+            "channel_unread": _compute_mfu_channel_unread_counts(str(row["username"])),
+        }
     finally:
         cur.close()
         db.close()
@@ -552,16 +563,33 @@ def desktop_notification_read_all():
     row = verify_notification_token()
     if not row:
         return jsonify({"ok": False, "error": "invalid_token"}), 401
+    from app.external_login_user.notifications import (
+        _compute_mfu_channel_unread_counts,
+        _mfu_notification_channel_sql,
+        _normalize_mfu_notification_channel,
+    )
+    body = request.get_json(silent=True) or {}
+    channel = _normalize_mfu_notification_channel(body.get("channel"))
+    channel_sql, channel_params = _mfu_notification_channel_sql(channel)
     db = get_db()
     cur = db.cursor()
     try:
         cur.execute(
-            "UPDATE mfu_notifications SET read_at=UTC_TIMESTAMP() WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL",
-            (row["username"],),
+            f"""
+            UPDATE mfu_notifications SET read_at=UTC_TIMESTAMP()
+             WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
+               AND {channel_sql}
+            """,
+            tuple([row["username"], *channel_params]),
         )
         updated = int(cur.rowcount or 0)
         db.commit()
-        return jsonify({"ok": True, "updated": updated})
+        return jsonify({
+            "ok": True,
+            "updated": updated,
+            "selected_channel": channel,
+            "channel_unread": _compute_mfu_channel_unread_counts(str(row["username"])),
+        })
     finally:
         cur.close()
         db.close()
