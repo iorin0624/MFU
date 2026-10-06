@@ -20,7 +20,6 @@ FEATURES = (
     "chiba_police_incidents",
     "mail_summary",
     "mail_spam_report",
-    "host_health",
     "debian_updates",
     "backup_status",
 )

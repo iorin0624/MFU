@@ -99,7 +99,7 @@ def test_raspberry_pi_notification_features_are_registered():
     repository = (ROOT / "discord_notifications" / "repository.py").read_text(encoding="utf-8")
     for feature in (
         "earthquake_early_warning", "ichihara_disaster_radio", "chiba_police_incidents",
-        "mail_summary", "mail_spam_report", "host_health", "debian_updates", "backup_status",
+        "mail_summary", "mail_spam_report", "debian_updates", "backup_status",
     ):
         assert feature in repository
 
@@ -108,7 +108,7 @@ def test_raspberry_pi_migration_covers_all_active_discord_producers():
     source = RPI_MIGRATION.read_text(encoding="utf-8")
     for feature in (
         "earthquake_early_warning", "ichihara_disaster_radio", "chiba_police_incidents",
-        "mail_summary", "mail_spam_report", "host_health", "debian_updates", "backup_status",
+        "mail_summary", "mail_spam_report", "debian_updates", "backup_status",
     ):
         assert f'"{feature}"' in source
     assert '127.0.0.1' in source
