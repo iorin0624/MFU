@@ -17,6 +17,8 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
+from email import policy
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,89 @@ from typing import Any
 
 DEFAULT_BASE_URL = "https://mfu.iori0624.jp/api/notification-ingress/discord"
 LOG = logging.getLogger("mfu-notification-bridge")
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+ATTACHMENT_CHUNK_SIZE = 3800
+MAX_EMBEDS_PER_PAYLOAD = 10
+
+
+def _text_chunks(value: str, limit: int = ATTACHMENT_CHUNK_SIZE) -> list[str]:
+    """Split text without needlessly cutting a line in the middle."""
+    remaining = value.replace("\r\n", "\n").strip()
+    chunks: list[str] = []
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, limit + 1)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n")
+    return chunks
+
+
+def _multipart_payloads(content_type: str, raw: bytes) -> list[dict[str, Any]]:
+    message = BytesParser(policy=policy.default).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("ascii") + raw
+    )
+    payload: dict[str, Any] | None = None
+    attachments: list[tuple[str, str]] = []
+    for part in message.iter_parts():
+        name = str(part.get_param("name", header="content-disposition") or "")
+        filename = str(part.get_filename() or "")
+        body = part.get_payload(decode=True) or b""
+        if name == "payload_json":
+            parsed = json.loads(body.decode(part.get_content_charset() or "utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("payload_json must be an object")
+            payload = parsed
+            continue
+        if not filename:
+            continue
+        suffix = Path(filename).suffix.lower()
+        if part.get_content_maintype() == "text" or suffix in {".txt", ".log", ".json", ".csv"}:
+            attachments.append((filename, body.decode(part.get_content_charset() or "utf-8", "replace")))
+
+    if payload is None:
+        raise ValueError("payload_json is required")
+    if not attachments:
+        return [payload]
+
+    embeds = [row for row in payload.get("embeds", []) if isinstance(row, dict)]
+    generated: list[dict[str, Any]] = []
+    for filename, text in attachments:
+        chunks = _text_chunks(text)
+        for index, chunk in enumerate(chunks, 1):
+            title = f"📎 {filename}"
+            if len(chunks) > 1:
+                title += f" ({index}/{len(chunks)})"
+            generated.append({"title": title, "description": chunk, "color": 0x5865F2})
+
+    result: list[dict[str, Any]] = []
+    first_capacity = max(0, MAX_EMBEDS_PER_PAYLOAD - len(embeds))
+    first = dict(payload)
+    first["embeds"] = embeds + generated[:first_capacity]
+    result.append(first)
+    generated = generated[first_capacity:]
+    page = 2
+    while generated:
+        continuation = dict(payload)
+        content = str(payload.get("content") or "").strip()
+        continuation["content"] = f"{content}\n（添付詳細の続き {page}）".strip()
+        continuation["embeds"] = generated[:MAX_EMBEDS_PER_PAYLOAD]
+        result.append(continuation)
+        generated = generated[MAX_EMBEDS_PER_PAYLOAD:]
+        page += 1
+    return result
+
+
+def parse_discord_payloads(content_type: str, raw: bytes) -> list[dict[str, Any]]:
+    if content_type.lower().startswith("multipart/form-data"):
+        return _multipart_payloads(content_type, raw)
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("JSON object required")
+    return [payload]
 
 
 class Store:
@@ -139,13 +224,15 @@ def handler_for(bridge: Bridge):
                 return
             try:
                 length = int(self.headers.get("Content-Length") or 0)
-                if length <= 0 or length > 2 * 1024 * 1024:
+                if length <= 0 or length > MAX_REQUEST_BYTES:
                     raise ValueError("invalid payload size")
-                payload = json.loads(self.rfile.read(length))
-                if not isinstance(payload, dict):
-                    raise ValueError("JSON object required")
+                payloads = parse_discord_payloads(
+                    str(self.headers.get("Content-Type") or "application/json"),
+                    self.rfile.read(length),
+                )
                 bridge.config()["tokens"][feature]
-                delivered = bridge.accept(feature, payload)
+                delivery_results = [bridge.accept(feature, payload) for payload in payloads]
+                delivered = all(delivery_results)
             except (ValueError, KeyError, json.JSONDecodeError) as exc:
                 self.send_error(400, str(exc))
                 return
