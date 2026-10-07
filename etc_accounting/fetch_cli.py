@@ -4,6 +4,8 @@ import argparse
 import json
 import time
 
+from app import create_app
+
 from .fetcher import fetch_month, scheduled_months
 from .browser_session import ETCTargetPage
 from .credentials import etc_browser_lock
@@ -66,6 +68,13 @@ def main() -> int:
     )
     parser.add_argument("--manual-job-id", help="画面から開始した手動取得のジョブID")
     args = parser.parse_args()
+
+    flask_app = create_app()
+    with flask_app.app_context():
+        return _run(args)
+
+
+def _run(args: argparse.Namespace) -> int:
     scheduled_run = not args.month and not args.force_id
     months = args.month or _scheduled_fetch_months()
     results = []

@@ -170,3 +170,30 @@ def test_discord_ingress_preserves_cards_lead_text_and_link_buttons():
     assert 'lead_text=str(event.get("lead_text")' in source
     assert 'payload.get("components")' in source
     assert 'params={"with_components": "true"}' in source
+
+
+def test_content_only_mail_summary_is_not_duplicated_across_title_body_and_lead():
+    from app.utils.notification_service import discord_payload_to_event
+
+    summary = "差出人: sender@example.com\n件名: ご利用のお知らせ\n------\n800円の利用がありました。"
+    event = discord_payload_to_event("mail_summary", {"content": summary})
+
+    assert event["title"] == "メール要約"
+    assert event["description"] == summary
+    assert event["lead_text"] == ""
+
+
+def test_embed_content_remains_a_lead_without_replacing_the_card_title():
+    from app.utils.notification_service import discord_payload_to_event
+
+    event = discord_payload_to_event(
+        "etc_accounting",
+        {
+            "content": "ETC定期取得のテスト通知です",
+            "embeds": [{"title": "ETC通知カード", "description": "2件取得"}],
+        },
+    )
+
+    assert event["title"] == "ETC通知カード"
+    assert event["description"] == "2件取得"
+    assert event["lead_text"] == "ETC定期取得のテスト通知です"
