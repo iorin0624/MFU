@@ -847,6 +847,22 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertTrue(all(call.kwargs["browser"] is browser for call in fetch.call_args_list))
         completed.assert_called_once_with("success")
 
+    def test_fetch_cli_runs_notification_dispatch_inside_flask_app_context(self):
+        fake_app = MagicMock()
+        context = MagicMock()
+        fake_app.app_context.return_value = context
+        with (
+            patch("sys.argv", ["fetch_cli"]),
+            patch.object(fetch_cli, "create_app", return_value=fake_app),
+            patch.object(fetch_cli, "_run", return_value=0) as run,
+        ):
+            exit_code = fetch_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        context.__enter__.assert_called_once_with()
+        run.assert_called_once()
+        context.__exit__.assert_called_once()
+
     def test_scheduled_cli_treats_official_maintenance_as_non_error(self):
         with (
             patch("sys.argv", ["fetch_cli"]),

@@ -367,8 +367,10 @@ def _common_notification_target_url(value: Any) -> str:
 def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     embeds = payload.get("embeds") if isinstance(payload.get("embeds"), list) else []
     embed = embeds[0] if embeds and isinstance(embeds[0], dict) else {}
-    title = str(embed.get("title") or payload.get("content") or FEATURE_DEFINITIONS.get(feature_key, {}).get("label") or "お知らせ")
-    description = str(embed.get("description") or payload.get("content") or "")
+    content = str(payload.get("content") or "")
+    feature_label = str(FEATURE_DEFINITIONS.get(feature_key, {}).get("label") or "お知らせ")
+    title = str(embed.get("title") or feature_label)
+    description = str(embed.get("description") or content)
     fields = []
     for row in embed.get("fields") or []:
         if isinstance(row, dict):
@@ -433,7 +435,9 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
         "description": description,
         "fields": fields,
         "cards": cards,
-        "lead_text": str(payload.get("content") or "")[:2000],
+        # Discordの content だけで送られた通知は description に一度だけ保存する。
+        # embed 付きの content は、従来どおりカード前の案内文として保持する。
+        "lead_text": content[:2000] if embeds else "",
         "image_url": str(image_data.get("url") or "")[:1000],
         "footer": str(footer_data.get("text") or payload.get("username") or "MFU")[:255],
         "target_url": target_url,
