@@ -197,3 +197,21 @@ def test_embed_content_remains_a_lead_without_replacing_the_card_title():
     assert event["title"] == "ETC通知カード"
     assert event["description"] == "2件取得"
     assert event["lead_text"] == "ETC定期取得のテスト通知です"
+
+
+def test_common_notification_entrypoints_restore_flask_context_for_background_jobs():
+    source = SERVICE.read_text(encoding="utf-8")
+
+    assert "def _with_notification_app_context(" in source
+    assert "if has_app_context():" in source
+    assert "with flask_app.app_context():" in source
+    assert "@_with_notification_app_context\ndef publish_common_notification(" in source
+    assert "@_with_notification_app_context\ndef mirror_discord_payload(" in source
+    assert "@_with_notification_app_context\ndef dispatch_discord_notification(" in source
+
+
+def test_shipment_first_real_progress_after_empty_success_is_not_suppressed():
+    source = (ROOT / "shipment_tracking" / "services.py").read_text(encoding="utf-8")
+
+    assert 'has_previous_success = target.get("last_check_success_at") is not None' in source
+    assert "previous_status is not None\n            or previous_detail is not None" not in source

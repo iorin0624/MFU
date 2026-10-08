@@ -4,10 +4,11 @@ import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Blueprint, abort, current_app, flash, has_app_context, jsonify, redirect, render_template_string, request, session, url_for
 from flask_socketio import disconnect, emit, join_room
 
 from app.chat.socketio_ext import socketio
@@ -22,6 +23,21 @@ TOKEN_DAYS = 180
 DEFAULT_RECIPIENT = "admin"
 _schema_ready = False
 _socket_tokens: dict[str, dict[str, Any]] = {}
+
+
+def _with_notification_app_context(function):
+    """Allow notification delivery from systemd jobs and background threads."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if has_app_context():
+            return function(*args, **kwargs)
+        from app import create_app
+
+        flask_app = create_app()
+        with flask_app.app_context():
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _hash_token(token: str) -> str:
@@ -279,6 +295,7 @@ def _is_muted(preference: dict[str, Any]) -> bool:
     return bool(mute_until and mute_until > datetime.utcnow())
 
 
+@_with_notification_app_context
 def publish_common_notification(
     *,
     recipient_username: str,
@@ -446,6 +463,7 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
     }
 
 
+@_with_notification_app_context
 def mirror_discord_payload(feature_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     event = discord_payload_to_event(feature_key, payload)
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -458,6 +476,7 @@ def mirror_discord_payload(feature_key: str, payload: dict[str, Any]) -> dict[st
     )
 
 
+@_with_notification_app_context
 def dispatch_discord_notification(
     feature_key: str,
     payload: dict[str, Any],

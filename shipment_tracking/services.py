@@ -583,11 +583,10 @@ def run_check(target_id: int, triggered_by: str) -> bool:
         previous_status = target.get("last_current_status")
         previous_detail = target.get("last_current_status_detail")
         previous_latest_event_at = target.get("last_latest_event_at")
-        has_previous_success = bool(
-            previous_status is not None
-            or previous_detail is not None
-            or previous_latest_event_at is not None
-        )
+        # The first successful fetch can legitimately contain no tracking event yet.
+        # Once that fetch has completed, the first real status is an update and must
+        # be notified instead of being mistaken for another initial fetch.
+        has_previous_success = target.get("last_check_success_at") is not None
         progress_changed = (
             previous_status != current_status
             or previous_detail != current_status_detail
