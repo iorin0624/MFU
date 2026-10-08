@@ -59,6 +59,7 @@
   .notification-field:not(.is-inline) { grid-column:1/-1; }
   .notification-field-name { font-size:.78rem; color:#64748b; font-weight:700; }
   .notification-field-value { overflow-wrap:anywhere; }
+  .notification-otp-code { font-size:1.3rem; font-weight:800; letter-spacing:.1em; font-variant-numeric:tabular-nums; }
   .notification-card-footer,.notification-meta { color:#5b687a; font-size:.82rem; margin-top:.6rem; }
   .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
   #emptyState { color:#64748b !important; font-size:1rem; }
@@ -308,6 +309,19 @@
         </section>`).join('')}</div>`;
     };
 
+    const renderOtpValue = (item) => {
+      if (item?.topic_key !== 'au-pay-otp') return '';
+      const actions = Array.isArray(item?.content?.actions) ? item.content.actions : [];
+      const index = actions.findIndex((action) => String(action?.type || '').toLowerCase() === 'copy');
+      if (index < 0) return '';
+      const action = actions[index];
+      const expiresAt = action?.expires_at ? new Date(action.expires_at) : null;
+      const expired = !!action?.expired || (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now());
+      const value = String(action?.value || '');
+      const shown = !expired && /^\d{6,10}$/.test(value) ? value : '期限切れ';
+      return `<div class="notification-field notification-otp mt-2"><div class="notification-field-name">ワンタイムパスワード</div><div class="notification-field-value notification-otp-code" data-otp-value="${index}">${escapeHtml(shown)}</div></div>`;
+    };
+
     const renderNotificationActions = (item) => {
       const content = item?.content && typeof item.content === 'object' ? item.content : {};
       const actions = Array.isArray(content.actions) ? content.actions : [];
@@ -317,7 +331,7 @@
         const type = String(action?.type || 'link').trim().toLowerCase();
         if (type === 'copy') {
           const expiresAt = action?.expires_at ? new Date(action.expires_at) : null;
-          const expired = !!action?.expired || (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now());
+          const expired = !!action?.expired || !action?.value || (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now());
           return `<button type="button" class="btn btn-sm btn-outline-primary" data-copy-action="${index}" ${expired ? 'disabled' : ''}>${escapeHtml(expired ? '期限切れ' : label)}</button>`;
         }
         const url = String(action?.url || '').trim();
@@ -347,13 +361,25 @@
       const content = item?.content && typeof item.content === 'object' ? item.content : {};
       const actions = Array.isArray(content.actions) ? content.actions : [];
       entry.querySelectorAll('[data-copy-action]').forEach((button) => {
+        const index = Number(button.dataset.copyAction || -1);
+        const action = actions[index];
+        if (!action || String(action.type || '').toLowerCase() !== 'copy') return;
+        const expiresAt = action.expires_at ? new Date(action.expires_at) : null;
+        const expire = () => {
+          button.disabled = true;
+          button.textContent = '期限切れ';
+          const otpValue = entry.querySelector(`[data-otp-value="${index}"]`);
+          if (otpValue) otpValue.textContent = '期限切れ';
+          delete action.value;
+        };
+        if (expiresAt && !Number.isNaN(expiresAt.getTime())) {
+          const remaining = expiresAt.getTime() - Date.now();
+          if (remaining <= 0) expire();
+          else window.setTimeout(expire, Math.min(remaining, 2147483647));
+        }
         button.addEventListener('click', async () => {
-          const action = actions[Number(button.dataset.copyAction || -1)];
-          if (!action || String(action.type || '').toLowerCase() !== 'copy') return;
-          const expiresAt = action.expires_at ? new Date(action.expires_at) : null;
           if (action.expired || (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now())) {
-            button.disabled = true;
-            button.textContent = '期限切れ';
+            expire();
             return;
           }
           const value = String(action.value || '');
@@ -367,8 +393,11 @@
             button.textContent = 'コピーできませんでした';
           }
           window.setTimeout(() => {
-            button.textContent = original;
-            button.disabled = false;
+            if (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) expire();
+            else {
+              button.textContent = original;
+              button.disabled = false;
+            }
           }, 1800);
         });
       });
@@ -408,6 +437,7 @@
       a.innerHTML = `
         ${hasCards ? '' : `<div class="notification-entry-head"><div><h2 class="h6 mb-1">${escapeHtml(item.title || 'お知らせ')}</h2></div></div>`}
         ${renderCards(item)}
+        ${renderOtpValue(item)}
         <div class="notification-meta"># ${escapeHtml(channelLabel(normalizedItemChannel(item)))} ・ ${formatDate(item.created_at)}</div>
         <div class="notification-actions"><button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>${renderNotificationActions(item)}</div>
       `;
