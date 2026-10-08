@@ -54,7 +54,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.5"
+APP_VERSION = "2.2.6"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -72,6 +72,17 @@ def _notification_action_expired(action: dict) -> bool:
         return expires_at <= datetime.now(timezone.utc)
     except ValueError:
         return False
+
+
+def _au_pay_otp_action(item: dict) -> dict | None:
+    if str(item.get("topic_key") or "") != "au-pay-otp":
+        return None
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    actions = content.get("actions") if isinstance(content.get("actions"), list) else []
+    return next(
+        (action for action in actions if isinstance(action, dict) and str(action.get("type") or "").lower() == "copy"),
+        None,
+    )
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -339,6 +350,24 @@ class NotificationCard(QFrame):
             fields = content.get("fields") if isinstance(content.get("fields"), list) else []
             if fields and not compact:
                 _add_notification_fields(layout, fields, columns=field_columns)
+        self.otp_value_label = None
+        otp_action = _au_pay_otp_action(item)
+        if otp_action is not None:
+            otp_value = str(otp_action.get("value") or "")
+            if _notification_action_expired(otp_action) or not re.fullmatch(r"\d{6,10}", otp_value):
+                otp_value = "期限切れ"
+            field = QFrame()
+            field.setObjectName("NotificationField")
+            field.setStyleSheet("QFrame#NotificationField{background:#111827;border:1px solid #374151;border-radius:6px;}")
+            field_layout = QVBoxLayout(field)
+            field_layout.setContentsMargins(9, 7, 9, 7)
+            name = QLabel("ワンタイムパスワード")
+            name.setStyleSheet("color:#9ca3af;font-size:12px;")
+            field_layout.addWidget(name)
+            self.otp_value_label = QLabel(otp_value)
+            self.otp_value_label.setStyleSheet("color:#f8fafc;font-size:19px;font-weight:700;")
+            field_layout.addWidget(self.otp_value_label)
+            layout.addWidget(field)
         feature_key = str(item.get("feature_key") or "general")
         feature_label = str(item.get("feature_label") or feature_key)
         meta = QLabel(f"# {feature_label}  {str(item.get('created_at') or '')}")
@@ -918,15 +947,28 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             action_type = str(row.get("type") or "link").strip().lower()
             if action_type == "copy":
                 value = str(row.get("value") or "")
-                if not label or not value:
+                if not label:
                     continue
-                expired = _notification_action_expired(row)
+                expired = _notification_action_expired(row) or not value
                 button = QPushButton("期限切れ" if expired else label[:24])
                 button.setEnabled(not expired)
                 button.clicked.connect(
-                    lambda _=False, copy_value=value: self._copy_notification_value(copy_value)
+                    lambda _=False, copy_action=row: self._copy_notification_value(copy_action)
                 )
                 card.actions.addWidget(button)
+                raw_expiry = str(row.get("expires_at") or "").strip()
+                if not expired and raw_expiry:
+                    try:
+                        expires_at = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+                        remaining_ms = int((expires_at - datetime.now(timezone.utc)).total_seconds() * 1000)
+                        timer = QTimer(card)
+                        timer.setSingleShot(True)
+                        timer.timeout.connect(lambda b=button, c=card: self._expire_copy_action_ui(b, c))
+                        timer.start(max(1, min(remaining_ms, 2147483647)))
+                    except ValueError:
+                        pass
                 continue
             url = str(row.get("url") or "").strip()
             if not label or not url:
@@ -935,7 +977,20 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             button.clicked.connect(lambda _=False, value=url: webbrowser.open(self.api.absolute_url(value)))
             card.actions.addWidget(button)
 
-    def _copy_notification_value(self, value: str) -> None:
+    @staticmethod
+    def _expire_copy_action_ui(button: QPushButton, card: NotificationCard) -> None:
+        button.setEnabled(False)
+        button.setText("期限切れ")
+        if card.otp_value_label is not None:
+            card.otp_value_label.setText("期限切れ")
+
+    def _copy_notification_value(self, action: dict) -> None:
+        if _notification_action_expired(action):
+            self.show_notification("ワンタイムパスワードの有効期限が切れています。")
+            return
+        value = str(action.get("value") or "")
+        if not value:
+            return
         QApplication.clipboard().setText(value)
         self.show_notification("ワンタイムパスワードをコピーしました。")
 
