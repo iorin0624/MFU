@@ -11,6 +11,7 @@ import sys
 import threading
 import webbrowser
 from ctypes import wintypes
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -52,9 +53,24 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
+
+
+def _notification_action_expired(action: dict) -> bool:
+    if action.get("expired"):
+        return True
+    raw = str(action.get("expires_at") or "").strip()
+    if not raw:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
+    except ValueError:
+        return False
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -805,12 +821,29 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             if not isinstance(row, dict):
                 continue
             label = str(row.get("label") or "").strip()
+            action_type = str(row.get("type") or "link").strip().lower()
+            if action_type == "copy":
+                value = str(row.get("value") or "")
+                if not label or not value:
+                    continue
+                expired = _notification_action_expired(row)
+                button = QPushButton("期限切れ" if expired else label[:24])
+                button.setEnabled(not expired)
+                button.clicked.connect(
+                    lambda _=False, copy_value=value: self._copy_notification_value(copy_value)
+                )
+                card.actions.addWidget(button)
+                continue
             url = str(row.get("url") or "").strip()
             if not label or not url:
                 continue
             button = QPushButton(label[:24])
             button.clicked.connect(lambda _=False, value=url: webbrowser.open(self.api.absolute_url(value)))
             card.actions.addWidget(button)
+
+    def _copy_notification_value(self, value: str) -> None:
+        QApplication.clipboard().setText(value)
+        self.show_notification("ワンタイムパスワードをコピーしました。")
 
     def _mark_notification_read(self, item: dict) -> None:
         notification_id = int(item.get("id") or 0)

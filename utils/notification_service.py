@@ -321,6 +321,29 @@ def publish_common_notification(
     feature = (feature_key or "general").strip()[:64]
     preference = _preference(recipient, feature)
     muted = _is_muted(preference)
+    normalized_actions: list[dict[str, str]] = []
+    for row in actions or []:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("label") or "").strip()[:80]
+        action_type = str(row.get("type") or "link").strip().lower()[:24]
+        if not label:
+            continue
+        if action_type == "copy":
+            value = str(row.get("value") or "")[:500]
+            if not value:
+                continue
+            normalized_actions.append({
+                "type": "copy",
+                "label": label,
+                "value": value,
+                "expires_at": str(row.get("expires_at") or "")[:64],
+            })
+            continue
+        url = str(row.get("url") or "").strip()[:1000]
+        if url:
+            normalized_actions.append({"type": "link", "label": label, "url": url})
+
     content = {
         "fields": [row for row in (fields or []) if isinstance(row, dict)][:30],
         "cards": [row for row in (cards or []) if isinstance(row, dict)][:10],
@@ -329,14 +352,7 @@ def publish_common_notification(
         "footer": (footer or "")[:255],
         "sound_enabled": bool(preference.get("sound_enabled")),
         "media_hub_enabled": bool(preference.get("media_hub_enabled")),
-        "actions": [
-            {
-                "label": str(row.get("label") or "")[:80],
-                "url": str(row.get("url") or "")[:1000],
-            }
-            for row in (actions or [])
-            if isinstance(row, dict) and str(row.get("label") or "").strip() and str(row.get("url") or "").strip()
-        ][:8],
+        "actions": normalized_actions[:8],
     }
     result = send_push(
         recipient_type="mfu_username",
@@ -856,10 +872,11 @@ def _accept_source_event(source: dict[str, Any], event: dict[str, Any], raw: byt
                     card["timestamp"] = str(raw_card.get("timestamp"))[:64]
                 embeds.append(card)
             if not embeds:
+                discord_fields = event.get("discord_fields") if isinstance(event.get("discord_fields"), list) else event.get("fields")
                 embeds = [{
                 "title": str(event.get("title") or "お知らせ")[:255],
                 "description": str(event.get("description") or event.get("body") or "")[:4000],
-                "fields": event.get("fields") if isinstance(event.get("fields"), list) else [],
+                "fields": discord_fields if isinstance(discord_fields, list) else [],
                 "footer": {"text": str(event.get("footer") or source.get("source_name") or "MFU")[:255]},
                 }]
             discord_payload: dict[str, Any] = {

@@ -311,12 +311,67 @@
     const renderNotificationActions = (item) => {
       const content = item?.content && typeof item.content === 'object' ? item.content : {};
       const actions = Array.isArray(content.actions) ? content.actions : [];
-      return actions.slice(0, 8).map((action) => {
+      return actions.slice(0, 8).map((action, index) => {
         const label = String(action?.label || '').trim();
+        if (!label) return '';
+        const type = String(action?.type || 'link').trim().toLowerCase();
+        if (type === 'copy') {
+          const expiresAt = action?.expires_at ? new Date(action.expires_at) : null;
+          const expired = !!action?.expired || (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now());
+          return `<button type="button" class="btn btn-sm btn-outline-primary" data-copy-action="${index}" ${expired ? 'disabled' : ''}>${escapeHtml(expired ? '期限切れ' : label)}</button>`;
+        }
         const url = String(action?.url || '').trim();
         if (!label || !url) return '';
         return `<a class="btn btn-sm btn-outline-primary" href="${escapeHtml(safeLink(url))}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
       }).join('');
+    };
+
+    const copyText = async (value) => {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      const input = document.createElement('textarea');
+      input.value = value;
+      input.setAttribute('readonly', '');
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand('copy');
+      input.remove();
+      if (!copied) throw new Error('copy failed');
+    };
+
+    const bindNotificationActions = (entry, item) => {
+      const content = item?.content && typeof item.content === 'object' ? item.content : {};
+      const actions = Array.isArray(content.actions) ? content.actions : [];
+      entry.querySelectorAll('[data-copy-action]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const action = actions[Number(button.dataset.copyAction || -1)];
+          if (!action || String(action.type || '').toLowerCase() !== 'copy') return;
+          const expiresAt = action.expires_at ? new Date(action.expires_at) : null;
+          if (action.expired || (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now())) {
+            button.disabled = true;
+            button.textContent = '期限切れ';
+            return;
+          }
+          const value = String(action.value || '');
+          if (!value) return;
+          const original = button.textContent;
+          button.disabled = true;
+          try {
+            await copyText(value);
+            button.textContent = 'ワンタイムパスワードをコピーしました';
+          } catch (_e) {
+            button.textContent = 'コピーできませんでした';
+          }
+          window.setTimeout(() => {
+            button.textContent = original;
+            button.disabled = false;
+          }, 1800);
+        });
+      });
     };
 
     const formatDate = (iso) => {
@@ -374,6 +429,7 @@
         }
         window.location.assign(a.dataset.targetUrl || '/external-login/');
       });
+      bindNotificationActions(a, item);
       return a;
     };
 
