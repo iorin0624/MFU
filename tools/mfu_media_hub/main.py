@@ -54,7 +54,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.2.4"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -573,7 +573,7 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         self.connection_action.setEnabled(False)
         menu.addAction(self.connection_action)
         self.notification_center_action = QAction("通知センター（未読0件）", menu)
-        self.notification_center_action.triggered.connect(self._open_notification_center)
+        self.notification_center_action.triggered.connect(self._queue_notification_center_open)
         menu.addAction(self.notification_center_action)
         read_all = QAction("通知をすべて既読", menu)
         read_all.triggered.connect(self._mark_all_notifications_read)
@@ -795,6 +795,44 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             popup.move(area.right() - popup.width() - 12, bottom - popup.height())
             bottom -= popup.height() + 10
 
+    def _queue_notification_center_open(self) -> None:
+        # Opening a top-level dialog while the native tray menu is still
+        # dismissing can make Windows hide that dialog immediately afterwards.
+        logging.info("notification center open queued after tray menu dismissal")
+        QTimer.singleShot(150, self._open_notification_center)
+
+    def _present_notification_center(self, dialog: NotificationCenterDialog) -> None:
+        state = dialog.windowState()
+        if state & Qt.WindowMinimized:
+            dialog.setWindowState(state & ~Qt.WindowMinimized)
+        dialog.show()
+        frame = dialog.frameGeometry()
+        screens = QApplication.screens()
+        if screens and not any(screen.availableGeometry().intersects(frame) for screen in screens):
+            area = (QApplication.primaryScreen() or screens[0]).availableGeometry()
+            frame.moveCenter(area.center())
+            dialog.move(frame.topLeft())
+        dialog.raise_()
+        dialog.activateWindow()
+        QApplication.alert(dialog, 0)
+
+    def _confirm_notification_center_visible(self, dialog: NotificationCenterDialog) -> None:
+        try:
+            if self.notification_center is not dialog:
+                return
+            if not dialog.isVisible() or dialog.windowState() & Qt.WindowMinimized:
+                logging.warning("notification center became hidden after tray menu dismissal; restoring")
+                self._present_notification_center(dialog)
+            logging.info(
+                "notification center visibility confirmed visible=%s minimized=%s geometry=%s",
+                dialog.isVisible(),
+                bool(dialog.windowState() & Qt.WindowMinimized),
+                dialog.frameGeometry().getRect(),
+            )
+        except RuntimeError:
+            logging.exception("notification center disappeared during visibility confirmation")
+            self.notification_center = None
+
     def _open_notification_center(self) -> None:
         logging.info("notification center open requested")
         try:
@@ -805,20 +843,8 @@ class MediaHubApp(clipboard.MediaClipboardApp):
                 self.notification_center = dialog
             dialog.refresh_features()
             dialog.refresh()
-            state = dialog.windowState()
-            if state & Qt.WindowMinimized:
-                dialog.setWindowState(state & ~Qt.WindowMinimized)
-            dialog.show()
-            QApplication.processEvents()
-            frame = dialog.frameGeometry()
-            screens = QApplication.screens()
-            if screens and not any(screen.availableGeometry().intersects(frame) for screen in screens):
-                area = (QApplication.primaryScreen() or screens[0]).availableGeometry()
-                frame.moveCenter(area.center())
-                dialog.move(frame.topLeft())
-            dialog.raise_()
-            dialog.activateWindow()
-            QApplication.alert(dialog, 0)
+            self._present_notification_center(dialog)
+            QTimer.singleShot(500, lambda value=dialog: self._confirm_notification_center_visible(value))
             logging.info(
                 "notification center shown visible=%s minimized=%s geometry=%s",
                 dialog.isVisible(),

@@ -94,6 +94,8 @@ def test_notification_center_recovers_hidden_minimized_and_stale_windows():
     assert "QApplication.screens()" in client
     assert "availableGeometry().intersects(frame)" in client
     assert "notification center had a stale window reference; recreating" in client
+    assert "QTimer.singleShot(150, self._open_notification_center)" in client
+    assert "notification center became hidden after tray menu dismissal; restoring" in client
 
 
 def test_notification_center_pwa_is_separate_from_mimoria_pwa():
