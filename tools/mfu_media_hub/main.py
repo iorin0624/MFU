@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import html
 import json
+import logging
 import os
 import re
 import secrets
@@ -53,7 +54,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -385,6 +386,7 @@ class NotificationCenterDialog(QDialog):
     def __init__(self, controller) -> None:
         super().__init__()
         self.controller = controller
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle("MFU 通知センター")
         self.resize(820, 720)
         layout = QVBoxLayout(self)
@@ -794,14 +796,50 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             bottom -= popup.height() + 10
 
     def _open_notification_center(self) -> None:
-        if self.notification_center is None:
-            self.notification_center = NotificationCenterDialog(self)
-            self.notification_center.finished.connect(lambda _=0: setattr(self, "notification_center", None))
-        self.notification_center.refresh_features()
-        self.notification_center.refresh()
-        self.notification_center.show()
-        self.notification_center.raise_()
-        self.notification_center.activateWindow()
+        logging.info("notification center open requested")
+        try:
+            dialog = self.notification_center
+            if dialog is None:
+                dialog = NotificationCenterDialog(self)
+                dialog.destroyed.connect(self._notification_center_destroyed)
+                self.notification_center = dialog
+            dialog.refresh_features()
+            dialog.refresh()
+            state = dialog.windowState()
+            if state & Qt.WindowMinimized:
+                dialog.setWindowState(state & ~Qt.WindowMinimized)
+            dialog.show()
+            QApplication.processEvents()
+            frame = dialog.frameGeometry()
+            screens = QApplication.screens()
+            if screens and not any(screen.availableGeometry().intersects(frame) for screen in screens):
+                area = (QApplication.primaryScreen() or screens[0]).availableGeometry()
+                frame.moveCenter(area.center())
+                dialog.move(frame.topLeft())
+            dialog.raise_()
+            dialog.activateWindow()
+            QApplication.alert(dialog, 0)
+            logging.info(
+                "notification center shown visible=%s minimized=%s geometry=%s",
+                dialog.isVisible(),
+                bool(dialog.windowState() & Qt.WindowMinimized),
+                dialog.frameGeometry().getRect(),
+            )
+        except RuntimeError:
+            logging.exception("notification center had a stale window reference; recreating")
+            self.notification_center = None
+            QTimer.singleShot(0, self._open_notification_center)
+        except Exception as exc:
+            logging.exception("notification center could not be opened")
+            self.show_notification(
+                f"通知センターを表示できませんでした。\n{exc}",
+                QSystemTrayIcon.Warning,
+                8000,
+            )
+
+    def _notification_center_destroyed(self, _obj=None) -> None:
+        logging.info("notification center window destroyed")
+        self.notification_center = None
 
     def _open_notification(self, item: dict) -> None:
         self._mark_notification_read(item)
