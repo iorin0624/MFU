@@ -87,6 +87,15 @@ def test_media_hub_has_realtime_notification_center_and_mute_controls():
     assert "_discord_rich_text" in client
 
 
+def test_notification_center_recovers_hidden_minimized_and_stale_windows():
+    client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
+    assert "Qt.WA_DeleteOnClose" in client
+    assert "state & Qt.WindowMinimized" in client
+    assert "QApplication.screens()" in client
+    assert "availableGeometry().intersects(frame)" in client
+    assert "notification center had a stale window reference; recreating" in client
+
+
 def test_notification_center_pwa_is_separate_from_mimoria_pwa():
     notifications = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8")
     template = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
