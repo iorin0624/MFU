@@ -54,7 +54,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.4"
+APP_VERSION = "2.2.5"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -796,10 +796,30 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             bottom -= popup.height() + 10
 
     def _queue_notification_center_open(self) -> None:
-        # Opening a top-level dialog while the native tray menu is still
-        # dismissing can make Windows hide that dialog immediately afterwards.
-        logging.info("notification center open queued after tray menu dismissal")
+        logging.info("notification center open queued")
         QTimer.singleShot(150, self._open_notification_center)
+
+    @staticmethod
+    def _native_window_visible(dialog: NotificationCenterDialog) -> bool:
+        if os.name != "nt":
+            return dialog.isVisible()
+        hwnd = int(dialog.winId())
+        return bool(ctypes.windll.user32.IsWindowVisible(ctypes.c_void_p(hwnd)))
+
+    @staticmethod
+    def _raise_native_window(dialog: NotificationCenterDialog) -> None:
+        if os.name != "nt":
+            return
+        user32 = ctypes.windll.user32
+        hwnd = int(dialog.winId())
+        native_hwnd = ctypes.c_void_p(hwnd)
+        # Qt can report isVisible=True while the native HWND is still hidden.
+        # ShowWindow and a brief topmost pulse synchronize the Windows state.
+        user32.ShowWindow(native_hwnd, 9 if user32.IsIconic(native_hwnd) else 5)
+        flags = 0x0001 | 0x0002 | 0x0040  # NOMOVE | NOSIZE | SHOWWINDOW
+        user32.SetWindowPos(native_hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
+        user32.SetWindowPos(native_hwnd, ctypes.c_void_p(-2), 0, 0, 0, 0, flags)
+        user32.SetForegroundWindow(native_hwnd)
 
     def _present_notification_center(self, dialog: NotificationCenterDialog) -> None:
         state = dialog.windowState()
@@ -814,20 +834,28 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             dialog.move(frame.topLeft())
         dialog.raise_()
         dialog.activateWindow()
+        self._raise_native_window(dialog)
         QApplication.alert(dialog, 0)
 
     def _confirm_notification_center_visible(self, dialog: NotificationCenterDialog) -> None:
         try:
             if self.notification_center is not dialog:
                 return
-            if not dialog.isVisible() or dialog.windowState() & Qt.WindowMinimized:
-                logging.warning("notification center became hidden after tray menu dismissal; restoring")
+            native_visible = self._native_window_visible(dialog)
+            if not dialog.isVisible() or not native_visible or dialog.windowState() & Qt.WindowMinimized:
+                logging.warning(
+                    "notification center hidden after opening qt_visible=%s native_visible=%s; restoring",
+                    dialog.isVisible(), native_visible,
+                )
+                dialog.hide()
                 self._present_notification_center(dialog)
             logging.info(
-                "notification center visibility confirmed visible=%s minimized=%s geometry=%s",
+                "notification center visibility confirmed qt_visible=%s native_visible=%s minimized=%s geometry=%s hwnd=%s",
                 dialog.isVisible(),
+                self._native_window_visible(dialog),
                 bool(dialog.windowState() & Qt.WindowMinimized),
                 dialog.frameGeometry().getRect(),
+                int(dialog.winId()),
             )
         except RuntimeError:
             logging.exception("notification center disappeared during visibility confirmation")
@@ -846,10 +874,12 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             self._present_notification_center(dialog)
             QTimer.singleShot(500, lambda value=dialog: self._confirm_notification_center_visible(value))
             logging.info(
-                "notification center shown visible=%s minimized=%s geometry=%s",
+                "notification center shown qt_visible=%s native_visible=%s minimized=%s geometry=%s hwnd=%s",
                 dialog.isVisible(),
+                self._native_window_visible(dialog),
                 bool(dialog.windowState() & Qt.WindowMinimized),
                 dialog.frameGeometry().getRect(),
+                int(dialog.winId()),
             )
         except RuntimeError:
             logging.exception("notification center had a stale window reference; recreating")
