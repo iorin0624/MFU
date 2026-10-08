@@ -1021,6 +1021,22 @@ def _serialize_mfu_notification_item(row: dict[str, Any]) -> dict[str, Any]:
             content = {}
     if not isinstance(content, dict):
         content = {}
+    actions = content.get("actions") if isinstance(content.get("actions"), list) else []
+    for action in actions:
+        if not isinstance(action, dict) or str(action.get("type") or "").lower() != "copy":
+            continue
+        raw_expiry = str(action.get("expires_at") or "").strip()
+        if not raw_expiry:
+            continue
+        try:
+            expiry = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if expiry <= datetime.now(timezone.utc):
+                action.pop("value", None)
+                action["expired"] = True
+        except ValueError:
+            pass
     return {
         "id": int(row.get("id") or 0),
         "kind": row.get("kind") or "general",

@@ -172,6 +172,19 @@ def test_discord_ingress_preserves_cards_lead_text_and_link_buttons():
     assert 'params={"with_components": "true"}' in source
 
 
+def test_common_notification_copy_actions_are_supported_by_web_and_windows():
+    service = SERVICE.read_text(encoding="utf-8")
+    web = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
+    windows = (ROOT / "tools" / "mfu_media_hub" / "main.py").read_text(encoding="utf-8")
+
+    assert 'if action_type == "copy":' in service
+    assert '"expires_at": str(row.get("expires_at")' in service
+    assert "data-copy-action" in web
+    assert "navigator.clipboard.writeText(value)" in web
+    assert 'if action_type == "copy":' in windows
+    assert "QApplication.clipboard().setText(value)" in windows
+
+
 def test_content_only_mail_summary_is_not_duplicated_across_title_body_and_lead():
     from app.utils.notification_service import discord_payload_to_event
 
