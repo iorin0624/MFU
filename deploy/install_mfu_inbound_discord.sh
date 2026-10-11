@@ -6,6 +6,7 @@ BACKUP="${EXTENSIONS}.mfu-inbound-discord.$(date +%Y%m%d%H%M%S).bak"
 
 install -o root -g asterisk -m 0755 /tmp/mfu_blocked_call_notify.py /var/lib/asterisk/bin/mfu_blocked_call_notify.py
 install -o root -g asterisk -m 0755 /tmp/mfu_blacklist_cdr.py /var/lib/asterisk/bin/mfu_blacklist_cdr.py
+install -o root -g asterisk -m 0755 /tmp/mfu_international_cdr.py /var/lib/asterisk/bin/mfu_international_cdr.py
 install -o root -g root -m 0755 /tmp/mfu-whitelist-apply /usr/local/sbin/mfu-whitelist-apply
 install -o root -g asterisk -m 0640 /tmp/mfu_inbound_discord.conf /etc/asterisk/mfu_inbound_discord.conf
 if [[ ! -e /etc/asterisk/caller_blacklist_actions_generated.conf ]]; then
@@ -30,7 +31,9 @@ replacement = '''; BEGIN CALLER ID WHITELIST
 [custom-callerid-whitelist]
 exten => s,1,NoOp(Caller ID whitelist check: raw=${CALLERID(num)})
  same => n,Set(RAW_CID=${CALLERID(num)})
- same => n,Set(NORMALIZED_CID=${FILTER(0-9,${RAW_CID})})
+ same => n,GotoIf($["${RAW_CID:0:1}" = "+"]?maybe-international:normalize-cid)
+ same => n(maybe-international),GotoIf($["${RAW_CID:0:3}" != "+81"]?international-rejected:normalize-cid)
+ same => n(normalize-cid),Set(NORMALIZED_CID=${FILTER(0-9,${RAW_CID})})
  same => n,GotoIf($["${NORMALIZED_CID:0:2}" = "81"]?maybe-e164:check)
  same => n(maybe-e164),GotoIf($[${LEN(${NORMALIZED_CID})} >= 11]?normalize-e164:check)
  same => n(normalize-e164),Set(NORMALIZED_CID=0${NORMALIZED_CID:2})
@@ -122,6 +125,29 @@ exten => s,1,NoOp(Caller ID whitelist check: raw=${CALLERID(num)})
  same => n,Hangup(21)
  same => n(blacklist-busy),Gosub(mfu-inbound-discord-notify,s,1(blacklist,blacklist_busy))
  same => n,Hangup(17)
+ same => n(international-rejected),NoOp(Explicit international caller rejected: ${RAW_CID})
+ same => n,Set(MFU_INTERNATIONAL_CID=+${FILTER(0-9,${RAW_CID})})
+ same => n,Set(CALLERID(name)=${BASE64_DECODE(5rW35aSW55Wq5Y+35ouS5ZCm)})
+ same => n,Set(MFU_CDR_DID=${FILTER(0-9,${FROM_DID})})
+ same => n,ExecIf($["${MFU_CDR_DID}" = ""]?Set(MFU_CDR_DID=${FILTER(0-9,${CDR(did)})}))
+ same => n,Set(MFU_CDR_ID=${FILTER(0-9.,${UNIQUEID})})
+ same => n,Set(CDR_PROP(disable)=1)
+ same => n,TrySystem(/usr/bin/nohup /usr/bin/python3 /var/lib/asterisk/bin/mfu_international_cdr.py '${MFU_INTERNATIONAL_CID}' '${MFU_CDR_DID}' '${MFU_CDR_ID}' </dev/null >/dev/null 2>&1 &)
+ same => n,Hangup(21)
+
+[from-internal-noxfer-custom]
+exten => _+81X.,1,NoOp(Normalize Japanese E.164 outbound number: ${EXTEN})
+ same => n,Goto(outbound-allroutes,0${EXTEN:3},1)
+exten => _+X.,1,NoOp(Block outbound international number: ${EXTEN})
+ same => n,Set(CDR(userfield)=INTERNATIONAL_OUTBOUND_REJECT)
+ same => n,Hangup(21)
+exten => _010X.,1,NoOp(Block outbound international number: ${EXTEN})
+ same => n,Set(CDR(userfield)=INTERNATIONAL_OUTBOUND_REJECT)
+ same => n,Hangup(21)
+exten => _001010X.,1,Goto(010${EXTEN:6},1)
+exten => _0033010X.,1,Goto(010${EXTEN:7},1)
+exten => _0041010X.,1,Goto(010${EXTEN:7},1)
+exten => _0061010X.,1,Goto(010${EXTEN:7},1)
 ; END CALLER ID WHITELIST'''
 
 text = text[:start] + replacement + text[end:]

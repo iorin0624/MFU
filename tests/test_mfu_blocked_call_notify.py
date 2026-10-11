@@ -73,6 +73,7 @@ class BlockedCallNotifyTest(unittest.TestCase):
     def test_no_buttons_for_anonymous_or_blacklist(self):
         payload = MODULE.build_discord_payload("", classification="anonymous", process="hangup_21")
         self.assertNotIn("components", payload)
+
         payload = MODULE.build_discord_payload("08093242655", classification="blacklist", process="hangup_21")
         self.assertNotIn("components", payload)
 
