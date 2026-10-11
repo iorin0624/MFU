@@ -167,6 +167,7 @@ async function saveVideos() {
       method: 'POST',
       body: JSON.stringify({
         jobId: downloader.videoJobId, videos: downloader.videos,
+        sourceUrl: downloader.videoUrl, identifier: downloader.videoIdentifier,
         selected: [...selected.value], folder: folder.value,
       }),
     });
