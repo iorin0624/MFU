@@ -5800,11 +5800,27 @@ def _catalog_video_save_result(data: dict, progress_callback=None) -> dict:
     job_id = str(data.get("jobId") or "")
     video_job = _read_video_job(job_id) if job_id else {}
     job_videos = video_job.get("videos") or []
+    submitted_url = str(data.get("sourceUrl") or "")
+    submitted_source, submitted_identifier = _extract_media_identifier(submitted_url)
+    requested_identifier = str(data.get("identifier") or "")
+    if requested_identifier and submitted_identifier and requested_identifier != submitted_identifier:
+        return {
+            "ok": False,
+            "error": "取得元URLと動画の識別子が一致しません。動画を再取得してください。",
+            "saved": [], "duplicates": [], "errors": [],
+        }
     source_url = _canonical_media_source_url(
-        str(video_job.get("source") or data.get("source") or "instagram"),
-        str(video_job.get("identifier") or data.get("identifier") or ""),
-        str(video_job.get("source_url") or data.get("sourceUrl") or ""),
+        str(video_job.get("source") or submitted_source),
+        str(video_job.get("identifier") or submitted_identifier),
+        str(video_job.get("source_url") or submitted_url),
     )
+    if not source_url:
+        _instagram_log("video_save_source_missing", job_id, "", job_found=bool(video_job))
+        return {
+            "ok": False,
+            "error": "取得元URLを確認できません。動画を再取得してから保存してください。",
+            "saved": [], "duplicates": [], "errors": [],
+        }
     source_videos = job_videos if job_videos else (data.get("videos") or [])
     by_index = {
         int(item.get("index") or 0): item

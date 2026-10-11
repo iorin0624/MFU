@@ -477,7 +477,7 @@ def test_catalog_video_save_reports_progress_for_each_selected_item():
                 {"uuid": "video-1", "display_name": "one.mp4"},
                 {"uuid": "video-2", "display_name": "two.mp4"},
             ],
-        ),
+        ) as store_file,
         patch.object(image_viewer_routes.catalog, "generate_thumbnail"),
     ):
         result = image_viewer_routes._catalog_video_save_result(
@@ -485,6 +485,8 @@ def test_catalog_video_save_reports_progress_for_each_selected_item():
                 "videos": source_videos,
                 "selected": [1, 2],
                 "folder": "video",
+                "sourceUrl": "https://www.instagram.com/p/Dd8mKbxTkLv/",
+                "identifier": "Dd8mKbxTkLv",
             },
             progress_callback=lambda processed, total, *_args: progress.append((processed, total)),
         )
@@ -492,6 +494,23 @@ def test_catalog_video_save_reports_progress_for_each_selected_item():
     assert result["ok"] is True
     assert len(result["saved"]) == 2
     assert progress == [(1, 2), (2, 2)]
+    assert all(call.kwargs["source_url"] == "https://www.instagram.com/p/Dd8mKbxTkLv/" for call in store_file.call_args_list)
+
+
+def test_catalog_video_save_refuses_to_store_without_source_metadata():
+    with (
+        patch.object(image_viewer_routes, "_read_video_job", return_value={}),
+        patch.object(image_viewer_routes, "_download_video_item") as download,
+        patch.object(image_viewer_routes.catalog, "store_file") as store_file,
+    ):
+        result = image_viewer_routes._catalog_video_save_result({
+            "jobId": "missing-job",
+            "videos": [{"index": 1, "url": "https://cdninstagram.com/one.mp4"}],
+            "selected": [1],
+        })
+    assert result["ok"] is False
+    download.assert_not_called()
+    store_file.assert_not_called()
 
 
 if __name__ == "__main__":
@@ -506,4 +525,5 @@ if __name__ == "__main__":
     test_instagram_reel_pairs_audio_and_excludes_ads_and_related_carousels()
     test_instagram_reel_source_url_is_preserved_as_reel()
     test_catalog_video_save_reports_progress_for_each_selected_item()
-    print("11 tests passed")
+    test_catalog_video_save_refuses_to_store_without_source_metadata()
+    print("12 tests passed")
