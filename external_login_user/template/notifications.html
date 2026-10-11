@@ -53,6 +53,8 @@
   .notification-card-stack { display:grid; gap:.75rem; }
   .notification-card { --card-color:var(--notice-color); border:1px solid #d8dee9; border-left:4px solid var(--card-color); border-radius:.65rem; padding:.9rem 1rem; background:#f8fafc; color:#172033; }
   .notification-card-title { color:#0f172a; font-weight:700; font-size:1.05rem; margin-bottom:.4rem; }
+  .notification-card-title a { color:#1d4ed8; text-decoration:underline; text-underline-offset:.18em; }
+  .notification-card-title a:hover,.notification-card-title a:focus-visible { color:#1e40af; }
   .notification-card-description { margin-bottom:.55rem; }
   .notification-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.5rem .75rem; }
   .notification-field { background:#fff; border:1px solid #e4e9f1; border-radius:.45rem; padding:.55rem .65rem; min-width:0; }
@@ -259,9 +261,19 @@
 
     const safeLink = (value) => {
       try {
-        const url = new URL(String(value || ''), window.location.origin);
-        return url.origin === window.location.origin || ['http:', 'https:'].includes(url.protocol) ? url.href : '#';
+        const raw = String(value || '').trim();
+        if (!raw || raw.startsWith('//') || raw.includes('\\') || /[\u0000-\u001f\u007f]/.test(raw)) return '#';
+        const url = new URL(raw, window.location.origin);
+        return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : '#';
       } catch (_e) { return '#'; }
+    };
+
+    const cardLink = (value) => {
+      const href = safeLink(value);
+      if (href === '#') return '';
+      const url = new URL(href);
+      if (url.origin === window.location.origin && url.pathname.replace(/\/$/, '') === '/mfu-notifications') return '';
+      return href;
     };
 
     const discordText = (value) => {
@@ -302,7 +314,7 @@
       const lead = content.lead_text ? `<div class="notification-lead">${discordText(content.lead_text)}</div>` : '';
       return `${lead}<div class="notification-card-stack">${cards.map((card) => `
         <section class="notification-card" style="--card-color:${colorHex(card?.color)}">
-          ${card?.title ? `<div class="notification-card-title">${discordText(card.title)}</div>` : ''}
+          ${card?.title ? `<div class="notification-card-title">${cardLink(card?.url) ? `<a href="${escapeHtml(cardLink(card.url))}" target="_blank" rel="noopener noreferrer" data-card-link>${escapeHtml(card.title)}</a>` : discordText(card.title)}</div>` : ''}
           ${card?.description ? `<div class="notification-card-description">${discordText(card.description)}</div>` : ''}
           ${renderFields(card?.fields)}
           ${card?.footer ? `<div class="notification-card-footer">${discordText(card.footer)}</div>` : ''}
@@ -431,6 +443,7 @@
       const isRead = !!(item.read_at || item.is_read);
       const content = item?.content && typeof item.content === 'object' ? item.content : {};
       const hasCards = Array.isArray(content.cards) && content.cards.length > 0;
+      const showDetails = cardLink(targetUrl) !== '';
       const severityColor = ({success:'#16a34a', warning:'#d97706', error:'#dc2626', critical:'#991b1b'})[item.severity] || '#2563eb';
       a.className = `notification-entry ${isRead ? '' : 'is-unread'}`;
       a.style.setProperty('--notice-color', severityColor);
@@ -439,9 +452,9 @@
         ${renderCards(item)}
         ${renderOtpValue(item)}
         <div class="notification-meta"># ${escapeHtml(channelLabel(normalizedItemChannel(item)))} ・ ${formatDate(item.created_at)}</div>
-        <div class="notification-actions"><button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>${renderNotificationActions(item)}</div>
+        <div class="notification-actions">${showDetails ? '<button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>' : ''}${renderNotificationActions(item)}</div>
       `;
-      a.querySelector('[data-open]').addEventListener('click', async () => {
+      const markItemRead = async () => {
         try {
           const res = await fetch(getReadUrl(item.id), {
             method: 'POST',
@@ -457,6 +470,12 @@
         } catch (_e) {
           // noop
         }
+      };
+      a.querySelectorAll('[data-card-link]').forEach((link) => {
+        link.addEventListener('click', () => { void markItemRead(); });
+      });
+      a.querySelector('[data-open]')?.addEventListener('click', async () => {
+        await markItemRead();
         window.location.assign(a.dataset.targetUrl || '/external-login/');
       });
       bindNotificationActions(a, item);

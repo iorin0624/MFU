@@ -131,7 +131,7 @@ def test_web_notifications_follow_windows_card_layout():
     source = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
     assert "const hasCards = Array.isArray(content.cards)" in source
     assert "${hasCards ? '' :" in source
-    assert '<div class="notification-actions"><button' in source
+    assert 'data-open>詳細を見る</button>' in source
     assert ".notification-field { background:#fff; border:1px solid #e4e9f1;" in source
     assert ".notification-field:not(.is-inline) { grid-column:1/-1; }" in source
     assert "white-space:pre-wrap; overflow-wrap:anywhere;" in source
@@ -210,6 +210,40 @@ def test_embed_content_remains_a_lead_without_replacing_the_card_title():
     assert event["title"] == "ETC通知カード"
     assert event["description"] == "2件取得"
     assert event["lead_text"] == "ETC定期取得のテスト通知です"
+
+
+def test_discord_card_links_keep_each_safe_destination_without_changing_push_target():
+    from app.utils.notification_service import discord_payload_to_event
+
+    event = discord_payload_to_event(
+        "chiba_police_incidents",
+        {
+            "embeds": [
+                {"title": "ETC明細", "url": "https://mfu.iori0624.jp/etc-accounting/records?month=10"},
+                {"title": "千葉県警察", "url": "https://www.police.pref.chiba.jp/news/123.html"},
+                {"title": "運行情報", "url": "https://transit.yahoo.co.jp/diainfo/"},
+                {"title": "無効なURL", "url": "javascript:alert(1)"},
+                {"title": "外部への省略URL", "url": "//example.com/unsafe"},
+                {"title": "URLなし"},
+            ]
+        },
+    )
+
+    assert event["target_url"] == "/etc-accounting/records?month=10"
+    assert [card["url"] for card in event["cards"]] == [
+        "/etc-accounting/records?month=10",
+        "https://www.police.pref.chiba.jp/news/123.html",
+        "https://transit.yahoo.co.jp/diainfo/",
+        "",
+        "",
+        "",
+    ]
+
+    external_first = discord_payload_to_event(
+        "chiba_police_incidents",
+        {"embeds": [{"title": "千葉県警察", "url": "https://www.police.pref.chiba.jp/news/123.html"}]},
+    )
+    assert external_first["target_url"] == "/mfu-notifications"
 
 
 def test_common_notification_entrypoints_restore_flask_context_for_background_jobs():
