@@ -397,6 +397,37 @@ def _common_notification_target_url(value: Any) -> str:
     return "/mfu-notifications"
 
 
+def _common_notification_card_url(value: Any) -> str:
+    """Keep safe per-card links, including external source pages."""
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 1000 or any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        return ""
+    if raw.startswith("/") and not raw.startswith("//") and "\\" not in raw:
+        return raw
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        port = parsed.port  # Reject malformed ports.
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in raw
+    ):
+        return ""
+    if hostname.lower() == "mfu.iori0624.jp" and port is None:
+        target = parsed.path or "/"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        if parsed.fragment:
+            target += f"#{parsed.fragment}"
+        return target
+    return raw
+
+
 def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     embeds = payload.get("embeds") if isinstance(payload.get("embeds"), list) else []
     embed = embeds[0] if embeds and isinstance(embeds[0], dict) else {}
@@ -440,7 +471,7 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
         cards.append({
             "title": str(raw_card.get("title") or "")[:255],
             "description": str(raw_card.get("description") or "")[:4000],
-            "url": _common_notification_target_url(raw_card.get("url")),
+            "url": _common_notification_card_url(raw_card.get("url")),
             "color": int(raw_card.get("color") or 0),
             "fields": card_fields[:25],
             "footer": str(card_footer.get("text") or "")[:255],
