@@ -39,3 +39,5 @@ def test_web_and_windows_render_card_source_links():
     assert "data-card-link" in web
     assert "_notification_link_label(description.strip(), card_url)" in windows
     assert "_notification_link_label(card_title, card_url, bold=True)" in windows
+    assert 'if _notification_card_url(item.get("target_url")):' in windows
+    assert 'if _notification_card_url(row.get("target_url")):' in windows
