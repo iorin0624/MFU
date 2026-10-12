@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from tools.mfu_media_clipboard import main as clipboard
+from tools.mfu_media_hub.card_links import notification_card_url as _notification_card_url
 from tools.mfu_photo_relay.core import load_settings as load_photo_settings, save_settings as save_photo_settings
 from tools.mfu_photo_relay.main import (
     ApiClient as PhotoApiClient,
@@ -248,6 +249,16 @@ def _rich_label(value: object, *, color: str = "#f8fafc") -> QLabel:
     return label
 
 
+def _notification_link_label(text: str, url: str, *, bold: bool = False) -> QLabel:
+    weight = "font-weight:700;" if bold else ""
+    label = QLabel(f'<a href="{html.escape(url, quote=True)}" style="color:#60a5fa;{weight}">{html.escape(text)}</a>')
+    label.setTextFormat(Qt.RichText)
+    label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+    label.setOpenExternalLinks(True)
+    label.setWordWrap(True)
+    return label
+
+
 def _add_notification_fields(layout: QVBoxLayout, fields: object, *, columns: int = 2) -> None:
     if not isinstance(fields, list) or not fields:
         return
@@ -324,14 +335,21 @@ class NotificationCard(QFrame):
                 )
                 embed_layout = QVBoxLayout(embed)
                 embed_layout.setContentsMargins(10, 8, 10, 8)
+                card_url = _notification_card_url(card_data.get("url"))
                 card_title = str(card_data.get("title") or "")
                 if card_title:
-                    title = _rich_label(card_title)
+                    title = _notification_link_label(card_title, card_url, bold=True) if card_url else _rich_label(card_title)
                     title.setStyleSheet("font-weight:700;font-size:14px;color:#f8fafc;")
                     embed_layout.addWidget(title)
                 description = str(card_data.get("description") or "")
+                is_link_prompt = bool(card_url and re.fullmatch(r".{1,80}(?:を開く|を確認する)", description.strip()))
                 if description:
-                    embed_layout.addWidget(_rich_label(description))
+                    embed_layout.addWidget(
+                        _notification_link_label(description.strip(), card_url)
+                        if is_link_prompt else _rich_label(description)
+                    )
+                if card_url and not card_title and (not description or not is_link_prompt):
+                    embed_layout.addWidget(_notification_link_label("リンクを開く", card_url))
                 fields = card_data.get("fields") if isinstance(card_data.get("fields"), list) else []
                 _add_notification_fields(embed_layout, fields, columns=field_columns)
                 footer = str(card_data.get("footer") or "")
