@@ -408,9 +408,10 @@ class NotificationPopup(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         card = NotificationCard(item, field_columns=1)
         layout.addWidget(card)
-        detail = QPushButton("詳細を見る")
-        detail.clicked.connect(lambda: controller._open_notification(item))
-        card.actions.addWidget(detail)
+        if _notification_card_url(item.get("target_url")):
+            detail = QPushButton("詳細を見る")
+            detail.clicked.connect(lambda: controller._open_notification(item))
+            card.actions.addWidget(detail)
         controller._append_notification_actions(card, item)
         mute = QPushButton("ミュート")
         menu = QMenu(mute)
@@ -538,9 +539,10 @@ class NotificationCenterDialog(QDialog):
             if query and query not in haystack:
                 continue
             card = NotificationCard(row)
-            detail = QPushButton("詳細を見る")
-            detail.clicked.connect(lambda _=False, value=row: self.controller._open_notification(value))
-            card.actions.addWidget(detail)
+            if _notification_card_url(row.get("target_url")):
+                detail = QPushButton("詳細を見る")
+                detail.clicked.connect(lambda _=False, value=row: self.controller._open_notification(value))
+                card.actions.addWidget(detail)
             self.controller._append_notification_actions(card, row)
             if not row.get("is_read"):
                 read = QPushButton("既読")
