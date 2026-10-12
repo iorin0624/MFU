@@ -56,6 +56,7 @@
   .notification-card-title a { color:#1d4ed8; text-decoration:underline; text-underline-offset:.18em; }
   .notification-card-title a:hover,.notification-card-title a:focus-visible { color:#1e40af; }
   .notification-card-description { margin-bottom:.55rem; }
+  .notification-card-description a[data-card-link] { color:#1d4ed8; text-decoration:underline; text-underline-offset:.18em; }
   .notification-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.5rem .75rem; }
   .notification-field { background:#fff; border:1px solid #e4e9f1; border-radius:.45rem; padding:.55rem .65rem; min-width:0; }
   .notification-field:not(.is-inline) { grid-column:1/-1; }
@@ -312,13 +313,18 @@
         return `<div class="notification-card-description">${discordText(item.body || '')}</div>${renderFields(content.fields)}`;
       }
       const lead = content.lead_text ? `<div class="notification-lead">${discordText(content.lead_text)}</div>` : '';
-      return `${lead}<div class="notification-card-stack">${cards.map((card) => `
-        <section class="notification-card" style="--card-color:${colorHex(card?.color)}">
-          ${card?.title ? `<div class="notification-card-title">${cardLink(card?.url) ? `<a href="${escapeHtml(cardLink(card.url))}" target="_blank" rel="noopener noreferrer" data-card-link>${escapeHtml(card.title)}</a>` : discordText(card.title)}</div>` : ''}
-          ${card?.description ? `<div class="notification-card-description">${discordText(card.description)}</div>` : ''}
+      return `${lead}<div class="notification-card-stack">${cards.map((card) => {
+        const href = cardLink(card?.url);
+        const description = String(card?.description || '').trim();
+        const linkPrompt = !!href && /^.{1,80}(?:を開く|を確認する)$/.test(description);
+        return `<section class="notification-card" style="--card-color:${colorHex(card?.color)}">
+          ${card?.title ? `<div class="notification-card-title">${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" data-card-link>${escapeHtml(card.title)}</a>` : discordText(card.title)}</div>` : ''}
+          ${description ? `<div class="notification-card-description">${linkPrompt ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" data-card-link>${escapeHtml(description)}</a>` : discordText(card.description)}</div>` : ''}
+          ${href && !card?.title && !linkPrompt ? `<div class="notification-card-description"><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" data-card-link>リンクを開く</a></div>` : ''}
           ${renderFields(card?.fields)}
           ${card?.footer ? `<div class="notification-card-footer">${discordText(card.footer)}</div>` : ''}
-        </section>`).join('')}</div>`;
+        </section>`;
+      }).join('')}</div>`;
     };
 
     const renderOtpValue = (item) => {
