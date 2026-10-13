@@ -5625,6 +5625,7 @@ def _catalog_instagram_save(data: dict):
         return jsonify({"ok": False, "error": "Select at least one image"}), 400
     start_number = max(1, int(data.get("startNumber") or 1))
     digits = min(6, max(1, int(data.get("digits") or 3)))
+    allow_duplicate_images = data.get("allowDuplicateImages") is True
     job = {}
     job_images = []
     if job_id:
@@ -5671,6 +5672,8 @@ def _catalog_instagram_save(data: dict):
                 display_name=filename,
                 move_source=True,
                 source_url=source_url,
+                ensure_unique_display_name=allow_duplicate_images,
+                allow_duplicate=allow_duplicate_images,
             )
             catalog.generate_thumbnail(record["uuid"])
             saved.append(record)
