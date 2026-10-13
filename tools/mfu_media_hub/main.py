@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import ctypes
+import html
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
 import threading
 import webbrowser
 from ctypes import wintypes
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -18,12 +21,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSystemTrayIcon,
@@ -31,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from tools.mfu_media_clipboard import main as clipboard
+from tools.mfu_media_hub.card_links import notification_card_url as _notification_card_url
 from tools.mfu_photo_relay.core import load_settings as load_photo_settings, save_settings as save_photo_settings
 from tools.mfu_photo_relay.main import (
     ApiClient as PhotoApiClient,
@@ -43,9 +51,35 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.7"
+APP_VERSION = "2.2.8"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
+
+
+def _notification_action_expired(action: dict) -> bool:
+    if action.get("expired"):
+        return True
+    raw = str(action.get("expires_at") or "").strip()
+    if not raw:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
+def _au_pay_otp_action(item: dict) -> dict | None:
+    if str(item.get("topic_key") or "") != "au-pay-otp":
+        return None
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    actions = content.get("actions") if isinstance(content.get("actions"), list) else []
+    return next(
+        (action for action in actions if isinstance(action, dict) and str(action.get("type") or "").lower() == "copy"),
+        None,
+    )
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -181,6 +215,220 @@ class HubLoginDialog(QDialog):
         super().done(result)
 
 
+SEVERITY_COLORS = {
+    "info": "#2563eb",
+    "success": "#16a34a",
+    "warning": "#d97706",
+    "error": "#dc2626",
+    "critical": "#991b1b",
+}
+
+
+def _discord_rich_text(value: object) -> str:
+    text = html.escape(str(value or ""))
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)]+)\)",
+        r'<a style="color:#60a5fa" href="\2">\1</a>',
+        text,
+    )
+    return text.replace("\n", "<br>")
+
+
+def _rich_label(value: object, *, color: str = "#f8fafc") -> QLabel:
+    label = QLabel(_discord_rich_text(value))
+    label.setTextFormat(Qt.RichText)
+    label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+    label.setOpenExternalLinks(True)
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color:{color};")
+    return label
+
+
+def _notification_link_label(text: str, url: str, *, bold: bool = False) -> QLabel:
+    weight = "font-weight:700;" if bold else ""
+    label = QLabel(f'<a href="{html.escape(url, quote=True)}" style="color:#60a5fa;{weight}">{html.escape(text)}</a>')
+    label.setTextFormat(Qt.RichText)
+    label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+    label.setOpenExternalLinks(True)
+    label.setWordWrap(True)
+    return label
+
+
+def _add_notification_fields(layout: QVBoxLayout, fields: object, *, columns: int = 2) -> None:
+    if not isinstance(fields, list) or not fields:
+        return
+    column_count = 1 if columns <= 1 else 2
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(8)
+    for column in range(column_count):
+        grid.setColumnStretch(column, 1)
+    grid_row = 0
+    grid_column = 0
+    for row in fields[:25]:
+        if not isinstance(row, dict):
+            continue
+        inline = bool(row.get("inline")) and column_count > 1
+        if not inline and grid_column:
+            grid_row += 1
+            grid_column = 0
+        field = QFrame()
+        field.setObjectName("NotificationField")
+        field.setStyleSheet(
+            "QFrame#NotificationField{background:#111827;border:1px solid #374151;border-radius:6px;}"
+        )
+        field_layout = QVBoxLayout(field)
+        field_layout.setContentsMargins(9, 7, 9, 7)
+        field_layout.setSpacing(2)
+        name = QLabel(f"<b>{html.escape(str(row.get('name') or ''))}</b>")
+        name.setTextFormat(Qt.RichText)
+        name.setStyleSheet("color:#9ca3af;font-size:12px;")
+        field_layout.addWidget(name)
+        value = _rich_label(row.get("value") or "", color="#f8fafc")
+        field_layout.addWidget(value)
+        if inline:
+            grid.addWidget(field, grid_row, grid_column)
+            grid_column += 1
+            if grid_column >= column_count:
+                grid_row += 1
+                grid_column = 0
+        else:
+            grid.addWidget(field, grid_row, 0, 1, column_count)
+            grid_row += 1
+    layout.addLayout(grid)
+
+
+class NotificationCard(QFrame):
+    def __init__(self, item: dict, *, compact: bool = False, field_columns: int = 2, parent=None) -> None:
+        super().__init__(parent)
+        self.item = item
+        severity = str(item.get("severity") or "info")
+        color = SEVERITY_COLORS.get(severity, SEVERITY_COLORS["info"])
+        self.setObjectName("NotificationEntry")
+        self.setStyleSheet(
+            f"QFrame#NotificationEntry{{background:#111827;border:1px solid #374151;border-left:5px solid {color};border-radius:8px;}}"
+            "QFrame#NotificationEntry QLabel{border:0;background:transparent;color:#f8fafc;} QFrame#NotificationEntry QPushButton{padding:5px 10px;}"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        cards = content.get("cards") if isinstance(content.get("cards"), list) else []
+        if cards and not compact:
+            lead_text = str(content.get("lead_text") or "")
+            if lead_text:
+                layout.addWidget(_rich_label(lead_text))
+            for card_data in cards[:10]:
+                if not isinstance(card_data, dict):
+                    continue
+                card_color_value = int(card_data.get("color") or 0)
+                card_color = f"#{min(card_color_value, 0xFFFFFF):06x}" if card_color_value > 0 else color
+                embed = QFrame()
+                embed.setObjectName("NotificationEmbed")
+                embed.setStyleSheet(
+                    f"QFrame#NotificationEmbed{{background:#172033;border:1px solid #374151;border-left:4px solid {card_color};border-radius:6px;}}"
+                )
+                embed_layout = QVBoxLayout(embed)
+                embed_layout.setContentsMargins(10, 8, 10, 8)
+                card_url = _notification_card_url(card_data.get("url"))
+                card_title = str(card_data.get("title") or "")
+                if card_title:
+                    title = _notification_link_label(card_title, card_url, bold=True) if card_url else _rich_label(card_title)
+                    title.setStyleSheet("font-weight:700;font-size:14px;color:#f8fafc;")
+                    embed_layout.addWidget(title)
+                description = str(card_data.get("description") or "")
+                is_link_prompt = bool(card_url and re.fullmatch(r".{1,80}(?:を開く|を確認する)", description.strip()))
+                if description:
+                    embed_layout.addWidget(
+                        _notification_link_label(description.strip(), card_url)
+                        if is_link_prompt else _rich_label(description)
+                    )
+                if card_url and not card_title and (not description or not is_link_prompt):
+                    embed_layout.addWidget(_notification_link_label("リンクを開く", card_url))
+                fields = card_data.get("fields") if isinstance(card_data.get("fields"), list) else []
+                _add_notification_fields(embed_layout, fields, columns=field_columns)
+                footer = str(card_data.get("footer") or "")
+                if footer:
+                    footer_label = _rich_label(footer, color="#9ca3af")
+                    footer_label.setStyleSheet("color:#9ca3af;font-size:11px;")
+                    embed_layout.addWidget(footer_label)
+                layout.addWidget(embed)
+        else:
+            title = _rich_label(str(item.get("title") or "お知らせ"))
+            title.setStyleSheet("font-weight:700;font-size:14px;color:#f8fafc;")
+            layout.addWidget(title)
+            body = str(item.get("body") or "")
+            if body:
+                layout.addWidget(_rich_label(body))
+            fields = content.get("fields") if isinstance(content.get("fields"), list) else []
+            if fields and not compact:
+                _add_notification_fields(layout, fields, columns=field_columns)
+        self.otp_value_label = None
+        otp_action = _au_pay_otp_action(item)
+        if otp_action is not None:
+            otp_value = str(otp_action.get("value") or "")
+            if _notification_action_expired(otp_action) or not re.fullmatch(r"\d{6,10}", otp_value):
+                otp_value = "期限切れ"
+            field = QFrame()
+            field.setObjectName("NotificationField")
+            field.setStyleSheet("QFrame#NotificationField{background:#111827;border:1px solid #374151;border-radius:6px;}")
+            field_layout = QVBoxLayout(field)
+            field_layout.setContentsMargins(9, 7, 9, 7)
+            name = QLabel("ワンタイムパスワード")
+            name.setStyleSheet("color:#9ca3af;font-size:12px;")
+            field_layout.addWidget(name)
+            self.otp_value_label = QLabel(otp_value)
+            self.otp_value_label.setStyleSheet("color:#f8fafc;font-size:19px;font-weight:700;")
+            field_layout.addWidget(self.otp_value_label)
+            layout.addWidget(field)
+        feature_key = str(item.get("feature_key") or "general")
+        feature_label = str(item.get("feature_label") or feature_key)
+        meta = QLabel(f"# {feature_label}  {str(item.get('created_at') or '')}")
+        meta.setStyleSheet("color:#9ca3af;font-size:11px;")
+        layout.addWidget(meta)
+        self.actions = QHBoxLayout()
+        self.actions.addStretch(1)
+        layout.addLayout(self.actions)
+
+
+class NotificationPopup(QDialog):
+    def __init__(self, controller, item: dict) -> None:
+        super().__init__()
+        self.controller = controller
+        self.item = item
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setFixedWidth(390)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        card = NotificationCard(item, field_columns=1)
+        layout.addWidget(card)
+        web = QPushButton("Webで開く")
+        web.clicked.connect(controller._open_notification_center)
+        card.actions.addWidget(web)
+        if _notification_card_url(item.get("target_url")):
+            detail = QPushButton("詳細を見る")
+            detail.clicked.connect(lambda: controller._open_notification(item))
+            card.actions.addWidget(detail)
+        controller._append_notification_actions(card, item)
+        mute = QPushButton("ミュート")
+        menu = QMenu(mute)
+        for label, minutes in (("1時間", 60), ("3時間", 180), ("8時間", 480), ("24時間", 1440), ("3日間", 4320)):
+            action = menu.addAction(label)
+            action.triggered.connect(lambda _=False, value=minutes: controller._mute_notification(item, minutes=value))
+        forever = menu.addAction("無期限")
+        forever.triggered.connect(lambda: controller._mute_notification(item, forever=True))
+        mute.setMenu(menu)
+        card.actions.addWidget(mute)
+        close = QPushButton("閉じる")
+        close.clicked.connect(self.close)
+        card.actions.addWidget(close)
+        severity = str(item.get("severity") or "info")
+        if severity not in {"error", "critical"}:
+            QTimer.singleShot(20000 if severity == "warning" else 10000, self.close)
+
+
 class MediaHubApp(clipboard.MediaClipboardApp):
     unread_count_loaded = Signal(int)
 
@@ -190,6 +438,8 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         self.photo_settings = load_photo_settings()
         self.photo_receiver: ReceiverThread | None = None
         self.last_saved_path = ""
+        self.notification_popups: list[NotificationPopup] = []
+        self._recent_popup_ids: list[int] = []
         self._notification_count_inflight = False
         tokens = load_tokens()
         if not tokens:
@@ -219,7 +469,7 @@ class MediaHubApp(clipboard.MediaClipboardApp):
                 QTimer.singleShot(
                     1500,
                     lambda: self.show_notification(
-                        "Web通知センターの未読数を表示するには、タスクトレイから『3機能をまとめてログイン』を一度実行してください。",
+                        "通知ポップアップとWeb通知センターの未読数を利用するには、タスクトレイから『3機能をまとめてログイン』を一度実行してください。",
                         QSystemTrayIcon.Warning,
                         10000,
                     ),
@@ -282,12 +532,15 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             self.photo_settings,
             self.photo_token,
             self.media_token,
+            self.notification_token,
         )
         self.photo_receiver.status_changed.connect(self._set_connection_status)
         self.photo_receiver.file_saved.connect(self._photo_saved)
         self.photo_receiver.error.connect(self._receiver_error)
         self.photo_receiver.authentication_failed.connect(lambda: self._set_connection_status("red", "再ログインが必要です"))
         self.photo_receiver.media_progress.connect(self.api.handle_websocket_progress)
+        self.photo_receiver.notification_received.connect(self._notification_received)
+        self.photo_receiver.notification_unread.connect(self._notification_unread)
         self.api.websocket_rpc = self.photo_receiver.media_call
         self.photo_receiver.start()
 
@@ -328,7 +581,7 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             self._start_receiver()
             self._disable_legacy_startups()
             self._poll_notification_count()
-            QMessageBox.information(None, APP_NAME, "写真転送、Media Clipboard、Web通知センターの未読数にログインしました。")
+            QMessageBox.information(None, APP_NAME, "写真転送、Media Clipboard、通知ポップアップとWeb通知センターにログインしました。")
         except Exception as exc:
             QMessageBox.warning(None, APP_NAME, f"ログイン情報を保存できませんでした。\n{exc}")
 
@@ -392,9 +645,163 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         self.api.clear_cookies()
         self.photo_token = self.media_token = self.notification_token = ""
         self.api.websocket_rpc = None
+        for popup in list(self.notification_popups):
+            popup.close()
         self._update_notification_count(0)
         self._set_connection_status("red", "未ログイン")
         QMessageBox.information(None, APP_NAME, "この端末のログイン情報を削除しました。")
+
+    def _notification_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.notification_token}"}
+
+    def _notification_unread(self, payload: dict) -> None:
+        if isinstance(payload, dict) and "count" in payload:
+            self._update_notification_count(max(0, int(payload.get("count") or 0)))
+
+    def _notification_received(self, item: dict) -> None:
+        # Only new events reach this handler. Historical lists are never sent
+        # to popup-only Windows clients.
+        notification_id = int(item.get("id") or 0)
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        if content.get("media_hub_enabled", True) and notification_id not in self._recent_popup_ids:
+            if notification_id:
+                self._recent_popup_ids.append(notification_id)
+                self._recent_popup_ids = self._recent_popup_ids[-200:]
+            self._show_notification_popup(item)
+        QTimer.singleShot(500, self._poll_notification_count)
+
+    def _show_notification_popup(self, item: dict) -> None:
+        while len(self.notification_popups) >= 3:
+            self.notification_popups[0].close()
+        popup = NotificationPopup(self, item)
+        self.notification_popups.append(popup)
+        popup.finished.connect(lambda _=0, value=popup: self._remove_popup(value))
+        self._position_popups()
+        popup.show()
+
+    def _remove_popup(self, popup: NotificationPopup) -> None:
+        if popup in self.notification_popups:
+            self.notification_popups.remove(popup)
+        self._position_popups()
+
+    def _position_popups(self) -> None:
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        area = screen.availableGeometry()
+        bottom = area.bottom() - 12
+        for popup in reversed(self.notification_popups):
+            popup.adjustSize()
+            popup.move(area.right() - popup.width() - 12, bottom - popup.height())
+            bottom -= popup.height() + 10
+
+    def _open_notification(self, item: dict) -> None:
+        target = _notification_card_url(item.get("target_url"))
+        if target and webbrowser.open(target):
+            self._mark_notification_read(item)
+
+    def _mark_notification_read(self, item: dict) -> None:
+        notification_id = int(item.get("id") or 0)
+        token = self.notification_token
+        if not notification_id or not token:
+            return
+
+        def mark_read() -> None:
+            try:
+                import requests
+                requests.post(
+                    self.api.url(f"/desktop/media-hub/api/notifications/{notification_id}/read"),
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={},
+                    timeout=8,
+                ).raise_for_status()
+            except Exception:
+                logging.warning("notification read acknowledgement failed", exc_info=True)
+
+        threading.Thread(target=mark_read, daemon=True).start()
+        QTimer.singleShot(1500, self._poll_notification_count)
+
+    def _append_notification_actions(self, card: NotificationCard, item: dict) -> None:
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        image_url = str(content.get("image_url") or "").strip()
+        actions = content.get("actions") if isinstance(content.get("actions"), list) else []
+        if image_url:
+            image_button = QPushButton("画像")
+            image_button.clicked.connect(lambda _=False, url=image_url: webbrowser.open(self.api.absolute_url(url)))
+            card.actions.addWidget(image_button)
+        for row in actions[:4]:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("label") or "").strip()
+            action_type = str(row.get("type") or "link").strip().lower()
+            if action_type == "copy":
+                value = str(row.get("value") or "")
+                if not label:
+                    continue
+                expired = _notification_action_expired(row) or not value
+                button = QPushButton("期限切れ" if expired else label[:24])
+                button.setEnabled(not expired)
+                button.clicked.connect(
+                    lambda _=False, copy_action=row: self._copy_notification_value(copy_action)
+                )
+                card.actions.addWidget(button)
+                raw_expiry = str(row.get("expires_at") or "").strip()
+                if not expired and raw_expiry:
+                    try:
+                        expires_at = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+                        remaining_ms = int((expires_at - datetime.now(timezone.utc)).total_seconds() * 1000)
+                        timer = QTimer(card)
+                        timer.setSingleShot(True)
+                        timer.timeout.connect(lambda b=button, c=card: self._expire_copy_action_ui(b, c))
+                        timer.start(max(1, min(remaining_ms, 2147483647)))
+                    except ValueError:
+                        pass
+                continue
+            url = str(row.get("url") or "").strip()
+            if not label or not url:
+                continue
+            button = QPushButton(label[:24])
+            button.clicked.connect(lambda _=False, value=url: webbrowser.open(self.api.absolute_url(value)))
+            card.actions.addWidget(button)
+
+    @staticmethod
+    def _expire_copy_action_ui(button: QPushButton, card: NotificationCard) -> None:
+        button.setEnabled(False)
+        button.setText("期限切れ")
+        if card.otp_value_label is not None:
+            card.otp_value_label.setText("期限切れ")
+
+    def _copy_notification_value(self, action: dict) -> None:
+        if _notification_action_expired(action):
+            self.show_notification("ワンタイムパスワードの有効期限が切れています。")
+            return
+        value = str(action.get("value") or "")
+        if not value:
+            return
+        QApplication.clipboard().setText(value)
+        self.show_notification("ワンタイムパスワードをコピーしました。")
+
+    def _mute_notification(self, item: dict, *, minutes: int = 0, forever: bool = False) -> None:
+        if not self.notification_token:
+            return
+        try:
+            import requests
+            response = requests.post(
+                self.api.url("/desktop/media-hub/api/notifications/mute"),
+                headers=self._notification_headers(),
+                json={
+                    "feature_key": str(item.get("feature_key") or "general"),
+                    "action": "forever" if forever else "mute",
+                    "minutes": minutes,
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            self.show_notification(f"{item.get('feature_key') or 'general'} の通知をミュートしました。")
+        except Exception as exc:
+            self.show_notification(f"ミュート設定に失敗しました。\n{exc}", QSystemTrayIcon.Warning, 5000)
 
     def _poll_notification_count(self) -> None:
         if not self.notification_token or self._notification_count_inflight:

@@ -70,7 +70,7 @@ def test_unified_login_issues_three_scoped_tokens_and_dpapi_store_is_used():
     assert "CryptUnprotectData" in client
 
 
-def test_media_hub_opens_web_notification_center_and_only_polls_unread_count():
+def test_media_hub_opens_web_notification_list_and_keeps_realtime_popups():
     server = (ROOT / "utils" / "notification_service.py").read_text(encoding="utf-8")
     client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
     receiver = (ROOT / "tools" / "mfu_photo_relay" / "main.py").read_text(encoding="utf-8")
@@ -78,7 +78,9 @@ def test_media_hub_opens_web_notification_center_and_only_polls_unread_count():
     assert '"/desktop/media-hub/api/notifications/unread-count"' in client
     assert 'self.api.url("/mfu-notifications")' in client
     assert "NotificationCenterDialog" not in client
-    assert 'namespace="/media-hub-notifications"' not in receiver
+    assert "class NotificationPopup(QDialog)" in client
+    assert 'namespace="/media-hub-notifications"' in receiver
+    assert '"popup_only": True' in receiver
 
 
 def test_notification_center_pwa_is_separate_from_mimoria_pwa():
