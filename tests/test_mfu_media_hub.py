@@ -47,7 +47,7 @@ def test_server_limits_websocket_to_explicit_media_operations():
 def test_integrated_client_uses_one_receiver_and_context_aware_notification_click():
     source = HUB_CLIENT_PATH.read_text(encoding="utf-8")
     clipboard_source = CLIPBOARD_PATH.read_text(encoding="utf-8")
-    assert "self.notification_token," in source
+    assert "self.notification_token" in source
     assert "self.photo_receiver.media_progress.connect(self.api.handle_websocket_progress)" in source
     assert "self.api.websocket_rpc = self.photo_receiver.media_call" in source
     assert "self._open_saved_folder(value)" in source
@@ -70,21 +70,15 @@ def test_unified_login_issues_three_scoped_tokens_and_dpapi_store_is_used():
     assert "CryptUnprotectData" in client
 
 
-def test_media_hub_has_realtime_notification_center_and_mute_controls():
+def test_media_hub_opens_web_notification_center_and_only_polls_unread_count():
     server = (ROOT / "utils" / "notification_service.py").read_text(encoding="utf-8")
     client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
     receiver = (ROOT / "tools" / "mfu_photo_relay" / "main.py").read_text(encoding="utf-8")
-    assert 'namespace="/media-hub-notifications"' in server
-    assert 'emit("notification_connected"' in server
-    assert '"notification_new"' in receiver
-    assert "NotificationCenterDialog" in client
-    assert '"/desktop/media-hub/api/notifications/mute"' in client
-    assert 'content.get("cards")' in client
-    assert 'setObjectName("NotificationEmbed")' in client
-    assert 'setObjectName("NotificationField")' in client
-    assert "QGridLayout" in client
-    assert "NotificationCard(item, field_columns=1)" in client
-    assert "_discord_rich_text" in client
+    assert '"/desktop/media-hub/api/notifications/unread-count"' in server
+    assert '"/desktop/media-hub/api/notifications/unread-count"' in client
+    assert 'self.api.url("/mfu-notifications")' in client
+    assert "NotificationCenterDialog" not in client
+    assert 'namespace="/media-hub-notifications"' not in receiver
 
 
 def test_notification_center_pwa_is_separate_from_mimoria_pwa():
@@ -116,5 +110,5 @@ def test_notification_centers_share_feature_channels_and_unread_counts():
     assert 'data-channel-count' in template
     assert "mfuNotificationChannel" in template
     assert 'channel_unread' in server
-    assert "すべてのチャンネル" in client
-    assert "_mark_notification_channel_read" in client
+    assert 'self.api.url("/mfu-notifications")' in client
+    assert "_mark_notification_channel_read" not in client

@@ -629,6 +629,27 @@ def desktop_notification_list():
     return jsonify(_desktop_notifications(row, max(int(request.args.get("since_id") or 0), 0), int(request.args.get("limit") or 100)))
 
 
+@notification_service_bp.get("/desktop/media-hub/api/notifications/unread-count")
+def desktop_notification_unread_count():
+    """Return only the unread total; notification content stays in the Web UI."""
+    row = verify_notification_token()
+    if not row:
+        return jsonify({"ok": False, "error": "invalid_token"}), 401
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM mfu_notifications "
+            "WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL",
+            (str(row["username"]),),
+        )
+        count = int((cur.fetchone() or {}).get("cnt") or 0)
+        return jsonify({"ok": True, "unread_count": count})
+    finally:
+        cur.close()
+        db.close()
+
+
 @notification_service_bp.post("/desktop/media-hub/api/notifications/<int:notification_id>/read")
 def desktop_notification_read(notification_id: int):
     row = verify_notification_token()
