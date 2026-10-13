@@ -6,10 +6,12 @@ import hashlib
 import html
 import json
 import mimetypes
+import ipaddress
 import re
 import secrets
 import signal
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -20,7 +22,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
 import requests
 from http.cookiejar import MozillaCookieJar
@@ -60,6 +62,18 @@ SUPPORTED_MEDIA_DOMAINS = {
     "threads.com",
     "threads.net",
 }
+MEDIA_DOWNLOAD_DOMAINS = (
+    "cdninstagram.com",
+    "fbcdn.net",
+    "twimg.com",
+    "instagram.com",
+    "threads.net",
+    "threads.com",
+    "twitter.com",
+    "x.com",
+)
+MEDIA_IMAGE_MAX_BYTES = max(1, int(os.environ.get("IMAGE_VIEWER_MEDIA_IMAGE_MAX_MB", "100"))) * 1024 * 1024
+MEDIA_VIDEO_MAX_BYTES = max(1, int(os.environ.get("IMAGE_VIEWER_MEDIA_VIDEO_MAX_MB", "900"))) * 1024 * 1024
 UPLOAD_ROOT = Path(os.environ.get("IMAGE_VIEWER_UPLOAD_DIR", "/mnt/mfu/image_viewer_uploads")).expanduser()
 THUMB_DIR_NAME = ".thumbs"
 THUMB_ROOT = UPLOAD_ROOT / THUMB_DIR_NAME
@@ -201,6 +215,41 @@ def _request_username() -> str:
         return username
     token_row = verify_media_clipboard_token()
     return str((token_row or {}).get("username") or "").strip()
+
+
+def _media_job_owned_by(job: dict, username: str) -> bool:
+    """A random job ID is not a substitute for checking its creator."""
+    return bool(username and job.get("owner_username") and job["owner_username"] == username)
+
+
+def _owned_media_job(job_id: str, reader, *, require_done: bool = False):
+    if not job_id:
+        return {}, (jsonify({"ok": False, "error": "取得ジョブIDが必要です。再取得してください。"}), 400)
+    job = reader(job_id)
+    if not job:
+        return {}, (jsonify({"ok": False, "error": "取得ジョブが見つかりません。再取得してください。"}), 404)
+    if not job.get("owner_username"):
+        return {}, (jsonify({"ok": False, "error": "旧形式の取得結果です。再取得してください。"}), 410)
+    if not _media_job_owned_by(job, _request_username()):
+        return {}, (jsonify({"ok": False, "error": "取得ジョブが見つかりません。"}), 404)
+    if time.time() - float(job.get("created_at") or 0) > _INSTAGRAM_JOB_TTL_SECONDS:
+        return {}, (jsonify({"ok": False, "error": "取得結果の期限が切れました。再取得してください。"}), 410)
+    if require_done and job.get("status") != "done":
+        return {}, (jsonify({"ok": False, "error": "取得が完了してから保存してください。"}), 409)
+    return job, None
+
+
+def _validate_job_selection(data: dict, job: dict, media_key: str):
+    selected = data.get("selected") or []
+    if not isinstance(selected, list) or not selected or any(not str(value).isdigit() for value in selected):
+        return jsonify({"ok": False, "error": "保存する項目を選択してください。"}), 400
+    allowed = {
+        int(item.get("index") or 0)
+        for item in (job.get(media_key) or []) if isinstance(item, dict)
+    }
+    if not {int(value) for value in selected}.issubset(allowed):
+        return jsonify({"ok": False, "error": "取得ジョブにない項目は保存できません。再取得してください。"}), 400
+    return None
 
 
 def _instagram_credentials_admin_required():
@@ -3076,6 +3125,8 @@ def _start_instagram_fetch_job(
     source: str = "instagram",
     source_url: str = "",
     video_frames_only: bool = False,
+    *,
+    owner_username: str,
 ) -> str:
     _cleanup_instagram_jobs()
     _cleanup_incomplete_instagram_job_files()
@@ -3088,6 +3139,7 @@ def _start_instagram_fetch_job(
             "source": source,
             "shortcode": shortcode,
             "source_url": source_url,
+            "owner_username": owner_username,
             "video_frames_only": bool(video_frames_only),
             "created_at": time.time(),
             "images": [],
@@ -3405,6 +3457,8 @@ def _start_video_fetch_job(
     identifier: str,
     source: str = "instagram",
     source_url: str = "",
+    *,
+    owner_username: str,
 ) -> str:
     _cleanup_video_jobs()
     job_id = uuid.uuid4().hex
@@ -3415,6 +3469,7 @@ def _start_video_fetch_job(
             "source": source,
             "identifier": identifier,
             "source_url": source_url,
+            "owner_username": owner_username,
             "created_at": time.time(),
             "videos": [],
             "error": "",
@@ -3756,6 +3811,71 @@ def _image_request_headers(image_url: str) -> dict:
     }
 
 
+def _validate_media_download_url(value: str) -> str:
+    parsed = urlparse(str(value or ""))
+    host = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("メディア取得先のポートが不正です。") from exc
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or not any(host == domain or host.endswith("." + domain) for domain in MEDIA_DOWNLOAD_DOMAINS)
+    ):
+        raise ValueError("許可されていないメディア取得先です。")
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        if not addresses or any(
+            not ipaddress.ip_address(result[4][0]).is_global for result in addresses
+        ):
+            raise ValueError("内部ネットワークの取得先は許可されていません。")
+    except (OSError, ValueError) as exc:
+        raise ValueError("安全なメディア取得先を確認できませんでした。") from exc
+    return value
+
+
+def _open_media_download(url: str, headers: dict, timeout: tuple[int, int]):
+    """Check every redirect instead of letting requests follow it blindly."""
+    current = url
+    for _ in range(6):
+        _validate_media_download_url(current)
+        response = requests.get(current, headers=headers, stream=True, timeout=timeout, allow_redirects=False)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            try:
+                response.raise_for_status()
+            except Exception:
+                response.close()
+                raise
+            return response
+        location = response.headers.get("Location")
+        response.close()
+        if not location:
+            raise ValueError("メディア取得先の転送先がありません。")
+        current = urljoin(current, location)
+    raise ValueError("メディア取得先の転送回数が多すぎます。")
+
+
+def _write_limited_media(response, target, max_bytes: int) -> None:
+    try:
+        stated_size = int(response.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        stated_size = 0
+    if stated_size > max_bytes:
+        raise ValueError("メディアのサイズが上限を超えています。")
+    total = 0
+    with target.open("wb") as fp:
+        for chunk in response.iter_content(chunk_size=1024 * 128):
+            if chunk:
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("メディアのサイズが上限を超えています。")
+                fp.write(chunk)
+
+
 def _instagram_source_is_heic(image_url: str, content_type: str = "") -> bool:
     suffix = Path(urlparse(image_url).path).suffix.lower()
     normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
@@ -3824,13 +3944,11 @@ def _download_instagram_image(image_url: str, target: Path) -> None:
         os.close(fd)
         download_path = Path(download_name)
         try:
-            with requests.get(image_url, headers=headers, stream=True, timeout=(8, 30)) as response:
-                response.raise_for_status()
+            with _open_media_download(image_url, headers, (8, 30)) as response:
                 content_type = response.headers.get("Content-Type") or ""
-                with download_path.open("wb") as fp:
-                    for chunk in response.iter_content(chunk_size=1024 * 128):
-                        if chunk:
-                            fp.write(chunk)
+                if content_type.lower().startswith(("text/", "application/json", "application/xml")):
+                    raise ValueError("画像以外の応答です。")
+                _write_limited_media(response, download_path, MEDIA_IMAGE_MAX_BYTES)
             if _instagram_source_is_heic(image_url, content_type):
                 _convert_heic_to_jpeg(download_path, target)
             else:
@@ -3858,15 +3976,11 @@ def _download_video_file(video_url: str, target: Path) -> None:
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            with requests.get(video_url, headers=headers, stream=True, timeout=(8, 60)) as response:
-                response.raise_for_status()
+            with _open_media_download(video_url, headers, (8, 60)) as response:
                 content_type = (response.headers.get("Content-Type") or "").lower()
                 if "text/html" in content_type or "application/json" in content_type:
                     raise RuntimeError(f"動画ファイルではない応答です。Content-Type: {content_type or 'unknown'}")
-                with open(tmp_target, "wb") as fp:
-                    for chunk in response.iter_content(chunk_size=1024 * 512):
-                        if chunk:
-                            fp.write(chunk)
+                _write_limited_media(response, tmp_target, MEDIA_VIDEO_MAX_BYTES)
             size = tmp_target.stat().st_size if tmp_target.is_file() else 0
             if size < 1024:
                 raise RuntimeError("動画ファイルの保存サイズが小さすぎます。URLの有効期限切れの可能性があります。")
@@ -5472,7 +5586,7 @@ def instagram_fetch():
     source, identifier = _extract_media_identifier(source_url)
     if not source or not identifier:
         return jsonify({"ok": False, "error": "Instagramの投稿・ストーリー、Threads、XのURLを確認してください。"}), 400
-    job_id = _start_instagram_fetch_job(identifier, source, source_url)
+    job_id = _start_instagram_fetch_job(identifier, source, source_url, owner_username=_request_username())
     _instagram_log("fetch_api_started", job_id, identifier, source=source)
     return jsonify({"ok": True, "status": "pending", "source": source, "shortcode": identifier, "jobId": job_id})
 
@@ -5490,6 +5604,7 @@ def video_frames_fetch():
         source,
         source_url,
         video_frames_only=True,
+        owner_username=_request_username(),
     )
     _instagram_log("video_frames_fetch_api_started", job_id, identifier, source=source)
     return jsonify(
@@ -5507,10 +5622,10 @@ def video_frames_fetch():
 @login_required
 def instagram_job(job_id: str):
     _cleanup_instagram_jobs()
-    job = _read_instagram_job(job_id)
-    if not job:
+    job, error = _owned_media_job(job_id, _read_instagram_job)
+    if error:
         _instagram_log("job_poll_missing", job_id)
-        return jsonify({"ok": False, "error": "取得ジョブが見つかりません。もう一度取得してください。"}), 404
+        return error
     if job.get("status") in {"error", "login_required"}:
         _instagram_log("job_poll_error", job_id, str(job.get("shortcode") or ""), error=job.get("error"))
         login_required_state = job.get("status") == "login_required"
@@ -5550,9 +5665,9 @@ def instagram_job(job_id: str):
 @login_required
 def instagram_job_cancel(job_id: str):
     _cleanup_instagram_jobs()
-    job = _read_instagram_job(job_id)
-    if not job:
-        return jsonify({"ok": False, "error": "取得ジョブが見つかりません。もう一度取得してください。"}), 404
+    job, error = _owned_media_job(job_id, _read_instagram_job)
+    if error:
+        return error
     if job.get("status") in {"done", "error", "cancelled", "login_required"}:
         _instagram_log("cancel_api_noop", job_id, str(job.get("shortcode") or ""), status=job.get("status"))
         return jsonify({"ok": True, "status": job.get("status"), "jobId": job_id})
@@ -5572,9 +5687,9 @@ def instagram_job_cancel(job_id: str):
 @login_required
 def instagram_preview(job_id: str, index: int):
     _cleanup_instagram_jobs()
-    job = _read_instagram_job(job_id)
-    if not job:
-        return _empty_image_response()
+    job, error = _owned_media_job(job_id, _read_instagram_job)
+    if error:
+        return error
     item = next((row for row in job.get("images") or [] if int(row.get("index") or 0) == index), None)
     if not item:
         return _empty_image_response()
@@ -5611,10 +5726,9 @@ def instagram_next_number():
     return jsonify({"ok": True, **result})
 
 
-def _catalog_instagram_save(data: dict):
-    shortcode = _extract_shortcode(data.get("shortcode") or "")
-    images = data.get("images") or []
-    job_id = str(data.get("jobId") or "")
+def _catalog_instagram_save(data: dict, job: dict):
+    shortcode = str(job.get("shortcode") or "")
+    images = job.get("images") or []
     selected_indexes = {
         int(value) for value in (data.get("selected") or [])
         if str(value).isdigit()
@@ -5626,21 +5740,14 @@ def _catalog_instagram_save(data: dict):
     start_number = max(1, int(data.get("startNumber") or 1))
     digits = min(6, max(1, int(data.get("digits") or 3)))
     allow_duplicate_images = data.get("allowDuplicateImages") is True
-    job = {}
-    job_images = []
-    if job_id:
-        job = _read_instagram_job(job_id)
-        if job.get("shortcode") == shortcode:
-            job_images = job.get("images") or []
     source_url = _canonical_media_source_url(
-        str(job.get("source") or data.get("source") or "instagram"),
-        str(job.get("shortcode") or shortcode),
-        str(job.get("source_url") or data.get("sourceUrl") or ""),
+        str(job.get("source") or "instagram"),
+        shortcode,
+        str(job.get("source_url") or ""),
     )
-    source_images = job_images if job_images else images
     by_index = {
         int(item.get("index") or 0): item
-        for item in source_images if isinstance(item, dict)
+        for item in images if isinstance(item, dict)
     }
     saved, duplicates, errors = [], [], []
     for offset, item_index in enumerate(sorted(selected_indexes)):
@@ -5694,12 +5801,17 @@ def _catalog_instagram_save(data: dict):
 @login_required
 def instagram_save():
     data = request.get_json(silent=True) or {}
+    job, error = _owned_media_job(str(data.get("jobId") or ""), _read_instagram_job, require_done=True)
+    if error:
+        return error
+    selection_error = _validate_job_selection(data, job, "images")
+    if selection_error:
+        return selection_error
     if catalog.CATALOG_ENABLED:
-        return _catalog_instagram_save(data)
+        return _catalog_instagram_save(data, job)
     _ensure_upload_root()
-    shortcode = _extract_shortcode(data.get("shortcode") or "")
-    images = data.get("images") or []
-    job_id = str(data.get("jobId") or "")
+    shortcode = str(job.get("shortcode") or "")
+    images = job.get("images") or []
     selected = data.get("selected") or []
     if not shortcode or not isinstance(images, list):
         return jsonify({"ok": False, "error": "保存データが不正です。"}), 400
@@ -5718,13 +5830,7 @@ def instagram_save():
 
     saved = []
     errors = []
-    job_images = []
-    if job_id:
-        job = _read_instagram_job(job_id)
-        if job.get("shortcode") == shortcode:
-            job_images = job.get("images") or []
-    source_images = job_images if job_images else images
-    by_index = {int(item.get("index") or 0): item for item in source_images if isinstance(item, dict)}
+    by_index = {int(item.get("index") or 0): item for item in images if isinstance(item, dict)}
     for offset, item_index in enumerate(sorted(selected_indexes)):
         item = by_index.get(item_index)
         if not item:
@@ -5768,7 +5874,7 @@ def video_fetch():
     source, identifier = _extract_media_identifier(source_url)
     if not source or not identifier:
         return jsonify({"ok": False, "error": "Instagramの投稿・ストーリー、Threads、XのURLを確認してください。"}), 400
-    job_id = _start_video_fetch_job(identifier, source, source_url)
+    job_id = _start_video_fetch_job(identifier, source, source_url, owner_username=_request_username())
     return jsonify({"ok": True, "status": "pending", "source": source, "identifier": identifier, "jobId": job_id})
 
 
@@ -5776,9 +5882,9 @@ def video_fetch():
 @login_required
 def video_job(job_id: str):
     _cleanup_video_jobs()
-    job = _read_video_job(job_id)
-    if not job:
-        return jsonify({"ok": False, "error": "取得ジョブが見つかりません。もう一度取得してください。"}), 404
+    job, error = _owned_media_job(job_id, _read_video_job)
+    if error:
+        return error
     if job.get("status") in {"error", "login_required"}:
         login_required_state = job.get("status") == "login_required"
         return jsonify({"ok": True if login_required_state else False, "status": job.get("status"), "loginRequired": login_required_state, "identifier": job.get("identifier"), "error": job.get("error")})
@@ -5802,20 +5908,13 @@ def _catalog_video_save_result(data: dict, progress_callback=None) -> dict:
         return {"ok": False, "error": "Select at least one video", "saved": [], "duplicates": [], "errors": []}
     job_id = str(data.get("jobId") or "")
     video_job = _read_video_job(job_id) if job_id else {}
+    if not video_job or video_job.get("status") != "done" or not video_job.get("owner_username"):
+        return {"ok": False, "error": "取得結果を確認できません。再取得してください。", "saved": [], "duplicates": [], "errors": []}
     job_videos = video_job.get("videos") or []
-    submitted_url = str(data.get("sourceUrl") or "")
-    submitted_source, submitted_identifier = _extract_media_identifier(submitted_url)
-    requested_identifier = str(data.get("identifier") or "")
-    if requested_identifier and submitted_identifier and requested_identifier != submitted_identifier:
-        return {
-            "ok": False,
-            "error": "取得元URLと動画の識別子が一致しません。動画を再取得してください。",
-            "saved": [], "duplicates": [], "errors": [],
-        }
     source_url = _canonical_media_source_url(
-        str(video_job.get("source") or submitted_source),
-        str(video_job.get("identifier") or submitted_identifier),
-        str(video_job.get("source_url") or submitted_url),
+        str(video_job.get("source") or ""),
+        str(video_job.get("identifier") or ""),
+        str(video_job.get("source_url") or ""),
     )
     if not source_url:
         _instagram_log("video_save_source_missing", job_id, "", job_found=bool(video_job))
@@ -5824,10 +5923,9 @@ def _catalog_video_save_result(data: dict, progress_callback=None) -> dict:
             "error": "取得元URLを確認できません。動画を再取得してから保存してください。",
             "saved": [], "duplicates": [], "errors": [],
         }
-    source_videos = job_videos if job_videos else (data.get("videos") or [])
     by_index = {
         int(item.get("index") or 0): item
-        for item in source_videos if isinstance(item, dict)
+        for item in job_videos if isinstance(item, dict)
     }
     saved, duplicates, errors = [], [], []
     ordered_indexes = sorted(selected_indexes)
@@ -5882,7 +5980,7 @@ def _catalog_video_save(data: dict):
     return jsonify(result), status
 
 
-def _start_video_save_job(data: dict) -> str:
+def _start_video_save_job(data: dict, owner_username: str) -> str:
     _cleanup_video_save_jobs()
     save_job_id = uuid.uuid4().hex
     selected = [int(value) for value in (data.get("selected") or []) if str(value).isdigit()]
@@ -5892,6 +5990,7 @@ def _start_video_save_job(data: dict) -> str:
         save_job_id,
         {
             "status": "pending",
+            "owner_username": owner_username,
             "created_at": time.time(),
             "total": len(selected),
             "processed": 0,
@@ -5955,10 +6054,17 @@ def _start_video_save_job(data: dict) -> str:
 @login_required
 def video_save_async():
     data = request.get_json(silent=True) or {}
+    job, error = _owned_media_job(str(data.get("jobId") or ""), _read_video_job, require_done=True)
+    if error:
+        return error
+    selection_error = _validate_job_selection(data, job, "videos")
+    if selection_error:
+        return selection_error
     selected = [value for value in (data.get("selected") or []) if str(value).isdigit()]
     if not selected:
         return jsonify({"ok": False, "error": "保存する動画を選択してください。"}), 400
-    save_job_id = _start_video_save_job(data)
+    safe_data = {"jobId": data["jobId"], "selected": selected, "folder": data.get("folder") or ""}
+    save_job_id = _start_video_save_job(safe_data, _request_username())
     return jsonify(
         {
             "ok": True,
@@ -5974,9 +6080,9 @@ def video_save_async():
 @login_required
 def video_save_job(save_job_id: str):
     _cleanup_video_save_jobs()
-    job = _read_video_save_job(save_job_id)
-    if not job:
-        return jsonify({"ok": False, "error": "動画保存ジョブが見つかりません。"}), 404
+    job, error = _owned_media_job(save_job_id, _read_video_save_job)
+    if error:
+        return error
     if job.get("status") == "error":
         return jsonify(
             {
@@ -6004,11 +6110,16 @@ def video_save_job(save_job_id: str):
 @login_required
 def video_save():
     data = request.get_json(silent=True) or {}
+    job, error = _owned_media_job(str(data.get("jobId") or ""), _read_video_job, require_done=True)
+    if error:
+        return error
+    selection_error = _validate_job_selection(data, job, "videos")
+    if selection_error:
+        return selection_error
     if catalog.CATALOG_ENABLED:
         return _catalog_video_save(data)
     _ensure_upload_root()
-    videos = data.get("videos") or []
-    job_id = str(data.get("jobId") or "")
+    videos = job.get("videos") or []
     selected = data.get("selected") or []
     selected_indexes = {int(v) for v in selected if str(v).isdigit()}
     if not selected_indexes:
@@ -6019,12 +6130,7 @@ def video_save():
         return jsonify({"ok": False, "error": "保存先は画像ビューアーのアップロード配下のみ指定できます。"}), 400
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    job_videos = []
-    if job_id:
-        job = _read_video_job(job_id)
-        job_videos = job.get("videos") or []
-    source_videos = job_videos if job_videos else videos
-    by_index = {int(item.get("index") or 0): item for item in source_videos if isinstance(item, dict)}
+    by_index = {int(item.get("index") or 0): item for item in videos if isinstance(item, dict)}
     saved = []
     errors = []
     for item_index in sorted(selected_indexes):

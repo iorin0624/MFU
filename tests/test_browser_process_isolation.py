@@ -318,6 +318,7 @@ def test_instagram_heic_download_converts_before_saving():
 
         with (
             patch.object(image_viewer_routes.requests, "get", return_value=response),
+            patch.object(image_viewer_routes, "_validate_media_download_url"),
             patch.object(image_viewer_routes, "_convert_heic_to_jpeg", side_effect=fake_convert) as convert,
         ):
             image_viewer_routes._download_instagram_image(
@@ -468,8 +469,15 @@ def test_catalog_video_save_reports_progress_for_each_selected_item():
         target.write_bytes(b"video-data")
 
     with (
-        patch.object(image_viewer_routes, "_read_video_job", return_value={}),
-        patch.object(image_viewer_routes, "_download_video_file", side_effect=fake_download),
+        patch.object(image_viewer_routes, "_read_video_job", return_value={
+            "status": "done",
+            "owner_username": "admin",
+            "source": "instagram",
+            "identifier": "Dd8mKbxTkLv",
+            "source_url": "https://www.instagram.com/p/Dd8mKbxTkLv/",
+            "videos": source_videos,
+        }),
+        patch.object(image_viewer_routes, "_download_video_file", side_effect=fake_download) as download,
         patch.object(
             image_viewer_routes.catalog,
             "store_file",
@@ -482,7 +490,8 @@ def test_catalog_video_save_reports_progress_for_each_selected_item():
     ):
         result = image_viewer_routes._catalog_video_save_result(
             {
-                "videos": source_videos,
+                "jobId": "valid-job",
+                "videos": [{"index": 1, "url": "https://127.0.0.1/one.mp4"}],
                 "selected": [1, 2],
                 "folder": "video",
                 "sourceUrl": "https://www.instagram.com/p/Dd8mKbxTkLv/",
@@ -494,6 +503,10 @@ def test_catalog_video_save_reports_progress_for_each_selected_item():
     assert result["ok"] is True
     assert len(result["saved"]) == 2
     assert progress == [(1, 2), (2, 2)]
+    assert [call.args[0] for call in download.call_args_list] == [
+        "https://cdninstagram.com/one.mp4",
+        "https://cdninstagram.com/two.mp4",
+    ]
     assert all(call.kwargs["source_url"] == "https://www.instagram.com/p/Dd8mKbxTkLv/" for call in store_file.call_args_list)
 
 
