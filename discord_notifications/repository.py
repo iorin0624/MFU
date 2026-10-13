@@ -29,6 +29,8 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("chiba_police_incidents", {"label": "千葉県警事件・事故情報", "description": "千葉県警の新着事件・事故情報", "group": "地域情報"}),
         ("mail_summary", {"label": "メール要約", "description": "受信メールの内容とAI要約", "group": "メール"}),
         ("mail_spam_report", {"label": "迷惑メール集計", "description": "SpamAssassinの検出件数と対象メール", "group": "メール"}),
+        ("au_pay_usage", {"label": "利用速報", "description": "au PAYの利用・取消・チャージ通知", "group": "au pay"}),
+        ("au_pay_otp", {"label": "ワンタイムパスワード", "description": "au PAYネットショッピング認証コード", "group": "au pay"}),
         ("debian_updates", {"label": "Debian自動更新", "description": "端末別の更新結果・失敗・再起動状況", "group": "システム"}),
         ("backup_status", {"label": "バックアップ結果", "description": "メールサーバーのバックアップ異常", "group": "システム"}),
         ("freepbx_calls", {"label": "FreePBX着信通知", "description": "全着信の分類・発信元・処理結果", "group": "電話"}),

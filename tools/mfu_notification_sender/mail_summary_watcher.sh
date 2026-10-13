@@ -27,6 +27,9 @@ LOG_FILE="${LOG_FILE:-/var/log/mail-summary-watcher/watcher.log}"
 : "${STATE_LOCK:=/var/run/mail_summary_watcher.lock}"
 : "${CHECKPOINT_FILE:=/var/lib/mail_summary_watcher/checkpoint}"
 : "${AU_PAY_OTP_HANDLER:=/usr/local/lib/mfu-notification-bridge/au_pay_otp_mail.py}"
+: "${AU_PAY_TRANSACTION_HANDLER:=/usr/local/lib/mfu-notification-bridge/au_pay_transaction_mail.py}"
+: "${AU_PAY_OTP_ENDPOINT:=http://127.0.0.1:8765/discord/au_pay_otp}"
+: "${AU_PAY_USAGE_ENDPOINT:=http://127.0.0.1:8765/discord/au_pay_usage}"
 # ===============================================================
 
 # ログ・状態ファイルの準備（ここより前でSTATE_FILE/LOG_FILEを参照しない）
@@ -302,7 +305,7 @@ process_file(){
   # 認証コードを通常要約やDiscord本文へ流さない。
   if [[ -x "$AU_PAY_OTP_HANDLER" ]]; then
     set +e
-    "$AU_PAY_OTP_HANDLER" --eml "$path" --endpoint "$DISCORD_WEBHOOK_URL"
+    "$AU_PAY_OTP_HANDLER" --eml "$path" --endpoint "$AU_PAY_OTP_ENDPOINT"
     special_status=$?
     set -e
     if [[ $special_status -eq 0 ]]; then
@@ -314,6 +317,25 @@ process_file(){
     fi
     if [[ $special_status -ne 2 ]]; then
       echo "$(ts) [ERROR] au PAY OTP handler failed status=$special_status path=$path" >&2
+      return 75
+    fi
+  fi
+
+  # au PAYの利用・取消・チャージは本文の必要な4項目だけを専用チャンネルへ送る。
+  if [[ -x "$AU_PAY_TRANSACTION_HANDLER" ]]; then
+    set +e
+    "$AU_PAY_TRANSACTION_HANDLER" --eml "$path" --endpoint "$AU_PAY_USAGE_ENDPOINT"
+    special_status=$?
+    set -e
+    if [[ $special_status -eq 0 ]]; then
+      record_seen "$sig"
+      advance_checkpoint "$path"
+      delete_processed_file "$path"
+      echo "$(ts) [DONE] au PAY transaction posted and deleted path=$path" >&2
+      return 0
+    fi
+    if [[ $special_status -ne 2 ]]; then
+      echo "$(ts) [ERROR] au PAY transaction handler failed status=$special_status path=$path" >&2
       return 75
     fi
   fi
