@@ -766,9 +766,10 @@ def media_hub_notifications_connect(auth=None):
     finally:
         cur.close()
         db.close()
-    # Re-send enough history to repair notifications missed while the Windows
-    # application was offline.  Deduplication in the client keeps reconnects safe.
-    emit("notification_connected", _desktop_notifications(row, limit=200))
+    # Popup-only clients show only new events. The full history belongs to the
+    # Web notification center and must not be sent to the Windows app.
+    if not auth.get("popup_only"):
+        emit("notification_connected", _desktop_notifications(row, limit=200))
     return True
 
 
