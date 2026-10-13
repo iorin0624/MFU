@@ -148,7 +148,7 @@ _OPERATIONS = {
 }
 
 
-def _direct_job_status(operation: str, data: dict) -> dict:
+def _direct_job_status(operation: str, data: dict, owner_username: str) -> dict:
     """Read the in-process worker state without issuing nested Flask requests.
 
     The job starter and this Socket.IO handler run in the same Gunicorn worker,
@@ -164,7 +164,7 @@ def _direct_job_status(operation: str, data: dict) -> dict:
     if operation in {"fetch_images", "fetch_video_frames"}:
         job_id = str(data.get("jobId") or "")
         job = _read_instagram_job(job_id) if job_id else {}
-        if not job:
+        if not job or job.get("owner_username") != owner_username:
             return {"ok": False, "status": "error", "error": "取得ジョブが見つかりません。"}
         images = []
         for item in job.get("images") or []:
@@ -178,6 +178,7 @@ def _direct_job_status(operation: str, data: dict) -> dict:
         status = str(job.get("status") or "pending")
         return {
             "ok": status not in {"error"},
+            "jobId": job_id,
             "status": status,
             "source": job.get("source") or "instagram",
             "shortcode": job.get("shortcode"),
@@ -192,12 +193,13 @@ def _direct_job_status(operation: str, data: dict) -> dict:
     if operation == "fetch_videos":
         job_id = str(data.get("jobId") or "")
         job = _read_video_job(job_id) if job_id else {}
-        if not job:
+        if not job or job.get("owner_username") != owner_username:
             return {"ok": False, "status": "error", "error": "取得ジョブが見つかりません。"}
         status = str(job.get("status") or "pending")
         videos = job.get("videos") or []
         return {
             "ok": status not in {"error"},
+            "jobId": job_id,
             "status": status,
             "source": job.get("source") or "instagram",
             "identifier": job.get("identifier"),
@@ -212,7 +214,7 @@ def _direct_job_status(operation: str, data: dict) -> dict:
     if operation == "save_videos":
         job_id = str(data.get("saveJobId") or "")
         job = _read_video_save_job(job_id) if job_id else {}
-        if not job:
+        if not job or job.get("owner_username") != owner_username:
             return {"ok": False, "status": "error", "error": "動画保存ジョブが見つかりません。"}
         status = str(job.get("status") or "pending")
         return {
@@ -247,6 +249,10 @@ def media_clipboard_request(payload=None):
     if not token:
         disconnect()
         return {"ok": False, "error": "invalid_token", "request_id": request_id}
+    media_row = verify_media_clipboard_token(token)
+    if not media_row:
+        disconnect()
+        return {"ok": False, "error": "invalid_token", "request_id": request_id}
     route = _OPERATIONS.get(operation)
     if not route:
         return {"ok": False, "error": "unsupported_operation", "request_id": request_id}
@@ -264,7 +270,7 @@ def media_clipboard_request(payload=None):
     attempts = 1800 if operation == "save_videos" else 180
     for _ in range(attempts):
         socketio.sleep(1)
-        current = _direct_job_status(operation, data)
+        current = _direct_job_status(operation, data, str(media_row["username"]))
         current.update({"request_id": request_id, "operation": operation})
         emit("media_clipboard_progress", current)
         if str(current.get("status") or "") in {"done", "error", "cancelled", "login_required"}:

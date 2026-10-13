@@ -40,7 +40,7 @@ def test_server_limits_websocket_to_explicit_media_operations():
     assert '"save_videos": ("POST", "/image_viewer/api/video/save-async")' in source
     assert '"unsupported_operation"' in source
     assert 'emit("media_clipboard_progress", current)' in source
-    assert "_direct_job_status(operation, data)" in source
+    assert '_direct_job_status(operation, data, str(media_row["username"]))' in source
     assert '_internal_request(token, "GET", job_path)' not in source
 
 
