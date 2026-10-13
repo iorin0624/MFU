@@ -84,6 +84,15 @@ class ImageViewerNumberingTest(unittest.TestCase):
         self.assertIn("allow_duplicate=allow_duplicate_images", source)
         self.assertIn("numbering_digits=numbering_digits", source)
 
+    def test_media_clipboard_duplicate_override_is_opt_in_for_images(self):
+        source = function_source(
+            ROOT / "image_viewer" / "routes.py", "_catalog_instagram_save"
+        )
+
+        self.assertIn('data.get("allowDuplicateImages") is True', source)
+        self.assertIn("allow_duplicate=allow_duplicate_images", source)
+        self.assertIn("ensure_unique_display_name=allow_duplicate_images", source)
+
     def test_folder_settings_are_server_persisted_and_duplicates_are_not(self):
         migration = (
             ROOT / "migrations" / "20260913_image_viewer_folder_numbering.sql"

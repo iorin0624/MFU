@@ -352,6 +352,81 @@ def test_batch_save_worker_keeps_image_numbering_continuous_across_urls():
     app.processEvents()
 
     assert [payload["startNumber"] for payload in api.image_payloads] == [7, 9]
+    assert [payload["allowDuplicateImages"] for payload in api.image_payloads] == [False, False]
     assert api.video_payloads[0]["folder"] == "video"
     assert finished[0]["outcomes"][0]["saved"] == 2
     assert finished[0]["outcomes"][1]["saved"] == 2
+
+
+def test_temporary_duplicate_button_resets_for_each_image_save_dialog():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+
+    class FakeApi:
+        def __init__(self):
+            self.payloads = []
+
+        def get_setting(self, _key, default=""):
+            return default
+
+        def folders(self):
+            return [""]
+
+        def image_next_number(self, _folder):
+            return 1
+
+        def save_images(self, payload):
+            self.payloads.append(payload)
+            return {"saved": [1], "duplicates": [], "errors": []}
+
+        def set_setting(self, _key, _value):
+            pass
+
+    api = FakeApi()
+    job = {"shortcode": "test", "images": [{"index": 1, "filename": "one.jpg"}]}
+    first = module.ImageSelectionDialog(api, job, show_completion_message=False)
+    assert not first.allow_duplicate_button.isChecked()
+    first.allow_duplicate_button.click()
+    assert first.allow_duplicate_button.text() == "重複保存: ON"
+    first._save()
+    assert api.payloads[0]["allowDuplicateImages"] is True
+    first.close()
+
+    second = module.ImageSelectionDialog(api, job, show_completion_message=False)
+    assert not second.allow_duplicate_button.isChecked()
+    second.close()
+
+    batch = module.BatchMediaSelectionDialog(api, [])
+    app.processEvents()
+    assert not batch.allow_duplicate_button.isChecked()
+    batch.allow_duplicate_button.click()
+    assert batch.allow_duplicate_button.isChecked()
+    batch.close()
+
+
+def test_batch_worker_forwards_temporary_duplicate_choice_only_to_images():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+
+    class FakeApi:
+        image_payloads = []
+        video_payloads = []
+
+        def save_images(self, payload):
+            self.image_payloads.append(payload)
+            return {"saved": [1], "duplicates": [], "errors": []}
+
+        def save_videos(self, payload, _progress):
+            self.video_payloads.append(payload)
+            return {"saved": [2], "duplicates": [], "errors": []}
+
+    api = FakeApi()
+    outcomes = [{"url": "one", "shown": True, "saved": 0, "duplicates": 0, "skipped": 0, "empty": False, "errors": []}]
+    image_groups = [{"row_index": 0, "job": {"shortcode": "one", "images": []}, "selected": [1]}]
+    video_groups = [{"row_index": 0, "job": {"jobId": "video", "videos": []}, "selected": [2]}]
+    worker = module.BatchSaveWorker(api, outcomes, image_groups, video_groups, "photos", 1, 3, "video", True)
+    worker.run()
+    app.processEvents()
+
+    assert api.image_payloads[0]["allowDuplicateImages"] is True
+    assert "allowDuplicateImages" not in api.video_payloads[0]

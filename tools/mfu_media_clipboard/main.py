@@ -556,6 +556,7 @@ class BatchSaveWorker(threading.Thread):
         image_start: int,
         image_digits: int,
         video_folder: str,
+        allow_duplicate_images: bool = False,
     ) -> None:
         super().__init__(daemon=True)
         self.api = api
@@ -566,6 +567,7 @@ class BatchSaveWorker(threading.Thread):
         self.image_start = image_start
         self.image_digits = image_digits
         self.video_folder = video_folder
+        self.allow_duplicate_images = allow_duplicate_images
         self.signals = WorkerSignals()
 
     def run(self) -> None:
@@ -589,6 +591,7 @@ class BatchSaveWorker(threading.Thread):
                             "folder": self.image_folder,
                             "startNumber": next_number,
                             "digits": self.image_digits,
+                            "allowDuplicateImages": self.allow_duplicate_images,
                         }
                     )
                     row["saved"] += len(data.get("saved") or [])
@@ -975,6 +978,15 @@ class ImageCardWidget(QWidget):
         super().mouseReleaseEvent(event)
 
 
+def _temporary_duplicate_save_button() -> QPushButton:
+    button = QPushButton("重複保存: OFF")
+    button.setCheckable(True)
+    button.setToolTip("ONの間だけ同じ画像の再保存を許可します。この画面を閉じると解除されます。")
+    button.setStyleSheet("QPushButton:checked {background:#b45309;color:#fff;font-weight:700;}")
+    button.toggled.connect(lambda enabled: button.setText(f"重複保存: {'ON' if enabled else 'OFF'}"))
+    return button
+
+
 class ImageSelectionDialog(QDialog):
     CARD_WIDTH = 184
     THUMB_SIZE = 156
@@ -1026,6 +1038,8 @@ class ImageSelectionDialog(QDialog):
             btn = QPushButton(label)
             btn.clicked.connect(handler)
             actions.addWidget(btn)
+        self.allow_duplicate_button = _temporary_duplicate_save_button()
+        actions.addWidget(self.allow_duplicate_button)
         actions.addStretch(1)
         layout.addLayout(actions)
 
@@ -1206,6 +1220,7 @@ class ImageSelectionDialog(QDialog):
                     "folder": self._folder_text(),
                     "startNumber": self.start_spin.value(),
                     "digits": self.digits_spin.value(),
+                    "allowDuplicateImages": self.allow_duplicate_button.isChecked(),
                 }
             )
             saved = len(data.get("saved") or [])
@@ -1553,6 +1568,8 @@ class BatchMediaSelectionDialog(QDialog):
         form.addRow("開始番号", self.image_start)
         form.addRow("桁数", self.image_digits)
         layout.addLayout(form)
+        self.allow_duplicate_button = _temporary_duplicate_save_button()
+        layout.addWidget(self.allow_duplicate_button)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1741,6 +1758,7 @@ class BatchMediaSelectionDialog(QDialog):
             self.image_start.value(),
             self.image_digits.value(),
             self._folder_text(self.video_folder),
+            self.allow_duplicate_button.isChecked(),
         )
         self.save_worker.signals.progress.connect(self._save_progress_changed)
         self.save_worker.signals.finished.connect(self._save_finished)
