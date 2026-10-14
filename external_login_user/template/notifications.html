@@ -150,6 +150,8 @@
     let hasNext = false;
     let loading = false;
     let pollingTimer = null;
+    let updateRequest = null;
+    let lastForegroundRefreshAt = 0;
     let notifSocketConnected = false;
     let lastId = 0;
     let currentUnreadCount = 0;
@@ -519,10 +521,17 @@
 
     const prependNewItems = (items) => {
       if (!Array.isArray(items) || items.length === 0) return;
-      for (const item of items) {
+      const anchor = scope === 'mfu' && listEl.getBoundingClientRect().top < 0
+        ? [...listEl.children].find((element) => element.getBoundingClientRect().bottom > 0)
+        : null;
+      const anchorTop = anchor?.getBoundingClientRect().top;
+      for (const item of [...items].sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0))) {
         if (!item || !item.id || knownIds.has(item.id)) continue;
         knownIds.add(item.id);
         listEl.insertBefore(createItem(item), listEl.firstChild);
+      }
+      if (anchor?.isConnected && Number.isFinite(anchorTop)) {
+        window.scrollBy(0, anchor.getBoundingClientRect().top - anchorTop);
       }
       updateEmptyState();
     };
@@ -541,7 +550,7 @@
 
       if (!append) {
         const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
-        lastId = Math.max(lastId, latest);
+        lastId = scope === 'mfu' ? latest : Math.max(lastId, latest);
       }
     };
 
@@ -592,22 +601,45 @@
 
     const pollUpdatesOnce = async () => {
       if (document.hidden) return;
-      if (onlyUnread.checked) return;
+      if (scope !== 'mfu' && onlyUnread.checked) return;
+      if (updateRequest) return updateRequest;
+      const requestedChannel = currentChannel;
+      const requestedUnread = onlyUnread.checked;
+      updateRequest = (async () => {
+        try {
+          let cursor = lastId;
+          // The updates API returns at most 20 entries per call. Catch up after a hidden tab resumes.
+          for (let batch = 0; batch < (scope === 'mfu' ? 10 : 1); batch += 1) {
+            const query = new URLSearchParams({
+              since_id:String(cursor),
+              limit:'50',
+              unread:scope === 'mfu' && requestedUnread ? '1' : '0',
+            });
+            if (scope === 'mfu') query.set('channel', requestedChannel);
+            const res = await fetch(`${getUpdatesUrl()}?${query.toString()}`, {
+              credentials: 'same-origin',
+              cache: 'no-store',
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (currentChannel !== requestedChannel || onlyUnread.checked !== requestedUnread) return;
+            const items = data.items || [];
+            prependNewItems(items);
+            const nextCursor = Math.max(cursor, Number(data?.latest_id || 0));
+            lastId = Math.max(lastId, nextCursor);
+            await applyCounts(Number(data?.unread_count ?? 0));
+            applyChannelCounts(data?.channel_unread);
+            if (items.length < 20 || nextCursor === cursor) break;
+            cursor = nextCursor;
+          }
+        } catch (_e) {
+          // Keep the visible list; retry on the next foreground sync.
+        }
+      })();
       try {
-        const query = new URLSearchParams({since_id:String(lastId), limit:'50', unread:'0'});
-        if (scope === 'mfu') query.set('channel', currentChannel);
-        const res = await fetch(`${getUpdatesUrl()}?${query.toString()}`, {
-          credentials: 'same-origin',
-          cache: 'no-store',
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        prependNewItems(data.items || []);
-        lastId = Math.max(lastId, Number(data?.latest_id || 0));
-        await applyCounts(Number(data?.unread_count ?? 0));
-        applyChannelCounts(data?.channel_unread);
-      } catch (_e) {
-        // noop
+        await updateRequest;
+      } finally {
+        updateRequest = null;
       }
     };
 
@@ -620,10 +652,10 @@
 
     const startPolling = () => {
       stopPolling();
-      if (notifSocketConnected) return;
-      if (document.hidden || onlyUnread.checked) return;
-      // Socket.IO切断時だけ低頻度でフォールバックする。
-      pollingTimer = window.setInterval(pollUpdatesOnce, 30000);
+      if (document.hidden) return;
+      if (scope !== 'mfu' && (notifSocketConnected || onlyUnread.checked)) return;
+      // MFU通知はSocket.IO接続中も同期し、未読フィルター中の取り逃しを補う。
+      pollingTimer = window.setInterval(pollUpdatesOnce, scope === 'mfu' ? 15000 : 30000);
     };
 
     onlyUnread.addEventListener('change', async () => {
@@ -681,6 +713,11 @@
     markChannelReadBtn?.addEventListener('click', () => markRead(currentChannel, markChannelReadBtn));
 
     const refreshCurrentHead = async () => {
+      if (scope === 'mfu') {
+        const now = Date.now();
+        if (now - lastForegroundRefreshAt < 1000) return;
+        lastForegroundRefreshAt = now;
+      }
       await pollUpdatesOnce();
     };
 
@@ -696,6 +733,7 @@
       await refreshCurrentHead();
       startPolling();
     });
+    if (scope === 'mfu') window.addEventListener('focus', refreshCurrentHead);
     window.addEventListener('message', (event) => {
       if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
     });
@@ -779,14 +817,22 @@
 
     if (typeof window.io === 'function') {
       const notifSocket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-      notifSocket.on('connect', () => { notifSocketConnected = true; stopPolling(); });
+      notifSocket.on('connect', () => {
+        notifSocketConnected = true;
+        if (scope === 'mfu') {
+          startPolling();
+          void pollUpdatesOnce();
+        } else stopPolling();
+      });
       notifSocket.on('notif_unread', async () => {
         await refreshUnreadCount();
+        if (scope === 'mfu') await pollUpdatesOnce();
       });
       notifSocket.on('notif_new', async (payload) => {
         const item = payload?.item;
         if (item && itemMatchesCurrentChannel(item)) prependNewItems([item]);
-        if (item?.id) lastId = Math.max(lastId, Number(item.id));
+        // MFUのcursorはHTTP同期だけで進め、Socketイベントの取り逃しを後から補う。
+        if (scope !== 'mfu' && item?.id) lastId = Math.max(lastId, Number(item.id));
         await refreshUnreadCount();
       });
       notifSocket.on('disconnect', () => { notifSocketConnected = false; startPolling(); });
@@ -795,10 +841,13 @@
 
     updateChannelNavigation();
     load({ append: false }).then(async () => {
-      if (typeof window.io !== 'function') startPolling();
+      if (scope === 'mfu' || typeof window.io !== 'function') startPolling();
       await pollUpdatesOnce();
       await refreshUnreadCount();
       await syncAppBadgeSafe();
+    }).catch((error) => {
+      console.warn('[notifications] initial load failed', error);
+      startPolling();
     });
     prepareNotificationPush();
   })();
