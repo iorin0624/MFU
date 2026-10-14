@@ -81,6 +81,8 @@ PREVIEW_ROOT = Path(os.environ.get("IMAGE_VIEWER_PREVIEW_DIR", os.path.join(os.e
 THUMB_JOB_ROOT = PREVIEW_ROOT / "_thumbnail_jobs"
 VIDEO_JOB_ROOT = PREVIEW_ROOT / "_video_jobs"
 VIDEO_SAVE_JOB_ROOT = PREVIEW_ROOT / "_video_save_jobs"
+MEDIA_FETCH_QUEUE_ROOT = PREVIEW_ROOT / "_media_fetch_queue"
+MEDIA_FETCH_HEARTBEAT = PREVIEW_ROOT / "_media_fetch_worker.heartbeat"
 AI_JOB_ROOT = Path(os.environ.get("IMAGE_VIEWER_AI_JOB_DIR", "/mnt/mfu/tmp/mfu_image_viewer_ai_jobs")).expanduser()
 THUMB_SIZE = (360, 360)
 THUMB_QUALITY = 82
@@ -177,6 +179,36 @@ def _job_manifest_path(job_id: str) -> Path:
     return _job_dir(job_id) / "manifest.json"
 
 
+@contextmanager
+def _media_job_file_lock(path: Path):
+    """Keep web cancellation and the separate fetch worker from losing updates."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(path.suffix + ".lock").open("a+b") as lock_file:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows-only local tests
+            fcntl = None
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_media_job_json(path: Path, job: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.stem}-", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(job, output, ensure_ascii=False)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def _instagram_log(event: str, job_id: str = "", shortcode: str = "", **fields) -> None:
     row = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -262,7 +294,22 @@ def _ensure_cache_roots() -> None:
     THUMB_JOB_ROOT.mkdir(parents=True, exist_ok=True)
     VIDEO_JOB_ROOT.mkdir(parents=True, exist_ok=True)
     VIDEO_SAVE_JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    MEDIA_FETCH_QUEUE_ROOT.mkdir(parents=True, exist_ok=True)
     AI_JOB_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _media_fetch_worker_available() -> bool:
+    try:
+        return time.time() - MEDIA_FETCH_HEARTBEAT.stat().st_mtime < 15
+    except OSError:
+        return False
+
+
+def _queue_media_fetch_job(kind: str, job_id: str) -> None:
+    if kind not in {"image", "video"} or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise ValueError("Invalid media fetch job")
+    _ensure_cache_roots()
+    (MEDIA_FETCH_QUEUE_ROOT / f"{kind}_{job_id}.job").touch(exist_ok=False)
 
 
 def _ensure_upload_root() -> None:
@@ -3019,11 +3066,7 @@ def _video_payload(identifier: str, items: list, source: str = "instagram") -> l
 
 def _write_instagram_job(job_id: str, job: dict) -> None:
     _ensure_cache_roots()
-    path = _job_manifest_path(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
-    tmp_path.replace(path)
+    _write_media_job_json(_job_manifest_path(job_id), job)
 
 
 def _read_instagram_job_from_disk(job_id: str) -> dict:
@@ -3050,13 +3093,19 @@ def _read_instagram_job(job_id: str) -> dict:
 
 
 def _set_instagram_job(job_id: str, updates: dict) -> None:
-    job = _read_instagram_job_from_disk(job_id)
     with _instagram_jobs_lock:
-        if not job:
-            job = dict(_instagram_jobs.get(job_id) or {})
-        job.update(updates)
-        _instagram_jobs[job_id] = dict(job)
-    _write_instagram_job(job_id, job)
+        with _media_job_file_lock(_job_manifest_path(job_id)):
+            job = _read_instagram_job_from_disk(job_id)
+            if not job:
+                job = dict(_instagram_jobs.get(job_id) or {})
+            next_updates = dict(updates)
+            if job.get("cancel_requested") and next_updates.get("status") != "cancelled":
+                next_updates["status"] = "cancelled"
+                next_updates["cancel_requested"] = True
+                next_updates["error"] = job.get("error") or "取得をキャンセルしました。"
+            job.update(next_updates)
+            _instagram_jobs[job_id] = dict(job)
+            _write_instagram_job(job_id, job)
 
 
 def _cleanup_instagram_jobs() -> None:
@@ -3088,7 +3137,7 @@ def _cleanup_incomplete_instagram_job_files() -> None:
             continue
         status = str(job.get("status") or "")
         created_at = float(job.get("created_at") or job_dir.stat().st_mtime)
-        stale_incomplete = status in {"pending", "downloading"} and now - created_at > 10 * 60
+        stale_incomplete = status in {"pending", "running", "downloading"} and now - created_at > _INSTAGRAM_JOB_TTL_SECONDS
         finished = status in {"done", "error", "cancelled", "login_required"}
         expired_finished = finished and now - created_at > _INSTAGRAM_JOB_TTL_SECONDS
         if expired_finished or stale_incomplete:
@@ -3127,30 +3176,34 @@ def _start_instagram_fetch_job(
     video_frames_only: bool = False,
     *,
     owner_username: str,
+    existing_job_id: str = "",
 ) -> str:
-    _cleanup_instagram_jobs()
-    _cleanup_incomplete_instagram_job_files()
-    job_id = uuid.uuid4().hex
-    _instagram_log("job_created", job_id, shortcode, source=source)
-    _set_instagram_job(
-        job_id,
-        {
-            "status": "pending",
-            "source": source,
-            "shortcode": shortcode,
-            "source_url": source_url,
-            "owner_username": owner_username,
-            "video_frames_only": bool(video_frames_only),
-            "created_at": time.time(),
-            "images": [],
-            "total": 0,
-            "processed": 0,
-            "downloaded": 0,
-            "failed": 0,
-            "cancel_requested": False,
-            "error": "",
-        },
-    )
+    if existing_job_id:
+        job_id = existing_job_id
+    else:
+        _cleanup_instagram_jobs()
+        _cleanup_incomplete_instagram_job_files()
+        job_id = uuid.uuid4().hex
+        _instagram_log("job_created", job_id, shortcode, source=source)
+        _set_instagram_job(
+            job_id,
+            {
+                "status": "pending",
+                "source": source,
+                "shortcode": shortcode,
+                "source_url": source_url,
+                "owner_username": owner_username,
+                "video_frames_only": bool(video_frames_only),
+                "created_at": time.time(),
+                "images": [],
+                "total": 0,
+                "processed": 0,
+                "downloaded": 0,
+                "failed": 0,
+                "cancel_requested": False,
+                "error": "",
+            },
+        )
 
     def worker() -> None:
         job_started_at = time.time()
@@ -3342,7 +3395,10 @@ def _start_instagram_fetch_job(
                 _set_instagram_job(job_id, {"status": "error", "error": str(exc)})
                 _instagram_log("job_error", job_id, shortcode, elapsed=round(time.time() - job_started_at, 3), error=str(exc))
 
-    threading.Thread(target=worker, daemon=True).start()
+    if existing_job_id:
+        worker()
+    else:
+        _queue_media_fetch_job("image", job_id)
     return job_id
 
 
@@ -3353,37 +3409,39 @@ def _video_job_path(job_id: str) -> Path:
 
 def _write_video_job(job_id: str, job: dict) -> None:
     _ensure_cache_roots()
-    path = _video_job_path(job_id)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
-    tmp_path.replace(path)
+    _write_media_job_json(_video_job_path(job_id), job)
 
 
 def _read_video_job(job_id: str) -> dict:
-    with _video_jobs_lock:
-        job = dict(_video_jobs.get(job_id) or {})
-    if job:
-        return job
     path = _video_job_path(job_id)
-    if not path.is_file():
-        return {}
-    try:
-        job = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    if not isinstance(job, dict):
-        return {}
+    if path.is_file():
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(job, dict):
+                with _video_jobs_lock:
+                    _video_jobs[job_id] = dict(job)
+                return job
+        except (OSError, ValueError):
+            pass
     with _video_jobs_lock:
-        _video_jobs[job_id] = dict(job)
-    return job
+        return dict(_video_jobs.get(job_id) or {})
 
 
 def _set_video_job(job_id: str, updates: dict) -> None:
     with _video_jobs_lock:
-        job = dict(_video_jobs.get(job_id) or {})
-        job.update(updates)
-        _video_jobs[job_id] = job
-    _write_video_job(job_id, job)
+        with _media_job_file_lock(_video_job_path(job_id)):
+            path = _video_job_path(job_id)
+            try:
+                job = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            except (OSError, ValueError):
+                job = {}
+            if not isinstance(job, dict):
+                job = {}
+            if not job:
+                job = dict(_video_jobs.get(job_id) or {})
+            job.update(updates)
+            _video_jobs[job_id] = dict(job)
+            _write_video_job(job_id, job)
 
 
 def _cleanup_video_jobs() -> None:
@@ -3459,22 +3517,26 @@ def _start_video_fetch_job(
     source_url: str = "",
     *,
     owner_username: str,
+    existing_job_id: str = "",
 ) -> str:
-    _cleanup_video_jobs()
-    job_id = uuid.uuid4().hex
-    _set_video_job(
-        job_id,
-        {
-            "status": "pending",
-            "source": source,
-            "identifier": identifier,
-            "source_url": source_url,
-            "owner_username": owner_username,
-            "created_at": time.time(),
-            "videos": [],
-            "error": "",
-        },
-    )
+    if existing_job_id:
+        job_id = existing_job_id
+    else:
+        _cleanup_video_jobs()
+        job_id = uuid.uuid4().hex
+        _set_video_job(
+            job_id,
+            {
+                "status": "pending",
+                "source": source,
+                "identifier": identifier,
+                "source_url": source_url,
+                "owner_username": owner_username,
+                "created_at": time.time(),
+                "videos": [],
+                "error": "",
+            },
+        )
 
     def worker() -> None:
         try:
@@ -3498,7 +3560,10 @@ def _start_video_fetch_job(
             _set_video_job(job_id, {"status": "error", "error": str(exc)})
             _instagram_log("video_job_error", job_id, identifier, source=source, error=str(exc))
 
-    threading.Thread(target=worker, daemon=True).start()
+    if existing_job_id:
+        worker()
+    else:
+        _queue_media_fetch_job("video", job_id)
     return job_id
 
 
@@ -5586,6 +5651,8 @@ def instagram_fetch():
     source, identifier = _extract_media_identifier(source_url)
     if not source or not identifier:
         return jsonify({"ok": False, "error": "Instagramの投稿・ストーリー、Threads、XのURLを確認してください。"}), 400
+    if not _media_fetch_worker_available():
+        return jsonify({"ok": False, "error": "画像取得サービスが起動していません。しばらくしてから再試行してください。"}), 503
     job_id = _start_instagram_fetch_job(identifier, source, source_url, owner_username=_request_username())
     _instagram_log("fetch_api_started", job_id, identifier, source=source)
     return jsonify({"ok": True, "status": "pending", "source": source, "shortcode": identifier, "jobId": job_id})
@@ -5599,6 +5666,8 @@ def video_frames_fetch():
     source, identifier = _extract_media_identifier(source_url)
     if not source or not identifier:
         return jsonify({"ok": False, "error": "Instagramの投稿・ストーリー、Threads、XのURLを確認してください。"}), 400
+    if not _media_fetch_worker_available():
+        return jsonify({"ok": False, "error": "画像取得サービスが起動していません。しばらくしてから再試行してください。"}), 503
     job_id = _start_instagram_fetch_job(
         identifier,
         source,
@@ -5874,6 +5943,8 @@ def video_fetch():
     source, identifier = _extract_media_identifier(source_url)
     if not source or not identifier:
         return jsonify({"ok": False, "error": "Instagramの投稿・ストーリー、Threads、XのURLを確認してください。"}), 400
+    if not _media_fetch_worker_available():
+        return jsonify({"ok": False, "error": "動画取得サービスが起動していません。しばらくしてから再試行してください。"}), 503
     job_id = _start_video_fetch_job(identifier, source, source_url, owner_username=_request_username())
     return jsonify({"ok": True, "status": "pending", "source": source, "identifier": identifier, "jobId": job_id})
 
