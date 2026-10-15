@@ -105,6 +105,39 @@ def test_au_pay_prepaid_usage_not_mistaken_for_refund_and_charge(tmp_path):
     }
 
 
+def test_au_pay_withdrawal_shows_only_requested_fields(tmp_path):
+    module = _module()
+    eml = tmp_path / "withdrawal.eml"
+    _write_mail(eml, "【au PAY】出金完了のお知らせ[メールコードS3101]", """・出金日時：2026/10/15 18:54:12
+・出金金額：15,000円
+・出金手数料：0円
+・au PAY 残高：50,127円
+・管理番号：************2779
+・詳細：出金　auじぶん銀行
+▼au PAY サイト
+https://wallet.auone.jp/""")
+    event = module.parse_au_pay_transaction(eml)
+    assert event["topic_key"] == "au-pay-usage"
+    assert event["embeds"][0]["title"] == "💸 au PAY 出金完了"
+    assert _fields(event) == {
+        "日時": "2026/10/15 18:54:12",
+        "出金先": "auじぶん銀行",
+        "手数料": "0円",
+        "金額": "15,000円",
+        "残高": "50,127円",
+    }
+    assert list(_fields(event)) == ["日時", "出金先", "手数料", "金額", "残高"]
+    assert "管理番号" not in str(event)
+    assert "wallet.auone.jp" not in str(event)
+
+
+def test_au_pay_other_withdrawal_codes_are_not_claimed(tmp_path):
+    module = _module()
+    eml = tmp_path / "unknown-withdrawal.eml"
+    _write_mail(eml, "【au PAY】出金完了のお知らせ[メールコードS9999]", "")
+    assert module.parse_au_pay_transaction(eml) is None
+
+
 def test_au_pay_transaction_requires_authenticated_sender(tmp_path):
     module = _module()
     eml = tmp_path / "unauthenticated.eml"
