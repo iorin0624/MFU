@@ -478,8 +478,8 @@ def _discord_notify(webhook_url, *, title, description, fields=(), color=0x2ECC7
         }]
         payload = {"embeds": embeds}
         from app.utils.notification_service import mirror_discord_payload_best_effort
-        mirror_discord_payload_best_effort("square_payment", payload)
-        requests.post(webhook_url, json=payload, timeout=10)
+        if mirror_discord_payload_best_effort("square_payment", payload):
+            requests.post(webhook_url, json=payload, timeout=10)
     except Exception:
         logging.exception("discord notify failed")
 
@@ -603,8 +603,8 @@ def _notify_tip_payment_completion(
         try:
             payload = {"content": msg}
             from app.utils.notification_service import mirror_discord_payload_best_effort
-            mirror_discord_payload_best_effort("square_payment", payload)
-            requests.post(webhook, json=payload, timeout=10)
+            if mirror_discord_payload_best_effort("square_payment", payload):
+                requests.post(webhook, json=payload, timeout=10)
         except Exception:
             logging.exception("tip discord notify failed")
 

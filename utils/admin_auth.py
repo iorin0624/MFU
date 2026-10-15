@@ -289,8 +289,8 @@ def _send_login_notification(method: str) -> None:
         )
         payload = {"content": body}
         from app.utils.notification_service import mirror_discord_payload_best_effort
-        mirror_discord_payload_best_effort("admin_login", payload)
-        http.post(webhook, json=payload, timeout=10).raise_for_status()
+        if mirror_discord_payload_best_effort("admin_login", payload):
+            http.post(webhook, json=payload, timeout=10).raise_for_status()
     except Exception as exc:
         # Discord webhook URLs contain secrets; never include the request URL
         # or exception text in logs.

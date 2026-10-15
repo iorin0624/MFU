@@ -527,7 +527,8 @@ def _send_discord(content: str) -> None:
     payload = {"content": content}
     try:
         from app.utils.notification_service import mirror_discord_payload_best_effort
-        mirror_discord_payload_best_effort("suspicious_access", payload)
+        if not mirror_discord_payload_best_effort("suspicious_access", payload):
+            return
     except Exception:
         pass
     body = json.dumps(payload).encode("utf-8")

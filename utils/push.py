@@ -333,6 +333,16 @@ def send_push(
         muted_at=muted_at,
     )
 
+    # Some MFU notifications bypass publish_common_notification (for example,
+    # album admin alerts). Apply the same channel mute at the shared gateway.
+    if req.recipient_type == "mfu_username" and req.muted_at is None:
+        from app.utils.notification_service import _is_muted, _preference
+
+        if _is_muted(_preference(str(req.recipient_value), req.feature_key)):
+            req.muted_at = datetime.utcnow()
+    if req.muted_at is not None:
+        req.send_web_push = False
+
     result: dict[str, Any] = {
         "ok": True,
         "created": False,

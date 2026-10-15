@@ -2841,10 +2841,10 @@ def join_event(event_uuid: str):
                 if wh:
                     payload = {"content": body_text}
                     from app.utils.notification_service import mirror_discord_payload_best_effort
-                    mirror_discord_payload_best_effort("event_management", payload)
-                    r = requests.post(wh, json=payload, timeout=7)
-                    if r.status_code >= 300:
-                        current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
+                    if mirror_discord_payload_best_effort("event_management", payload):
+                        r = requests.post(wh, json=payload, timeout=7)
+                        if r.status_code >= 300:
+                            current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
                 else:
                     current_app.logger.warning("join: admin webhook_url not set")
 

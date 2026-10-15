@@ -466,7 +466,8 @@ def send_discord_embeds(webhook_url: str, embeds: list[dict]) -> bool:
         return False
     payload = {"embeds": embeds, "allowed_mentions": {"parse": []}}
     from app.utils.notification_service import mirror_discord_payload_best_effort
-    mirror_discord_payload_best_effort("train_status", payload)
+    if not mirror_discord_payload_best_effort("train_status", payload):
+        return True
     for attempt in range(DISCORD_RATE_LIMIT_RETRIES + 1):
         response = requests.post(
             webhook_url,

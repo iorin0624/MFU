@@ -179,7 +179,9 @@ def send_discord_upload_notification(
     resp = None
     try:
         from app.utils.notification_service import mirror_discord_payload_best_effort
-        mirror_discord_payload_best_effort(feature_key, payload)
+        if not mirror_discord_payload_best_effort(feature_key, payload):
+            logger.info("%s Discord通知スキップ: reason=channel_muted user=%s upload_id=%s", context_label, username, upload_id)
+            return True
         resp = requests.post(normalized_webhook, json=payload, timeout=10)
         body_preview = _truncate((resp.text or "").replace("\n", "\\n"), DISCORD_RESPONSE_BODY_LOG_LIMIT)
         logger.info(
