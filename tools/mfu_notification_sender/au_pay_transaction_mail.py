@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish authenticated au PAY usage, cancellation and charge mail as four-field cards."""
+"""Publish authenticated au PAY transaction mail as focused notification cards."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ from au_pay_otp_mail import _message_text, post_event
 
 
 EXPECTED_SENDER = "info@wallet.auone.jp"
-SUBJECT_RE = re.compile(r"^【au PAY】(ご利用のお知らせ|チャージ完了のお知らせ)\s*\[メールコード([PC]\d+)\]$")
+SUBJECT_RE = re.compile(r"^【au PAY】(ご利用のお知らせ|チャージ完了のお知らせ|出金完了のお知らせ)\s*\[メールコード([PCS]\d+)\]$")
 
 
 def _authenticated(message) -> bool:
@@ -54,10 +54,24 @@ def parse_au_pay_transaction(path: Path) -> dict | None:
     text = _message_text(message)
     is_charge = notice_type == "チャージ完了のお知らせ" and code.startswith("C")
     is_usage = notice_type == "ご利用のお知らせ" and code.startswith("P")
-    if not (is_charge or is_usage):
+    is_withdrawal = notice_type == "出金完了のお知らせ" and code == "S3101"
+    if not (is_charge or is_usage or is_withdrawal):
         return None
 
-    if is_charge:
+    if is_withdrawal:
+        detail = _label_value(text, "詳細")
+        destination_match = re.fullmatch(r"出金[\s\u3000]+(.+)", detail)
+        destination = _label_value(text, "出金先") or (destination_match.group(1).strip() if destination_match else "")
+        title = "💸 au PAY 出金完了"
+        labels = (
+            ("日時", _label_value(text, "出金日時")),
+            ("出金先", destination),
+            ("手数料", _label_value(text, "出金手数料")),
+            ("金額", _label_value(text, "出金金額")),
+            ("残高", _label_value(text, "au PAY 残高")),
+        )
+        color = 0x9B59B6
+    elif is_charge:
         title = "💰 au PAY チャージ完了"
         labels = (
             ("日時", _label_value(text, "チャージ日時")),
@@ -65,6 +79,7 @@ def parse_au_pay_transaction(path: Path) -> dict | None:
             ("金額", _label_value(text, "チャージ金額")),
             ("残高", _label_value(text, "au PAY 残高", "決済後残高")),
         )
+        color = 0x2ECC71
     else:
         transaction_type = _label_value(text, "種別")
         cancellation = "取消" in transaction_type or "au PAYの返金が完了" in text
@@ -78,6 +93,7 @@ def parse_au_pay_transaction(path: Path) -> dict | None:
             ("利用金額", _label_value(text, "ご利用金額", "支払金額", "支払い金額", "支払い取消金額")),
             ("残高", balance),
         )
+        color = 0xF39C12 if cancellation else 0x3498DB
     if not all(value for _, value in labels):
         raise ValueError(f"required au PAY {code} fields are missing")
 
@@ -89,7 +105,7 @@ def parse_au_pay_transaction(path: Path) -> dict | None:
         "topic_key": "au-pay-usage",
         "embeds": [{
             "title": title,
-            "color": 0x2ECC71 if is_charge else (0xF39C12 if cancellation else 0x3498DB),
+            "color": color,
             "fields": [
                 {"name": label, "value": value, "inline": False}
                 for label, value in labels

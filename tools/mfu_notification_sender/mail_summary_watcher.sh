@@ -321,7 +321,7 @@ process_file(){
     fi
   fi
 
-  # au PAYの利用・取消・チャージは本文の必要な4項目だけを専用チャンネルへ送る。
+  # au PAYの利用・取消・チャージ・出金は必要な項目だけを専用チャンネルへ送る。
   if [[ -x "$AU_PAY_TRANSACTION_HANDLER" ]]; then
     set +e
     "$AU_PAY_TRANSACTION_HANDLER" --eml "$path" --endpoint "$AU_PAY_USAGE_ENDPOINT"
