@@ -14,14 +14,15 @@ function notice(id: number) {
 function mountNotifications() {
   if (!script) throw new Error('notification script not found');
   document.body.innerHTML = `
-    <div id="notificationList"></div>
-    <div id="emptyState" class="d-none"></div>
+    <section class="notification-feed"><div id="notificationList"></div>
+    <div id="emptyState" class="d-none"></div></section>
     <div id="notificationChannelList"></div><select id="notificationChannelSelect"></select>
     <h2 id="notificationFeedTitle"></h2><button id="channelMuteBtn"></button>
     <button id="loadMoreBtn"></button><button id="markAllReadBtn"></button>
     <button id="refreshBtn"></button><input id="onlyUnread" type="checkbox" checked>
   `;
   localStorage.clear();
+  window.history.replaceState({}, '', '/');
   let hidden = false;
   Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
 
@@ -132,5 +133,18 @@ describe('MFU notification auto-refresh', () => {
     muteButton.click();
     await vi.waitFor(() => expect(state.getMuted()).toBe(false));
     await vi.waitFor(() => expect(muteButton.getAttribute('aria-pressed')).toBe('false'));
+  });
+
+  it('resets only the notification pane when changing channels', async () => {
+    const state = mountNotifications();
+    await vi.waitFor(() => expect(state.ids()).toEqual([1]));
+    const feed = document.querySelector('.notification-feed') as HTMLElement;
+    const channels = document.getElementById('notificationChannelList') as HTMLElement;
+    feed.scrollTop = 120;
+    channels.scrollTop = 80;
+
+    (document.querySelector('[data-channel="general"]') as HTMLButtonElement).click();
+    expect(feed.scrollTop).toBe(0);
+    expect(channels.scrollTop).toBe(80);
   });
 });

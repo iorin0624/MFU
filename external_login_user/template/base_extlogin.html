@@ -17,7 +17,7 @@
     .container-narrow { max-width: 960px; }
   </style>
 </head>
-<body>
+<body class="{{ 'mfu-notification-layout' if notification_scope == 'mfu' else '' }}">
 {% include "_extlogin_nav.html" %}
 
 

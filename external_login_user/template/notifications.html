@@ -26,15 +26,17 @@
   .container-narrow { max-width:1180px; }
   .navbar { background:#fff !important; color:#172033; box-shadow:0 1px 0 rgba(15,23,42,.05); }
   .navbar-brand { color:#172033; font-weight:700; }
+  body.mfu-notification-layout { height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+  body.mfu-notification-layout > main { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
   .notification-toolbar { gap:1rem; }
   .notification-toolbar > div { flex-wrap:wrap; align-items:center; justify-content:flex-end; }
-  .notification-shell { display:grid; grid-template-columns:250px minmax(0,1fr); gap:1.25rem; align-items:start; }
-  .notification-sidebar { position:sticky; top:1rem; background:#fff; border:1px solid #d7dfeb; border-radius:.85rem; padding:.65rem; box-shadow:0 .15rem .65rem rgba(15,23,42,.06); }
+  .notification-shell { display:grid; grid-template-columns:250px minmax(0,1fr); gap:1.25rem; flex:1 1 auto; min-height:0; overflow:hidden; }
+  .notification-sidebar { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:#fff; border:1px solid #d7dfeb; border-radius:.85rem; padding:.65rem; box-shadow:0 .15rem .65rem rgba(15,23,42,.06); }
   .notification-sidebar-title { color:#64748b; font-size:.78rem; font-weight:700; letter-spacing:.05em; padding:.35rem .6rem .55rem; }
-  .notification-channel-list { display:grid; gap:.2rem; }
+  .notification-channel-list { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:.2rem; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
   .notification-channel-group { color:#64748b; font-size:.72rem; font-weight:800; letter-spacing:.06em; padding:.75rem .65rem .2rem; }
   .notification-channel-group:first-child { padding-top:.2rem; }
-  .notification-channel { width:100%; display:flex; align-items:center; gap:.55rem; border:0; border-radius:.55rem; background:transparent; color:#334155; padding:.58rem .65rem; text-align:left; }
+  .notification-channel { box-sizing:border-box; width:100%; min-width:0; max-width:100%; display:flex; align-items:center; gap:.55rem; overflow:hidden; border:0; border-radius:.55rem; background:transparent; color:#334155; padding:.58rem .65rem; text-align:left; }
   .notification-channel:hover { background:#f1f5f9; }
   .notification-channel.is-active { background:#e8f1ff; color:#0b57d0; font-weight:700; }
   .notification-channel.is-muted .notification-channel-label { color:#64748b; }
@@ -44,6 +46,7 @@
   .notification-channel-count { min-width:1.6rem; border-radius:999px; background:#dc2626; color:#fff; font-size:.72rem; font-weight:700; line-height:1.35rem; padding:0 .35rem; text-align:center; }
   .notification-channel-count.is-zero { visibility:hidden; }
   .notification-mobile-channel { display:none; margin-bottom:1rem; }
+  .notification-feed { min-width:0; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding-right:.35rem; }
   .notification-feed-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }
   .notification-feed-title { margin:0; color:#334155; font-size:1rem; font-weight:700; }
   .notification-list { display: grid; gap: .9rem; }
@@ -69,12 +72,15 @@
   .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
   #emptyState { color:#64748b !important; font-size:1rem; }
   @media (max-width:767.98px) {
+    body.mfu-notification-layout { height:auto; min-height:100dvh; display:block; overflow:auto; }
+    body.mfu-notification-layout > main { display:block; }
     .container-narrow { padding-left:.85rem; padding-right:.85rem; }
     .notification-toolbar { align-items:flex-start !important; flex-direction:column; }
     .notification-toolbar > div { justify-content:flex-start; width:100%; }
-    .notification-shell { display:block; }
+    .notification-shell { display:block; overflow:visible; }
     .notification-sidebar { display:none; }
     .notification-mobile-channel { display:block; }
+    .notification-feed { overflow:visible; padding-right:0; }
     .notification-feed-head { align-items:flex-start; flex-direction:column; }
     .notification-fields { grid-template-columns:1fr; }
     .notification-field { grid-column:1/-1; }
@@ -92,10 +98,10 @@
   {% if notification_scope == 'mfu' %}
   <aside class="notification-sidebar" aria-label="通知チャンネル">
     <div class="notification-sidebar-title">通知チャンネル</div>
-    <div id="notificationChannelList" class="notification-channel-list"></div>
+    <div id="notificationChannelList" class="notification-channel-list" tabindex="0"></div>
   </aside>
   {% endif %}
-  <section class="notification-feed">
+  <section class="notification-feed" aria-label="通知一覧" tabindex="0">
     {% if notification_scope == 'mfu' %}
     <div class="notification-feed-head">
       <h2 id="notificationFeedTitle" class="notification-feed-title"># すべて</h2>
@@ -138,6 +144,7 @@
     const markChannelReadBtn = document.getElementById('markChannelReadBtn');
     const channelListEl = document.getElementById('notificationChannelList');
     const channelSelectEl = document.getElementById('notificationChannelSelect');
+    const feedEl = document.querySelector('.notification-feed');
     const feedTitleEl = document.getElementById('notificationFeedTitle');
     const channelMuteBtn = document.getElementById('channelMuteBtn');
 
@@ -266,6 +273,7 @@
       else url.searchParams.set('channel', currentChannel);
       window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
       updateChannelNavigation();
+      if (feedEl) feedEl.scrollTop = 0;
       page = 1;
       hasNext = false;
       await load({append:false});
