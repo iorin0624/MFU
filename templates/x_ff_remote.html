@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Xフォロー関係の遠隔取得 - MFU{% endblock %}
+{% block content %}
+<main class="container py-3" style="max-width:1100px">
+  <h1 class="h3">Xフォロー関係の遠隔取得</h1>
+  <p class="text-muted">全件一覧と比較結果は、この画面を開いている間だけ受信します。MFUには全件一覧を保存せず、増減したIDのみ通知履歴に残します。正式な履歴はChrome拡張機能に取り込みます。</p>
+  <div class="card mb-3"><div class="card-body">
+    <div id="connection" class="mb-2">接続状態を確認中…</div>
+    <div id="latest" class="small text-muted mb-3"></div>
+    <div class="d-flex gap-2 flex-wrap">
+      <button class="btn btn-primary" data-mode="all">フォロー関係を一括取得</button>
+      <button class="btn btn-outline-primary" data-mode="followers">フォロワーのみ取得</button>
+      <button class="btn btn-outline-primary" data-mode="following">フォロー中のみ取得</button>
+      <button class="btn btn-outline-danger" id="cancel">取得を中止</button>
+    </div>
+    <div id="progress" class="mt-3" aria-live="polite"></div>
+  </div></div>
+  <div class="card mb-3"><div class="card-body">
+    <h2 class="h5">直近の取得結果</h2>
+    <div id="result" aria-live="polite">実行結果はまだありません。</div>
+    <div class="row mt-3"><div class="col-md-6"><h3 class="h6">フォロワー増加</h3><ul id="followers-added"></ul></div>
+      <div class="col-md-6"><h3 class="h6">フォロワー減少</h3><ul id="followers-removed"></ul></div></div>
+    <div class="row mt-3"><div class="col-md-6"><h3 class="h6">フォロー中の追加</h3><ul id="following-added"></ul></div>
+      <div class="col-md-6"><h3 class="h6">フォロー中の解除</h3><ul id="following-removed"></ul></div></div>
+  </div></div>
+  <div class="card"><div class="card-body">
+    <h2 class="h5">Windows電源</h2>
+    <p class="small text-muted">電源ボタンはPCがオフラインの時のみ手動で押します。応答は起動完了を保証しません。スリープは取得・取り込み待ちがない時のみ実行します。</p>
+    <button class="btn btn-outline-warning" id="power">SwitchBotで電源ボタンを押す</button>
+    <button class="btn btn-outline-secondary" id="sleep">Windowsをスリープ</button>
+  </div></div>
+</main>
+{% endblock %}
+{% block body_extra %}
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+  const $ = id => document.getElementById(id);
+  const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  const connection = $('connection');
+  let online = false;
+  let busy = false;
+  let bridgePending = 0;
+  const socket = io('/x-ff-admin', {transports: ['websocket', 'polling']});
+  function paint() {
+    connection.textContent = `Windows側: ${online ? '接続中' : '未接続'}${busy ? '・取得中' : ''}${bridgePending ? `・Chromeへの取り込み待ち ${bridgePending}件` : ''}`;
+    connection.className = online ? 'text-success mb-2' : 'text-danger mb-2';
+    document.querySelectorAll('[data-mode]').forEach(button => {button.disabled = !online || busy;});
+    $('sleep').disabled = !online || busy || bridgePending > 0;
+    $('power').disabled = online;
+  }
+  async function post(path, body = {}, action = '') {
+    const token = action ? await window.MFUAdminPasskey.authorize(action) : '';
+    const response = await fetch(`/admin/x-ff-remote/${path}`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type':'application/json', 'X-CSRF-Token':csrf, ...(token ? {'X-MFU-Admin-Passkey':token} : {})},
+      body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  }
+  function list(id, rows) {
+    const element = $(id);
+    element.replaceChildren();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!/^[A-Za-z0-9_]{1,15}$/.test(String(row.handle || ''))) continue;
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = `https://x.com/${row.handle}`;
+      a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = `@${row.handle}`;
+      li.append(a); element.append(li);
+    }
+  }
+  socket.on('agent_state', state => {
+    online = !!state.online; busy = !!state.busy;
+    bridgePending = Number(state.bridgePending || 0); paint();
+  });
+  socket.on('progress', value => {
+    busy = true; paint();
+    $('progress').textContent = `${value.type === 'followers' ? 'フォロワー' : 'フォロー中'}: ${value.count ?? 0}件取得（期待値 ${value.expectedCount ?? '不明'}件）`;
+  });
+  socket.on('result', value => {
+    busy = false; bridgePending = value.bridgePending ? 1 : 0; paint();
+    const followers = value.diffByType?.followers;
+    const following = value.diffByType?.following;
+    $('result').textContent = `状態: ${value.status} / フォロワー ${value.counts?.followers ?? '—'}件（増 ${followers?.addedCount ?? '—'} / 減 ${followers?.removedCount ?? '—'}） / フォロー中 ${value.counts?.following ?? '—'}件（増 ${following?.addedCount ?? '—'} / 減 ${following?.removedCount ?? '—'}）`;
+    list('followers-added', followers?.added); list('followers-removed', followers?.removed);
+    list('following-added', following?.added); list('following-removed', following?.removed);
+  });
+  document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', async () => {
+    try { await post('start', {mode:button.dataset.mode}); busy = true; paint(); $('progress').textContent = '取得を開始します…'; }
+    catch (error) { alert(error.message); }
+  }));
+  $('cancel').onclick = async () => { try { await post('cancel'); } catch (error) { alert(error.message); } };
+  $('power').onclick = async () => {
+    if (!confirm('PCが実際に電源OFFであることを確認しましたか？ 接続断だけなら電源ON中の可能性があります。確認できた場合だけ電源ボタンを1回押します。')) return;
+    try { await post('power', {confirmedOff:true}, 'x_ff_power'); alert('操作を送信しました。起動は接続状態で確認してください。'); }
+    catch (error) { alert(error.message); }
+  };
+  $('sleep').onclick = async () => {
+    if (!confirm('Windowsをスリープします。よろしいですか？')) return;
+    try { await post('sleep', {}, 'x_ff_sleep'); } catch (error) { alert(error.message); }
+  };
+  fetch('/admin/x-ff-remote/state').then(r => r.json()).then(state => {
+    online = !!state.online; bridgePending = Number(state.bridgePending || 0); paint();
+    if (!state.configured) connection.textContent += '・MFU側の接続トークンが未設定です';
+    if (state.latest) $('latest').textContent = `直近: ${state.latest.started_at} / ${state.latest.mode} / ${state.latest.status} / フォロワー ${state.latest.followers_count ?? '—'}件 / フォロー中 ${state.latest.following_count ?? '—'}件`;
+  }).catch(error => { connection.textContent = error.message; });
+  paint();
+});
+</script>
+{% endblock %}
