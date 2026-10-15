@@ -6861,6 +6861,17 @@ app.register_blueprint(mail_filters_bp)
 from app.inpa.mfu_admin_bridge import inpa_admin_bp
 app.register_blueprint(inpa_admin_bp)
 
+# Windows headless X follow collector (lists never enter MFU storage).
+from app.x_ff_remote import bp as x_ff_remote_bp, register_socketio as register_x_ff_socketio
+app.register_blueprint(x_ff_remote_bp)
+register_x_ff_socketio(socketio)
+try:
+    from app.x_ff_remote import _db as ensure_x_ff_remote_schema, ensure_nav_item as ensure_x_ff_nav_item
+    ensure_x_ff_remote_schema()
+    ensure_x_ff_nav_item()
+except Exception as exc:
+    app.logger.warning("X follow remote schema/nav init skipped: %s", exc)
+
 try:
     ensure_mail_filter_schema()
     ensure_mail_filter_nav_item()
