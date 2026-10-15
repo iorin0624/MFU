@@ -524,7 +524,8 @@ def send_discord_alert(
         "allowed_mentions": {"parse": []},
     }
     from app.utils.notification_service import mirror_discord_payload_best_effort
-    mirror_discord_payload_best_effort("rain_alert", payload)
+    if not mirror_discord_payload_best_effort("rain_alert", payload):
+        return True
     response = requests.post(
         # Keep the attachment delivery on Discord while the card is mirrored above.
         webhook_url,

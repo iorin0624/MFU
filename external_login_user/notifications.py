@@ -227,6 +227,7 @@ def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
                 "updates": "/api/mfu-notifications/updates",
                 "readOneBase": "/api/mfu-notifications",
                 "readAll": "/api/mfu-notifications/read-all",
+                "mutes": "/api/mfu-notifications/mutes",
             },
         }
     return None
@@ -1696,6 +1697,26 @@ def api_mfu_notifications_unread_count():
         "channel_unread": _compute_mfu_channel_unread_counts(username),
         **counts,
     })
+
+
+@mfu_notifications_bp.route("/api/mfu-notifications/mutes", methods=["GET", "POST"])
+def api_mfu_notifications_mutes():
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    from app.utils.notification_service import mfu_channel_mutes, set_mfu_channel_mute
+
+    if request.method == "GET":
+        return jsonify({"ok": True, "muted_channels": mfu_channel_mutes(username)})
+
+    payload = request.get_json(silent=True) or {}
+    channel = str(payload.get("channel") or "").strip().lower()
+    if channel not in FEATURE_DEFINITIONS and channel != "other":
+        return jsonify({"ok": False, "reason": "invalid_channel"}), 400
+    if type(payload.get("muted")) is not bool:
+        return jsonify({"ok": False, "reason": "invalid_muted"}), 400
+    muted_channels = set_mfu_channel_mute(username, channel, payload["muted"])
+    return jsonify({"ok": True, "channel": channel, "muted_channels": muted_channels})
 
 
 def _fetch_mfu_notifications(

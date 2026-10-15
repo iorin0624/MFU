@@ -16,6 +16,8 @@ function mountNotifications() {
   document.body.innerHTML = `
     <div id="notificationList"></div>
     <div id="emptyState" class="d-none"></div>
+    <div id="notificationChannelList"></div><select id="notificationChannelSelect"></select>
+    <h2 id="notificationFeedTitle"></h2><button id="channelMuteBtn"></button>
     <button id="loadMoreBtn"></button><button id="markAllReadBtn"></button>
     <button id="refreshBtn"></button><input id="onlyUnread" type="checkbox" checked>
   `;
@@ -32,20 +34,26 @@ function mountNotifications() {
         list: '/api/mfu-notifications',
         updates: '/api/mfu-notifications/updates',
         unreadCount: '/api/mfu-notifications/unread-count',
+        mutes: '/api/mfu-notifications/mutes',
         readOneBase: '/api/mfu-notifications',
         readAll: '/api/mfu-notifications/read-all',
       },
-      channels: [],
+      channels: [{ key: 'general', label: '一般', group: 'その他' }],
     },
     io: () => socket,
   });
 
   const items = [notice(1)];
+  let muted = false;
   const requests: URL[] = [];
-  const fetchMock = vi.fn(async (input: string) => {
+  const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'https://mfu.iori0624.jp');
     requests.push(url);
     const since = Number(url.searchParams.get('since_id') || 0);
+    if (url.pathname.endsWith('/mutes')) {
+      if (init?.method === 'POST') muted = Boolean(JSON.parse(String(init.body)).muted);
+      return { ok: true, json: async () => ({ muted_channels: { general: muted } }) };
+    }
     const data = url.pathname.endsWith('/updates')
       ? { items: items.filter((item) => item.id > since), latest_id: Math.max(since, ...items.map((item) => item.id)), unread_count: items.length, channel_unread: {} }
       : url.pathname.endsWith('/unread-count')
@@ -64,7 +72,8 @@ function mountNotifications() {
   new Function('window', 'document', 'navigator', 'fetch', script)(window, document, navigator, fetchMock);
   const ids = () => [...document.querySelectorAll('#notificationList > article')]
     .map((element) => Number((element as HTMLElement).dataset.notificationId));
-  return { items, requests, socketHandlers, ids, getTick: () => tick, setHidden: (value: boolean) => { hidden = value; } };
+  return { items, requests, socketHandlers, ids, getTick: () => tick,
+    getMuted: () => muted, setHidden: (value: boolean) => { hidden = value; } };
 }
 
 afterEach(() => {
@@ -105,5 +114,23 @@ describe('MFU notification auto-refresh', () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2000);
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.waitFor(() => expect(state.ids()).toEqual([2, 1]));
+  });
+
+  it('mutes and unmutes the selected channel without removing its history', async () => {
+    const state = mountNotifications();
+    await vi.waitFor(() => expect(state.ids()).toEqual([1]));
+    (document.querySelector('[data-channel="general"]') as HTMLButtonElement).click();
+    const muteButton = document.getElementById('channelMuteBtn') as HTMLButtonElement;
+    await vi.waitFor(() => expect(muteButton.classList.contains('d-none')).toBe(false));
+    await vi.waitFor(() => expect(muteButton.disabled).toBe(false));
+
+    muteButton.click();
+    await vi.waitFor(() => expect(state.getMuted()).toBe(true));
+    await vi.waitFor(() => expect(muteButton.getAttribute('aria-pressed')).toBe('true'));
+    expect(state.ids()).toEqual([1]);
+
+    muteButton.click();
+    await vi.waitFor(() => expect(state.getMuted()).toBe(false));
+    await vi.waitFor(() => expect(muteButton.getAttribute('aria-pressed')).toBe('false'));
   });
 });

@@ -263,16 +263,19 @@ def revoke_notification_token(token: str) -> bool:
 
 def _preference(username: str, feature_key: str) -> dict[str, Any]:
     ensure_notification_service_schema()
+    known_channel = feature_key in FEATURE_DEFINITIONS
+    preferred_key = feature_key if known_channel else "other"
+    fallback_key = "*" if known_channel else feature_key
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         cur.execute(
             """
             SELECT * FROM mfu_notification_preferences
-             WHERE recipient_type='mfu_username' AND recipient_value=%s AND feature_key IN (%s, '*')
-             ORDER BY feature_key=%s DESC LIMIT 1
+             WHERE recipient_type='mfu_username' AND recipient_value=%s AND feature_key IN (%s, %s, '*')
+             ORDER BY CASE WHEN feature_key=%s THEN 0 WHEN feature_key=%s THEN 1 ELSE 2 END LIMIT 1
             """,
-            (username, feature_key, feature_key),
+            (username, preferred_key, fallback_key, preferred_key, fallback_key),
         )
         row = cur.fetchone() or {}
         return {
@@ -293,6 +296,54 @@ def _is_muted(preference: dict[str, Any]) -> bool:
         return True
     mute_until = preference.get("mute_until")
     return bool(mute_until and mute_until > datetime.utcnow())
+
+
+def mfu_channel_mutes(username: str) -> dict[str, bool]:
+    """Return effective mute state for each notification-center channel."""
+    ensure_notification_service_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT feature_key, muted_forever, mute_until
+              FROM mfu_notification_preferences
+             WHERE recipient_type='mfu_username' AND recipient_value=%s
+            """,
+            (username,),
+        )
+        saved = {str(row["feature_key"]): row for row in (cur.fetchall() or [])}
+        return {
+            key: _is_muted(saved.get(key) or saved.get("*") or {})
+            for key in (*FEATURE_DEFINITIONS.keys(), "other")
+        }
+    finally:
+        cur.close()
+        db.close()
+
+
+def set_mfu_channel_mute(username: str, channel: str, muted: bool) -> dict[str, bool]:
+    """Persist a per-user, permanent mute; existing unread items are untouched."""
+    if channel not in FEATURE_DEFINITIONS and channel != "other":
+        raise ValueError("invalid_channel")
+    ensure_notification_service_schema()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO mfu_notification_preferences
+              (recipient_type, recipient_value, feature_key, muted_forever, mute_until)
+            VALUES ('mfu_username', %s, %s, %s, NULL)
+            ON DUPLICATE KEY UPDATE muted_forever=VALUES(muted_forever), mute_until=NULL
+            """,
+            (username, channel, int(muted)),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+    return mfu_channel_mutes(username)
 
 
 @_with_notification_app_context
@@ -560,10 +611,12 @@ def dispatch_discord_notification(
     return result
 
 
-def mirror_discord_payload_best_effort(feature_key: str, payload: dict[str, Any]) -> None:
-    """Mirror a legacy direct-Discord sender without changing its delivery path."""
+def mirror_discord_payload_best_effort(feature_key: str, payload: dict[str, Any]) -> bool:
+    """Mirror a legacy sender; return whether its direct Discord delivery is allowed."""
     try:
-        mirror_discord_payload(feature_key, payload)
+        result = mirror_discord_payload(feature_key, payload)
+        preference = result.get("preference") if isinstance(result.get("preference"), dict) else {}
+        return not result.get("muted") and bool(preference.get("discord_enabled", True))
     except Exception:
         # A common-notification outage must never suppress the original alert.
         try:
@@ -572,6 +625,7 @@ def mirror_discord_payload_best_effort(feature_key: str, payload: dict[str, Any]
             )
         except Exception:
             pass
+        return True
 
 
 def _serialize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
