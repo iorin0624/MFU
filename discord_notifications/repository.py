@@ -34,6 +34,7 @@ FEATURE_DEFINITIONS = OrderedDict(
         ("au_pay_otp", {"label": "ワンタイムパスワード", "description": "au PAYネットショッピング認証コード", "group": "au pay"}),
         ("debian_updates", {"label": "Debian自動更新", "description": "端末別の更新結果・失敗・再起動状況", "group": "システム"}),
         ("backup_status", {"label": "バックアップ結果", "description": "メールサーバーのバックアップ異常", "group": "システム"}),
+        ("windows_device_connection", {"label": "Windows端末接続", "description": "MFU Media Hub端末の接続・切断", "group": "システム"}),
         ("freepbx_calls", {"label": "FreePBX着信通知", "description": "全着信の分類・発信元・処理結果", "group": "電話"}),
         ("voicemail_transcription", {"label": "留守番電話文字起こし", "description": "留守番電話の文字起こし・要約", "group": "電話"}),
     ]

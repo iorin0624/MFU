@@ -15,14 +15,16 @@ import secrets
 import shutil
 import tempfile
 import threading
+import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 from flask import (
     Blueprint,
     abort,
+    current_app,
     jsonify,
     redirect,
     render_template_string,
@@ -40,6 +42,11 @@ from app.utils.ios_upload_images import (
     IOSUploadImageError,
     convert_heif_to_jpeg,
     looks_like_heif,
+)
+from app.utils.photo_relay_connection_notifications import (
+    DISCONNECT_GRACE_SECONDS,
+    connection_notification_payload,
+    should_notify_connection,
 )
 from app.utils.socket_connection_metrics import register_connection, unregister_connection
 from app.utils.upload_security import detect_mime_from_bytes
@@ -67,6 +74,7 @@ _schema_ready = False
 _schema_lock = threading.Lock()
 _sid_devices: dict[str, int] = {}
 _sid_lock = threading.Lock()
+_server_started_at = time.monotonic()
 
 
 def _hash_token(token: str) -> str:
@@ -156,6 +164,48 @@ def _ensure_schema() -> None:
               KEY ix_photo_relay_job_device (device_id, status, created_at),
               CONSTRAINT fk_photo_relay_job_device FOREIGN KEY (device_id)
                 REFERENCES photo_relay_devices(id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS photo_relay_connection_state (
+              device_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+              online TINYINT(1) NOT NULL DEFAULT 0,
+              last_ip VARCHAR(64) NOT NULL DEFAULT '',
+              connected_at DATETIME NULL,
+              disconnected_at DATETIME NULL,
+              pending_disconnect_at DATETIME NULL,
+              CONSTRAINT fk_photo_relay_connection_device FOREIGN KEY (device_id)
+                REFERENCES photo_relay_devices(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        # At rollout, already-connected clients may reconnect because the
+        # server restarts. Seed their last known state without alerting.
+        cur.execute(
+            """
+            INSERT IGNORE INTO photo_relay_connection_state
+              (device_id, online, connected_at)
+            SELECT id, 1, last_connected_at FROM photo_relay_devices
+             WHERE last_connected_at IS NOT NULL AND revoked_at IS NULL AND removed_at IS NULL
+            """
+        )
+        cur.execute("SHOW COLUMNS FROM photo_relay_connection_state LIKE 'pending_disconnect_at'")
+        if not cur.fetchone():
+            cur.execute(
+                "ALTER TABLE photo_relay_connection_state ADD COLUMN pending_disconnect_at DATETIME NULL"
+            )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS photo_relay_socket_sessions (
+              sid VARCHAR(128) NOT NULL PRIMARY KEY,
+              device_id BIGINT UNSIGNED NOT NULL,
+              connected_at DATETIME NOT NULL,
+              lease_until DATETIME NOT NULL,
+              KEY ix_photo_relay_socket_device (device_id, lease_until),
+              CONSTRAINT fk_photo_relay_socket_device FOREIGN KEY (device_id)
+                REFERENCES photo_relay_devices(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
@@ -984,6 +1034,179 @@ def relay_job_status(job_uuid: str):
     )
 
 
+def _publish_device_connection(app, device: dict, ip_address: str, connected: bool, occurred_at: datetime) -> None:
+    with app.app_context():
+        try:
+            from app.utils.notification_service import dispatch_discord_notification
+
+            dispatch_discord_notification(
+                "windows_device_connection",
+                connection_notification_payload(
+                    device_name=str(device["label"]),
+                    occurred_at=occurred_at,
+                    ip_address=ip_address,
+                    connected=connected,
+                ),
+                recipient_username=str(device["username"]),
+                media_hub_enabled=False,
+            )
+        except Exception:
+            app.logger.exception("Windows device connection notification failed device_id=%s", device["id"])
+
+
+def _mark_device_connected(device: dict, sid: str, ip_address: str) -> bool:
+    device_id = int(device["id"])
+    # Gunicorn has multiple workers, so the database lease is authoritative;
+    # this process's _sid_devices only serves its own resync and lease task.
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "INSERT IGNORE INTO photo_relay_connection_state (device_id, online) VALUES (%s, 0)",
+            (device_id,),
+        )
+        cur.execute(
+            "SELECT online, pending_disconnect_at FROM photo_relay_connection_state WHERE device_id=%s FOR UPDATE",
+            (device_id,),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            "DELETE FROM photo_relay_socket_sessions WHERE device_id=%s AND lease_until<UTC_TIMESTAMP()",
+            (device_id,),
+        )
+        cur.execute(
+            "SELECT COUNT(*) AS total FROM photo_relay_socket_sessions "
+            "WHERE device_id=%s AND lease_until>UTC_TIMESTAMP()",
+            (device_id,),
+        )
+        already_connected = bool((cur.fetchone() or {}).get("total"))
+        pending_at = row.get("pending_disconnect_at") if row else None
+        recent_disconnect = bool(
+            pending_at and (datetime.utcnow() - pending_at).total_seconds() < DISCONNECT_GRACE_SECONDS
+        )
+        notify = should_notify_connection(
+            was_online=bool(row["online"]) if row else None,
+            recent_disconnect=recent_disconnect,
+            already_connected=already_connected,
+            server_uptime_seconds=time.monotonic() - _server_started_at,
+        )
+        cur.execute(
+            """
+            INSERT INTO photo_relay_socket_sessions (sid, device_id, connected_at, lease_until)
+            VALUES (%s, %s, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 SECOND))
+            """,
+            (sid, device_id),
+        )
+        cur.execute(
+            """
+            UPDATE photo_relay_connection_state
+               SET online=1, last_ip=%s, connected_at=UTC_TIMESTAMP(),
+                   disconnected_at=NULL, pending_disconnect_at=NULL
+             WHERE device_id=%s
+            """,
+            (ip_address, device_id),
+        )
+        cur.execute(
+            "UPDATE photo_relay_devices SET last_connected_at=UTC_TIMESTAMP() WHERE id=%s",
+            (device_id,),
+        )
+        db.commit()
+        with _sid_lock:
+            _sid_devices[sid] = device_id
+        return notify
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+        db.close()
+
+
+def _refresh_socket_lease(app, sid: str, device_id: int) -> None:
+    with app.app_context():
+        while True:
+            socketio.sleep(30)
+            with _sid_lock:
+                if _sid_devices.get(sid) != device_id:
+                    return
+            try:
+                db = get_db()
+                cur = db.cursor()
+                try:
+                    cur.execute(
+                        "UPDATE photo_relay_socket_sessions "
+                        "SET lease_until=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 SECOND) WHERE sid=%s",
+                        (sid,),
+                    )
+                    active = bool(cur.rowcount)
+                    db.commit()
+                finally:
+                    cur.close()
+                    db.close()
+                if not active:
+                    return
+            except Exception:
+                app.logger.exception("Windows device socket lease refresh failed device_id=%s", device_id)
+
+
+def _confirm_device_disconnected(app, device_id: int) -> None:
+    with app.app_context():
+        device = None
+        ip_address = ""
+        disconnected_at = None
+        try:
+            db = get_db()
+            cur = db.cursor(dictionary=True)
+            try:
+                cur.execute(
+                    """
+                    SELECT s.online, s.last_ip, s.pending_disconnect_at, d.id, d.username, d.label
+                      FROM photo_relay_connection_state s
+                      JOIN photo_relay_devices d ON d.id=s.device_id
+                     WHERE s.device_id=%s FOR UPDATE
+                    """,
+                    (device_id,),
+                )
+                row = cur.fetchone()
+                pending_at = row.get("pending_disconnect_at") if row else None
+                if row and row["online"] and pending_at and (
+                    datetime.utcnow() - pending_at
+                ).total_seconds() >= DISCONNECT_GRACE_SECONDS:
+                    cur.execute(
+                        "SELECT COUNT(*) AS total FROM photo_relay_socket_sessions "
+                        "WHERE device_id=%s AND lease_until>UTC_TIMESTAMP()",
+                        (device_id,),
+                    )
+                    if not (cur.fetchone() or {}).get("total"):
+                        cur.execute(
+                            """
+                            UPDATE photo_relay_connection_state
+                               SET online=0, disconnected_at=%s, pending_disconnect_at=NULL
+                             WHERE device_id=%s
+                            """,
+                            (pending_at, device_id),
+                        )
+                        device = row
+                        ip_address = str(row["last_ip"] or "")
+                        disconnected_at = pending_at.replace(tzinfo=timezone.utc)
+                    else:
+                        cur.execute(
+                            "UPDATE photo_relay_connection_state SET pending_disconnect_at=NULL WHERE device_id=%s",
+                            (device_id,),
+                        )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+                db.close()
+            if device and disconnected_at:
+                _publish_device_connection(app, device, ip_address, False, disconnected_at)
+        except Exception:
+            app.logger.exception("Windows device disconnect confirmation failed device_id=%s", device_id)
+
+
 @socketio.on("connect", namespace="/photo-relay")
 def photo_relay_socket_connect(auth=None):
     auth = auth if isinstance(auth, dict) else {}
@@ -992,17 +1215,15 @@ def photo_relay_socket_connect(auth=None):
         return False
     _cleanup_expired_jobs()
     join_room(f"photo-relay:{device['device_uuid']}")
-    with _sid_lock:
-        _sid_devices[request.sid] = int(device["id"])
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "UPDATE photo_relay_devices SET last_connected_at=UTC_TIMESTAMP() WHERE id=%s",
-        (device["id"],),
-    )
-    db.commit()
-    db.close()
+    ip_address = str(request.remote_addr or "")[:64]
+    notify = _mark_device_connected(device, request.sid, ip_address)
     register_connection(socketio, "/photo-relay")
+    socketio.start_background_task(
+        _refresh_socket_lease,
+        current_app._get_current_object(),
+        request.sid,
+        int(device["id"]),
+    )
     emit(
         "photo_relay_connected",
         {
@@ -1011,6 +1232,15 @@ def photo_relay_socket_connect(auth=None):
             "queued_files": _queued_files(int(device["id"])),
         },
     )
+    if notify:
+        socketio.start_background_task(
+            _publish_device_connection,
+            current_app._get_current_object(),
+            device,
+            ip_address,
+            True,
+            datetime.now(timezone.utc),
+        )
 
 
 @socketio.on("photo_relay_resync", namespace="/photo-relay")
@@ -1025,6 +1255,49 @@ def photo_relay_resync(_payload=None):
 
 @socketio.on("disconnect", namespace="/photo-relay")
 def photo_relay_socket_disconnect():
+    app = current_app._get_current_object()
+    sid = request.sid
     with _sid_lock:
-        _sid_devices.pop(request.sid, None)
+        device_id = _sid_devices.pop(sid, None)
+    if device_id:
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT online FROM photo_relay_connection_state WHERE device_id=%s FOR UPDATE",
+                (device_id,),
+            )
+            cur.fetchone()
+            cur.execute("DELETE FROM photo_relay_socket_sessions WHERE sid=%s", (sid,))
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM photo_relay_socket_sessions "
+                "WHERE device_id=%s AND lease_until>UTC_TIMESTAMP()",
+                (device_id,),
+            )
+            last_socket = not bool((cur.fetchone() or {}).get("total"))
+            if last_socket:
+                cur.execute(
+                    """
+                    UPDATE photo_relay_connection_state
+                       SET pending_disconnect_at=UTC_TIMESTAMP()
+                     WHERE device_id=%s AND online=1 AND pending_disconnect_at IS NULL
+                    """,
+                    (device_id,),
+                )
+            db.commit()
+        except Exception:
+            db.rollback()
+            app.logger.exception("Windows device disconnect tracking failed device_id=%s", device_id)
+            last_socket = False
+        finally:
+            cur.close()
+            db.close()
+        if last_socket:
+            timer = threading.Timer(
+                DISCONNECT_GRACE_SECONDS + 1,
+                _confirm_device_disconnected,
+                args=(app, device_id),
+            )
+            timer.daemon = True
+            timer.start()
     unregister_connection(socketio, "/photo-relay")

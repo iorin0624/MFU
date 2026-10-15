@@ -365,6 +365,7 @@ def publish_common_notification(
     actions: list[dict[str, Any]] | None = None,
     dedup_key: str,
     source_id: int | None = None,
+    media_hub_enabled: bool | None = None,
 ) -> dict[str, Any]:
     from app.utils.push import send_push
 
@@ -372,6 +373,7 @@ def publish_common_notification(
     feature = (feature_key or "general").strip()[:64]
     preference = _preference(recipient, feature)
     muted = _is_muted(preference)
+    desktop_enabled = bool(preference.get("media_hub_enabled")) if media_hub_enabled is None else bool(media_hub_enabled)
     normalized_actions: list[dict[str, str]] = []
     for row in actions or []:
         if not isinstance(row, dict):
@@ -402,7 +404,7 @@ def publish_common_notification(
         "image_url": (image_url or "")[:1000],
         "footer": (footer or "")[:255],
         "sound_enabled": bool(preference.get("sound_enabled")),
-        "media_hub_enabled": bool(preference.get("media_hub_enabled")),
+        "media_hub_enabled": desktop_enabled,
         "actions": normalized_actions[:8],
     }
     result = send_push(
@@ -426,7 +428,7 @@ def publish_common_notification(
     result["muted"] = muted
     result["preference"] = preference
     result.setdefault("delivery", {})["media_hub"] = (
-        "muted" if muted else ("queued" if preference.get("media_hub_enabled") else "disabled")
+        "muted" if muted else ("queued" if desktop_enabled else "disabled")
     )
     return result
 
@@ -583,6 +585,7 @@ def dispatch_discord_notification(
     legacy_webhook: str | None = None,
     timeout: int = 10,
     params: dict[str, Any] | None = None,
+    media_hub_enabled: bool | None = None,
 ) -> dict[str, Any]:
     """Register once in the common store, then fan out to every enabled channel."""
     event = discord_payload_to_event(feature_key, payload)
@@ -591,6 +594,7 @@ def dispatch_discord_notification(
     result = publish_common_notification(
         recipient_username=recipient_username,
         dedup_key=f"dispatch:{feature_key}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:32]}:{bucket}",
+        media_hub_enabled=media_hub_enabled,
         **event,
     )
     preference = result.get("preference") if isinstance(result.get("preference"), dict) else {}
