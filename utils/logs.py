@@ -8,6 +8,7 @@ import os
 import json
 from datetime import datetime
 from typing import Optional, Dict, Tuple, List, Union
+from urllib.parse import urlsplit, urlunsplit
 from flask import g, request as _req, current_app
 from app.utils.db import get_db
 from app.utils.fw_auto_ban import choose_ban_escalation, evaluate_events, enforcement_enabled
@@ -605,6 +606,19 @@ def _latency_ms() -> int:
     return 0
 
 
+def redact_upload_access_url(value: str) -> str:
+    """Remove query strings from upload access URLs before logging or redirecting."""
+    referer = str(value or "")
+    try:
+        parts = urlsplit(referer)
+        if parts.query and parts.path.startswith("/view/") and parts.path.endswith("/access"):
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    except ValueError:
+        if "/access?" in referer:
+            return "[upload access URL redacted]"
+    return referer
+
+
 def build_access_log_fields(flask_request, flask_response, flask_session, endpoint: Optional[str]) -> dict:
     """DB保存用のフィールド辞書を作成（log_request_raw にそのまま渡せる形）。"""
 
@@ -655,7 +669,7 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
         path=flask_request.path or "",
         status=int(getattr(flask_response, "status_code", 0) or 0),
         ua=flask_request.headers.get("User-Agent", "-"),
-        referer=flask_request.headers.get("Referer", ""),
+        referer=redact_upload_access_url(flask_request.headers.get("Referer", "")),
         endpoint=endpoint or "",
         username=username,
         latency_ms=_latency_ms(),

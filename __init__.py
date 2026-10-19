@@ -101,6 +101,7 @@ from app.utils.logs import (
     get_fw_404_settings,
     list_fw_auto_permanent_bans,
     log_request_raw,
+    redact_upload_access_url,
     save_fw_404_settings,
     unban_fw_auto_permanent,
 )
@@ -507,12 +508,12 @@ def _log_csrf_debug(reason, **extra):
         "method": request.method,
         "host": request.host,
         "host_url": request.host_url,
-        "url": request.url,
+        "url": redact_upload_access_url(request.url),
         "scheme": request.scheme,
         "is_secure": request.is_secure,
         "header_host": request.headers.get("Host"),
         "header_origin": origin_raw,
-        "header_referer": referer_raw,
+        "header_referer": redact_upload_access_url(referer_raw),
         "x_forwarded_proto": request.headers.get("X-Forwarded-Proto"),
         "x_forwarded_host": request.headers.get("X-Forwarded-Host"),
         "x_forwarded_port": request.headers.get("X-Forwarded-Port"),
@@ -6247,7 +6248,7 @@ def before_every_request():
         session.clear()
         if request.is_json or request.path.startswith(("/api/", "/chat/api/")):
             return jsonify(ok=False, error="admin_reauthentication_required"), 401
-        return redirect(url_for("login", next=request.full_path or request.path))
+        return redirect(url_for("login", next=redact_upload_access_url(request.full_path or request.path)))
 
     # ★ 管理パス(/admin...) は admin 以外には 404 を返す
     #    - 未ログイン
@@ -6325,6 +6326,12 @@ def finalize_response(response):
             response.headers["Expires"] = "0"
     except Exception as e:
         app.logger.warning(f"after_request(no-cache) failed: {e}")
+
+    # The new access URL carries a bearer token in its query string.  Never
+    # forward that URL as a Referer (including the automatic verification POST).
+    if request.endpoint in {"view_upload_access_token", "view_upload_access_token_verify"}:
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
 
     # --- 2) アクセスログ（委譲） ---
     try:

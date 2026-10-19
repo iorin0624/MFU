@@ -184,7 +184,7 @@ def build_upload_view_url(public_base: str, upload: dict) -> str:
     uuid = str((upload or {}).get("uuid") or "").strip()
     if upload_auth_method(upload) == AUTH_ACCESS_TOKEN:
         token = generate_upload_access_token(uuid)
-        return f"{base}/view/{uuid}/access#{token}"
+        return f"{base}/view/{uuid}/access?token={token}"
     return f"{base}/view/{uuid}"
 
 
