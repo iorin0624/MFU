@@ -60,6 +60,8 @@ h2 { margin:0; font-size:1.15rem; }
 .reply-comment { display:grid; gap:7px; font-weight:800; }
 .reply-comment textarea { width:100%; resize:vertical; border:1px solid #ccd8e9; border-radius:12px; padding:12px 14px; line-height:1.6; }
 .reply-error { margin:0; color:#b42318; font-weight:800; }
+.reply-auth-help { display:flex; flex-wrap:wrap; gap:6px 12px; margin:0; color:#52647f; font-size:.9rem; }
+.reply-auth-help a { color:#175cd3; font-weight:800; text-decoration:underline; }
 .reply-progress { position:relative; height:22px; overflow:hidden; border-radius:999px; background:#e8eef7; text-align:center; }
 .reply-progress span { position:absolute; inset:0 auto 0 0; background:#91b5ff; transition:width .2s; }.reply-progress small { position:relative; z-index:1; }
 .reply-submit-row { display:flex; align-items:center; justify-content:flex-end; gap:16px; color:#60708a; }

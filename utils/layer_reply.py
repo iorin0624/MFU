@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import shutil
+import secrets
 import uuid as uuidlib
 from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, abort, current_app, jsonify, redirect, request, send_file, url_for
+from flask import Blueprint, abort, current_app, jsonify, redirect, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
 from app.utils.db import get_db
@@ -22,11 +23,13 @@ from app.utils.upload_notifications import (
     send_discord_upload_notification,
 )
 from app.utils.upload_security import (
+    AUTH_ACCESS_TOKEN,
     can_access_upload_record_from_session,
     grant_layer_reply_upload_auth,
     grant_layer_reply_view_auth,
     has_layer_reply_upload_auth,
     has_layer_reply_view_auth,
+    upload_auth_method,
 )
 
 
@@ -185,7 +188,7 @@ def public_replies(uuid):
         return jsonify(ok=False, message="対象のアップロードが見つかりません。"), 404
     full_access, upload_only = _reply_access(upload)
     if not full_access and not upload_only:
-        return jsonify(ok=False, message="アップロード権限がありません。"), 403
+        return jsonify(ok=False, error="auth_required", message="認証状態が切れました。再認証して送信してください。"), 403
     try:
         result = _save_reply(upload, user, request.files.getlist("photos"), str(request.form.get("comment") or ""))
     except ValueError as exc:
@@ -194,6 +197,30 @@ def public_replies(uuid):
         ok=True, replyUuid=result["reply_uuid"],
         postedAt=result["posted_at"].isoformat(), count=result["count"],
     ), 201
+
+
+@layer_reply_bp.get("/view/<uuid>/replies/session")
+def public_replies_session(uuid):
+    """Refresh the CSRF token before an upload without transferring any files."""
+    upload, user = _fetch_layer_upload(uuid)
+    if not upload or not user or not user.get("enable_layer_upload_url"):
+        return jsonify(ok=False, message="対象のアップロードが見つかりません。"), 404
+    full_access, upload_only = _reply_access(upload)
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    response = jsonify(
+        ok=True,
+        authorized=bool(full_access or upload_only),
+        csrfToken=token,
+        authUrl=(
+            None if upload_auth_method(upload) == AUTH_ACCESS_TOKEN
+            else url_for("view_upload", uuid=uuid, section="reply") + "#reply"
+        ),
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 def _safe_reply_image(upload_uuid: str, reply_uuid: str, filename: str) -> Path | None:
