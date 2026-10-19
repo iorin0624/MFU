@@ -71,7 +71,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert " 23:59" in component
     assert "data.upload.modeLabel" not in component
     assert 'class="lightbox-filename"' in component
-    assert "{{ lightboxFile.name }}" in component
+    assert "lightboxFile.flagged ? `🚩　${lightboxFile.name}` : lightboxFile.name" in component
     assert "changeLightboxVisibility(lightboxFile)" in component
     assert "公開に戻す" in component
     assert "非公開にする" in component
@@ -100,7 +100,7 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20260916-notice-album-focus1" in template
+    assert "public-upload-viewer.js') }}?v=20261019-photo-flag1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():

@@ -2941,7 +2941,7 @@ def public_upload_view_api(uuid):
     try:
         cursor.execute(
             """
-            SELECT id, filename, is_hidden
+            SELECT id, filename, is_hidden, is_flagged
               FROM files
              WHERE upload_id = %s
                AND (%s = 1 OR is_hidden = 0)
@@ -3000,6 +3000,7 @@ def public_upload_view_api(uuid):
                 "id": int(row["id"]),
                 "name": filename,
                 "hidden": bool(row.get("is_hidden")),
+                "flagged": bool(row.get("is_flagged")),
                 "kind": "image" if suffix in image_extensions else ("video" if suffix in video_extensions else "file"),
                 "url": url_for("uploaded_file", subpath=f"{uuid}/original/{filename}"),
                 "thumbnailUrl": thumbnail_url,
@@ -3288,6 +3289,67 @@ def update_upload_file_visibility(uuid):
             "visibility_version": int(version_row.get("visibility_version") or 0),
         }
     )
+
+
+@app.post("/view/<uuid>/flag")
+def update_upload_file_flag(uuid):
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
+    if not is_upload_owner(upload):
+        return jsonify({"ok": False, "message": "アップロードしたユーザーだけが変更できます。"}), 403
+
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("file_ids")
+    flagged = data.get("flagged")
+    if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 5000:
+        return jsonify({"ok": False, "message": "変更する写真を選択してください。"}), 400
+    if not isinstance(flagged, bool):
+        return jsonify({"ok": False, "message": "フラグの指定が不正です。"}), 400
+
+    try:
+        file_ids = sorted({int(value) for value in raw_ids if int(value) > 0})
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "写真の指定が不正です。"}), 400
+    if not file_ids:
+        return jsonify({"ok": False, "message": "変更する写真を選択してください。"}), 400
+
+    placeholders = ",".join(["%s"] * len(file_ids))
+    image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT id, filename FROM files WHERE upload_id=%s AND id IN ({placeholders}) FOR UPDATE",
+            (upload["id"], *file_ids),
+        )
+        matched = cursor.fetchall()
+        if {int(row["id"]) for row in matched} != set(file_ids) or any(
+            Path(str(row["filename"])).suffix.lower() not in image_extensions for row in matched
+        ):
+            db.rollback()
+            return jsonify({"ok": False, "message": "対象にできない写真が含まれています。"}), 400
+
+        value = int(flagged)
+        cursor.execute(
+            f"UPDATE files SET is_flagged=%s WHERE upload_id=%s AND id IN ({placeholders}) AND is_flagged<>%s",
+            (value, upload["id"], *file_ids, value),
+        )
+        changed = int(cursor.rowcount or 0)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cursor.close()
+        db.close()
+
+    if changed:
+        app.logger.info(
+            "upload file flag changed uuid=%s user=%s flagged=%s changed=%s",
+            uuid, session.get("user"), flagged, changed,
+        )
+    return jsonify({"ok": True, "flagged": flagged, "changed": changed, "file_ids": file_ids})
 
 
 @app.route("/upload/<path:subpath>")
