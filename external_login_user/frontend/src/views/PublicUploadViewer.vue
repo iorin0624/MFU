@@ -73,7 +73,7 @@ const config = JSON.parse(configElement?.textContent || '{}') as { uuid?: string
 const requestedSection = new URLSearchParams(window.location.search).get('section')
   || window.location.hash.replace(/^#/, '');
 const focusReplyOnLoad = requestedSection === 'reply';
-const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+let csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
 const filenameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 const data = ref<ViewerPayload | null>(null);
 const loading = ref(true);
@@ -96,6 +96,8 @@ const replyPreviewUrls = ref<string[]>([]);
 const replyBusy = ref(false);
 const replyProgress = ref<number | null>(null);
 const replyError = ref('');
+const replyNeedsReauth = ref(false);
+const replyAuthUrl = ref('');
 const replyLightboxImages = ref<ReplyImage[]>([]);
 const replyLightboxIndex = ref(-1);
 const appendFiles = ref<File[]>([]);
@@ -604,6 +606,7 @@ function setReplyFiles(files: File[]) {
   replyFiles.value = files.filter((file) => file.type.startsWith('image/') || /\.(heic|heif)$/i.test(file.name));
   replyPreviewUrls.value = replyFiles.value.map((file) => URL.createObjectURL(file));
   replyError.value = '';
+  replyNeedsReauth.value = false;
 }
 
 function chooseReplyFiles(event: Event) {
@@ -614,6 +617,54 @@ function chooseReplyFiles(event: Event) {
 
 function dropReplyFiles(event: DragEvent) {
   setReplyFiles(Array.from(event.dataTransfer?.files || []));
+}
+
+class ReplyCsrfError extends Error {}
+class ReplyAuthError extends Error {}
+
+async function refreshReplySession() {
+  const uuid = data.value?.upload.uuid;
+  if (!uuid) throw new Error('アップロード先を確認できませんでした。');
+  const response = await fetch(`/view/${encodeURIComponent(uuid)}/replies/session`, {
+    credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' },
+  });
+  const payload = await response.json().catch(() => null) as {
+    ok?: boolean; authorized?: boolean; csrfToken?: string; authUrl?: string; message?: string;
+  } | null;
+  if (!response.ok || !payload?.ok || !payload.csrfToken) {
+    throw new Error(payload?.message || '認証状態を確認できませんでした。時間をおいて再送してください。');
+  }
+  csrfToken = payload.csrfToken;
+  replyAuthUrl.value = payload.authUrl || '';
+  if (!payload.authorized) {
+    throw new ReplyAuthError(replyAuthUrl.value
+      ? '認証状態が切れました。新しいタブで再認証し、この画面に戻って再送してください。'
+      : '認証状態が切れました。最初に案内された共有リンクを別タブで開き直し、この画面に戻って再送してください。');
+  }
+  replyNeedsReauth.value = false;
+}
+
+function sendReply(form: FormData): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', data.value!.reply.uploadUrl);
+    xhr.responseType = 'json';
+    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) replyProgress.value = Math.round((event.loaded / event.total) * 100);
+    };
+    xhr.onload = () => {
+      const payload = xhr.response as { error?: string; message?: string } | null;
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else if ((xhr.status === 400 || xhr.status === 403) && payload?.error === 'csrf_failed') {
+        reject(new ReplyCsrfError(payload.message || '認証状態が切れました。'));
+      } else if (xhr.status === 403 && payload?.error === 'auth_required') {
+        reject(new ReplyAuthError(payload.message || '認証状態が切れました。'));
+      } else reject(new Error(payload?.message || '折り返しを送信できませんでした。'));
+    };
+    xhr.onerror = () => reject(new Error('通信に失敗しました。保存済みか確認してから再送してください。'));
+    xhr.send(form);
+  });
 }
 
 async function submitReply() {
@@ -629,27 +680,22 @@ async function submitReply() {
   replyFiles.value.forEach((file) => form.append('photos', file, file.name));
   form.append('comment', replyComment.value);
   try {
-    await new Promise<void>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', data.value!.reply.uploadUrl);
-      xhr.responseType = 'json';
-      xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) replyProgress.value = Math.round((event.loaded / event.total) * 100);
-      };
-      xhr.onload = () => {
-        const payload = xhr.response as { message?: string } | null;
-        if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else reject(new Error(payload?.message || '折り返しを送信できませんでした。'));
-      };
-      xhr.onerror = () => reject(new Error('通信に失敗しました。'));
-      xhr.send(form);
-    });
+    await refreshReplySession();
+    try {
+      await sendReply(form);
+    } catch (reason) {
+      if (!(reason instanceof ReplyCsrfError)) throw reason;
+      // CSRF rejection happens before saving; only this case is safe to retry.
+      await refreshReplySession();
+      replyProgress.value = 0;
+      await sendReply(form);
+    }
     setReplyFiles([]);
     replyComment.value = '';
     await load();
     showToast('折り返しを送信しました。');
   } catch (reason) {
+    if (reason instanceof ReplyAuthError || reason instanceof ReplyCsrfError) replyNeedsReauth.value = true;
     replyError.value = reason instanceof Error ? reason.message : '折り返しを送信できませんでした。';
   } finally {
     replyBusy.value = false;
@@ -723,9 +769,11 @@ onUnmounted(() => {
             <img v-for="(url,index) in replyPreviewUrls" :key="url" :src="url" :alt="`${index+1}枚目のプレビュー`">
           </div>
           <label class="reply-comment"><span>コメント（任意）</span><textarea v-model="replyComment" rows="3" :disabled="replyBusy" placeholder="コメントを入力"></textarea></label>
-          <p v-if="replyError" class="reply-error">{{ replyError }}</p>
+          <p v-if="replyError" class="reply-error" role="alert">{{ replyError }}</p>
+          <p v-if="replyNeedsReauth && replyAuthUrl" class="reply-auth-help"><a :href="replyAuthUrl" target="_blank" rel="noopener noreferrer">新しいタブで再認証する</a><span>この画面を閉じなければ、選択中の写真とコメントを保持できます。</span></p>
+          <p v-else-if="replyNeedsReauth" class="reply-auth-help">この画面を閉じず、元の共有リンクを別タブで開き直してください。選択中の写真とコメントを保持できます。</p>
           <div v-if="replyProgress !== null" class="reply-progress"><span :style="{width:`${replyProgress}%`}"></span><small>{{ replyProgress }}%</small></div>
-          <div class="reply-submit-row"><span>{{ replyFiles.length }}枚選択中</span><button type="submit" class="primary-button" :disabled="replyBusy || !replyFiles.length">{{ replyBusy ? '送信中…' : '折り返しを送信' }}</button></div>
+          <div class="reply-submit-row"><span>{{ replyFiles.length }}枚選択中</span><button type="submit" class="primary-button" :disabled="replyBusy || !replyFiles.length">{{ replyBusy ? '送信中…' : replyNeedsReauth ? '認証後に再送' : '折り返しを送信' }}</button></div>
         </form>
         <details v-if="data.reply.canList" id="replies" class="reply-list-embedded reply-collapsible">
           <summary class="reply-section-heading"><div><h2>折り返し一覧</h2><p>アップロード日時ごとに表示します。</p></div><span aria-hidden="true">⌄</span></summary>

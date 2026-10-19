@@ -535,6 +535,8 @@ def _log_csrf_debug(reason, **extra):
 
 
 def _is_json_error_response():
+    if request.endpoint == "layer_reply.public_replies":
+        return True
     if (
         request.path.startswith("/api/")
         or request.path.startswith("/album/api/")
@@ -548,6 +550,12 @@ def _is_json_error_response():
 
 
 def _csrf_error(message, status=403):
+    if request.endpoint == "layer_reply.public_replies":
+        return jsonify({
+            "ok": False,
+            "error": "csrf_failed",
+            "message": "認証状態が切れました。再認証して送信してください。",
+        }), status
     if _is_json_error_response():
         return jsonify({"ok": False, "error": "csrf_failed", "message": message}), status
     return message, status

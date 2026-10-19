@@ -44,7 +44,11 @@ UPLOAD_ACCESS_TOKEN_PREFIX = "mfu_view_"
 
 VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
 VIEW_AUTH_VERSION_SESSION_KEY = "view_auth_versions"
-VIEW_AUTH_MAX_ITEMS = 50
+VIEW_AUTH_MAX_ITEMS = 12
+LAYER_REPLY_UPLOAD_MAX_ITEMS = 6
+LAYER_REPLY_VIEW_MAX_UPLOADS = 4
+LAYER_REPLY_VIEW_MAX_REPLIES = 4
+PUBLIC_AUTH_COOKIE_BUDGET = 3000
 _UUID32_RE = re.compile(r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")
 
 # 代表的な「危険な実行系拡張子」
@@ -227,12 +231,9 @@ def cleanup_legacy_view_auth_keys(current_uuid: str | None = None) -> None:
 
 
 def grant_view_auth(uuid: str, auth_version: int = 0) -> None:
-    cleanup_legacy_view_auth_keys(current_uuid=uuid)
-    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
-    if uuid in allowed:
-        session[VIEW_AUTH_SESSION_KEY] = allowed
-    else:
-        session[VIEW_AUTH_SESSION_KEY] = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
+    cleanup_legacy_view_auth_keys()
+    allowed = [item for item in (session.get(VIEW_AUTH_SESSION_KEY) or []) if item != uuid]
+    session[VIEW_AUTH_SESSION_KEY] = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
     versions = dict(session.get(VIEW_AUTH_VERSION_SESSION_KEY) or {})
     versions[uuid] = int(auth_version or 0)
     allowed_now = set(session.get(VIEW_AUTH_SESSION_KEY) or [])
@@ -258,8 +259,71 @@ def has_view_auth(uuid: str, auth_version: int | None = None) -> bool:
 
 
 LAYER_REPLY_UPLOAD_SESSION_KEY = "layer_reply_upload_auth"
-LAYER_REPLY_UPLOAD_MAX_ITEMS = 20
 LAYER_REPLY_VIEW_SESSION_KEY = "layer_reply_view_auth"
+
+
+def compact_public_auth_session(session_data, app) -> None:
+    """Keep UUID grants in Flask's signed cookie below a safe size.
+
+    The newest grant in each collection is retained where possible.  This
+    also migrates oversized cookies created before the smaller limits.
+    """
+    keys = (VIEW_AUTH_SESSION_KEY, VIEW_AUTH_VERSION_SESSION_KEY,
+            LAYER_REPLY_UPLOAD_SESSION_KEY, LAYER_REPLY_VIEW_SESSION_KEY)
+    if not any(key in session_data for key in keys):
+        return
+
+    views = list(dict.fromkeys(
+        str(value) for value in (session_data.get(VIEW_AUTH_SESSION_KEY) or []) if value
+    ))[-VIEW_AUTH_MAX_ITEMS:]
+    versions = dict(session_data.get(VIEW_AUTH_VERSION_SESSION_KEY) or {})
+    uploads = list(dict.fromkeys(
+        str(value) for value in (session_data.get(LAYER_REPLY_UPLOAD_SESSION_KEY) or []) if value
+    ))[-LAYER_REPLY_UPLOAD_MAX_ITEMS:]
+    grants = {}
+    for upload_uuid, reply_uuids in (session_data.get(LAYER_REPLY_VIEW_SESSION_KEY) or {}).items():
+        replies = list(dict.fromkeys(
+            str(value) for value in (reply_uuids or []) if value
+        ))[-LAYER_REPLY_VIEW_MAX_REPLIES:]
+        if replies:
+            grants[str(upload_uuid)] = replies
+    grants = dict(list(grants.items())[-LAYER_REPLY_VIEW_MAX_UPLOADS:])
+
+    def save_grants() -> None:
+        if views:
+            session_data[VIEW_AUTH_SESSION_KEY] = views
+            session_data[VIEW_AUTH_VERSION_SESSION_KEY] = {
+                value: versions[value] for value in views if value in versions
+            }
+        else:
+            session_data.pop(VIEW_AUTH_SESSION_KEY, None)
+            session_data.pop(VIEW_AUTH_VERSION_SESSION_KEY, None)
+        if uploads:
+            session_data[LAYER_REPLY_UPLOAD_SESSION_KEY] = uploads
+        else:
+            session_data.pop(LAYER_REPLY_UPLOAD_SESSION_KEY, None)
+        if grants:
+            session_data[LAYER_REPLY_VIEW_SESSION_KEY] = grants
+        else:
+            session_data.pop(LAYER_REPLY_VIEW_SESSION_KEY, None)
+
+    save_grants()
+    serializer = app.session_interface.get_signing_serializer(app)
+    if serializer is None:
+        return
+    while len(serializer.dumps(dict(session_data))) > PUBLIC_AUTH_COOKIE_BUDGET:
+        if len(views) > 1:
+            views.pop(0)
+        elif len(uploads) > 1:
+            uploads.pop(0)
+        elif sum(map(len, grants.values())) > 1:
+            first_key = next(iter(grants))
+            grants[first_key].pop(0)
+            if not grants[first_key]:
+                del grants[first_key]
+        else:
+            break
+        save_grants()
 
 
 def grant_layer_reply_upload_auth(uuid: str) -> None:
@@ -291,13 +355,14 @@ def grant_layer_reply_view_auth(uuid: str, reply_uuid: str) -> None:
     if not upload_value or not reply_value:
         return
     grants = dict(session.get(LAYER_REPLY_VIEW_SESSION_KEY) or {})
+    existing_replies = grants.pop(upload_value, None) or []
     replies = [
         str(item).strip()
-        for item in (grants.get(upload_value) or [])
+        for item in existing_replies
         if str(item).strip() and str(item).strip() != reply_value
     ]
-    grants[upload_value] = (replies + [reply_value])[-LAYER_REPLY_UPLOAD_MAX_ITEMS:]
-    session[LAYER_REPLY_VIEW_SESSION_KEY] = dict(list(grants.items())[-LAYER_REPLY_UPLOAD_MAX_ITEMS:])
+    grants[upload_value] = (replies + [reply_value])[-LAYER_REPLY_VIEW_MAX_REPLIES:]
+    session[LAYER_REPLY_VIEW_SESSION_KEY] = dict(list(grants.items())[-LAYER_REPLY_VIEW_MAX_UPLOADS:])
 
 
 def layer_reply_view_grants(uuid: str) -> set[str]:

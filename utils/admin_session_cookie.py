@@ -21,3 +21,9 @@ class MFUSecureCookieSessionInterface(SecureCookieSessionInterface):
         if session.permanent and (is_admin or is_external_user):
             return datetime.now(timezone.utc) + AUTHENTICATED_COOKIE_TTL
         return super().get_expiration_time(app, session)
+
+    def save_session(self, app, session, response):
+        from app.utils.upload_security import compact_public_auth_session
+
+        compact_public_auth_session(session, app)
+        return super().save_session(app, session, response)
