@@ -24,6 +24,14 @@ Keep the existing deleted-album log exclusion by changing its `SetEnvIf`
 environment flag to `mfu_skip_access_log` as well. Validate with
 `apache2ctl -t` and reload Apache before publishing new-format links.
 
+Apache also sets a site-wide `strict-origin-when-cross-origin` policy. The two
+TLS virtual hosts therefore need a more specific `LocationMatch` for
+`^/view/[^/]+/access(?:/verify)?$` that unsets both existing Referrer-Policy
+header tables and sets `no-referrer`, `Cache-Control: private, no-store`, and
+`X-Robots-Tag: noindex, nofollow, noarchive` (matching the login route's
+header override pattern). Confirm the final HTTP response headers, not only
+the Flask headers.
+
 The access page sets `Referrer-Policy: no-referrer`, disallows caching, removes
 the token from browser history before verification, and submits it by POST.
 The application access-log Referer field also strips query strings from upload
