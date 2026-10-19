@@ -5,6 +5,7 @@ type PublicFile = {
   id: number;
   name: string;
   hidden: boolean;
+  flagged: boolean;
   kind: 'image' | 'video' | 'file';
   url: string;
   thumbnailUrl: string | null;
@@ -109,6 +110,7 @@ const filteredFiles = computed(() => {
 const displayedFiles = computed(() => filteredFiles.value);
 const selectableFiles = computed(() => (data.value?.files || []).filter((file) => !file.hidden));
 const selectedFiles = computed(() => (data.value?.files || []).filter((file) => selected.value.includes(file.id)));
+const selectedImageIds = computed(() => selectedFiles.value.filter((file) => file.kind === 'image').map((file) => file.id));
 const lightboxFiles = computed(() => displayedFiles.value.filter((file) => file.kind === 'image' || file.kind === 'video'));
 const lightboxFile = computed(() => lightboxFiles.value[lightboxIndex.value] || null);
 const replyLightboxImage = computed(() => replyLightboxImages.value[replyLightboxIndex.value] || null);
@@ -310,6 +312,15 @@ function keydown(event: KeyboardEvent) {
     event.preventDefault();
     void changeLightboxVisibility(lightboxFile.value);
   }
+  if (
+    event.key.toLowerCase() === 'e'
+    && !event.repeat
+    && data.value?.permissions.manageVisibility
+    && lightboxFile.value?.kind === 'image'
+  ) {
+    event.preventDefault();
+    void changeLightboxFlag(lightboxFile.value);
+  }
 }
 
 function startLightboxSwipe(event: TouchEvent) {
@@ -430,6 +441,40 @@ async function changeLightboxVisibility(file: PublicFile, forceHidden?: boolean)
   } catch (reason) {
     showToast(reason instanceof Error ? reason.message : '公開状態を変更できませんでした。');
   } finally { busy.value = false; }
+}
+
+async function updateFlags(fileIds: number[], flagged: boolean, lightboxFileId?: number) {
+  if (busy.value || !data.value || !fileIds.length) return;
+  busy.value = true;
+  try {
+    const response = await fetch(`/view/${encodeURIComponent(data.value.upload.uuid)}/flag`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      body: JSON.stringify({ file_ids: fileIds, flagged }),
+    });
+    const payload = await response.json().catch(() => null) as { message?: string } | null;
+    if (!response.ok) throw new Error(payload?.message || 'フラグを変更できませんでした。');
+    if (lightboxFileId === undefined) clearSelection();
+    await load();
+    if (lightboxFileId !== undefined) {
+      const index = lightboxFiles.value.findIndex((candidate) => candidate.id === lightboxFileId);
+      if (index >= 0) lightboxIndex.value = index;
+      else closeLightbox();
+    }
+    showToast(flagged ? '加工バック希望のフラグを付けました。' : 'フラグを外しました。');
+  } catch (reason) {
+    showToast(reason instanceof Error ? reason.message : 'フラグを変更できませんでした。');
+  } finally { busy.value = false; }
+}
+
+function changeFlags(flagged: boolean) {
+  void updateFlags(selectedImageIds.value, flagged);
+}
+
+function changeLightboxFlag(file: PublicFile) {
+  if (file.kind !== 'image') return;
+  void updateFlags([file.id], !file.flagged, file.id);
 }
 
 function startManaging() {
@@ -592,6 +637,7 @@ onUnmounted(() => {
           <div>
             <h2>写真・動画</h2>
             <p v-if="data.permissions.manageVisibility">公開中 {{ data.counts.public }}件 ／ 非公開 {{ data.counts.hidden }}件</p>
+            <p v-if="data.files.some(file => file.flagged && !file.hidden)" class="flag-legend">🚩 赤枠の写真は加工バック希望です</p>
           </div>
           <div class="toolbar-actions">
             <template v-if="managing">
@@ -606,11 +652,12 @@ onUnmounted(() => {
 
         <div v-if="!displayedFiles.length" class="empty-state">表示できるファイルがありません。</div>
         <div v-else class="media-grid">
-          <article v-for="file in displayedFiles" :key="file.id" class="media-card" :class="{'is-hidden':file.hidden}">
+          <article v-for="file in displayedFiles" :key="file.id" class="media-card" :class="{'is-hidden':file.hidden,'is-flagged':file.flagged && file.kind === 'image'}">
             <button class="select-button" type="button" :aria-label="`${file.name}を選択`" :class="{selected:selected.includes(file.id)}" @click.stop="toggleSelection(file)">
               <span v-if="selected.includes(file.id)">✓</span>
             </button>
             <span v-if="file.hidden" class="hidden-badge">非公開</span>
+            <span v-if="file.flagged && file.kind === 'image'" class="flag-badge" title="加工バック希望" aria-label="加工バック希望">🚩</span>
             <button v-if="file.kind !== 'file'" class="preview-button" type="button" @click="openLightbox(file)">
               <img v-if="file.kind === 'image'" :src="file.thumbnailUrl || file.url" :alt="file.name" loading="lazy">
               <video v-else :src="file.url" preload="metadata" muted playsinline></video>
@@ -629,6 +676,8 @@ onUnmounted(() => {
         <template v-if="managing">
           <button type="button" :disabled="busy || !selected.length" class="dark-button" @click="changeVisibility(true)">非公開</button>
           <button type="button" :disabled="busy || !selected.length" class="primary-button" @click="changeVisibility(false)">公開</button>
+          <button type="button" :disabled="busy || !selectedImageIds.length" @click="changeFlags(true)">🚩を付ける</button>
+          <button type="button" :disabled="busy || !selectedImageIds.length" @click="changeFlags(false)">🚩を外す</button>
         </template>
         <template v-else>
           <button type="button" :disabled="busy || !selected.length" class="primary-button" @click="zipDownload">ZIPでDL</button>
@@ -653,7 +702,7 @@ onUnmounted(() => {
         <video v-else :src="lightboxFile.url" controls autoplay playsinline></video>
         <button class="lightbox-nav next" type="button" aria-label="次へ" @click="moveLightbox(1)" @dblclick.prevent>›</button>
         <div class="lightbox-footer">
-          <span class="lightbox-filename">{{ lightboxFile.name }}</span>
+          <span class="lightbox-filename">{{ lightboxFile.flagged ? `🚩　${lightboxFile.name}` : lightboxFile.name }}</span>
           <button
             v-if="data.permissions.manageVisibility"
             type="button"
@@ -661,6 +710,14 @@ onUnmounted(() => {
             :class="lightboxFile.hidden ? 'make-public' : 'make-hidden'"
             @click="changeLightboxVisibility(lightboxFile)"
           >{{ lightboxFile.hidden ? '公開に戻す' : '非公開にする' }}</button>
+          <button
+            v-if="data.permissions.manageVisibility && lightboxFile.kind === 'image'"
+            type="button"
+            :disabled="busy"
+            class="lightbox-flag-button"
+            aria-keyshortcuts="E"
+            @click="changeLightboxFlag(lightboxFile)"
+          >{{ lightboxFile.flagged ? '🚩を外す' : '🚩を付ける' }}（E）</button>
         </div>
       </div>
       <div v-if="replyLightboxImage" class="lightbox" role="dialog" aria-modal="true" @click.self="closeReplyLightbox">

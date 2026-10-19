@@ -416,6 +416,11 @@ def ensure_upload_password_schema() -> None:
                 "ALTER TABLE files "
                 "ADD COLUMN hidden_by VARCHAR(255) NULL AFTER hidden_at"
             )
+        if "is_flagged" not in file_columns:
+            cur.execute(
+                "ALTER TABLE files "
+                "ADD COLUMN is_flagged TINYINT(1) NOT NULL DEFAULT 0 AFTER hidden_by"
+            )
         db.commit()
 
         if "password" not in columns:
