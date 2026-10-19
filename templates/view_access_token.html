@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
   <title>アクセスURLを確認中</title>
   <style>
     body{font-family:system-ui,"Yu Gothic",Meiryo,sans-serif;background:#f0f4f8;color:#1f2937;margin:0;padding:2em 1em}
@@ -33,10 +34,13 @@
     (() => {
       const status = document.getElementById('statusText');
       const spinner = document.getElementById('spinner');
-      const encoded = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
+      const queryToken = new URLSearchParams(window.location.search).get('token');
+      const legacyEncoded = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
       let token = '';
-      try { token = decodeURIComponent(encoded).trim(); } catch (_) { token = ''; }
-      history.replaceState(null, '', window.location.pathname + window.location.search);
+      try {
+        token = queryToken !== null ? queryToken.trim() : decodeURIComponent(legacyEncoded).trim();
+      } catch (_) { token = ''; }
+      history.replaceState(null, '', window.location.pathname);
       if (!token) {
         if (spinner) spinner.style.display = 'none';
         if (status) status.textContent = 'この画面の表示には、送信者から案内された専用アクセスURLが必要です。';
