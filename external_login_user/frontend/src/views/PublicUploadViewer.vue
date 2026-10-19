@@ -81,6 +81,7 @@ const error = ref('');
 const selected = ref<number[]>([]);
 const noticeOpen = ref(true);
 const replyDetails = ref<HTMLDetailsElement | null>(null);
+const appendDetails = ref<HTMLDetailsElement | null>(null);
 const albumPanel = ref<HTMLElement | null>(null);
 const filter = ref<'all' | 'public' | 'hidden'>('all');
 const managing = ref(false);
@@ -97,6 +98,13 @@ const replyProgress = ref<number | null>(null);
 const replyError = ref('');
 const replyLightboxImages = ref<ReplyImage[]>([]);
 const replyLightboxIndex = ref(-1);
+const appendFiles = ref<File[]>([]);
+const appendBusy = ref(false);
+const appendProgress = ref<number | null>(null);
+const appendProgressText = ref('');
+const appendResult = ref('');
+const appendErrors = ref<string[]>([]);
+const appendRenames = ref<string[]>([]);
 let lightboxTouchStart: { x: number; y: number; at: number } | null = null;
 let activeLoadController: AbortController | null = null;
 let loadSequence = 0;
@@ -477,6 +485,109 @@ function changeLightboxFlag(file: PublicFile) {
   void updateFlags([file.id], !file.flagged, file.id);
 }
 
+function setAppendFiles(files: File[]) {
+  if (appendBusy.value) return;
+  appendFiles.value = files;
+  appendResult.value = '';
+  appendErrors.value = [];
+  appendRenames.value = [];
+  appendProgress.value = null;
+}
+
+function chooseAppendFiles(event: Event) {
+  const input = event.target as HTMLInputElement;
+  setAppendFiles(Array.from(input.files || []));
+  input.value = '';
+}
+
+function dropAppendFiles(event: DragEvent) {
+  setAppendFiles(Array.from(event.dataTransfer?.files || []));
+}
+
+function appendOneFile(uuid: string, file: File, onProgress: (loaded: number) => void) {
+  return new Promise<{ saved: string; thumbnailStatus: string }>((resolve, reject) => {
+    const form = new FormData();
+    form.append('photo', file, file.name);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/view/${encodeURIComponent(uuid)}/append`);
+    xhr.responseType = 'json';
+    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded);
+    };
+    xhr.onload = () => {
+      const payload = xhr.response as { ok?: boolean; saved?: string; thumbnailStatus?: string; message?: string } | null;
+      if (xhr.status >= 200 && xhr.status < 300 && payload?.ok && payload.saved) {
+        onProgress(file.size);
+        resolve({ saved: payload.saved, thumbnailStatus: payload.thumbnailStatus || '' });
+      } else {
+        const failure = new Error(payload?.message || `アップロードに失敗しました（HTTP ${xhr.status}）。`);
+        reject(Object.assign(failure, { status: xhr.status }));
+      }
+    };
+    xhr.onerror = () => reject(new Error('通信に失敗しました。'));
+    xhr.send(form);
+  });
+}
+
+async function appendUploadFiles() {
+  if (appendBusy.value || !data.value?.permissions.manageVisibility || !appendFiles.value.length) return;
+  const files = [...appendFiles.value];
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const uuid = data.value.upload.uuid;
+  const failed: File[] = [];
+  const errors: string[] = [];
+  const renames: string[] = [];
+  let completedBytes = 0;
+  let saved = 0;
+  let thumbnailErrors = 0;
+  appendBusy.value = true;
+  appendProgress.value = 0;
+  appendResult.value = '';
+  appendErrors.value = [];
+  appendRenames.value = [];
+  try {
+    for (const [index, file] of files.entries()) {
+      appendProgressText.value = `アップロード中 ${index + 1}/${files.length}：${file.name}`;
+      try {
+        const result = await appendOneFile(uuid, file, (loaded) => {
+          appendProgress.value = totalBytes
+            ? Math.min(99, Math.round(((completedBytes + loaded) / totalBytes) * 100))
+            : Math.round(((index + 1) / files.length) * 99);
+        });
+        saved += 1;
+        if (result.saved !== file.name) renames.push(`${file.name} → ${result.saved}`);
+        if (result.thumbnailStatus === 'error') thumbnailErrors += 1;
+      } catch (reason) {
+        failed.push(file);
+        errors.push(`${file.name}: ${reason instanceof Error ? reason.message : '保存に失敗しました。'}`);
+        const status = (reason as { status?: number })?.status;
+        if (status === 401 || status === 403 || status === 410) {
+          failed.push(...files.slice(index + 1));
+          break;
+        }
+      }
+      completedBytes += file.size;
+    }
+    appendFiles.value = failed;
+    appendErrors.value = errors;
+    appendRenames.value = renames;
+    appendResult.value = saved
+      ? `${saved}件を追加しました。${failed.length ? ` 未保存 ${failed.length}件は選択欄に残しています。` : ''}`
+      : '追加できたファイルはありません。';
+    if (thumbnailErrors) appendErrors.value.push(`${thumbnailErrors}件のサムネイル生成を開始できませんでした。`);
+    if (saved) {
+      await load();
+      await nextTick();
+      if (appendDetails.value) appendDetails.value.open = true;
+    }
+  } finally {
+    appendBusy.value = false;
+    appendProgress.value = null;
+    appendProgressText.value = '';
+  }
+}
+
 function startManaging() {
   managing.value = true;
   filter.value = 'all';
@@ -630,6 +741,25 @@ onUnmounted(() => {
             </details>
           </div>
         </details>
+      </details>
+
+      <details v-if="data.permissions.manageVisibility && !data.replyOnly" id="append" ref="appendDetails" class="append-upload-panel reply-collapsible">
+        <summary class="reply-section-heading">
+          <div><h2>写真を追加</h2><p>このアルバムにファイルを追加します。</p></div><span aria-hidden="true">⌄</span>
+        </summary>
+        <form class="append-upload-form" @submit.prevent="appendUploadFiles">
+          <p class="append-upload-note">追加したファイルは公開されます。URL・保存期限は変わらず、相手への通知も送信しません。</p>
+          <label class="reply-drop-zone" @dragover.prevent @drop.prevent="dropAppendFiles">
+            <input type="file" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.nrw,.arw,.dng,.pdf,.zip" multiple :disabled="appendBusy" @change="chooseAppendFiles">
+            <strong>追加するファイルを選択</strong><span>または、ここへドラッグ＆ドロップ</span>
+          </label>
+          <ul v-if="appendFiles.length" class="append-file-list"><li v-for="(file,index) in appendFiles" :key="`${index}-${file.name}`">{{ file.name }}</li></ul>
+          <p v-if="appendResult" class="append-result" role="status">{{ appendResult }}</p>
+          <ul v-if="appendRenames.length" class="append-file-list"><li v-for="(message,index) in appendRenames" :key="index">{{ message }}</li></ul>
+          <ul v-if="appendErrors.length" class="append-errors" role="alert"><li v-for="(message,index) in appendErrors" :key="index">{{ message }}</li></ul>
+          <div v-if="appendProgress !== null" class="reply-progress"><span :style="{width:`${appendProgress}%`}"></span><small>{{ appendProgressText }}（{{ appendProgress }}%）</small></div>
+          <div class="reply-submit-row"><span>{{ appendFiles.length }}件選択中</span><button type="submit" class="primary-button" :disabled="appendBusy || !appendFiles.length">{{ appendBusy ? '追加中…' : 'ファイルを追加' }}</button></div>
+        </form>
       </details>
 
       <section v-if="!data.replyOnly" ref="albumPanel" class="album-panel">

@@ -3352,6 +3352,156 @@ def update_upload_file_flag(uuid):
     return jsonify({"ok": True, "flagged": flagged, "changed": changed, "file_ids": file_ids})
 
 
+def _upload_is_open_for_append(upload):
+    if not upload or upload.get("upload_deleted_at"):
+        return False
+    try:
+        expiry = upload["expire_at"]
+        expiry_date = expiry.date() if isinstance(expiry, datetime) else date_cls.fromisoformat(str(expiry)[:10])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return expiry_date >= datetime.now(timezone(timedelta(hours=9))).date()
+
+
+@app.post("/view/<uuid>/append")
+def append_upload_file(uuid):
+    """Add one complete file to an active upload without resending its first-upload notification."""
+    if not _UUID32_RE.fullmatch(uuid):
+        return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
+    upload = _get_upload_access_record(uuid)
+    if not upload:
+        return jsonify({"ok": False, "message": "指定されたデータが存在しません。"}), 404
+    if not is_upload_owner(upload):
+        return jsonify({"ok": False, "message": "アップロードしたユーザーだけが追加できます。"}), 403
+    if not _upload_is_open_for_append(upload):
+        return jsonify({"ok": False, "message": "保存期間を過ぎたデータには追加できません。"}), 410
+
+    file_storage = request.files.get("photo")
+    if not file_storage or not file_storage.filename:
+        return jsonify({"ok": False, "message": "追加するファイルを選択してください。"}), 400
+
+    initial_name = sanitize_filename(file_storage.filename, set())
+    head = file_storage.stream.read(8192)
+    file_storage.stream.seek(0)
+    detected_mime = detect_mime_from_bytes(head)
+    allowed_extensions = current_app.config.get("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
+    valid, reason = validate_upload_file(
+        filename=initial_name,
+        header_mime=file_storage.mimetype,
+        detected_mime=detected_mime,
+        allowed_extensions=allowed_extensions,
+    )
+    if not valid:
+        return jsonify({"ok": False, "message": f"{initial_name}: {reason}"}), 400
+
+    _base_dir, original_dir, _thumb_dir = _upload_dirs(uuid)
+    if not os.path.isdir(original_dir):
+        return jsonify({"ok": False, "message": "元のファイル保存先が見つかりません。"}), 409
+
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT filename FROM files WHERE upload_id=%s", (upload["id"],))
+        known_names = {str(row["filename"]).casefold() for row in cursor.fetchall()}
+    finally:
+        cursor.close()
+        db.close()
+    known_names.update(name.casefold() for name in os.listdir(original_dir))
+    known_stems = {Path(name).stem.casefold() for name in known_names}
+
+    staged_path = None
+    saved_path = None
+    committed = False
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".append-", suffix=".tmp", dir=original_dir, delete=False
+        ) as staged:
+            staged_path = Path(staged.name)
+            shutil.copyfileobj(file_storage.stream, staged, length=1024 * 1024)
+        staged_path.chmod(0o640)
+
+        stem, extension = os.path.splitext(initial_name)
+        for sequence in range(1, 10001):
+            name = initial_name if sequence == 1 else f"{stem}_{sequence}{extension}"
+            if name.casefold() in known_names or Path(name).stem.casefold() in known_stems:
+                continue
+            candidate = Path(original_dir) / name
+            try:
+                os.link(staged_path, candidate)
+            except FileExistsError:
+                continue
+            saved_path = candidate
+            break
+        if saved_path is None:
+            return jsonify({"ok": False, "message": "空いているファイル名を確保できませんでした。"}), 409
+
+        db = get_db()
+        cursor = db.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                "SELECT id, username, expire_at, upload_deleted_at FROM uploads WHERE uuid=%s FOR UPDATE",
+                (uuid,),
+            )
+            current_upload = cursor.fetchone()
+            if not current_upload or not _upload_is_open_for_append(current_upload):
+                db.rollback()
+                return jsonify({"ok": False, "message": "保存期間を過ぎたデータには追加できません。"}), 410
+            if current_upload["username"] != session.get("user"):
+                db.rollback()
+                return jsonify({"ok": False, "message": "アップロードしたユーザーだけが追加できます。"}), 403
+            cursor.execute(
+                "INSERT INTO files (upload_id, filename) VALUES (%s, %s)",
+                (current_upload["id"], saved_path.name),
+            )
+            cursor.execute(
+                "UPDATE uploads SET visibility_version=visibility_version+1 WHERE id=%s",
+                (current_upload["id"],),
+            )
+            db.commit()
+            committed = True
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            cursor.close()
+            db.close()
+    except OSError:
+        app.logger.exception("upload append storage failed uuid=%s", uuid)
+        return jsonify({"ok": False, "message": "ファイルを保存できませんでした。"}), 500
+    except Exception:
+        app.logger.exception("upload append registration failed uuid=%s", uuid)
+        return jsonify({"ok": False, "message": "追加ファイルの登録に失敗しました。"}), 500
+    finally:
+        if staged_path is not None:
+            try:
+                staged_path.unlink(missing_ok=True)
+            except OSError:
+                app.logger.warning("upload append temporary cleanup failed uuid=%s", uuid, exc_info=True)
+        if saved_path is not None and not committed:
+            try:
+                saved_path.unlink(missing_ok=True)
+            except OSError:
+                app.logger.warning("upload append rollback cleanup failed uuid=%s", uuid, exc_info=True)
+
+    try:
+        _purge_upload_zip_cache(uuid)
+    except OSError:
+        app.logger.warning("upload append ZIP cache purge failed uuid=%s", uuid, exc_info=True)
+    thumbnail_status = "not_required"
+    if upload.get("generate_thumbnails") and saved_path.suffix.lower() in {
+        ".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif",
+        ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".dng",
+    }:
+        try:
+            enqueue_thumb_job("upload", uuid, "thumb")
+            thumbnail_status = "queued"
+        except Exception:
+            app.logger.exception("upload append thumbnail queue failed uuid=%s", uuid)
+            thumbnail_status = "error"
+    app.logger.info("upload file appended uuid=%s user=%s filename=%s", uuid, session.get("user"), saved_path.name)
+    return jsonify({"ok": True, "saved": saved_path.name, "thumbnailStatus": thumbnail_status})
+
+
 @app.route("/upload/<path:subpath>")
 @app.route("/uploads/<path:subpath>")
 def uploaded_file(subpath: str):
