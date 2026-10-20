@@ -3,6 +3,7 @@
 import os
 import re
 import json
+import hashlib
 import shutil
 import subprocess
 import uuid
@@ -27,6 +28,7 @@ from app.utils.upload_security import (
     upload_file_is_hidden,
 )
 from app.utils.upload_download_history import (
+    log_download_audit,
     record_upload_download,
     request_ip as download_request_ip,
     track_upload_download_response,
@@ -93,6 +95,18 @@ def _cfg_progress_ttl() -> int:
 def _cfg_zip_file_ttl() -> int:
     # 通常ダウンロードへ渡す一時ZIPの保持秒数
     return int(current_app.config.get("ZIP_FILE_TTL", 6 * 60 * 60))
+
+def _zip_job_ref(key: str) -> str:
+    """Correlate ZIP logs without writing the reusable download key to them."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+def _zip_audit(event: str, *, key: str, **details):
+    client_ip = download_request_ip(request)
+    log_download_audit(event,
+                       job_ref=_zip_job_ref(key),
+                       client_ip_hash=hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:16],
+                       user_agent=request.headers.get("User-Agent", "")[:180],
+                       **details)
 
 # ------------------------------------------------------------
 # 進捗保存（使わない場合もあるが互換のため維持）
@@ -792,68 +806,135 @@ def api_zip_prepare():
     """
     _cleanup_progress_expired()
 
+    started = time.monotonic()
+    key = _safe_download_key(request.headers.get("X-Idempotency-Key") or uuid.uuid4().hex)
+
     data = request.get_json(silent=True) or {}
     relpaths = data.get("paths") or []
     if not isinstance(relpaths, list) or not relpaths:
+        _zip_audit("prepare_rejected", key=key, reason="paths_required", http_status=400)
         return jsonify({"ok": False, "error": "paths_required"}), 400
+
+    _zip_audit("prepare_started", key=key, requested_files=len(relpaths),
+               sequence_rename=bool(data.get("sequence_rename")))
 
     try:
         abs_list, bad_paths, access = _resolve_zip_request_paths(relpaths)
     except PermissionError as exc:
+        _zip_audit("prepare_rejected", key=key, reason="unauthorized_path", http_status=403,
+                   requested_files=len(relpaths))
         return jsonify({"ok": False, "error": "unauthorized_path", "path": str(exc)}), 403
+    except Exception as exc:
+        _zip_audit("prepare_failed", key=key, reason="path_resolution_error", http_status=500,
+                   error_type=type(exc).__name__, requested_files=len(relpaths))
+        raise
 
     if not abs_list:
+        _zip_audit("prepare_rejected", key=key, reason="no_valid_files", http_status=400,
+                   requested_files=len(relpaths), bad_paths_count=len(bad_paths))
         return jsonify({"ok": False, "error": "no_valid_files", "bad_paths": bad_paths}), 400
 
-    key = _safe_download_key(request.headers.get("X-Idempotency-Key") or uuid.uuid4().hex)
     if not _acquire_lock(key):
         prog = _progress_read(key)
+        _zip_audit("prepare_rejected", key=key, reason="already_in_progress", http_status=409)
         return jsonify({"ok": False, "error": "already_in_progress", "progress": prog}), 409
 
-    entries = (
-        build_sequential_download_entries(abs_list)
-        if data.get("sequence_rename") and access.get("type") == "upload" and len(access.get("upload_ids") or []) == 1
-        else [(os.path.basename(path), path) for path in abs_list]
-    )
-    if not entries:
+    try:
+        entries = (
+            build_sequential_download_entries(abs_list)
+            if data.get("sequence_rename") and access.get("type") == "upload" and len(access.get("upload_ids") or []) == 1
+            else [(os.path.basename(path), path) for path in abs_list]
+        )
+        if not entries:
+            _zip_audit("prepare_rejected", key=key, reason="invalid_sequence_selection", http_status=400)
+            return jsonify({"ok": False, "error": "invalid_sequence_selection"}), 400
+        path = _make_zip_entries_internal(entries, key, access=access)
+    except Exception as exc:
+        _zip_audit("prepare_failed", key=key, reason="unexpected_zip_error", http_status=500,
+                   error_type=type(exc).__name__, requested_files=len(relpaths),
+                   elapsed_ms=round((time.monotonic() - started) * 1000))
+        raise
+    finally:
         _unlock_only(key)
-        return jsonify({"ok": False, "error": "invalid_sequence_selection"}), 400
-    path = _make_zip_entries_internal(entries, key, access=access)
-    _unlock_only(key)
     if not path:
+        _zip_audit("prepare_failed", key=key, reason="zip_failed", http_status=500,
+                   requested_files=len(relpaths), valid_files=len(abs_list),
+                   elapsed_ms=round((time.monotonic() - started) * 1000))
         return jsonify({"ok": False, "error": "zip_failed"}), 500
+
+    archive_bytes = os.path.getsize(path)
+    _zip_audit("prepare_completed", key=key, http_status=200,
+               requested_files=len(relpaths), valid_files=len(abs_list),
+               bad_paths_count=len(bad_paths), archive_bytes=archive_bytes,
+               upload_ids=access.get("upload_ids") or [],
+               elapsed_ms=round((time.monotonic() - started) * 1000))
 
     return jsonify({
         "ok": True,
         "key": key,
         "download_url": f"/api/zip-download/{key}",
         "download_name": f"{key}.zip",
-        "size": os.path.getsize(path),
+        "size": archive_bytes,
+        "expires_in_seconds": _cfg_zip_file_ttl(),
         "bad_paths": bad_paths,
     })
+
+@zip_api.route("/api/zip-download-intent", methods=["POST"])
+def api_zip_download_intent():
+    """Record a user tap separately from the subsequent browser download request."""
+    data = request.get_json(silent=True) or {}
+    raw_key = data.get("key")
+    key = _safe_download_key(raw_key) if isinstance(raw_key, str) else ""
+    intent_ref = str(data.get("intent_ref") or "")
+    if not key or key != raw_key or not re.fullmatch(r"[0-9a-fA-F-]{32,36}", intent_ref):
+        return jsonify({"ok": False, "error": "invalid_intent"}), 400
+    path = _zip_out_path(key)
+    progress = _progress_read(key)
+    if not os.path.isfile(path) or not progress:
+        _zip_audit("download_intent_rejected", key=key, intent_ref=intent_ref,
+                   reason="zip_not_found", http_status=404)
+        return jsonify({"ok": False, "error": "zip_not_found"}), 404
+    if not _job_access_allowed(progress):
+        _zip_audit("download_intent_rejected", key=key, intent_ref=intent_ref,
+                   reason="forbidden", http_status=403)
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    history = ((progress.get("access") or {}).get("download_history") or {})
+    _zip_audit("download_clicked", key=key, intent_ref=intent_ref,
+               upload_id=history.get("upload_id"),
+               file_count=len(history.get("files") or []),
+               archive_bytes=os.path.getsize(path))
+    return jsonify({"ok": True})
 
 @zip_api.route("/api/zip-download/<key>", methods=["GET"])
 def api_zip_download(key: str):
     _cleanup_progress_expired()
     safe_key = _safe_download_key(key)
     if safe_key != key:
+        _zip_audit("download_rejected", key=safe_key, reason="invalid_key", http_status=400)
         return jsonify({"ok": False, "error": "invalid_key"}), 400
     path = _zip_out_path(safe_key)
     if not os.path.isfile(path):
+        _zip_audit("download_rejected", key=safe_key, reason="zip_not_found", http_status=404)
         return jsonify({"ok": False, "error": "zip_not_found"}), 404
     progress = _progress_read(safe_key)
     if safe_key.startswith("album-") and not progress:
+        _zip_audit("download_rejected", key=safe_key, reason="zip_metadata_not_found", http_status=404)
         return jsonify({"ok": False, "error": "zip_metadata_not_found"}), 404
     if not _job_access_allowed(progress):
+        _zip_audit("download_rejected", key=safe_key, reason="forbidden", http_status=403)
         return jsonify({"ok": False, "error": "forbidden"}), 403
     download_name = (progress or {}).get("download_name") or f"{safe_key}.zip"
     history_event_id = None
     history = ((progress or {}).get("access") or {}).get("download_history") or {}
+    attempt_ref = uuid.uuid4().hex
+    intent_ref = request.args.get("intent", "")
+    if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", intent_ref):
+        intent_ref = None
     if request.method == "GET" and not request.headers.get("Range") and history.get("files"):
         try:
             history_event_id = record_upload_download(
                 upload_id=int(history["upload_id"]),
-                event_key=f"selected-zip:{safe_key}",
+                event_key=f"selected-zip:{safe_key}:{attempt_ref}",
                 download_kind="selected_zip",
                 ip_address=download_request_ip(request),
                 user_agent=request.headers.get("User-Agent", ""),
@@ -875,10 +956,24 @@ def api_zip_download(key: str):
         etag=False,
         last_modified=datetime.now(timezone.utc),
     )
+    audit = {
+        "kind": "zip_download",
+        "job_ref": _zip_job_ref(safe_key),
+        "attempt_ref": attempt_ref,
+        "intent_ref": intent_ref,
+        "upload_id": history.get("upload_id"),
+        "file_count": len(history.get("files") or []),
+        "range_requested": bool(request.headers.get("Range")),
+        "http_status": response.status_code,
+        "archive_bytes": os.path.getsize(path),
+    }
+    _zip_audit("download_started", key=safe_key, **{k: v for k, v in audit.items() if k != "job_ref"},
+               history_event_id=history_event_id, response_bytes=response.content_length)
     return track_upload_download_response(
         response,
         history_event_id,
         logger=current_app._get_current_object().logger,
+        audit=audit,
     )
 
 @zip_api.route("/api/zip-progress", methods=["GET"])

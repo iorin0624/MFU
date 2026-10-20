@@ -7,6 +7,7 @@ import types
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from flask import Flask
 
@@ -28,8 +29,17 @@ class ZipStreamTest(unittest.TestCase):
         security_module.resolve_upload_subpath = lambda *_args, **_kwargs: None
         security_module.fetch_upload_access_record = lambda _uuid: None
         security_module.can_access_upload_record = lambda *_args, **_kwargs: False
+        security_module.can_access_upload_record_from_session = lambda *_args, **_kwargs: False
+        security_module.current_upload_visibility_version = lambda *_args, **_kwargs: 0
+        security_module.fetch_upload_file_record = lambda *_args, **_kwargs: None
+        security_module.fetch_upload_thumbnail_source = lambda *_args, **_kwargs: None
         security_module.has_view_auth = lambda *_args, **_kwargs: False
+        security_module.upload_file_is_hidden = lambda *_args, **_kwargs: False
         sys.modules["app.utils.upload_security"] = security_module
+
+        db_module = types.ModuleType("app.utils.db")
+        db_module.get_db = lambda: None
+        sys.modules["app.utils.db"] = db_module
 
         spec = importlib.util.spec_from_file_location(
             "app.utils.zip_stream_under_test",
@@ -103,11 +113,70 @@ class ZipStreamTest(unittest.TestCase):
         )
         self.assertEqual(prepared.status_code, 200)
         payload = prepared.get_json()
+        intent = client.post("/api/zip-download-intent", json={
+            "key": payload["key"],
+            "intent_ref": "d254c4f9-92d5-46a4-910e-29eb8fe802f6",
+        })
+        self.assertEqual(intent.status_code, 200)
         downloaded = client.get(payload["download_url"])
         self.assertEqual(downloaded.status_code, 200)
-        with zipfile.ZipFile(io.BytesIO(downloaded.data)) as archive:
+        first_bytes = downloaded.data
+        with zipfile.ZipFile(io.BytesIO(first_bytes)) as archive:
             self.assertEqual(archive.namelist(), ["photo.jpg"])
         downloaded.close()
+        retried = client.get(payload["download_url"])
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(retried.data, first_bytes)
+        retried.close()
+
+    def test_selected_zip_retry_creates_separate_history_and_transfer_logs(self):
+        key = "selected-zip-retry-test"
+        self.tmp_root.mkdir(parents=True)
+        with zipfile.ZipFile(self.tmp_root / f"{key}.zip", "w") as archive:
+            archive.writestr("00001.jpg", bytes(range(256)) * 1024)
+        with self.app.app_context():
+            self.zip_stream._progress_write(key, {
+                "status": "done",
+                "access": {
+                    "type": "bearer",
+                    "download_history": {
+                        "upload_id": 42,
+                        "files": [{"file_id": 1, "filename": "photo.jpg"}],
+                    },
+                },
+            })
+        event_keys = []
+
+        def record_attempt(**kwargs):
+            event_keys.append(kwargs["event_key"])
+            return len(event_keys)
+
+        client = self.app.test_client()
+        with patch.object(self.zip_stream, "record_upload_download", side_effect=record_attempt), \
+             patch("app.utils.upload_download_history.mark_upload_download_status") as mark_status, \
+             self.assertLogs("mfu.download_audit", level="INFO") as logs:
+            for _ in range(2):
+                response = client.get(f"/api/zip-download/{key}")
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.data.startswith(b"PK"))
+                response.close()
+
+        self.assertEqual(len(event_keys), 2)
+        self.assertNotEqual(*event_keys)
+        self.assertEqual(mark_status.call_count, 2)
+        self.assertTrue(all(call.args[1] == "completed" for call in mark_status.call_args_list))
+        self.assertEqual(sum("download_started" in line for line in logs.output), 2)
+        self.assertEqual(sum("stream_finished" in line for line in logs.output), 2)
+        self.assertFalse(any(key in line for line in logs.output))
+
+        with patch.object(self.zip_stream, "record_upload_download", return_value=3), \
+             patch("app.utils.upload_download_history.mark_upload_download_status") as mark_status, \
+             self.assertLogs("mfu.download_audit", level="INFO") as interrupted_logs:
+            response = client.get(f"/api/zip-download/{key}", buffered=False)
+            next(iter(response.response))
+            response.close()
+        mark_status.assert_called_once_with(3, "failed")
+        self.assertTrue(any('"result": "interrupted"' in line for line in interrupted_logs.output))
 
     def test_admin_background_job_uses_common_progress_and_download(self):
         photo = Path(self.temp_dir.name) / "admin-photo.jpg"

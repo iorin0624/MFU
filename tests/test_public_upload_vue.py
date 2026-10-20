@@ -96,11 +96,15 @@ def test_public_upload_viewer_uses_requested_labels_without_notice_copy_button()
     assert "0%,66.666%" in styles
     assert "66.667%,100%" in styles
     assert "align-items:stretch" in styles
+    assert 'class="prepared-zip-download" @click="clickPreparedZip"' in component
+    assert "ZIPをダウンロード" in component
+    assert "window.MFUZipDownload.startDownload(result.download_url)" not in component
+    assert "'/api/zip-download-intent'" in component
 
     app_source = (ROOT / "__init__.py").read_text(encoding="utf-8")
     template = (ROOT / "templates" / "public_upload_vue.html").read_text(encoding="utf-8")
     assert 'response.headers["Cache-Control"] = "private, no-store, max-age=0"' in app_source
-    assert "public-upload-viewer.js') }}?v=20261019-reply-session1" in template
+    assert "public-upload-viewer.js') }}?v=20261020-zip-retry1" in template
 
 
 def test_public_upload_viewer_build_artifacts_exist():

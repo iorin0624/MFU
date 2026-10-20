@@ -8,7 +8,10 @@ when the normal upload is deleted.
 from __future__ import annotations
 
 import ipaddress
+import json
+import logging
 import threading
+import time
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -31,6 +34,20 @@ DOWNLOAD_STATUS_LABELS = {
 }
 _SCHEMA_LOCK = threading.Lock()
 _schema_ready = False
+_AUDIT_LOGGER = logging.getLogger("mfu.download_audit")
+_AUDIT_LOGGER.setLevel(logging.INFO)
+_AUDIT_LOGGER.propagate = False
+if not _AUDIT_LOGGER.handlers:
+    _audit_handler = logging.StreamHandler()
+    _audit_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    _AUDIT_LOGGER.addHandler(_audit_handler)
+
+
+def log_download_audit(event: str, **details) -> None:
+    """Write structured transfer diagnostics to stderr/systemd journal."""
+    _AUDIT_LOGGER.info("DOWNLOAD_AUDIT %s", json.dumps({
+        "event": event, **details,
+    }, ensure_ascii=False, sort_keys=True))
 
 
 def ensure_upload_download_history_schema() -> None:
@@ -229,18 +246,26 @@ def mark_upload_download_status(event_id: int | None, status: str) -> None:
         db.close()
 
 
-def track_upload_download_response(response, event_id: int | None, *, logger=None):
-    """Mark completion only after the response body is fully consumed."""
-    if not event_id:
+def track_upload_download_response(response, event_id: int | None, *, logger=None, audit=None):
+    """Mark completion after streaming and optionally log each transfer attempt."""
+    if not event_id and not audit:
         return response
     original_iterable = response.response
+    expected_bytes = response.content_length
+    started = time.monotonic()
 
     def tracked_body():
         completed = False
+        bytes_yielded = 0
+        stream_error = None
         try:
             for chunk in original_iterable:
+                bytes_yielded += len(chunk)
                 yield chunk
             completed = True
+        except BaseException as exc:
+            stream_error = type(exc).__name__
+            raise
         finally:
             try:
                 close = getattr(original_iterable, "close", None)
@@ -252,17 +277,28 @@ def track_upload_download_response(response, event_id: int | None, *, logger=Non
                         "upload download response close failed event_id=%s",
                         event_id,
                     )
-            try:
-                mark_upload_download_status(
-                    event_id,
-                    "completed" if completed else "failed",
-                )
-            except Exception:
-                if logger:
-                    logger.exception(
-                        "upload download status update failed event_id=%s",
+            if event_id:
+                try:
+                    mark_upload_download_status(
                         event_id,
+                        "completed" if completed else "failed",
                     )
+                except Exception:
+                    if logger:
+                        logger.exception(
+                            "upload download status update failed event_id=%s",
+                            event_id,
+                        )
+            if audit:
+                log_download_audit("stream_finished", **{
+                    **audit,
+                    "result": "completed" if completed else "interrupted",
+                    "history_event_id": event_id,
+                    "bytes_yielded": bytes_yielded,
+                    "expected_bytes": expected_bytes,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    "stream_error": stream_error,
+                })
 
     response.response = tracked_body()
     return response
