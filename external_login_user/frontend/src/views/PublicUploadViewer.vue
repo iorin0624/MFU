@@ -15,6 +15,15 @@ type PublicFile = {
 };
 
 type ReplyImage = { name: string; url: string };
+type PreparedZip = {
+  key: string;
+  url: string;
+  name: string;
+  count: number;
+  size: number;
+  preparedAt: number;
+  expiresInSeconds: number;
+};
 type NoticePart = { kind: 'text' | 'link'; value: string };
 type ReplyGroup = {
   id: number;
@@ -57,8 +66,7 @@ declare global {
         key: string;
         sequenceRename?: boolean;
         onProgress: (data: Record<string, number>) => void;
-      }): Promise<{ download_url: string }>;
-      startDownload(url: string): void;
+      }): Promise<{ key: string; download_url: string; download_name: string; size: number; expires_in_seconds: number }>;
     };
     MFUShortcutDownload?: {
       isIOSDevice: () => boolean;
@@ -89,6 +97,7 @@ const busy = ref(false);
 const toast = ref('');
 const progress = ref<number | null>(null);
 const progressText = ref('');
+const preparedZip = ref<PreparedZip | null>(null);
 const lightboxIndex = ref(-1);
 const replyFiles = ref<File[]>([]);
 const replyComment = ref('');
@@ -397,11 +406,23 @@ async function zipDownload() {
         progressText.value = `${progress.value}%（${done}/${total}件）`;
       },
     });
+    if (!/^\/api\/zip-download\/[0-9A-Za-z._:-]+$/.test(result.download_url)) {
+      throw new Error('無効なダウンロードURLです。');
+    }
+    preparedZip.value = {
+      key: result.key,
+      url: result.download_url,
+      name: result.download_name,
+      count: paths.length,
+      size: result.size,
+      preparedAt: Date.now(),
+      expiresInSeconds: result.expires_in_seconds,
+    };
     progress.value = 100;
     progressText.value = '生成完了';
-    window.MFUZipDownload.startDownload(result.download_url);
-  } catch {
-    showToast('ZIPの生成に失敗しました。');
+    showToast('ZIPの準備ができました。「ZIPをダウンロード」を押してください。');
+  } catch (reason) {
+    showToast(reason instanceof Error ? `ZIPの生成に失敗しました: ${reason.message}` : 'ZIPの生成に失敗しました。');
   } finally {
     busy.value = false;
     window.setTimeout(() => { progress.value = null; }, 1500);
@@ -588,6 +609,28 @@ async function appendUploadFiles() {
     appendProgress.value = null;
     appendProgressText.value = '';
   }
+}
+
+function clickPreparedZip(event: MouseEvent) {
+  const zip = preparedZip.value;
+  if (!zip) return;
+  if (zip.expiresInSeconds > 0 && Date.now() - zip.preparedAt >= zip.expiresInSeconds * 1000) {
+    event.preventDefault();
+    showToast('ZIPの有効期限が切れました。「ZIPでDL」から作り直してください。');
+    return;
+  }
+  const intentRef = crypto.randomUUID();
+  const url = new URL(zip.url, window.location.origin);
+  url.searchParams.set('intent', intentRef);
+  (event.currentTarget as HTMLAnchorElement).href = url.toString();
+  // The click audit must never delay or block the browser's native download.
+  void fetch('/api/zip-download-intent', {
+    method: 'POST',
+    credentials: 'same-origin',
+    keepalive: true,
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify({ key: zip.key, intent_ref: intentRef }),
+  }).catch(() => {});
 }
 
 function startManaging() {
@@ -846,7 +889,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <div v-if="!data.replyOnly" class="bottom-spacer"></div>
+      <div v-if="!data.replyOnly" class="bottom-spacer" :class="{'has-prepared-zip':!!preparedZip}"></div>
       <div v-if="!data.replyOnly" class="selection-bar">
         <button type="button" @click="selectAll">全選択</button>
         <button type="button" :disabled="!selected.length" @click="clearSelection">全解除</button>
@@ -861,6 +904,11 @@ onUnmounted(() => {
           <button type="button" :disabled="busy || !selected.length" class="primary-button" @click="zipDownload">ZIPでDL</button>
           <button v-if="isIos && data.download.mobileEnabled" type="button" :disabled="busy || !selectedFiles.some(file=>file.mobileDownload)" class="shortcut-button" @click="shortcutDownload">SCでDL</button>
         </template>
+        <div v-if="preparedZip && !managing" class="prepared-zip" role="status">
+          <span>ZIP準備完了（{{ preparedZip.count }}件・{{ Math.ceil(preparedZip.size / 1024 / 1024) }}MB）</span>
+          <a :href="preparedZip.url" :download="preparedZip.name" class="prepared-zip-download" @click="clickPreparedZip">ZIPをダウンロード</a>
+          <small>開始しない場合は、このボタンから同じZIPを再試行できます。</small>
+        </div>
         <div v-if="progress !== null" class="progress-row"><span :style="{width:`${progress}%`}"></span><small>{{ progressText }}</small></div>
       </div>
 

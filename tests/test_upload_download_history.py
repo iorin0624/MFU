@@ -28,7 +28,7 @@ def test_selected_zip_records_file_ids_at_actual_download():
     source = (ROOT / "utils" / "zip_stream.py").read_text(encoding="utf-8")
 
     assert '"download_history"' in source
-    assert 'event_key=f"selected-zip:{safe_key}"' in source
+    assert 'event_key=f"selected-zip:{safe_key}:{attempt_ref}"' in source
     assert 'download_kind="selected_zip"' in source
     assert "api_zip_download" in source
 
