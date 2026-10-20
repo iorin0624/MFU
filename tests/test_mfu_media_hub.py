@@ -109,7 +109,9 @@ def test_notification_centers_share_feature_channels_and_unread_counts():
     assert 'channels.append({"key": "other", "label": "その他", "group": "システム"})' in notifications
     assert 'return [channel for group_channels in grouped.values() for channel in group_channels]' in notifications
     assert "notification-channel-group" in template
-    assert "-webkit-line-clamp:2" in template
+    assert ".notification-channel-list { display:flex; flex-direction:column;" in template
+    assert ".notification-channel { box-sizing:border-box; flex:0 0 auto;" in template
+    assert "overflow-wrap:anywhere; white-space:normal; line-height:1.3;" in template
     assert "def _compute_mfu_channel_unread_counts" in notifications
     assert 'request.args.get("channel")' in notifications
     assert 'data-channel-count' in template
