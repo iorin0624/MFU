@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import configparser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +156,24 @@ def test_raspberry_pi_migration_covers_all_active_discord_producers():
         assert f'"{feature}"' in source
     assert '127.0.0.1' in source
     assert 'parsed.port == 8765' in source
+
+
+def test_eew_migration_writes_unquoted_ini_url(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("migrate_raspberry_pi_discord", RPI_MIGRATION)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = tmp_path / "discord.conf"
+    config.write_text('[discord]\nwebhook_url = "old"\n', encoding="utf-8")
+    monkeypatch.setattr(module, "atomic_write", lambda path, value: path.write_text(value, encoding="utf-8"))
+
+    path, key, feature, quoted = module.SETTINGS[0]
+    assert path.name == "discord.conf"
+    module.set_value(config, key, f"{module.BRIDGE}/{feature}", quoted=quoted)
+
+    parser = configparser.ConfigParser()
+    parser.read(config, encoding="utf-8")
+    assert parser.get("discord", "webhook_url") == f"{module.BRIDGE}/{feature}"
 
 
 def test_freepbx_migration_separates_calls_and_voicemail():

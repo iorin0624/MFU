@@ -9,13 +9,13 @@ from pathlib import Path
 
 BRIDGE = "http://127.0.0.1:8765/discord"
 SETTINGS = (
-    (Path("/etc/p2p-eew-history/discord.conf"), "webhook_url", "earthquake_early_warning"),
-    (Path("/etc/default/chiba_police_watcher"), "CHIBA_POLICE_DISCORD_WEBHOOK_URL", "chiba_police_incidents"),
-    (Path("/etc/default/ichihara_bousai_watcher"), "ICHIHARA_DISCORD_WEBHOOK_URL", "ichihara_disaster_radio"),
-    (Path("/etc/default/mail_summary_watcher"), "DISCORD_WEBHOOK_URL", "mail_summary"),
-    (Path("/etc/default/mail_spam_monitor"), "MAIL_SPAM_MONITOR_DISCORD_WEBHOOK_URL", "mail_spam_report"),
-    (Path("/usr/local/bin/update_all_debian.conf"), "DISCORD_WEBHOOK_URL", "debian_updates"),
-    (Path("/etc/default/mfu-notify"), "DISCORD_WEBHOOK_URL_HARDCODE", "backup_status"),
+    (Path("/etc/p2p-eew-history/discord.conf"), "webhook_url", "earthquake_early_warning", False),
+    (Path("/etc/default/chiba_police_watcher"), "CHIBA_POLICE_DISCORD_WEBHOOK_URL", "chiba_police_incidents", True),
+    (Path("/etc/default/ichihara_bousai_watcher"), "ICHIHARA_DISCORD_WEBHOOK_URL", "ichihara_disaster_radio", True),
+    (Path("/etc/default/mail_summary_watcher"), "DISCORD_WEBHOOK_URL", "mail_summary", True),
+    (Path("/etc/default/mail_spam_monitor"), "MAIL_SPAM_MONITOR_DISCORD_WEBHOOK_URL", "mail_spam_report", True),
+    (Path("/usr/local/bin/update_all_debian.conf"), "DISCORD_WEBHOOK_URL", "debian_updates", True),
+    (Path("/etc/default/mfu-notify"), "DISCORD_WEBHOOK_URL_HARDCODE", "backup_status", True),
 )
 VALIDATORS = (
     Path("/usr/local/bin/chiba_police_watcher.py"),
@@ -34,10 +34,11 @@ def atomic_write(path: Path, text: str) -> None:
     os.replace(temporary, path)
 
 
-def set_value(path: Path, key: str, value: str) -> None:
+def set_value(path: Path, key: str, value: str, quoted: bool = True) -> None:
     text = path.read_text(encoding="utf-8")
     pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=\s*).*$", re.MULTILINE)
-    changed, count = pattern.subn(rf'\g<1>"{value}"', text)
+    rendered = f'"{value}"' if quoted else value
+    changed, count = pattern.subn(lambda match: match.group(1) + rendered, text)
     if count != 1:
         raise RuntimeError(f"expected one {key} in {path}, found {count}")
     atomic_write(path, changed)
@@ -62,8 +63,8 @@ def allow_local_bridge(path: Path) -> None:
 def main() -> int:
     for path in VALIDATORS:
         allow_local_bridge(path)
-    for path, key, feature in SETTINGS:
-        set_value(path, key, f"{BRIDGE}/{feature}")
+    for path, key, feature, quoted in SETTINGS:
+        set_value(path, key, f"{BRIDGE}/{feature}", quoted=quoted)
     print(f"migrated={len(SETTINGS)}")
     return 0
 
