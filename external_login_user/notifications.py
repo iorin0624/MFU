@@ -150,12 +150,15 @@ def _mfu_notification_channels() -> list[dict[str, str]]:
         {
             "key": str(key),
             "label": str(definition.get("label") or key),
-            "group": str(definition.get("group") or "その他"),
+            "group": str(definition.get("group") or "システム"),
         }
         for key, definition in FEATURE_DEFINITIONS.items()
     ]
-    channels.append({"key": "other", "label": "その他", "group": "その他"})
-    return channels
+    channels.append({"key": "other", "label": "その他", "group": "システム"})
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for channel in channels:
+        grouped.setdefault(channel["group"], []).append(channel)
+    return [channel for group_channels in grouped.values() for channel in group_channels]
 
 
 def _normalize_mfu_notification_channel(value: Any) -> str:

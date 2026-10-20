@@ -105,8 +105,11 @@ def test_notification_centers_share_feature_channels_and_unread_counts():
     server = (ROOT / "utils" / "notification_service.py").read_text(encoding="utf-8")
     client = HUB_CLIENT_PATH.read_text(encoding="utf-8")
     assert "def _mfu_notification_channels" in notifications
-    assert '"group": str(definition.get("group") or "その他")' in notifications
+    assert '"group": str(definition.get("group") or "システム")' in notifications
+    assert 'channels.append({"key": "other", "label": "その他", "group": "システム"})' in notifications
+    assert 'return [channel for group_channels in grouped.values() for channel in group_channels]' in notifications
     assert "notification-channel-group" in template
+    assert "-webkit-line-clamp:2" in template
     assert "def _compute_mfu_channel_unread_counts" in notifications
     assert 'request.args.get("channel")' in notifications
     assert 'data-channel-count' in template
