@@ -41,7 +41,7 @@
   .notification-channel.is-active { background:#e8f1ff; color:#0b57d0; font-weight:700; }
   .notification-channel.is-muted .notification-channel-label { color:#64748b; }
   .notification-channel-hash { color:#94a3b8; font-weight:700; }
-  .notification-channel-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .notification-channel-label { flex:1; min-width:0; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; white-space:normal; line-height:1.3; }
   .notification-channel-mute { min-width:1.2rem; text-align:center; }
   .notification-channel-count { min-width:1.6rem; border-radius:999px; background:#dc2626; color:#fff; font-size:.72rem; font-weight:700; line-height:1.35rem; padding:0 .35rem; text-align:center; }
   .notification-channel-count.is-zero { visibility:hidden; }
@@ -196,7 +196,7 @@
       if (channelListEl && !channelListEl.children.length) {
         let previousGroup = '';
         channelListEl.innerHTML = channels.map((channel) => {
-          const group = String(channel.group || 'その他');
+          const group = String(channel.group || 'システム');
           const groupHeading = channel.key !== 'all' && group !== previousGroup
             ? `<div class="notification-channel-group">${escapeHtml(group)}</div>` : '';
           if (channel.key !== 'all') previousGroup = group;
@@ -215,7 +215,7 @@
       if (channelSelectEl && !channelSelectEl.options.length) {
         const grouped = new Map();
         for (const channel of configuredChannels) {
-          const group = String(channel.group || 'その他');
+          const group = String(channel.group || 'システム');
           if (!grouped.has(group)) grouped.set(group, []);
           grouped.get(group).push(channel);
         }
