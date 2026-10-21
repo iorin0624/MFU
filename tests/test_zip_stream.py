@@ -154,6 +154,7 @@ class ZipStreamTest(unittest.TestCase):
         client = self.app.test_client()
         with patch.object(self.zip_stream, "record_upload_download", side_effect=record_attempt), \
              patch("app.utils.upload_download_history.mark_upload_download_status") as mark_status, \
+             patch("app.utils.upload_download_history.record_upload_download_audit") as record_audit, \
              self.assertLogs("mfu.download_audit", level="INFO") as logs:
             for _ in range(2):
                 response = client.get(f"/api/zip-download/{key}")
@@ -164,6 +165,8 @@ class ZipStreamTest(unittest.TestCase):
         self.assertEqual(len(event_keys), 2)
         self.assertNotEqual(*event_keys)
         self.assertEqual(mark_status.call_count, 2)
+        self.assertEqual(record_audit.call_count, 4)
+        self.assertTrue(all(call.kwargs["upload_id"] == 42 for call in record_audit.call_args_list))
         self.assertTrue(all(call.args[1] == "completed" for call in mark_status.call_args_list))
         self.assertEqual(sum("download_started" in line for line in logs.output), 2)
         self.assertEqual(sum("stream_finished" in line for line in logs.output), 2)
@@ -171,6 +174,7 @@ class ZipStreamTest(unittest.TestCase):
 
         with patch.object(self.zip_stream, "record_upload_download", return_value=3), \
              patch("app.utils.upload_download_history.mark_upload_download_status") as mark_status, \
+             patch("app.utils.upload_download_history.record_upload_download_audit"), \
              self.assertLogs("mfu.download_audit", level="INFO") as interrupted_logs:
             response = client.get(f"/api/zip-download/{key}", buffered=False)
             next(iter(response.response))

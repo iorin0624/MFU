@@ -32,6 +32,49 @@ DOWNLOAD_STATUS_LABELS = {
     "completed": "配信完了",
     "failed": "中断・失敗",
 }
+DOWNLOAD_AUDIT_EVENT_LABELS = {
+    "prepare_started": "ZIP生成を開始",
+    "prepare_completed": "ZIP生成が完了",
+    "prepare_rejected": "ZIP生成を拒否",
+    "prepare_failed": "ZIP生成に失敗",
+    "download_clicked": "ダウンロードボタンを押下",
+    "download_intent_rejected": "ダウンロード操作を拒否",
+    "download_started": "ZIP配信を開始",
+    "download_rejected": "ZIP配信を拒否",
+    "stream_finished": "ZIP配信が終了",
+}
+DOWNLOAD_AUDIT_DETAIL_LABELS = {
+    "job_ref": "ジョブ参照ID",
+    "attempt_ref": "配信試行ID",
+    "intent_ref": "操作ID",
+    "client_ip_hash": "IP識別子（匿名化）",
+    "user_agent": "ブラウザー",
+    "reason": "理由",
+    "error_type": "エラー種別",
+    "requested_files": "指定枚数",
+    "valid_files": "有効枚数",
+    "bad_paths_count": "対象外枚数",
+    "file_count": "配信枚数",
+    "sequence_rename": "連番リネーム",
+    "http_status": "HTTP状態",
+    "archive_bytes": "ZIPサイズ（バイト）",
+    "elapsed_ms": "所要時間（ミリ秒）",
+    "range_requested": "範囲指定リクエスト",
+    "response_bytes": "応答予定（バイト）",
+    "history_event_id": "履歴ID",
+    "result": "配信結果",
+    "bytes_yielded": "送信量（バイト）",
+    "expected_bytes": "予定送信量（バイト）",
+    "stream_error": "配信エラー",
+}
+_AUDIT_DETAIL_KEYS = frozenset(DOWNLOAD_AUDIT_DETAIL_LABELS)
+_AUDIT_DISPLAY_ORDER = (
+    "result", "reason", "http_status", "file_count", "requested_files",
+    "valid_files", "bad_paths_count", "bytes_yielded", "expected_bytes",
+    "archive_bytes", "response_bytes", "elapsed_ms", "error_type",
+    "stream_error", "sequence_rename", "range_requested", "job_ref",
+    "attempt_ref", "intent_ref", "history_event_id", "client_ip_hash", "user_agent",
+)
 _SCHEMA_LOCK = threading.Lock()
 _schema_ready = False
 _AUDIT_LOGGER = logging.getLogger("mfu.download_audit")
@@ -48,6 +91,14 @@ def log_download_audit(event: str, **details) -> None:
     _AUDIT_LOGGER.info("DOWNLOAD_AUDIT %s", json.dumps({
         "event": event, **details,
     }, ensure_ascii=False, sort_keys=True))
+    if event in DOWNLOAD_AUDIT_EVENT_LABELS and details.get("upload_id"):
+        try:
+            record_upload_download_audit(
+                upload_id=int(details["upload_id"]), event=event, details=details,
+            )
+        except Exception:
+            # Diagnostics must never interrupt ZIP creation or response streaming.
+            _AUDIT_LOGGER.exception("DOWNLOAD_AUDIT database insert failed event=%s", event)
 
 
 def ensure_upload_download_history_schema() -> None:
@@ -101,6 +152,24 @@ def ensure_upload_download_history_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upload_download_audit_events (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                  upload_id INT NOT NULL,
+                  job_ref CHAR(16) NULL,
+                  event_name VARCHAR(40) NOT NULL,
+                  details_json TEXT NOT NULL,
+                  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                  PRIMARY KEY (id),
+                  KEY idx_download_audit_upload_time (upload_id, created_at, id),
+                  KEY idx_download_audit_job (job_ref, id),
+                  CONSTRAINT fk_download_audit_upload
+                    FOREIGN KEY (upload_id) REFERENCES uploads (id)
+                    ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
             # ios_shortcut が履歴種別へ追加される前は selected_zip に正規化
             # されていたため、イベントキーから安全に判別できる既存行を補正する。
             cur.execute(
@@ -115,6 +184,103 @@ def ensure_upload_download_history_schema() -> None:
         finally:
             db.close()
         _schema_ready = True
+
+
+def record_upload_download_audit(*, upload_id: int, event: str, details: dict) -> None:
+    """Persist only allowlisted diagnostics, never the reusable ZIP download key."""
+    if upload_id <= 0 or event not in DOWNLOAD_AUDIT_EVENT_LABELS:
+        return
+    safe_details = {
+        key: value for key, value in details.items()
+        if key in _AUDIT_DETAIL_KEYS and value is not None
+        and isinstance(value, (str, int, float, bool))
+    }
+    for key in ("user_agent", "reason", "error_type", "stream_error"):
+        if key in safe_details:
+            safe_details[key] = str(safe_details[key])[:180]
+    ensure_upload_download_history_schema()
+    db = get_db(retries=1)
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO upload_download_audit_events
+                (upload_id, job_ref, event_name, details_json, created_at)
+            VALUES (%s, %s, %s, %s, UTC_TIMESTAMP(6))
+            """,
+            (upload_id, safe_details.get("job_ref"), event,
+             json.dumps(safe_details, ensure_ascii=False)),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def find_upload_id_for_zip_job(job_ref: str) -> int | None:
+    """Resolve an expired ZIP attempt to its upload without storing the capability key."""
+    if not isinstance(job_ref, str) or len(job_ref) != 16 or any(c not in "0123456789abcdef" for c in job_ref):
+        return None
+    ensure_upload_download_history_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT upload_id FROM upload_download_audit_events
+             WHERE job_ref=%s
+             ORDER BY id DESC LIMIT 1
+            """,
+            (job_ref,),
+        )
+        row = cur.fetchone()
+        return int(row["upload_id"]) if row else None
+    finally:
+        db.close()
+
+
+def list_upload_download_audit(*, upload_id: int, page: int = 1, per_page: int = 50) -> dict[str, Any]:
+    """Return only this upload's diagnostics, newest first, with a bounded page."""
+    ensure_upload_download_history_schema()
+    page = max(1, int(page or 1))
+    per_page = min(100, max(1, int(per_page or 50)))
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT COUNT(*) AS total FROM upload_download_audit_events WHERE upload_id=%s",
+            (upload_id,),
+        )
+        total = int((cur.fetchone() or {}).get("total") or 0)
+        page_count = max(1, (total + per_page - 1) // per_page)
+        page = min(page, page_count)
+        cur.execute(
+            """
+            SELECT id, event_name, details_json,
+                   CONVERT_TZ(created_at, '+00:00', '+09:00') AS created_at_jst
+              FROM upload_download_audit_events
+             WHERE upload_id=%s
+             ORDER BY created_at DESC, id DESC
+             LIMIT %s OFFSET %s
+            """,
+            (upload_id, per_page, (page - 1) * per_page),
+        )
+        events = cur.fetchall()
+    finally:
+        db.close()
+    for row in events:
+        try:
+            details = json.loads(row.pop("details_json") or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        if not isinstance(details, dict):
+            details = {}
+        row["label"] = DOWNLOAD_AUDIT_EVENT_LABELS.get(row["event_name"], row["event_name"])
+        row["details"] = [
+            (DOWNLOAD_AUDIT_DETAIL_LABELS[key],
+             ("あり" if details[key] else "なし") if isinstance(details[key], bool) else details[key])
+            for key in _AUDIT_DISPLAY_ORDER if key in details
+        ]
+    return {"events": events, "total": total, "page": page, "page_count": page_count}
 
 
 def request_ip(flask_request: Request) -> str:
