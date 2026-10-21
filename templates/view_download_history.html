@@ -39,6 +39,14 @@
   .download-history-page .deleted .history-filename{color:#94a3b8}
   .download-history-page .history-pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:20px}
   .download-history-page .history-pager a{padding:8px 13px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;text-decoration:none}
+  .download-history-page .history-tabs{display:flex;gap:8px;margin:0 0 16px}
+  .download-history-page .history-tabs a{padding:10px 16px;border:1px solid var(--history-line);border-radius:9px;background:#fff;color:#334155;text-decoration:none;font-weight:700}
+  .download-history-page .history-tabs a[aria-current="page"]{border-color:var(--history-blue);background:#e8f1ff;color:#0b57b7}
+  .download-history-page .audit-note{color:var(--history-muted);margin:0 0 16px}
+  .download-history-page .audit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:0}
+  .download-history-page .audit-grid div{min-width:0;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;overflow-wrap:anywhere}
+  .download-history-page .audit-grid dt{font-size:.78rem;color:#64748b;font-weight:700}
+  .download-history-page .audit-grid dd{margin:3px 0 0}
   @media(max-width:800px){
     .download-history-page .history-filters{grid-template-columns:1fr 1fr}
     .download-history-page .history-topbar{flex-direction:column}
@@ -62,6 +70,47 @@
     </div>
     <a class="history-back" href="{{ url_for('upload_history.upload_list') }}">アップロード履歴へ戻る</a>
   </header>
+
+  <nav class="history-tabs" aria-label="ダウンロード記録の種類">
+    <a href="{{ url_for('view_upload_download_history', uuid=uuid) }}" {% if not show_audit %}aria-current="page"{% endif %}>ダウンロード履歴</a>
+    <a href="{{ url_for('view_upload_download_history', uuid=uuid, view='logs') }}" {% if show_audit %}aria-current="page"{% endif %}>詳細ログ</a>
+  </nav>
+
+  {% if show_audit %}
+    <p class="audit-note">ZIPの生成・ボタン操作・配信結果を、このUUIDについて記録します。詳細ログは本機能の追加後から表示されます。「配信完了」はサーバーからの送信完了で、端末への保存完了を保証しません。</p>
+    <div class="history-summary">
+      <strong>{{ audit_history.total }}件</strong>
+      <span>{{ audit_history.page }} / {{ audit_history.page_count }}ページ</span>
+    </div>
+    {% if audit_history.events %}
+      {% for event in audit_history.events %}
+        <article class="history-card">
+          <header class="history-head">
+            <time class="history-time">{{ event.created_at_jst.strftime('%Y年%m月%d日 %H:%M:%S') }}</time>
+            <span class="history-badge">{{ event.label }}</span>
+          </header>
+          <dl class="audit-grid">
+            {% for label, value in event.details %}
+              <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+            {% endfor %}
+          </dl>
+        </article>
+      {% endfor %}
+    {% else %}
+      <div class="history-empty">このUUIDの詳細ログはまだありません。</div>
+    {% endif %}
+    {% if audit_history.page_count > 1 %}
+      <nav class="history-pager" aria-label="詳細ログのページ送り">
+        {% if audit_history.page > 1 %}
+          <a href="{{ url_for('view_upload_download_history', uuid=uuid, view='logs', page=audit_history.page-1) }}">前へ</a>
+        {% endif %}
+        <span>{{ audit_history.page }} / {{ audit_history.page_count }}</span>
+        {% if audit_history.page < audit_history.page_count %}
+          <a href="{{ url_for('view_upload_download_history', uuid=uuid, view='logs', page=audit_history.page+1) }}">次へ</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
 
   <form class="history-filters" method="get">
     <label>開始日
@@ -140,6 +189,7 @@
         <a href="{{ url_for('view_upload_download_history', uuid=uuid, page=history.page+1, date_from=filters.date_from, date_to=filters.date_to, ip_address=filters.ip_address, download_kind=filters.download_kind, filename=filters.filename) }}">次へ</a>
       {% endif %}
     </nav>
+  {% endif %}
   {% endif %}
 </section>
 {% endblock %}

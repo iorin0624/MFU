@@ -174,6 +174,7 @@ from app.utils.upload_notifications import send_discord_upload_notification
 from app.utils.upload_download_history import (
     DOWNLOAD_KIND_LABELS,
     ensure_upload_download_history_schema,
+    list_upload_download_audit,
     list_upload_download_history,
     record_upload_download,
     request_ip as download_request_ip,
@@ -3100,6 +3101,7 @@ def view_upload_download_history(uuid):
     if not is_upload_owner(upload):
         abort(403)
 
+    show_audit = request.args.get("view") == "logs"
     try:
         page = max(1, int(request.args.get("page", "1")))
     except (TypeError, ValueError):
@@ -3111,15 +3113,20 @@ def view_upload_download_history(uuid):
         "date_from": str(request.args.get("date_from") or "").strip(),
         "date_to": str(request.args.get("date_to") or "").strip(),
     }
-    history = list_upload_download_history(
-        upload_id=int(upload["id"]),
-        page=page,
-        per_page=30,
-        **filters,
-    )
+    history = None
+    audit_history = None
+    if show_audit:
+        audit_history = list_upload_download_audit(upload_id=int(upload["id"]), page=page)
+    else:
+        history = list_upload_download_history(
+            upload_id=int(upload["id"]),
+            page=page,
+            per_page=30,
+            **filters,
+        )
 
     upload_root = Path(UPLOAD_BASE_DIR) / uuid
-    for event in history["events"]:
+    for event in (history or {}).get("events", []):
         for item in event["files"]:
             filename = str(item.get("filename") or "")
             current = bool(item.get("current_file_id"))
@@ -3154,6 +3161,8 @@ def view_upload_download_history(uuid):
         upload=upload,
         uuid=uuid,
         history=history,
+        audit_history=audit_history,
+        show_audit=show_audit,
         filters=filters,
         kind_labels=DOWNLOAD_KIND_LABELS,
     )
