@@ -77,7 +77,7 @@
   </nav>
 
   {% if show_audit %}
-    <p class="audit-note">ZIPの生成・ボタン操作・配信結果を、このUUIDについて記録します。詳細ログは本機能の追加後から表示されます。「配信完了」はサーバーからの送信完了で、端末への保存完了を保証しません。</p>
+    <p class="audit-note">ZIPの生成・ボタン操作・配信結果と、SCでDLの起動・ファイル応答・完了通知を、このUUIDについて記録します。詳細ログは各機能の追加後から表示されます。ZIPの「配信完了」やSC用ファイル応答の準備は、端末への保存完了を保証しません。</p>
     <div class="history-summary">
       <strong>{{ audit_history.total }}件</strong>
       <span>{{ audit_history.page }} / {{ audit_history.page_count }}ページ</span>
