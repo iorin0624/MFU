@@ -342,6 +342,14 @@ def _get_shortcut_settings() -> dict:
     return settings
 
 
+def get_shortcut_template_url() -> str:
+    """Return the currently available distribution URL for message templates."""
+    settings = _get_shortcut_settings()
+    if not settings.get("is_enabled"):
+        return ""
+    return str(settings.get("download_url") or "")
+
+
 def _public_shortcut_settings(settings: dict | None = None) -> dict:
     settings = settings or _get_shortcut_settings()
     return {

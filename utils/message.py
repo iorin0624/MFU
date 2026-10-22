@@ -5,6 +5,7 @@ import threading
 
 _notification_schema_lock = threading.Lock()
 _notification_schema_ready = False
+_SHORTCUT_DOWNLOAD_URL_RE = re.compile(r"{{\s*shortcut_download_url\s*}}")
 
 
 def ensure_notification_message_schema():
@@ -83,6 +84,22 @@ def render_message_text(template, context):
         return str(values.get(key, f"{{{{{key}}}}}"))
 
     return re.sub(r'{{\s*(\w+)\s*}}', repl, template)
+
+
+def resolve_shortcut_download_url(message, *, download_url=None):
+    """Resolve the live shortcut URL only when a message is displayed or sent.
+
+    The placeholder stays in saved upload messages, so changing the admin URL
+    also updates notices belonging to uploads that already exist.
+    """
+    message = str(message or "")
+    if not _SHORTCUT_DOWNLOAD_URL_RE.search(message):
+        return message
+    if download_url is None:
+        from app.utils.mobile_download import get_shortcut_template_url
+
+        download_url = get_shortcut_template_url()
+    return _SHORTCUT_DOWNLOAD_URL_RE.sub(lambda _: str(download_url or ""), message)
 
 
 def _render_template(table, mode, context, username):
