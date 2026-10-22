@@ -32,7 +32,8 @@ def test_upload_completion_snapshots_and_uses_each_template_separately():
 def test_public_viewer_continues_to_use_site_notice_snapshot():
     source = (ROOT / "__init__.py").read_text(encoding="utf-8")
 
-    assert '"notice": "" if reply_only_access else str(message_row.get("message") or "").strip()' in source
+    assert '"notice": "" if reply_only_access else resolve_shortcut_download_url(' in source
+    assert 'str(message_row.get("message") or "").strip()' in source
 
 
 def test_upload_can_customize_site_notice_for_one_upload():

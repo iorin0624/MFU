@@ -79,6 +79,13 @@
     </div>
 
     <h4 class="mt-4">🧩 使用可能な変数一覧</h4>
+    {% if not shortcut_url_available %}
+      <div class="alert alert-warning" id="shortcut-url-warning" role="status"
+           {% if 'shortcut_download_url' not in site_template and 'shortcut_download_url' not in notification_template %}hidden{% endif %}>
+        ショートカット配布URLが未設定、またはショートカットが無効です。
+        {{ '{{ shortcut_download_url }}' }} は現在空欄として表示・送信されます。
+      </div>
+    {% endif %}
     <ul class="list-group mb-3" style="font-family: monospace;">
       {% for var, desc in [
         ("title", "撮影タイトル"),
@@ -87,6 +94,7 @@
         ("password", "ダウンロード用パスワード（有効時のみ）"),
         ("expire", "有効期限（例: 2025年07月08日）※有効期限は60日間固定"),
         ("layer_upload_url", "レイヤーさんからのアップロード用URL（有効時のみ）"),
+        ("shortcut_download_url", "ショートカット配布URL（設定変更後も最新のURLを表示）"),
         ("username", "アップロード実行ユーザー名（ログインID）"),
         ("nickname", "アップロード実行ユーザーのニックネーム")
       ] %}
@@ -120,6 +128,20 @@
 {% endif %}
 
 <script>
+  const shortcutUrlWarning = document.getElementById("shortcut-url-warning");
+  if (shortcutUrlWarning) {
+    const siteTemplate = document.getElementById("site_template");
+    const notificationTemplate = document.getElementById("notification_template");
+    const refreshShortcutUrlWarning = () => {
+      shortcutUrlWarning.hidden = !(
+        siteTemplate.value.includes("shortcut_download_url") ||
+        notificationTemplate.value.includes("shortcut_download_url")
+      );
+    };
+    siteTemplate.addEventListener("input", refreshShortcutUrlWarning);
+    notificationTemplate.addEventListener("input", refreshShortcutUrlWarning);
+  }
+
   function copyToClipboard(text, btn) {
     navigator.clipboard.writeText(text).then(() => {
       const original = btn.textContent;

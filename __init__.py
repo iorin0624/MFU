@@ -119,6 +119,7 @@ from app.utils.message import (
     generate_message,
     generate_notification_message,
     render_message_text,
+    resolve_shortcut_download_url,
 )
 from app.utils.storage_info import get_storage_info
 from app.utils.socket_connection_metrics import (
@@ -1754,7 +1755,7 @@ def submit_upload():
         },
         filenames,
     )
-    message = prepared["notification_message"]
+    message = resolve_shortcut_download_url(prepared["notification_message"])
     template_key = prepared["template_key"]
     context = prepared["context"]
 
@@ -2116,6 +2117,7 @@ def upload_done(uid: str):
     if not message:
         prepared = _prepare_upload_completion(upload_row)
         message = str(prepared.get("message") or "")
+    message = resolve_shortcut_download_url(message)
     mode_config = (prepared or {}).get("mode_config") or {}
     if not mode_config:
         db = get_db()
@@ -2291,7 +2293,7 @@ def submit_upload_finish():
     title = upload_row.get("title") or ""
     date_value = upload_row.get("date")
     prepared = _prepare_upload_completion(upload_row, filenames)
-    message = prepared["notification_message"]
+    message = resolve_shortcut_download_url(prepared["notification_message"])
     template_key = prepared["template_key"]
     context = prepared["context"]
 
@@ -2388,6 +2390,7 @@ def submit_upload_mail():
         or site_message_row.get("message")
         or ""
     ).strip()
+    body = resolve_shortcut_download_url(body)
     if not body:
         return jsonify({"ok": False, "error": "送信する本文が見つかりません。"}), 400
 
@@ -2476,7 +2479,7 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
 
             notify_method = user.get("notify_method", "discord") if user else "discord"
             base_msg = generate_notification_message(mode, context, username=context["username"])
-            msg = base_msg + "\n（サムネイル生成はスキップしました）"
+            msg = resolve_shortcut_download_url(base_msg) + "\n（サムネイル生成はスキップしました）"
 
             send_discord_upload_notification(
                 logger=(logger or app.logger),
@@ -2556,7 +2559,9 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
         db.close()
 
         notify_method = user.get("notify_method", "discord") if user else "discord"
-        msg = generate_notification_message(mode, context, username=context["username"]) + "\n（サムネイル生成が完了しました）"
+        msg = resolve_shortcut_download_url(
+            generate_notification_message(mode, context, username=context["username"])
+        ) + "\n（サムネイル生成が完了しました）"
 
         send_discord_upload_notification(
             logger=(logger or app.logger),
@@ -3075,7 +3080,9 @@ def public_upload_view_api(uuid):
             },
             "permissions": {"manageVisibility": owner_management},
             "counts": {"public": public_count, "hidden": hidden_count, "total": len(file_rows)},
-            "notice": "" if reply_only_access else str(message_row.get("message") or "").strip(),
+            "notice": "" if reply_only_access else resolve_shortcut_download_url(
+                str(message_row.get("message") or "").strip()
+            ),
             "reply": {
                 "enabled": reply_enabled,
                 "uploadUrl": url_for("layer_reply.public_replies", uuid=uuid),
@@ -5997,12 +6004,15 @@ def mode_edit_combined(mode):
         return redirect(url_for("mode_list"))
 
     db.close()
+    from app.utils.mobile_download import get_shortcut_template_url
+
     return render_template("mode_edit_combined.html",
                            action="edit" if mode_data else "add",
                            mode=mode,
                            mode_data=mode_data,
                            site_template=site_template,
-                           notification_template=notification_template)
+                           notification_template=notification_template,
+                           shortcut_url_available=bool(get_shortcut_template_url()))
 
 @app.post("/modes/delete/<mode>")
 def mode_delete(mode):
