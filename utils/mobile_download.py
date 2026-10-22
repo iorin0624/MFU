@@ -39,6 +39,7 @@ from app.utils.upload_security import (
     upload_file_is_hidden,
 )
 from app.utils.upload_download_history import (
+    log_download_audit,
     mark_upload_download_status,
     record_upload_download,
     request_ip as download_request_ip,
@@ -372,6 +373,31 @@ def _record_shortcut_download(job: dict, *, status: str) -> int | None:
         files=files,
         status=status,
     )
+
+
+def _shortcut_audit(event: str, job: dict, *, upload: dict | None = None, **details) -> None:
+    """Correlate SC diagnostics with one normal upload, never with its tokens."""
+    if str(job.get("source_type") or "upload") != "upload":
+        return
+    try:
+        upload = upload or fetch_upload_access_record(str(job.get("upload_uuid") or ""))
+        if not upload:
+            return
+        job_ref = hashlib.sha256(
+            f"ios-shortcut:{int(job['id'])}".encode("utf-8")
+        ).hexdigest()[:16]
+        client_ip = download_request_ip(request)
+        log_download_audit(
+            event,
+            upload_id=int(upload["id"]),
+            job_ref=job_ref,
+            client_ip_hash=hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:16],
+            user_agent=request.headers.get("User-Agent", "")[:180],
+            **details,
+        )
+    except Exception:
+        # Audit failures must not prevent an otherwise valid shortcut transfer.
+        current_app.logger.exception("SC download audit failed event=%s job_id=%s", event, job.get("id"))
 
 
 def _cleanup_expired_jobs() -> None:
@@ -770,6 +796,13 @@ def create_job():
     finally:
         db.close()
 
+    if source_type == "upload":
+        _shortcut_audit(
+            "shortcut_job_created",
+            {"id": job_id, "source_type": source_type, "upload_uuid": upload_uuid},
+            upload=upload,
+            requested_files=len(files),
+        )
     shortcut_settings = _get_shortcut_settings()
     universal_link = url_for(
         "mobile_download.open_job",
@@ -1140,6 +1173,12 @@ def exchange_token():
                 rejection_state,
                 room=f"shortcut:{_hash_token(launch_token)}",
             )
+            _shortcut_audit(
+                "shortcut_exchange_rejected", job,
+                reason=str(version_result.get("reason") or "version_rejected"),
+                shortcut_version=rejected_version,
+                http_status=200,
+            )
             return _shortcut_version_rejection(settings, version_result)
 
         shortcut_version = int(version_result.get("client_version") or 0)
@@ -1179,6 +1218,12 @@ def exchange_token():
             "mobile download history start insert failed job_id=%s",
             job.get("id"),
         )
+    _shortcut_audit(
+        "shortcut_exchange_accepted", job,
+        shortcut_version=shortcut_version,
+        requested_files=len(manifest["files"]),
+        http_status=200,
+    )
     emit_download_event(
         "shortcut_progress_update",
         {"launch_token": launch_token, "started": True, "completed": False, "expired": False},
@@ -1213,10 +1258,15 @@ def download_file(job_id: int, image_id: str):
     files = json.loads(job.get("files_json") or "[]")
     item = next((row for row in files if row.get("id") == image_id), None)
     if not item:
+        _shortcut_audit(
+            "shortcut_file_rejected", job,
+            reason="file_not_in_job", http_status=404,
+        )
         return jsonify({"ok": False, "error": "file_not_found"}), 404
 
     source_type = str(job.get("source_type") or "upload")
     target = None
+    upload = None
     if source_type == "album":
         if _album_job_access_allowed(job):
             if str(item.get("media_type") or "image") == "video":
@@ -1248,6 +1298,10 @@ def download_file(job_id: int, image_id: str):
         if ref and ref["target"].is_file() and file_row and not upload_file_is_hidden(file_row):
             target = str(ref["target"])
     if not target or not os.path.isfile(target):
+        _shortcut_audit(
+            "shortcut_file_rejected", job, upload=upload,
+            filename=str(item["name"]), reason="file_unavailable", http_status=404,
+        )
         return jsonify({"ok": False, "error": "file_not_found"}), 404
 
     output_name = str(item.get("output_name") or item["name"])
@@ -1273,6 +1327,10 @@ def download_file(job_id: int, image_id: str):
     else:
         magick = shutil.which("magick") or shutil.which("convert")
         if not magick:
+            _shortcut_audit(
+                "shortcut_file_rejected", job, upload=upload,
+                filename=str(item["name"]), reason="jpeg_converter_unavailable", http_status=503,
+            )
             return jsonify({"ok": False, "error": "jpeg_converter_unavailable"}), 503
         try:
             converted = subprocess.run(
@@ -1283,6 +1341,10 @@ def download_file(job_id: int, image_id: str):
             ).stdout
         except (subprocess.SubprocessError, OSError):
             current_app.logger.exception("shortcut JPEG conversion failed: %s", target)
+            _shortcut_audit(
+                "shortcut_file_rejected", job, upload=upload,
+                filename=str(item["name"]), reason="jpeg_conversion_failed", http_status=500,
+            )
             return jsonify({"ok": False, "error": "jpeg_conversion_failed"}), 500
         response = send_file(
             io.BytesIO(converted),
@@ -1294,6 +1356,11 @@ def download_file(job_id: int, image_id: str):
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["X-MFU-Image-ID"] = image_id
     response.headers["X-MFU-Media-Type"] = str(item.get("media_type") or "image")
+    _shortcut_audit(
+        "shortcut_file_ready", job, upload=upload,
+        filename=str(item["name"]), http_status=response.status_code,
+        response_bytes=int(response.headers.get("Content-Length") or 0),
+    )
     return response
 
 
@@ -1313,6 +1380,7 @@ def complete_job(job_id: int):
     finally:
         db.close()
 
+    event_id = None
     try:
         event_id = _record_shortcut_download(job, status="completed")
         mark_upload_download_status(event_id, "completed")
@@ -1321,6 +1389,14 @@ def complete_job(job_id: int):
             "mobile download history insert failed job_id=%s",
             job_id,
         )
+    try:
+        file_count = len(json.loads(job.get("files_json") or "[]"))
+    except (TypeError, ValueError):
+        file_count = 0
+    _shortcut_audit(
+        "shortcut_complete_reported", job,
+        requested_files=file_count, history_event_id=event_id,
+    )
     # The launch token itself is not retained; the hash is the private room id.
     emit_download_event(
         "shortcut_progress_update",

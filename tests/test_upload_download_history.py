@@ -192,3 +192,51 @@ def test_history_page_exposes_owner_only_audit_tab():
     assert "list_upload_download_audit(upload_id=int(upload[\"id\"]), page=page)" in app_source
     assert "view='logs'" in template
     assert "audit_history.events" in template
+
+
+def test_shortcut_detail_events_share_the_uuid_audit_without_leaking_tokens():
+    module = _load_history_module()
+    module._schema_ready = True
+    calls = []
+
+    class FakeCursor:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    assert module.DOWNLOAD_AUDIT_EVENT_LABELS["shortcut_file_ready"] == "SC用ファイル応答を準備"
+    with patch.object(module, "get_db", return_value=FakeConnection()):
+        module.record_upload_download_audit(
+            upload_id=42, event="shortcut_file_ready", details={
+                "job_ref": "1234567890abcdef", "filename": "image.jpg",
+                "http_status": 200, "response_bytes": 1234,
+                "access_token": "secret", "launch_token": "secret",
+            },
+        )
+    assert len(calls) == 1
+    assert calls[0][1][:3] == (42, "1234567890abcdef", "shortcut_file_ready")
+    assert json.loads(calls[0][1][3]) == {
+        "job_ref": "1234567890abcdef", "filename": "image.jpg",
+        "http_status": 200, "response_bytes": 1234,
+    }
+
+
+def test_mobile_shortcut_records_each_auditable_stage():
+    source = (ROOT / "utils" / "mobile_download.py").read_text(encoding="utf-8")
+    template = (ROOT / "templates" / "view_download_history.html").read_text(encoding="utf-8")
+    for event in (
+        "shortcut_job_created", "shortcut_exchange_accepted",
+        "shortcut_exchange_rejected", "shortcut_file_ready",
+        "shortcut_file_rejected", "shortcut_complete_reported",
+    ):
+        assert f'"{event}"' in source
+    assert "SCでDLの起動・ファイル応答・完了通知" in template

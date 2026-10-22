@@ -42,6 +42,12 @@ DOWNLOAD_AUDIT_EVENT_LABELS = {
     "download_started": "ZIP配信を開始",
     "download_rejected": "ZIP配信を拒否",
     "stream_finished": "ZIP配信が終了",
+    "shortcut_job_created": "SCダウンロードを準備",
+    "shortcut_exchange_accepted": "SCが接続",
+    "shortcut_exchange_rejected": "SCの接続を拒否",
+    "shortcut_file_ready": "SC用ファイル応答を準備",
+    "shortcut_file_rejected": "SC用ファイルを取得できず",
+    "shortcut_complete_reported": "SCから完了通知を受信",
 }
 DOWNLOAD_AUDIT_DETAIL_LABELS = {
     "job_ref": "ジョブ参照ID",
@@ -66,6 +72,8 @@ DOWNLOAD_AUDIT_DETAIL_LABELS = {
     "bytes_yielded": "送信量（バイト）",
     "expected_bytes": "予定送信量（バイト）",
     "stream_error": "配信エラー",
+    "filename": "ファイル名",
+    "shortcut_version": "SCバージョン",
 }
 _AUDIT_DETAIL_KEYS = frozenset(DOWNLOAD_AUDIT_DETAIL_LABELS)
 _AUDIT_DISPLAY_ORDER = (
@@ -73,7 +81,8 @@ _AUDIT_DISPLAY_ORDER = (
     "valid_files", "bad_paths_count", "bytes_yielded", "expected_bytes",
     "archive_bytes", "response_bytes", "elapsed_ms", "error_type",
     "stream_error", "sequence_rename", "range_requested", "job_ref",
-    "attempt_ref", "intent_ref", "history_event_id", "client_ip_hash", "user_agent",
+    "attempt_ref", "intent_ref", "history_event_id", "filename",
+    "shortcut_version", "client_ip_hash", "user_agent",
 )
 _SCHEMA_LOCK = threading.Lock()
 _schema_ready = False
@@ -195,9 +204,9 @@ def record_upload_download_audit(*, upload_id: int, event: str, details: dict) -
         if key in _AUDIT_DETAIL_KEYS and value is not None
         and isinstance(value, (str, int, float, bool))
     }
-    for key in ("user_agent", "reason", "error_type", "stream_error"):
+    for key in ("user_agent", "reason", "error_type", "stream_error", "filename"):
         if key in safe_details:
-            safe_details[key] = str(safe_details[key])[:180]
+            safe_details[key] = str(safe_details[key])[:1024 if key == "filename" else 180]
     ensure_upload_download_history_schema()
     db = get_db(retries=1)
     cur = db.cursor()
