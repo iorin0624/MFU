@@ -69,7 +69,7 @@
   .notification-field-value { overflow-wrap:anywhere; }
   .notification-otp-code { font-size:1.3rem; font-weight:800; letter-spacing:.1em; font-variant-numeric:tabular-nums; }
   .notification-card-footer,.notification-meta { color:#5b687a; font-size:.82rem; margin-top:.6rem; }
-  .notification-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
+  .notification-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.5rem; margin-top:.8rem; }
   #emptyState { color:#64748b !important; font-size:1rem; }
   @media (max-width:767.98px) {
     body.mfu-notification-layout { height:auto; min-height:100dvh; display:block; overflow:auto; }
@@ -544,7 +544,7 @@
         ${renderCards(item)}
         ${renderOtpValue(item)}
         <div class="notification-meta"># ${escapeHtml(channelLabel(normalizedItemChannel(item)))} ・ ${formatDate(item.created_at)}</div>
-        <div class="notification-actions">${showDetails ? '<button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>' : ''}${renderNotificationActions(item)}</div>
+        <div class="notification-actions">${scope === 'mfu' && !isRead ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-mark-read>既読にする</button>' : ''}${showDetails ? '<button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>' : ''}${renderNotificationActions(item)}</div>
       `;
       const markItemRead = async () => {
         try {
@@ -553,6 +553,8 @@
             credentials: 'same-origin',
           });
           if (res.ok) {
+            a.classList.remove('is-unread');
+            a.querySelector('[data-mark-read]')?.remove();
             if (onlyUnread.checked && removeItemById(item.id)) {
               console.debug('[notifications] unread item removed after read', { id: item.id, scope });
             }
@@ -564,10 +566,11 @@
         }
       };
       a.querySelectorAll('[data-card-link]').forEach((link) => {
-        link.addEventListener('click', () => { void markItemRead(); });
+        if (scope !== 'mfu') link.addEventListener('click', () => { void markItemRead(); });
       });
+      a.querySelector('[data-mark-read]')?.addEventListener('click', markItemRead);
       a.querySelector('[data-open]')?.addEventListener('click', async () => {
-        await markItemRead();
+        if (scope !== 'mfu') await markItemRead();
         window.location.assign(a.dataset.targetUrl || '/external-login/');
       });
       bindNotificationActions(a, item);
