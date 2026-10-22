@@ -11,7 +11,7 @@ import re
 import secrets
 import shutil
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -527,6 +527,16 @@ def _selected_upload_photos(upload: dict, paths: list) -> list[dict]:
     return selected
 
 
+def _v2_upload_active(upload: dict) -> bool:
+    try:
+        expire_at = upload["expire_at"]
+        expiry_date = (expire_at.date() if isinstance(expire_at, datetime)
+                       else datetime.fromisoformat(str(expire_at)[:10]).date())
+    except (KeyError, TypeError, ValueError):
+        return False
+    return expiry_date >= datetime.now(timezone(timedelta(hours=9))).date()
+
+
 def _album_access_allowed(album_id: str) -> tuple[bool, dict | None, dict]:
     # 遅延 import にして、アプリ初期化時の Blueprint 循環参照を避ける。
     from app.albums.routes import (
@@ -865,6 +875,8 @@ def create_job():
                 return jsonify({"ok": False, "error": "upload_not_found"}), 404
             if not can_access_upload_record_from_session(upload):
                 return jsonify({"ok": False, "error": "upload_forbidden"}), 403
+            if protocol_version == V2_PROTOCOL_VERSION and not _v2_upload_active(upload):
+                return jsonify({"ok": False, "error": "upload_expired"}), 410
             files = _selected_upload_photos(upload, data.get("paths") or [])
             title = str(upload.get("title") or "")[:255]
     except PermissionError as exc:
@@ -1419,7 +1431,9 @@ def _v2_browser_job(job_id: int) -> dict | None:
         allowed, _, _ = _album_access_allowed(str(job.get("album_id") or ""))
         return job if allowed and _album_job_access_allowed(job) else None
     upload = fetch_upload_access_record(str(job.get("upload_uuid") or ""))
-    return job if upload and can_access_upload_record_from_session(upload) else None
+    if not upload or not can_access_upload_record_from_session(upload):
+        return None
+    return job if _v2_upload_active(upload) else None
 
 
 def _v2_album_file_available(job: dict, item: dict) -> bool:
@@ -1543,7 +1557,8 @@ def resume_job(job_id: int):
         retry_ids, resume_error = resume_file_ids(progress["files"], requested_ids)
         if resume_error:
             db.rollback()
-            return jsonify({"ok": False, "error": resume_error}), (
+            return jsonify({"ok": False, "error": resume_error,
+                            "progress": progress}), (
                 400 if resume_error == "invalid_retry_uncertain" else 409
             )
         items = {str(item["id"]): item for item in json.loads(locked["files_json"])}
