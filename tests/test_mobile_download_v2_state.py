@@ -4,6 +4,7 @@ import sys
 import ast
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -182,6 +183,18 @@ class MobileDownloadV2StateTests(unittest.TestCase):
         self.assertEqual(result["total"], 100)
         self.assertEqual(result["saved"], 97)
         self.assertEqual(result["remaining"], 3)
+
+    def test_expired_upload_cannot_start_or_resume_v2(self):
+        source = (Path(__file__).resolve().parents[1] / "utils" / "mobile_download.py").read_text(
+            encoding="utf-8"
+        )
+        function = next(node for node in ast.parse(source).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "_v2_upload_active")
+        namespace = {"datetime": datetime, "timedelta": timedelta, "timezone": timezone}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "mobile_download.py", "exec"), namespace)
+        today_jst = datetime.now(timezone(timedelta(hours=9))).date()
+        self.assertTrue(namespace["_v2_upload_active"]({"expire_at": today_jst}))
+        self.assertFalse(namespace["_v2_upload_active"]({"expire_at": today_jst - timedelta(days=1)}))
 
 
 if __name__ == "__main__":
