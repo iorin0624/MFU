@@ -28,13 +28,6 @@
       </a>
     `).join('');
 
-    list.querySelectorAll('a[data-id]').forEach((a) => {
-      a.addEventListener('click', async (e) => {
-        e.preventDefault();
-        await fetch(`/api/mfu-notifications/${a.dataset.id}/read`, {method:'POST'});
-        window.location.href = a.href;
-      });
-    });
   }
 
   readAllBtn.addEventListener('click', async () => {
