@@ -566,6 +566,8 @@ def _csrf_error(message, status=403):
 def _requires_csrf_protection():
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
         return False
+    if request.endpoint == "mobile_download.resume_job":
+        return True
     if request.path in _CSRF_EXEMPT_PATHS:
         return False
     if request.endpoint == "view_upload":

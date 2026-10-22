@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -47,6 +48,7 @@ from app.utils.upload_download_history import (
 from app.utils.realtime import emit_download_event
 from app.utils.upload_sort import build_sequential_download_entries
 from app.utils.shortcut_version import evaluate_shortcut_version
+from app.utils.mobile_download_v2 import file_transition_error, resume_file_ids
 
 
 mobile_download_bp = Blueprint("mobile_download", __name__)
@@ -59,6 +61,8 @@ IOS_BUNDLE_ID = "jp.iori0624.mfudownload"
 LAUNCH_TOKEN_MINUTES = 10
 SESSION_TOKEN_HOURS = 1
 MAX_JOB_FILES = 1000
+V2_PROTOCOL_VERSION = 2
+V2_PROGRESS_DAYS = 7
 LAUNCH_TOKEN_PREFIX = "mfu_launch_"
 ACCESS_TOKEN_PREFIX = "mfu_dl_"
 
@@ -199,6 +203,36 @@ def _ensure_schema() -> None:
             cur.execute(
                 "ALTER TABLE mobile_download_jobs ADD COLUMN shortcut_rejection_reason VARCHAR(64) NULL AFTER shortcut_rejected_at"
             )
+        if "protocol_version" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN protocol_version TINYINT UNSIGNED NOT NULL DEFAULT 1"
+            )
+        if "resume_token_hash" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN resume_token_hash CHAR(64) NULL"
+            )
+        if "retention_expires_at" not in columns:
+            cur.execute(
+                "ALTER TABLE mobile_download_jobs ADD COLUMN retention_expires_at DATETIME NULL"
+            )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mobile_download_file_progress (
+              job_id BIGINT UNSIGNED NOT NULL,
+              file_id CHAR(32) NOT NULL,
+              state VARCHAR(16) NOT NULL DEFAULT 'pending',
+              attempt_count SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+              last_error_code VARCHAR(64) NULL,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              saved_reported_at DATETIME NULL,
+              PRIMARY KEY (job_id, file_id),
+              KEY idx_mobile_download_file_progress_state (job_id, state),
+              CONSTRAINT fk_mobile_download_progress_job
+                FOREIGN KEY (job_id) REFERENCES mobile_download_jobs (id)
+                ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS mobile_download_shortcut_settings (
@@ -408,16 +442,19 @@ def _cleanup_expired_jobs() -> None:
         cur.execute(
             """
             DELETE FROM mobile_download_jobs
-             WHERE (completed_at IS NOT NULL AND completed_at < UTC_TIMESTAMP() - INTERVAL 7 DAY)
-                OR (revoked_at IS NOT NULL AND revoked_at < UTC_TIMESTAMP() - INTERVAL 7 DAY)
-                OR (
-                    exchanged_at IS NULL
-                    AND launch_expires_at < UTC_TIMESTAMP() - INTERVAL 1 DAY
-                )
-                OR (
-                    session_expires_at IS NOT NULL
-                    AND session_expires_at < UTC_TIMESTAMP() - INTERVAL 7 DAY
-                )
+             WHERE (protocol_version=2 AND retention_expires_at < UTC_TIMESTAMP())
+                OR (protocol_version=1 AND (
+                    (completed_at IS NOT NULL AND completed_at < UTC_TIMESTAMP() - INTERVAL 7 DAY)
+                    OR (revoked_at IS NOT NULL AND revoked_at < UTC_TIMESTAMP() - INTERVAL 7 DAY)
+                    OR (
+                        exchanged_at IS NULL
+                        AND launch_expires_at < UTC_TIMESTAMP() - INTERVAL 1 DAY
+                    )
+                    OR (
+                        session_expires_at IS NOT NULL
+                        AND session_expires_at < UTC_TIMESTAMP() - INTERVAL 7 DAY
+                    )
+                ))
             """
         )
         db.commit()
@@ -652,6 +689,14 @@ def _selected_album_media(album_id: str, child_id: str, filenames: list) -> tupl
 def _manifest(job: dict) -> dict:
     files = json.loads(job.get("files_json") or "[]")
     job_id = int(job["id"])
+    progress = None
+    if int(job.get("protocol_version") or 1) == V2_PROTOCOL_VERSION:
+        progress = _progress_snapshot(job)
+        eligible = {
+            row["file_id"] for row in progress["files"]
+            if row["state"] in {"pending", "saving", "failed"}
+        }
+        files = [item for item in files if item["id"] in eligible]
     for item in files:
         item["download_url"] = url_for(
             "mobile_download.download_file",
@@ -659,7 +704,7 @@ def _manifest(job: dict) -> dict:
             image_id=item["id"],
             _external=True,
         )
-    return {
+    manifest = {
         "job_id": job_id,
         "source_type": job.get("source_type") or "upload",
         "title": job.get("upload_title") or "MFU Photos",
@@ -667,6 +712,66 @@ def _manifest(job: dict) -> dict:
         "expires_at": job.get("session_expires_at").isoformat() + "Z",
         "files": files,
     }
+    if progress is not None:
+        manifest["protocol_version"] = V2_PROTOCOL_VERSION
+        manifest["progress"] = progress["counts"]
+    return manifest
+
+
+def _progress_snapshot(job: dict, cur=None) -> dict:
+    """Return a v2 job's persisted state in its original file order."""
+    own_db = get_db() if cur is None else None
+    cursor = cur if cur is not None else own_db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT file_id, state, attempt_count, last_error_code "
+            "FROM mobile_download_file_progress WHERE job_id=%s",
+            (int(job["id"]),),
+        )
+        states = {str(row["file_id"]): row for row in cursor.fetchall()}
+    finally:
+        if own_db is not None:
+            own_db.close()
+    counts = {key: 0 for key in ("pending", "saving", "saved", "failed", "uncertain")}
+    files = []
+    for item in json.loads(job.get("files_json") or "[]"):
+        row = states.get(str(item["id"]))
+        if row is None:
+            raise RuntimeError("mobile download progress is incomplete")
+        state = str(row["state"])
+        if state not in counts:
+            raise RuntimeError("invalid mobile download progress state")
+        counts[state] += 1
+        files.append({
+            "file_id": item["id"],
+            "name": item["name"],
+            "output_name": item["output_name"],
+            "state": state,
+            "attempt_count": int(row["attempt_count"] or 0),
+            "last_error_code": row.get("last_error_code"),
+        })
+    counts["total"] = len(files)
+    counts["remaining"] = counts["total"] - counts["saved"]
+    return {"job_id": int(job["id"]), "protocol_version": V2_PROTOCOL_VERSION,
+            "completed": bool(job.get("completed_at")), "counts": counts, "files": files}
+
+
+def _progress_counts(job_id: int, cur) -> dict:
+    """Small response for per-file reports, even for a 1000-file job."""
+    cur.execute(
+        "SELECT state, COUNT(*) AS count FROM mobile_download_file_progress "
+        "WHERE job_id=%s GROUP BY state",
+        (job_id,),
+    )
+    counts = {key: 0 for key in ("pending", "saving", "saved", "failed", "uncertain")}
+    for row in cur.fetchall():
+        state = str(row["state"])
+        if state not in counts:
+            raise RuntimeError("invalid mobile download progress state")
+        counts[state] = int(row["count"])
+    counts["total"] = sum(counts.values())
+    counts["remaining"] = counts["total"] - counts["saved"]
+    return counts
 
 
 def _authorized_job(job_id: int, *, allow_completed: bool = False) -> dict | None:
@@ -731,6 +836,11 @@ def _authorized_job_id_from_token() -> int | None:
 def create_job():
     _cleanup_expired_jobs()
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "invalid_request"}), 400
+    protocol_version = data.get("protocol_version", 1)
+    if type(protocol_version) is not int or protocol_version not in (1, V2_PROTOCOL_VERSION):
+        return jsonify({"ok": False, "error": "unsupported_protocol_version"}), 400
     source_type = str(data.get("source_type") or "upload").strip().lower()
     upload_uuid = None
     album_id = None
@@ -767,6 +877,10 @@ def create_job():
         return jsonify({"ok": False, "error": "no_photo_selected"}), 400
 
     launch_token = LAUNCH_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    resume_token = (
+        "mfu_resume_" + secrets.token_urlsafe(32)
+        if protocol_version == V2_PROTOCOL_VERSION else None
+    )
     launch_expires_at = datetime.utcnow() + timedelta(minutes=LAUNCH_TOKEN_MINUTES)
     db = get_db()
     cur = db.cursor()
@@ -776,8 +890,10 @@ def create_job():
             INSERT INTO mobile_download_jobs
                 (source_type, upload_uuid, upload_title, album_id, child_id,
                  authorization_json, files_json, launch_token_hash,
-                 created_at, launch_expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(), %s)
+                  created_at, launch_expires_at, protocol_version,
+                  resume_token_hash, retention_expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(), %s,
+                    %s, %s, %s)
             """,
             (
                 source_type,
@@ -789,9 +905,20 @@ def create_job():
                 json.dumps(files, ensure_ascii=False, separators=(",", ":")),
                 _hash_token(launch_token),
                 launch_expires_at,
+                protocol_version,
+                _hash_token(resume_token) if resume_token else None,
+                datetime.utcnow() + timedelta(days=V2_PROGRESS_DAYS) if resume_token else None,
             ),
         )
         job_id = int(cur.lastrowid)
+        if resume_token:
+            cur.executemany(
+                """
+                INSERT INTO mobile_download_file_progress (job_id, file_id, state)
+                VALUES (%s, %s, 'pending')
+                """,
+                [(job_id, str(item["id"])) for item in files],
+            )
         db.commit()
     finally:
         db.close()
@@ -814,10 +941,12 @@ def create_job():
         universal_link,
         str(shortcut_settings.get("shortcut_name") or SHORTCUT_NAME),
     )
-    return jsonify(
+    response = jsonify(
         {
             "ok": True,
             "job_id": job_id,
+            "protocol_version": protocol_version,
+            **({"resume_token": resume_token} if resume_token else {}),
             "count": len(files),
             "expires_in": LAUNCH_TOKEN_MINUTES * 60,
             "app_url": universal_link,
@@ -829,6 +958,8 @@ def create_job():
             ),
         }
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @mobile_download_bp.get("/mobile-download/api/shortcut-config")
@@ -1132,6 +1263,14 @@ def exchange_token():
             db.rollback()
             return jsonify({"ok": False, "error": "launch_token_used"}), 410
 
+        if (int(job.get("protocol_version") or 1) == V2_PROTOCOL_VERSION
+                and int(version_result.get("client_version") or 0) < V2_PROTOCOL_VERSION):
+            version_result = {
+                **version_result,
+                "ok": False,
+                "reason": "protocol_v2_required",
+            }
+
         if not version_result["ok"]:
             rejected_version = version_result.get("client_version")
             if not isinstance(rejected_version, int) or not 0 <= rejected_version <= 65535:
@@ -1229,7 +1368,7 @@ def exchange_token():
         {"launch_token": launch_token, "started": True, "completed": False, "expired": False},
         room=f"shortcut:{_hash_token(launch_token)}",
     )
-    return jsonify(
+    response = jsonify(
         {
             "ok": True,
             "access_token": access_token,
@@ -1239,6 +1378,8 @@ def exchange_token():
             "minimum_supported_version": settings["minimum_supported_version"],
         }
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @mobile_download_bp.get("/mobile-download/api/jobs/<int:job_id>")
@@ -1246,7 +1387,340 @@ def get_job(job_id: int):
     job = _authorized_job(job_id)
     if not job:
         return jsonify({"ok": False, "error": "invalid_or_expired_session"}), 401
-    return jsonify({"ok": True, "manifest": _manifest(job)})
+    response = jsonify({"ok": True, "manifest": _manifest(job)})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _v2_browser_job(job_id: int) -> dict | None:
+    """A resume secret is required in addition to current source access."""
+    resume_token = str(request.headers.get("X-MFU-Resume-Token") or "")
+    if not resume_token.startswith("mfu_resume_") or len(resume_token) > 128:
+        return None
+    _ensure_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT * FROM mobile_download_jobs
+            WHERE id=%s AND protocol_version=2 AND resume_token_hash=%s
+              AND revoked_at IS NULL AND retention_expires_at > UTC_TIMESTAMP()
+            LIMIT 1
+            """,
+            (job_id, _hash_token(resume_token)),
+        )
+        job = cur.fetchone()
+    finally:
+        db.close()
+    if not job:
+        return None
+    if job.get("source_type") == "album":
+        allowed, _, _ = _album_access_allowed(str(job.get("album_id") or ""))
+        return job if allowed and _album_job_access_allowed(job) else None
+    upload = fetch_upload_access_record(str(job.get("upload_uuid") or ""))
+    return job if upload and can_access_upload_record_from_session(upload) else None
+
+
+def _v2_album_file_available(job: dict, item: dict) -> bool:
+    from app.albums.routes import _movie_find_abs, _open_media_path
+    album_id = str(job.get("album_id") or "")
+    child_id = str(job.get("child_id") or "")
+    if str(item.get("media_type") or "image") == "video":
+        target = _movie_find_abs(album_id, child_id, str(item.get("storage_name") or item["name"]))
+    else:
+        target = _open_media_path(album_id, child_id, str(item["name"]), mode="normal")
+    return bool(target and os.path.isfile(target))
+
+
+def _v2_unavailable_files(job: dict, items: dict, retry_ids: set[str]) -> list[str]:
+    if job.get("source_type") == "album":
+        return [file_id for file_id in retry_ids
+                if not _v2_album_file_available(job, items[file_id])]
+    upload = fetch_upload_access_record(str(job.get("upload_uuid") or ""))
+    if not upload:
+        return list(retry_ids)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id, filename, is_hidden FROM files WHERE upload_id=%s",
+            (upload["id"],),
+        )
+        available = {str(row["filename"]): row for row in cur.fetchall()}
+    finally:
+        db.close()
+    missing = []
+    for file_id in retry_ids:
+        item = items[file_id]
+        ref = resolve_upload_subpath(
+            f"{job['upload_uuid']}/original/{item['name']}", allow_zip=False
+        )
+        row = available.get(str(item["name"]))
+        if not (ref and ref["target"].is_file() and row
+                and int(row["id"]) == int(item.get("file_id") or 0)
+                and not upload_file_is_hidden(row)):
+            missing.append(file_id)
+    return missing
+
+
+@mobile_download_bp.get("/mobile-download/api/jobs/<int:job_id>/progress")
+def job_progress(job_id: int):
+    job = _authorized_job(job_id, allow_completed=True) or _v2_browser_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "invalid_or_expired_session"}), 401
+    if int(job.get("protocol_version") or 1) != V2_PROTOCOL_VERSION:
+        return jsonify({"ok": False, "error": "v2_job_required"}), 409
+    if (job.get("session_expires_at") and not job.get("completed_at")
+            and job["session_expires_at"] <= datetime.utcnow()):
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE mobile_download_file_progress AS p
+                JOIN mobile_download_jobs AS j ON j.id=p.job_id
+                   SET p.state='uncertain', p.updated_at=UTC_TIMESTAMP()
+                 WHERE p.job_id=%s AND p.state='saving'
+                   AND j.session_expires_at <= UTC_TIMESTAMP()
+                   AND j.completed_at IS NULL
+                """,
+                (job_id,),
+            )
+            db.commit()
+        finally:
+            db.close()
+    response = jsonify({"ok": True, "progress": _progress_snapshot(job)})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@mobile_download_bp.post("/mobile-download/api/jobs/<int:job_id>/resume")
+def resume_job(job_id: int):
+    job = _v2_browser_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "resume_forbidden_or_expired"}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "invalid_request"}), 400
+    requested = data.get("retry_uncertain", [])
+    if not isinstance(requested, list) or len(requested) > MAX_JOB_FILES or not all(
+        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)
+        for value in requested
+    ):
+        return jsonify({"ok": False, "error": "invalid_retry_uncertain"}), 400
+    requested_ids = set(requested)
+    if len(requested_ids) != len(requested):
+        return jsonify({"ok": False, "error": "invalid_retry_uncertain"}), 400
+
+    launch_token = LAUNCH_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        db.start_transaction()
+        cur.execute(
+            """
+            SELECT * FROM mobile_download_jobs WHERE id=%s AND protocol_version=2
+              AND resume_token_hash=%s AND revoked_at IS NULL
+              AND retention_expires_at > UTC_TIMESTAMP()
+            LIMIT 1 FOR UPDATE
+            """,
+            (job_id, _hash_token(str(request.headers.get("X-MFU-Resume-Token") or ""))),
+        )
+        locked = cur.fetchone()
+        if not locked or locked.get("completed_at"):
+            db.rollback()
+            return jsonify({"ok": False, "error": "job_completed_or_expired"}), 409
+        cur.execute(
+            """
+            UPDATE mobile_download_file_progress
+               SET state='uncertain', updated_at=UTC_TIMESTAMP()
+             WHERE job_id=%s AND state='saving'
+            """,
+            (job_id,),
+        )
+        progress = _progress_snapshot(locked, cur)
+        retry_ids, resume_error = resume_file_ids(progress["files"], requested_ids)
+        if resume_error:
+            db.rollback()
+            return jsonify({"ok": False, "error": resume_error}), (
+                400 if resume_error == "invalid_retry_uncertain" else 409
+            )
+        items = {str(item["id"]): item for item in json.loads(locked["files_json"])}
+        unavailable = _v2_unavailable_files(locked, items, retry_ids)
+        if unavailable:
+            db.rollback()
+            return jsonify({"ok": False, "error": "source_file_unavailable",
+                            "unavailable_count": len(unavailable)}), 409
+        if requested_ids:
+            cur.executemany(
+                """
+                UPDATE mobile_download_file_progress
+                   SET state='pending', last_error_code='uncertain_retry_approved',
+                       updated_at=UTC_TIMESTAMP()
+                 WHERE job_id=%s AND file_id=%s AND state='uncertain'
+                """,
+                [(job_id, file_id) for file_id in requested_ids],
+            )
+        cur.execute(
+            """
+            UPDATE mobile_download_jobs
+               SET launch_token_hash=%s, launch_expires_at=%s,
+                   access_token_hash=NULL, exchanged_at=NULL,
+                   session_expires_at=NULL, last_accessed_at=UTC_TIMESTAMP(),
+                   shortcut_rejected_at=NULL, shortcut_rejection_reason=NULL,
+                   retention_expires_at=UTC_TIMESTAMP() + INTERVAL 7 DAY
+             WHERE id=%s
+            """,
+            (_hash_token(launch_token),
+             datetime.utcnow() + timedelta(minutes=LAUNCH_TOKEN_MINUTES), job_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+    _shortcut_audit(
+        "shortcut_resumed", job,
+        requested_files=len(retry_ids),
+        saved_files=progress["counts"]["saved"],
+    )
+    settings = _get_shortcut_settings()
+    universal_link = url_for("mobile_download.open_job", launch_token=launch_token, _external=True)
+    result = {
+        "ok": True, "job_id": job_id, "protocol_version": V2_PROTOCOL_VERSION,
+        "count": len(retry_ids), "expires_in": LAUNCH_TOKEN_MINUTES * 60,
+        "app_url": universal_link,
+        "custom_scheme_url": "mfudownload://job?" + urlencode({"token": launch_token}),
+        "shortcut_url": _shortcut_url(universal_link, str(settings.get("shortcut_name") or SHORTCUT_NAME)),
+        "shortcut_status_url": url_for("mobile_download.shortcut_launch_status", launch_token=launch_token),
+        "progress": _progress_snapshot(job),
+    }
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@mobile_download_bp.post("/mobile-download/api/jobs/<int:job_id>/files/<file_id>/result")
+def report_file_result(job_id: int, file_id: str):
+    token = _bearer_token()
+    if not token.startswith(ACCESS_TOKEN_PREFIX) or not re.fullmatch(r"[0-9a-f]{32}", file_id):
+        return jsonify({"ok": False, "error": "invalid_or_expired_session"}), 401
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "invalid_request"}), 400
+    state = data.get("state")
+    if not isinstance(state, str) or state not in {"saving", "saved", "failed"}:
+        return jsonify({"ok": False, "error": "invalid_file_state"}), 400
+    error_code = data.get("error_code") if state == "failed" else None
+    if error_code is not None and (not isinstance(error_code, str)
+                                   or not re.fullmatch(r"[a-z0-9_]{1,64}", error_code)):
+        return jsonify({"ok": False, "error": "invalid_error_code"}), 400
+    _ensure_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        db.start_transaction()
+        cur.execute(
+            """
+            SELECT * FROM mobile_download_jobs WHERE id=%s AND protocol_version=2
+              AND access_token_hash=%s AND revoked_at IS NULL
+              AND session_expires_at > UTC_TIMESTAMP()
+            LIMIT 1 FOR UPDATE
+            """,
+            (job_id, _hash_token(token)),
+        )
+        job = cur.fetchone()
+        if not job:
+            db.rollback()
+            return jsonify({"ok": False, "error": "invalid_or_expired_session"}), 401
+        cur.execute(
+            "SELECT state FROM mobile_download_file_progress "
+            "WHERE job_id=%s AND file_id=%s FOR UPDATE",
+            (job_id, file_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            db.rollback()
+            return jsonify({"ok": False, "error": "file_not_in_job"}), 404
+        previous = str(row["state"])
+        if job.get("completed_at") and not (state == previous == "saved"):
+            db.rollback()
+            return jsonify({"ok": False, "error": "job_completed"}), 409
+        transition_error = file_transition_error(previous, state)
+        if transition_error:
+            db.rollback()
+            return jsonify({"ok": False, "error": transition_error}), 409
+        if state != previous:
+            cur.execute(
+                """
+                UPDATE mobile_download_file_progress
+                   SET state=%s, attempt_count=attempt_count+%s,
+                       last_error_code=%s, updated_at=UTC_TIMESTAMP(),
+                       saved_reported_at=CASE WHEN %s='saved' THEN UTC_TIMESTAMP()
+                                                ELSE saved_reported_at END
+                 WHERE job_id=%s AND file_id=%s
+                """,
+                (state, 1 if state == "saving" else 0, error_code,
+                 state, job_id, file_id),
+            )
+        cur.execute(
+            """
+            UPDATE mobile_download_jobs
+               SET last_accessed_at=UTC_TIMESTAMP(),
+                   retention_expires_at=UTC_TIMESTAMP() + INTERVAL 7 DAY
+             WHERE id=%s
+            """,
+            (job_id,),
+        )
+        counts = _progress_counts(job_id, cur)
+        auto_completed = bool(
+            state == "saved" and not job.get("completed_at")
+            and counts["total"] > 0 and counts["saved"] == counts["total"]
+        )
+        if auto_completed:
+            cur.execute(
+                "UPDATE mobile_download_jobs SET completed_at=UTC_TIMESTAMP() WHERE id=%s",
+                (job_id,),
+            )
+        db.commit()
+    finally:
+        db.close()
+    progress = {
+        "job_id": job_id, "protocol_version": V2_PROTOCOL_VERSION,
+        "completed": auto_completed or bool(job.get("completed_at")),
+        "counts": counts,
+        "file": {"file_id": file_id, "state": state},
+    }
+    if auto_completed:
+        event_id = None
+        try:
+            event_id = _record_shortcut_download(job, status="completed")
+            mark_upload_download_status(event_id, "completed")
+        except Exception:
+            current_app.logger.exception("mobile download history insert failed job_id=%s", job_id)
+        _shortcut_audit(
+            "shortcut_complete_reported", job,
+            requested_files=progress["counts"]["total"],
+            saved_files=progress["counts"]["saved"], history_event_id=event_id,
+        )
+    result_item = next(
+        (item for item in json.loads(job["files_json"]) if item["id"] == file_id),
+        None,
+    )
+    _shortcut_audit(
+        "shortcut_file_reported", job,
+        filename=str(result_item["name"]) if result_item else "",
+        result=state, reason=error_code or "",
+        saved_files=progress["counts"]["saved"],
+    )
+    emit_download_event(
+        "shortcut_progress_update",
+        {"job_id": job_id, "started": True, "completed": progress["completed"],
+         "expired": False, "progress": progress["counts"]},
+        room=f"shortcut:{job['launch_token_hash']}",
+    )
+    response = jsonify({"ok": True, "progress": progress})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @mobile_download_bp.get("/mobile-download/api/files/<int:job_id>/<image_id>")
@@ -1263,6 +1737,19 @@ def download_file(job_id: int, image_id: str):
             reason="file_not_in_job", http_status=404,
         )
         return jsonify({"ok": False, "error": "file_not_found"}), 404
+    if int(job.get("protocol_version") or 1) == V2_PROTOCOL_VERSION:
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT state FROM mobile_download_file_progress WHERE job_id=%s AND file_id=%s",
+                (job_id, image_id),
+            )
+            progress_row = cur.fetchone()
+        finally:
+            db.close()
+        if not progress_row or progress_row["state"] != "saving":
+            return jsonify({"ok": False, "error": "saving_report_required"}), 409
 
     source_type = str(job.get("source_type") or "upload")
     target = None
@@ -1366,9 +1853,13 @@ def download_file(job_id: int, image_id: str):
 
 @mobile_download_bp.post("/mobile-download/api/jobs/<int:job_id>/complete")
 def complete_job(job_id: int):
-    job = _authorized_job(job_id)
+    job = _authorized_job(job_id, allow_completed=True)
     if not job:
         return jsonify({"ok": False, "error": "invalid_or_expired_session"}), 401
+    if int(job.get("protocol_version") or 1) == V2_PROTOCOL_VERSION:
+        return _complete_v2_job(job_id)
+    if job.get("completed_at"):
+        return jsonify({"ok": True})
     db = get_db()
     cur = db.cursor()
     try:
@@ -1404,6 +1895,72 @@ def complete_job(job_id: int):
         room=f"shortcut:{str(job.get('launch_token_hash') or '')}",
     )
     return jsonify({"ok": True})
+
+
+def _complete_v2_job(job_id: int):
+    token = _bearer_token()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        db.start_transaction()
+        cur.execute(
+            """
+            SELECT * FROM mobile_download_jobs WHERE id=%s AND protocol_version=2
+              AND access_token_hash=%s AND revoked_at IS NULL
+              AND session_expires_at > UTC_TIMESTAMP()
+            LIMIT 1 FOR UPDATE
+            """,
+            (job_id, _hash_token(token)),
+        )
+        job = cur.fetchone()
+        if not job:
+            db.rollback()
+            return jsonify({"ok": False, "error": "invalid_or_expired_session"}), 401
+        progress = _progress_snapshot(job, cur)
+        if job.get("completed_at"):
+            db.commit()
+            return jsonify({"ok": True, "progress": progress})
+        if progress["counts"]["saved"] != progress["counts"]["total"]:
+            db.rollback()
+            _shortcut_audit(
+                "shortcut_complete_rejected", job,
+                reason="files_not_all_saved",
+                requested_files=progress["counts"]["total"],
+                saved_files=progress["counts"]["saved"],
+            )
+            return jsonify({"ok": False, "error": "files_not_all_saved",
+                            "progress": progress}), 409
+        cur.execute(
+            """
+            UPDATE mobile_download_jobs
+               SET completed_at=UTC_TIMESTAMP(),
+                   retention_expires_at=UTC_TIMESTAMP() + INTERVAL 7 DAY
+             WHERE id=%s
+            """,
+            (job_id,),
+        )
+        db.commit()
+        progress["completed"] = True
+    finally:
+        db.close()
+    event_id = None
+    try:
+        event_id = _record_shortcut_download(job, status="completed")
+        mark_upload_download_status(event_id, "completed")
+    except Exception:
+        current_app.logger.exception("mobile download history insert failed job_id=%s", job_id)
+    _shortcut_audit(
+        "shortcut_complete_reported", job,
+        requested_files=progress["counts"]["total"],
+        saved_files=progress["counts"]["saved"], history_event_id=event_id,
+    )
+    emit_download_event(
+        "shortcut_progress_update",
+        {"job_id": job_id, "started": True, "completed": True,
+         "expired": False, "progress": progress["counts"]},
+        room=f"shortcut:{job['launch_token_hash']}",
+    )
+    return jsonify({"ok": True, "progress": progress})
 
 
 @mobile_download_bp.post("/mobile-download/api/jobs/complete")

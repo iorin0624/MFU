@@ -47,6 +47,9 @@ DOWNLOAD_AUDIT_EVENT_LABELS = {
     "shortcut_exchange_rejected": "SCの接続を拒否",
     "shortcut_file_ready": "SC用ファイル応答を準備",
     "shortcut_file_rejected": "SC用ファイルを取得できず",
+    "shortcut_file_reported": "SCからファイル保存結果を受信",
+    "shortcut_resumed": "SCダウンロードを再開",
+    "shortcut_complete_rejected": "SCの完了報告を保留",
     "shortcut_complete_reported": "SCから完了通知を受信",
 }
 DOWNLOAD_AUDIT_DETAIL_LABELS = {
@@ -74,11 +77,12 @@ DOWNLOAD_AUDIT_DETAIL_LABELS = {
     "stream_error": "配信エラー",
     "filename": "ファイル名",
     "shortcut_version": "SCバージョン",
+    "saved_files": "保存確認済み枚数",
 }
 _AUDIT_DETAIL_KEYS = frozenset(DOWNLOAD_AUDIT_DETAIL_LABELS)
 _AUDIT_DISPLAY_ORDER = (
     "result", "reason", "http_status", "file_count", "requested_files",
-    "valid_files", "bad_paths_count", "bytes_yielded", "expected_bytes",
+    "valid_files", "bad_paths_count", "saved_files", "bytes_yielded", "expected_bytes",
     "archive_bytes", "response_bytes", "elapsed_ms", "error_type",
     "stream_error", "sequence_rename", "range_requested", "job_ref",
     "attempt_ref", "intent_ref", "history_event_id", "filename",
