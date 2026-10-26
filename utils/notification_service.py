@@ -13,6 +13,7 @@ from flask_socketio import disconnect, emit, join_room
 
 from app.chat.socketio_ext import socketio
 from app.discord_notifications.repository import FEATURE_DEFINITIONS
+from app.utils.au_pay_push_body import build_au_pay_transaction_body
 from app.utils.db import get_db
 
 
@@ -496,6 +497,8 @@ def discord_payload_to_event(feature_key: str, payload: dict[str, Any]) -> dict[
                 "value": str(row.get("value") or "")[:2000],
                 "inline": bool(row.get("inline")),
             })
+    if feature_key == "au_pay_usage" and not description:
+        description = build_au_pay_transaction_body(title, fields)
     color = int(embed.get("color") or 0)
     severity = "info"
     if color in {0x2ECC71, 0x57F287, 3066993}:
