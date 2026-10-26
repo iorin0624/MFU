@@ -11,7 +11,13 @@ from app.etc_accounting import credentials as etc_credentials
 from app.etc_accounting import browser_session as etc_browser_session
 from app.etc_accounting.browser_session import ETCMaintenanceError, ETCPDFDownloadError, ETCTargetPage
 from app.etc_accounting.batch import registration_eligibility, run_batch_job
-from app.etc_accounting.fetcher import _discard_replaced_pdf, _pdf_metadata, fetch_month, scheduled_months
+from app.etc_accounting.fetcher import (
+    _discard_replaced_pdf,
+    _parse_statement_page_with_logging,
+    _pdf_metadata,
+    fetch_month,
+    scheduled_months,
+)
 from app.etc_accounting import fetch_cli
 from app.etc_accounting import manual_jobs
 from app.etc_accounting import repository as etc_repository
@@ -1659,6 +1665,28 @@ class ETCAccountingTest(unittest.TestCase):
     def test_parse_statement_requires_login(self):
         with self.assertRaises(ETCAuthenticationRequired):
             parse_statement_page("<html><title>ログイン</title></html>", "202606")
+
+    def test_failed_statement_page_logs_safe_diagnostics(self):
+        browser = MagicMock()
+        browser.html.return_value = (
+            '<html><title>ETC側メンテナンス</title><body>'
+            'メンテナンス中 <input name="risLoginId" value="private-id">'
+            '</body></html>'
+        )
+        browser.evaluate.return_value = "https://www2.etc-meisai.jp/etc/R?token=private-token"
+
+        with self.assertLogs("app.etc_accounting.fetcher", level="WARNING") as logs:
+            with self.assertRaises(ETCAuthenticationRequired):
+                _parse_statement_page_with_logging(browser, "202610", 2)
+
+        message = logs.output[0]
+        self.assertIn("month=202610 page=2", message)
+        self.assertIn("error_type=ETCAuthenticationRequired", message)
+        self.assertIn("url=https://www2.etc-meisai.jp/etc/R", message)
+        self.assertIn("has_login_form=True", message)
+        self.assertIn("has_maintenance_marker=True", message)
+        self.assertNotIn("private-id", message)
+        self.assertNotIn("private-token", message)
 
     def test_parse_statement_separates_logged_in_navigation_error(self):
         html = """<html><title>ETC利用照会サービス</title><body>
