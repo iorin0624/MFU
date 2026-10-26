@@ -397,7 +397,10 @@ class NotificationPopup(QDialog):
         super().__init__()
         self.controller = controller
         self.item = item
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # Use an ordinary top-level window so popup actions remain interactive
+        # even while the tray-only application is in the background.
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setFixedWidth(390)
         layout = QVBoxLayout(self)
@@ -405,11 +408,11 @@ class NotificationPopup(QDialog):
         card = NotificationCard(item, field_columns=1)
         layout.addWidget(card)
         web = QPushButton("Webで開く")
-        web.clicked.connect(controller._open_notification_center)
+        web.clicked.connect(self._open_web)
         card.actions.addWidget(web)
         if _notification_card_url(item.get("target_url")):
             detail = QPushButton("詳細を見る")
-            detail.clicked.connect(lambda: controller._open_notification(item))
+            detail.clicked.connect(self._open_detail)
             card.actions.addWidget(detail)
         controller._append_notification_actions(card, item)
         mute = QPushButton("ミュート")
@@ -427,6 +430,14 @@ class NotificationPopup(QDialog):
         severity = str(item.get("severity") or "info")
         if severity not in {"error", "critical"}:
             QTimer.singleShot(20000 if severity == "warning" else 10000, self.close)
+
+    def _open_web(self) -> None:
+        logging.info("notification popup action clicked: web")
+        self.controller._open_notification_center()
+
+    def _open_detail(self) -> None:
+        logging.info("notification popup action clicked: detail")
+        self.controller._open_notification(self.item)
 
 
 class MediaHubApp(clipboard.MediaClipboardApp):
@@ -676,8 +687,8 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         popup = NotificationPopup(self, item)
         self.notification_popups.append(popup)
         popup.finished.connect(lambda _=0, value=popup: self._remove_popup(value))
-        self._position_popups()
         popup.show()
+        self._position_popups()
 
     def _remove_popup(self, popup: NotificationPopup) -> None:
         if popup in self.notification_popups:
