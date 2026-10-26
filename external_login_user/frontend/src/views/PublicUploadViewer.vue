@@ -139,6 +139,10 @@ const filteredFiles = computed(() => {
 });
 const displayedFiles = computed(() => filteredFiles.value);
 const selectableFiles = computed(() => (data.value?.files || []).filter((file) => !file.hidden));
+const flaggedSelectableFiles = computed(() =>
+  (managing.value ? displayedFiles.value : selectableFiles.value)
+    .filter((file) => file.kind === 'image' && file.flagged),
+);
 const selectedFiles = computed(() => (data.value?.files || []).filter((file) => selected.value.includes(file.id)));
 const selectedImageIds = computed(() => selectedFiles.value.filter((file) => file.kind === 'image').map((file) => file.id));
 const lightboxFiles = computed(() => displayedFiles.value.filter((file) => file.kind === 'image' || file.kind === 'video'));
@@ -303,6 +307,11 @@ function toggleSelection(file: PublicFile) {
 function selectAll() {
   const targets = managing.value ? displayedFiles.value : selectableFiles.value;
   selected.value = Array.from(new Set([...selected.value, ...targets.map((file) => file.id)]));
+}
+
+function selectFlaggedOnly() {
+  selected.value = flaggedSelectableFiles.value.map((file) => file.id);
+  preparedZip.value = null;
 }
 
 function clearSelection() { selected.value = []; }
@@ -897,6 +906,9 @@ onUnmounted(() => {
             </button>
             <a v-else class="file-card" :href="file.url" download><span>📄</span><small>{{ file.name }}</small></a>
           </article>
+        </div>
+        <div class="flag-select-footer">
+          <button type="button" class="flag-select-button" :disabled="busy || !flaggedSelectableFiles.length" @click="selectFlaggedOnly">🚩だけ選択</button>
         </div>
       </section>
 
