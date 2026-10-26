@@ -41,15 +41,20 @@ def test_popup_only_socket_does_not_send_history():
 
 def test_new_notification_popup_can_be_shown_without_local_list():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QPushButton
     from tools.mfu_media_hub.main import NotificationPopup
 
     class Controller:
+        def __init__(self):
+            self.opened = []
+
         def _open_notification_center(self):
-            pass
+            self.opened.append("web")
 
         def _open_notification(self, _item):
-            pass
+            self.opened.append("detail")
 
         def _append_notification_actions(self, _card, _item):
             pass
@@ -58,11 +63,19 @@ def test_new_notification_popup_can_be_shown_without_local_list():
             pass
 
     app = QApplication.instance() or QApplication([])
-    popup = NotificationPopup(Controller(), {"id": 1, "title": "通知テスト", "body": "本文", "severity": "info"})
+    controller = Controller()
+    popup = NotificationPopup(controller, {
+        "id": 1, "title": "通知テスト", "body": "本文", "severity": "critical",
+        "target_url": "https://example.com/detail",
+    })
     popup.show()
     app.processEvents()
     assert popup.isVisible()
-    assert any(button.text() == "Webで開く" for button in popup.findChildren(QPushButton))
+    assert popup.windowType() == Qt.Window
+    buttons = {button.text(): button for button in popup.findChildren(QPushButton)}
+    QTest.mouseClick(buttons["Webで開く"], Qt.LeftButton)
+    QTest.mouseClick(buttons["詳細を見る"], Qt.LeftButton)
+    assert controller.opened == ["web", "detail"]
     popup.close()
 
 
