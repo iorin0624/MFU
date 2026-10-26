@@ -7,6 +7,10 @@ import re
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from bs4 import BeautifulSoup
+
 from .browser_session import ETCMaintenanceError, ETCTargetPage
 from .credentials import etc_browser_lock
 from .parser import ETCAuthenticationRequired, is_provisional_record, parse_statement_page
@@ -28,6 +32,51 @@ PAGE_URL = "/etc/R?funccode=1013000000&nextfunc=1013100000&pageNo={page}"
 PDF_URL = "/etc/R?funccode=1013000000&nextfunc=1013600000"
 _LOGGER = logging.getLogger(__name__)
 MAX_STATEMENT_PAGES = 100
+
+
+def _log_statement_parse_failure(
+    browser: ETCTargetPage, html: str, month: str, page: int, error: Exception
+) -> None:
+    """Record page diagnostics without retaining credentials, URL parameters or statement data."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    raw_title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    title = re.sub(r"[\x00-\x1f\x7f]+", " ", raw_title).strip()[:120]
+    try:
+        raw_url = browser.evaluate("location.href")
+        parsed_url = urlsplit(raw_url) if isinstance(raw_url, str) else None
+        url = (
+            f"{parsed_url.scheme}://{parsed_url.hostname}{parsed_url.path}"
+            if parsed_url and parsed_url.scheme in {"http", "https"} and parsed_url.hostname
+            else "unavailable"
+        )
+    except Exception:
+        url = "unavailable"
+    body_text = soup.body.get_text(" ", strip=True) if soup.body else ""
+    _LOGGER.warning(
+        "ETC statement parse failed: month=%s page=%s error_type=%s url=%s title=%r "
+        "html_chars=%s has_page_form=%s has_statement_checkbox=%s has_login_form=%s has_logout_marker=%s "
+        "has_maintenance_marker=%s",
+        month,
+        page,
+        type(error).__name__,
+        url,
+        title,
+        len(html or ""),
+        bool(soup.find("form", attrs={"name": "frm"}) or soup.find("form")),
+        bool(soup.select_one('input[name="hakkoMeisai"]')),
+        bool(soup.select_one('input[name="risLoginId"], input[name="risPassword"]')),
+        "ログアウト" in body_text,
+        "メンテナンス" in body_text,
+    )
+
+
+def _parse_statement_page_with_logging(browser: ETCTargetPage, month: str, page: int):
+    html = browser.html()
+    try:
+        return parse_statement_page(html, month)
+    except Exception as error:
+        _log_statement_parse_failure(browser, html, month, page, error)
+        raise
 
 
 class ETCRecordPDFFetchError(RuntimeError):
@@ -139,7 +188,7 @@ def fetch_month(
         browser_context = ETCTargetPage() if browser is None else nullcontext(browser)
         with browser_lock_context, browser_context as active_browser:
             active_browser.open_statement_month(statement_month)
-            first_page = parse_statement_page(active_browser.html(), statement_month)
+            first_page = _parse_statement_page_with_logging(active_browser, statement_month, 1)
             pending_page_numbers = sorted({int(value) for value in first_page.page_numbers if int(value) > 0})
             if 1 not in pending_page_numbers:
                 pending_page_numbers.insert(0, 1)
@@ -154,7 +203,7 @@ def fetch_month(
                     page = first_page
                 else:
                     active_browser.go_to_page(page_number)
-                    page = parse_statement_page(active_browser.html(), statement_month)
+                    page = _parse_statement_page_with_logging(active_browser, statement_month, page_number)
                 visited_page_numbers.add(page_number)
                 for discovered_page_number in page.page_numbers:
                     discovered_page_number = int(discovered_page_number)
