@@ -48,6 +48,7 @@ type ViewerPayload = {
   notice: string;
   reply: {
     enabled: boolean;
+    cardColor: string;
     uploadUrl: string;
     canList: boolean;
     groups: ReplyGroup[];
@@ -84,6 +85,16 @@ const focusReplyOnLoad = requestedSection === 'reply';
 let csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
 const filenameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 const data = ref<ViewerPayload | null>(null);
+const replyCardTextColor = computed(() => {
+  const hex = data.value?.reply.cardColor?.match(/^#([0-9a-f]{6})$/i)?.[1];
+  if (!hex) return '#14213a';
+  const channels = [0, 2, 4].map((index) => {
+    const value = parseInt(hex.slice(index, index + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  return luminance < 0.22 ? '#fff' : '#14213a';
+});
 const loading = ref(true);
 const error = ref('');
 const selected = ref<number[]>([]);
@@ -799,9 +810,9 @@ onUnmounted(() => {
         </details>
       </section>
 
-      <details v-if="data.reply.enabled" id="reply" ref="replyDetails" class="reply-upload-panel reply-collapsible" :open="focusReplyOnLoad">
+      <details v-if="data.reply.enabled" id="reply" ref="replyDetails" class="reply-upload-panel reply-collapsible" :style="{'--reply-card-color':data.reply.cardColor,'--reply-card-text-color':replyCardTextColor}" :open="focusReplyOnLoad">
         <summary class="reply-section-heading">
-          <div><h2>折り返し</h2><p>加工済みの写真を選択して送信できます。</p></div><span aria-hidden="true">⌄</span>
+          <div><h2>🔙加工バック・折り返し</h2><p>加工済みの写真を選択して送信できます。</p></div><span aria-hidden="true">⌄</span>
         </summary>
         <form class="reply-upload-form" @submit.prevent="submitReply">
           <label class="reply-drop-zone" @dragover.prevent @drop.prevent="dropReplyFiles">
