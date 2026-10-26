@@ -34,6 +34,9 @@ h2 { margin:0; font-size:1.15rem; }
 .reply-card { display:flex; align-items:center; justify-content:space-between; gap:20px; background:linear-gradient(135deg,#f1f6ff,#fff); }
 .reply-card p { margin:8px 0 0; color:#697892; }
 .reply-upload-panel,.reply-list-panel { margin-top:20px; padding:24px 28px; }
+.reply-upload-panel { background:var(--reply-card-color,#f4b3c2); color:var(--reply-card-text-color,#14213a); }
+.reply-upload-panel .reply-section-heading p,.reply-upload-panel .reply-collapsible > summary > span,.reply-upload-panel .reply-submit-row { color:var(--reply-card-text-color,#14213a); }
+.reply-upload-panel .reply-group { color:#14213a; }
 .append-upload-panel { margin-top:20px; padding:24px 28px; }
 .append-upload-form { display:grid; gap:16px; }
 .append-upload-note { margin:0; color:#52617a; line-height:1.6; }

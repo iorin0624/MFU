@@ -87,6 +87,7 @@ from app.utils.upload_security import (
     AUTH_EMAIL_OTP,
     AUTH_PASSWORD,
 )
+from app.utils.reply_card_color import DEFAULT_REPLY_CARD_COLOR, normalize_reply_card_color
 from app.utils.upload_sort import build_sequential_download_entries, sort_upload_file_rows
 from app.utils.upload_email_otp import (
     UploadOtpError,
@@ -2975,7 +2976,7 @@ def public_upload_view_api(uuid):
         message_row = cursor.fetchone() or {}
         cursor.execute(
             """
-            SELECT label, enable_layer_upload_url
+            SELECT label, enable_layer_upload_url, reply_card_color
               FROM upload_modes
              WHERE username = %s AND mode = %s
              LIMIT 1
@@ -3085,6 +3086,7 @@ def public_upload_view_api(uuid):
             ),
             "reply": {
                 "enabled": reply_enabled,
+                "cardColor": normalize_reply_card_color(mode_row.get("reply_card_color")),
                 "uploadUrl": url_for("layer_reply.public_replies", uuid=uuid),
                 "canList": bool((view_access or receipt_reply_grants) and reply_enabled),
                 "groups": reply_groups,
@@ -5965,23 +5967,25 @@ def mode_edit_combined(mode):
         auth_method = normalize_upload_auth_method(request.form.get("auth_method"))
         require_password = auth_method == AUTH_PASSWORD
         enable_layer_upload_url = bool(request.form.get("enable_layer_upload_url"))
+        reply_card_color = normalize_reply_card_color(request.form.get("reply_card_color"))
         generate_thumbnails = bool(request.form.get("generate_thumbnails"))
 
         cursor.execute(
             """
             INSERT INTO upload_modes
-            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, generate_thumbnails, template_key)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, reply_card_color, generate_thumbnails, template_key)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 label = VALUES(label),
                 enable_download_url = VALUES(enable_download_url),
                 require_password = VALUES(require_password),
                 auth_method = VALUES(auth_method),
                 enable_layer_upload_url = VALUES(enable_layer_upload_url),
+                reply_card_color = VALUES(reply_card_color),
                 generate_thumbnails = VALUES(generate_thumbnails),
                 template_key = VALUES(template_key)
             """,
-            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, generate_thumbnails, mode),
+            (username, mode, label, enable_download_url, require_password, auth_method, enable_layer_upload_url, reply_card_color, generate_thumbnails, mode),
         )
 
         cursor.execute(
@@ -6010,6 +6014,7 @@ def mode_edit_combined(mode):
                            action="edit" if mode_data else "add",
                            mode=mode,
                            mode_data=mode_data,
+                           default_reply_card_color=DEFAULT_REPLY_CARD_COLOR,
                            site_template=site_template,
                            notification_template=notification_template,
                            shortcut_url_available=bool(get_shortcut_template_url()))

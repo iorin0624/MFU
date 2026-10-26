@@ -52,6 +52,16 @@
       <label class="form-check-label" for="enable_layer_upload_url">加工済アップロードURL</label>
     </div>
 
+    <div class="mb-3 mt-3">
+      <label for="reply_card_color" class="form-label">加工バック・折り返しカードの背景色</label>
+      <div class="d-flex align-items-center gap-2">
+        <input type="color" class="form-control form-control-color" name="reply_card_color" id="reply_card_color"
+               value="{{ mode_data.reply_card_color if mode_data and mode_data.reply_card_color else default_reply_card_color }}">
+        <output for="reply_card_color" id="reply_card_color_value">{{ mode_data.reply_card_color if mode_data and mode_data.reply_card_color else default_reply_card_color }}</output>
+      </div>
+      <div class="form-text">初期色は {{ default_reply_card_color }}。変更すると、このモードの既存の公開ページにも反映されます。</div>
+    </div>
+
     <div class="form-check mb-3">
       <input type="checkbox" class="form-check-input" name="generate_thumbnails" id="generate_thumbnails"
              {% if (mode_data and mode_data.generate_thumbnails) or (action == 'add') %}checked{% endif %}>
@@ -128,6 +138,10 @@
 {% endif %}
 
 <script>
+  const replyCardColor = document.getElementById("reply_card_color");
+  const replyCardColorValue = document.getElementById("reply_card_color_value");
+  replyCardColor?.addEventListener("input", () => { replyCardColorValue.textContent = replyCardColor.value; });
+
   const shortcutUrlWarning = document.getElementById("shortcut-url-warning");
   if (shortcutUrlWarning) {
     const siteTemplate = document.getElementById("site_template");

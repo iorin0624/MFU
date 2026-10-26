@@ -431,6 +431,11 @@ def ensure_upload_password_schema() -> None:
             cur.execute(
                 "ALTER TABLE upload_modes ADD COLUMN auth_method VARCHAR(20) NULL AFTER require_password"
             )
+        if "reply_card_color" not in mode_columns:
+            cur.execute(
+                "ALTER TABLE upload_modes ADD COLUMN reply_card_color CHAR(7) "
+                "NOT NULL DEFAULT '#f4b3c2' AFTER enable_layer_upload_url"
+            )
         cur.execute(
             """
             UPDATE upload_modes
