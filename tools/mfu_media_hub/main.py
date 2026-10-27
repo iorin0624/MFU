@@ -400,7 +400,6 @@ class NotificationPopup(QDialog):
         # Use an ordinary top-level window so popup actions remain interactive
         # even while the tray-only application is in the background.
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setFixedWidth(390)
         layout = QVBoxLayout(self)

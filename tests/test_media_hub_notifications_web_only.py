@@ -72,6 +72,7 @@ def test_new_notification_popup_can_be_shown_without_local_list():
     app.processEvents()
     assert popup.isVisible()
     assert popup.windowType() == Qt.Window
+    assert not popup.testAttribute(Qt.WA_ShowWithoutActivating)
     buttons = {button.text(): button for button in popup.findChildren(QPushButton)}
     QTest.mouseClick(buttons["Webで開く"], Qt.LeftButton)
     QTest.mouseClick(buttons["詳細を見る"], Qt.LeftButton)
