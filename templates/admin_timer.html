@@ -686,7 +686,11 @@ function transferScanJan(jan){
 }
 
 function offerScannedJan(jan){
-  if (!isJanCode(jan) || $('#mjan-code').value.trim() === jan) return;
+  if (!isJanCode(jan)) return;
+  if ($('#mjan-code').value.trim() === jan){
+    clearPendingScanJan();
+    return;
+  }
   if (janRegistrationDirty){
     pendingScanJan = jan;
     $('#mjan-scan-pending-code').textContent = jan;
@@ -840,6 +844,7 @@ if (!isJanCode(jan)) {
 let _lastScanSig = '';
 let scanStatusSeen = false;
 let lastScanRaw = '';
+let lastScanTs = 0;
 
 $('#scan-google-search').addEventListener('click', () => {
   if (!lastScanRaw) return;
@@ -869,6 +874,8 @@ function applyScanStatus(data, { live = false } = {}){
     const kind = String(ls.kind || '');
     const note = String(ls.note || '');
     const ts   = ls.ts;
+    const scanTs = Number(ts) || 0;
+    if (scanTs && lastScanTs && scanTs < lastScanTs) return;
 
     // 変化がないならDOM更新を省略
     const sig = `${raw}|${kind}|${note}|${ts||''}`;
@@ -877,6 +884,7 @@ function applyScanStatus(data, { live = false } = {}){
     _lastScanSig = sig;
     scanStatusSeen = true;
     lastScanRaw = raw.trim();
+    lastScanTs = Math.max(lastScanTs, scanTs);
 
     $('#scan-raw').textContent  = raw ? raw : '（未検出）';
     $('#scan-kind').textContent = kindLabel(kind);
@@ -889,9 +897,12 @@ function applyScanStatus(data, { live = false } = {}){
 
 async function loadScanStatus(){
   try{
+    const priorSig = _lastScanSig;
     const res = await fetch('/api/timer/scan-status', { credentials:'same-origin' });
     if(!res.ok) return;
-    applyScanStatus(await res.json());
+    const data = await res.json();
+    if (_lastScanSig !== priorSig) return;
+    applyScanStatus(data);
   }catch(e){
     // ここは静かに無視（タイマー画面全体を壊さない）
   }
@@ -919,7 +930,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const scanSocket = window.io('/admin-system', {transports:['websocket','polling']});
     scanSocket.on('connect', () => {
       stopScanFallback();
-      scanSocket.emit('timer_scan_subscribe', {}, (reply) => applyScanStatus(reply || {}));
+      const priorSig = _lastScanSig;
+      scanSocket.emit('timer_scan_subscribe', {}, (reply) => {
+        if (_lastScanSig !== priorSig) return;
+        applyScanStatus(reply || {});
+      });
     });
     scanSocket.on('timer_scan_update', data => applyScanStatus(data, {live: true}));
     scanSocket.on('disconnect', startScanFallback);

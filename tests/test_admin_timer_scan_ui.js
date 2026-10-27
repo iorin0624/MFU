@@ -66,6 +66,8 @@ test('a new valid JAN fills only the registration form without saving', () => {
   assert.equal(page.get('mjan-label').value, '');
   assert.equal(page.get('mjan-minutes').value, '');
   assert.equal(page.get('mjan-scan-pending').classList.contains('d-none'), true);
+  page.context.applyScanStatus({ last_scan: { raw: '4901234567890', kind: 'JAN', ts: 1 } });
+  assert.equal(page.get('mjan-code').value, '12345670', 'older status must not replace the newer scan');
   page.context.applyScanStatus({ last_scan: { raw: '123456789012', kind: 'JAN', ts: 3 } });
   assert.equal(page.get('mjan-code').value, '12345670', 'invalid JAN is ignored');
 });
@@ -82,6 +84,9 @@ test('manual edits are preserved until the user explicitly transfers a new JAN',
   assert.equal(page.get('mjan-label').value, '編集中の商品');
   assert.equal(page.get('mjan-scan-pending-code').textContent, '12345670');
   assert.equal(page.get('mjan-scan-pending').classList.contains('d-none'), false);
+  page.context.applyScanStatus({ last_scan: { raw: '4901234567890', kind: 'JAN', ts: 3 } });
+  assert.equal(page.get('mjan-scan-pending').classList.contains('d-none'), true);
+  page.context.applyScanStatus({ last_scan: { raw: '12345670', kind: 'JAN', ts: 4 } });
   page.get('mjan-scan-transfer').click();
   assert.equal(page.get('mjan-code').value, '12345670');
   assert.equal(page.get('mjan-label').value, '');
