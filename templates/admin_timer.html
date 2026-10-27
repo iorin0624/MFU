@@ -121,6 +121,7 @@
         <div class="d-flex align-items-center gap-2 flex-wrap">
           <span class="badge text-bg-secondary" id="scan-kind">—</span>
           <code class="fs-5" id="scan-raw">（未検出）</code>
+          <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="scan-google-search" disabled>Googleで検索</button>
         </div>
       </div>
 
@@ -148,6 +149,11 @@
         <div class="col-6 col-md-2">
           <button id="mjan-save" class="btn btn-primary w-100">保存/更新</button>
         </div>
+      </div>
+      <div id="mjan-scan-pending" class="alert alert-info d-none mt-3 mb-0" role="status">
+        新しいJAN <code id="mjan-scan-pending-code"></code> を検出しました。編集中の内容は変更していません。
+        <button type="button" id="mjan-scan-transfer" class="btn btn-sm btn-outline-primary ms-2">このJANを転記</button>
+        <div class="small mt-1">転記すると、編集中の商品名・時間は消去されます。</div>
       </div>
       <div id="mjan-msg" class="form-text mt-2"></div>
     </div>
@@ -661,6 +667,44 @@ $('#jan-start')?.addEventListener('click', async () => {
 });
 
 /* ========= JAN 管理（一覧・保存・削除） ========= */
+let janRegistrationDirty = false;
+let pendingScanJan = '';
+
+function clearPendingScanJan(){
+  pendingScanJan = '';
+  $('#mjan-scan-pending').classList.add('d-none');
+  $('#mjan-scan-pending-code').textContent = '';
+}
+
+function transferScanJan(jan){
+  $('#mjan-code').value = jan;
+  $('#mjan-label').value = '';
+  $('#mjan-minutes').value = '';
+  $('#mjan-msg').textContent = '';
+  janRegistrationDirty = false;
+  clearPendingScanJan();
+}
+
+function offerScannedJan(jan){
+  if (!isJanCode(jan) || $('#mjan-code').value.trim() === jan) return;
+  if (janRegistrationDirty){
+    pendingScanJan = jan;
+    $('#mjan-scan-pending-code').textContent = jan;
+    $('#mjan-scan-pending').classList.remove('d-none');
+    return;
+  }
+  transferScanJan(jan);
+}
+
+['mjan-code', 'mjan-label', 'mjan-minutes'].forEach(id => {
+  $(`#${id}`).addEventListener('input', () => { janRegistrationDirty = true; });
+});
+$('#mjan-scan-transfer').addEventListener('click', () => {
+  if (!pendingScanJan) return;
+  transferScanJan(pendingScanJan);
+  $('#mjan-label').focus();
+});
+
 async function reloadJAN(){
   const tbody = $('#mjan-tbody');
   tbody.innerHTML = '<tr><td colspan="4" class="text-muted">読み込み中...</td></tr>';
@@ -709,6 +753,7 @@ async function reloadJAN(){
         $('#mjan-code').value = jan || '';
         $('#mjan-label').value = rec.label || '';
         $('#mjan-minutes').value = rec.seconds ? Math.round(Number(rec.seconds)/60) : '';
+        janRegistrationDirty = true;
         $('#mjan-code').focus();
       });
     });
@@ -769,6 +814,7 @@ if (!isJanCode(jan)) {
 
     if (ok) {
       msg.textContent = '保存しました';
+      janRegistrationDirty = false;
       reloadJAN();
       return;
     }
@@ -792,6 +838,13 @@ if (!isJanCode(jan)) {
 
 /* ========= スキャン内容表示 ========= */
 let _lastScanSig = '';
+let scanStatusSeen = false;
+let lastScanRaw = '';
+
+$('#scan-google-search').addEventListener('click', () => {
+  if (!lastScanRaw) return;
+  window.open(`https://www.google.com/search?q=${encodeURIComponent(lastScanRaw)}`, '_blank', 'noopener,noreferrer');
+});
 
 function fmtScanTs(ts){
   const n = Number(ts)||0;
@@ -810,7 +863,7 @@ function kindLabel(kind){
   return '—';
 }
 
-function applyScanStatus(data){
+function applyScanStatus(data, { live = false } = {}){
     const ls = (data && data.last_scan) ? data.last_scan : {};
     const raw  = String(ls.raw || '');
     const kind = String(ls.kind || '');
@@ -820,13 +873,18 @@ function applyScanStatus(data){
     // 変化がないならDOM更新を省略
     const sig = `${raw}|${kind}|${note}|${ts||''}`;
     if(sig === _lastScanSig) return;
+    const isNewScan = live || scanStatusSeen;
     _lastScanSig = sig;
+    scanStatusSeen = true;
+    lastScanRaw = raw.trim();
 
     $('#scan-raw').textContent  = raw ? raw : '（未検出）';
     $('#scan-kind').textContent = kindLabel(kind);
     $('#scan-ts').textContent   = fmtScanTs(ts);
+    $('#scan-google-search').disabled = !lastScanRaw;
 
     $('#scan-note').textContent = note ? note : '';
+    if (isNewScan && kind.toUpperCase() === 'JAN' && isJanCode(raw)) offerScannedJan(raw.trim());
 }
 
 async function loadScanStatus(){
@@ -863,7 +921,7 @@ document.addEventListener("DOMContentLoaded", () => {
       stopScanFallback();
       scanSocket.emit('timer_scan_subscribe', {}, (reply) => applyScanStatus(reply || {}));
     });
-    scanSocket.on('timer_scan_update', applyScanStatus);
+    scanSocket.on('timer_scan_update', data => applyScanStatus(data, {live: true}));
     scanSocket.on('disconnect', startScanFallback);
     scanSocket.on('connect_error', startScanFallback);
   } else {
