@@ -36,7 +36,7 @@ localhost only; `/etc/mfu-notification-bridge.json` contains source secrets.
 `mail_summary_watcher.sh` watches the notify Maildir with inotify. Authenticated
 mail from `info@mail-jcn.dnp-cdms.jp` is handed to `au_pay_otp_mail.py` before
 the AI summary path and posted to the `au_pay_otp` channel. Authenticated usage,
-cancellation, charge and S3101 withdrawal mail from `info@wallet.auone.jp` is
+cancellation, P1009 refund, charge and S3101 withdrawal mail from `info@wallet.auone.jp` is
 handed to `au_pay_transaction_mail.py` and posted to `au_pay_usage` as a focused
 card (five fields for withdrawals).
 Both handlers must be installed in `/usr/local/lib/mfu-notification-bridge/` and

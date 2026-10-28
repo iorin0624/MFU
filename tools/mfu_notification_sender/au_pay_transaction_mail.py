@@ -16,7 +16,7 @@ from au_pay_otp_mail import _message_text, post_event
 
 
 EXPECTED_SENDER = "info@wallet.auone.jp"
-SUBJECT_RE = re.compile(r"^【au PAY】(ご利用のお知らせ|チャージ完了のお知らせ|出金完了のお知らせ)\s*\[メールコード([PCS]\d+)\]$")
+SUBJECT_RE = re.compile(r"^【au PAY】(ご利用のお知らせ|チャージ完了のお知らせ|出金完了のお知らせ|返金のお知らせ)\s*\[メールコード([PCS]\d+)\]$")
 
 
 def _authenticated(message) -> bool:
@@ -55,7 +55,8 @@ def parse_au_pay_transaction(path: Path) -> dict | None:
     is_charge = notice_type == "チャージ完了のお知らせ" and code.startswith("C")
     is_usage = notice_type == "ご利用のお知らせ" and code.startswith("P")
     is_withdrawal = notice_type == "出金完了のお知らせ" and code == "S3101"
-    if not (is_charge or is_usage or is_withdrawal):
+    is_refund = notice_type == "返金のお知らせ" and code == "P1009"
+    if not (is_charge or is_usage or is_withdrawal or is_refund):
         return None
 
     if is_withdrawal:
@@ -71,6 +72,16 @@ def parse_au_pay_transaction(path: Path) -> dict | None:
             ("残高", _label_value(text, "au PAY 残高")),
         )
         color = 0x9B59B6
+    elif is_refund:
+        amount = _label_value(text, "返金額").removesuffix("※").strip()
+        title = "↩️ au PAY 返金完了"
+        labels = (
+            ("利用日時", _label_value(text, "利用日時")),
+            ("店舗名", _label_value(text, "利用店舗")),
+            ("返金額", amount),
+            ("残高", _label_value(text, "決済後残高")),
+        )
+        color = 0xF39C12
     elif is_charge:
         title = "💰 au PAY チャージ完了"
         labels = (

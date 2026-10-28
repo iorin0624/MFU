@@ -79,6 +79,40 @@ Steam
     assert _fields(event)["残高"] == "記載なし"
 
 
+def test_au_pay_p1009_refund_uses_only_transaction_fields(tmp_path):
+    module = _module()
+    eml = tmp_path / "p1009.eml"
+    _write_mail(eml, "【au PAY】返金のお知らせ [メールコードP1009]", """■利用店舗
+テスト店舗
+■種別
+支払取消(部分取消)
+■利用日時
+2026年10月28日(水) 12:10:01
+■返金額
+-436円※
+■決済後残高
+36,607円
+■伝票番号
+123456789""")
+    event = module.parse_au_pay_transaction(eml)
+    assert event["topic_key"] == "au-pay-usage"
+    assert event["embeds"][0]["title"] == "↩️ au PAY 返金完了"
+    assert _fields(event) == {
+        "利用日時": "2026年10月28日(水) 12:10:01",
+        "店舗名": "テスト店舗",
+        "返金額": "-436円",
+        "残高": "36,607円",
+    }
+    assert "伝票番号" not in str(event)
+
+
+def test_au_pay_other_refund_codes_are_not_claimed(tmp_path):
+    module = _module()
+    eml = tmp_path / "unknown-refund.eml"
+    _write_mail(eml, "【au PAY】返金のお知らせ[メールコードP9999]", "")
+    assert module.parse_au_pay_transaction(eml) is None
+
+
 def test_au_pay_prepaid_usage_not_mistaken_for_refund_and_charge(tmp_path):
     module = _module()
     usage = tmp_path / "prepaid.eml"
