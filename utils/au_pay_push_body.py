@@ -14,7 +14,7 @@ _BODY_FIELDS = (
 
 
 def build_au_pay_transaction_body(title: str, fields: list[dict[str, Any]]) -> str:
-    """Return the three requested values; leave other au PAY events unchanged."""
+    """Return short push text, adding today's total only for ordinary usage."""
     matching = next((mapping for label, mapping in _BODY_FIELDS if label in title), None)
     if matching is None:
         return ""
@@ -25,4 +25,7 @@ def build_au_pay_transaction_body(title: str, fields: list[dict[str, Any]]) -> s
     }
     if any(not values.get(source) for _, source in matching):
         return ""
-    return "　".join(f"{label}：{values[source]}" for label, source in matching)
+    parts = [f"{label}：{values[source]}" for label, source in matching]
+    if "au PAY 利用速報" in title and values.get("本日使用合計金額"):
+        parts.append(f"合計金額：{values['本日使用合計金額']}")
+    return "　".join(parts)

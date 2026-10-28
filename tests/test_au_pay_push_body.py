@@ -26,6 +26,13 @@ def test_usage_body_contains_amount_store_and_balance():
     )
 
 
+def test_usage_body_adds_daily_total_with_short_push_label():
+    build = _module().build_au_pay_transaction_body
+    assert build("💳 au PAY 利用速報", _fields(
+        利用金額="400円", 店舗名="テスト店舗", 残高="9,000円", 本日使用合計金額="2,400円"
+    )) == "金額：400円　店舗名：テスト店舗　残高：9,000円　合計金額：2,400円"
+
+
 def test_charge_body_contains_amount_method_and_balance():
     build = _module().build_au_pay_transaction_body
     assert build("💰 au PAY チャージ完了", _fields(金額="13,000円", 方法="セブン銀行ATM", 残高="68,936円")) == (
