@@ -70,6 +70,18 @@ test('HTTP URL scan keeps punctuation and case and opens the URL on click', () =
   assert.deepEqual(page.opened[0], [raw, '_blank', 'noopener,noreferrer']);
 });
 
+test('old Japanese-layout scan fixes only the scheme apostrophe for display and navigation', () => {
+  const page = makePage();
+  const raw = "https'//www.example.com/O'Brien?next=1";
+  const fixed = "https://www.example.com/O'Brien?next=1";
+  page.context.applyScanStatus({ last_scan: { raw, kind: 'OTHER', ts: 1 } });
+  assert.equal(page.get('scan-raw').textContent, fixed);
+  assert.equal(page.get('scan-kind').textContent, 'URL');
+  assert.equal(page.get('scan-google-search').textContent, 'URLに飛ぶ');
+  page.get('scan-google-search').click();
+  assert.deepEqual(page.opened[0], [fixed, '_blank', 'noopener,noreferrer']);
+});
+
 test('non-HTTP or malformed URL is never opened directly', () => {
   const page = makePage();
   page.context.applyScanStatus({ last_scan: { raw: 'javascript:alert(1)', kind: 'OTHER', ts: 1 } });

@@ -63,3 +63,11 @@ def test_only_http_urls_are_classified_as_urls():
     assert decoder_module.classify_code("www.example.com/path") == "URL"
     for value in ("javascript:alert(1)", "file:///etc/passwd", "https://user:pass@example.com", "https://a b"):
         assert decoder_module.classify_code(value) == "OTHER"
+
+
+def test_japanese_scanner_apostrophe_is_corrected_only_in_url_scheme():
+    raw = "https'//www.example.com/O'Brien?next=1"
+    fixed = "https://www.example.com/O'Brien?next=1"
+    assert decoder_module.normalize_scanned_url(raw) == fixed
+    assert decoder_module.classify_code(raw) == "URL"
+    assert decoder_module.normalize_scanned_url("Bob's barcode") == "Bob's barcode"
