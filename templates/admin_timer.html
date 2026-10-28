@@ -120,7 +120,7 @@
       <div class="mt-2 p-2 rounded bg-body-tertiary border">
         <div class="d-flex align-items-center gap-2 flex-wrap">
           <span class="badge text-bg-secondary" id="scan-kind">—</span>
-          <code class="fs-5" id="scan-raw">（未検出）</code>
+          <code class="fs-5" id="scan-raw" style="overflow-wrap:anywhere; min-width:0; white-space:normal;">（未検出）</code>
           <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="scan-google-search" disabled>Googleで検索</button>
         </div>
       </div>
@@ -844,11 +844,26 @@ if (!isJanCode(jan)) {
 let _lastScanSig = '';
 let scanStatusSeen = false;
 let lastScanRaw = '';
+let lastScanUrl = '';
 let lastScanTs = 0;
+
+function scanHttpUrl(raw){
+  const value = String(raw || '').trim();
+  if (!value || /[\s\\\x00-\x1f]/.test(value)) return '';
+  const candidate = /^www\./i.test(value) ? `https://${value}` : value;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) return '';
+    return parsed.href;
+  } catch (_e) {
+    return '';
+  }
+}
 
 $('#scan-google-search').addEventListener('click', () => {
   if (!lastScanRaw) return;
-  window.open(`https://www.google.com/search?q=${encodeURIComponent(lastScanRaw)}`, '_blank', 'noopener,noreferrer');
+  const target = lastScanUrl || `https://www.google.com/search?q=${encodeURIComponent(lastScanRaw)}`;
+  window.open(target, '_blank', 'noopener,noreferrer');
 });
 
 function fmtScanTs(ts){
@@ -864,6 +879,7 @@ function kindLabel(kind){
   if(k==='MIN')   return '分';
   if(k==='SEC')   return '秒';
   if(k==='START') return 'START';
+  if(k==='URL')   return 'URL';
   if(k==='OTHER') return 'OTHER';
   return '—';
 }
@@ -884,12 +900,14 @@ function applyScanStatus(data, { live = false } = {}){
     _lastScanSig = sig;
     scanStatusSeen = true;
     lastScanRaw = raw.trim();
+    lastScanUrl = scanHttpUrl(lastScanRaw);
     lastScanTs = Math.max(lastScanTs, scanTs);
 
     $('#scan-raw').textContent  = raw ? raw : '（未検出）';
-    $('#scan-kind').textContent = kindLabel(kind);
+    $('#scan-kind').textContent = lastScanUrl ? 'URL' : kindLabel(kind);
     $('#scan-ts').textContent   = fmtScanTs(ts);
     $('#scan-google-search').disabled = !lastScanRaw;
+    $('#scan-google-search').textContent = lastScanUrl ? 'URLに飛ぶ' : 'Googleで検索';
 
     $('#scan-note').textContent = note ? note : '';
     if (isNewScan && kind.toUpperCase() === 'JAN' && isJanCode(raw)) offerScannedJan(raw.trim());
