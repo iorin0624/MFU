@@ -847,12 +847,8 @@ let lastScanRaw = '';
 let lastScanUrl = '';
 let lastScanTs = 0;
 
-function normalizeScanUrl(raw){
-  return String(raw || '').replace(/^(https?)'\/\//i, '$1://');
-}
-
 function scanHttpUrl(raw){
-  const value = normalizeScanUrl(raw).trim();
+  const value = String(raw || '').trim();
   if (!value || /[\s\\\x00-\x1f]/.test(value)) return '';
   const candidate = /^www\./i.test(value) ? `https://${value}` : value;
   try {
@@ -865,7 +861,7 @@ function scanHttpUrl(raw){
 }
 
 $('#scan-google-search').addEventListener('click', () => {
-  if (!lastScanRaw) return;
+  if (!lastScanRaw || $('#scan-google-search').disabled) return;
   const target = lastScanUrl || `https://www.google.com/search?q=${encodeURIComponent(lastScanRaw)}`;
   window.open(target, '_blank', 'noopener,noreferrer');
 });
@@ -903,17 +899,19 @@ function applyScanStatus(data, { live = false } = {}){
     const isNewScan = live || scanStatusSeen;
     _lastScanSig = sig;
     scanStatusSeen = true;
-    lastScanRaw = normalizeScanUrl(raw.trim());
-    lastScanUrl = scanHttpUrl(lastScanRaw);
+    lastScanRaw = raw.trim();
+    const detectedUrl = scanHttpUrl(lastScanRaw);
+    const needsRescan = (detectedUrl && ls.decoder_version !== 'jp106-v2') || /^https?'\/\//i.test(lastScanRaw);
+    lastScanUrl = needsRescan ? '' : detectedUrl;
     lastScanTs = Math.max(lastScanTs, scanTs);
 
     $('#scan-raw').textContent  = lastScanRaw || '（未検出）';
-    $('#scan-kind').textContent = lastScanUrl ? 'URL' : kindLabel(kind);
+    $('#scan-kind').textContent = detectedUrl ? 'URL' : kindLabel(kind);
     $('#scan-ts').textContent   = fmtScanTs(ts);
-    $('#scan-google-search').disabled = !lastScanRaw;
-    $('#scan-google-search').textContent = lastScanUrl ? 'URLに飛ぶ' : 'Googleで検索';
+    $('#scan-google-search').disabled = !lastScanRaw || !!needsRescan;
+    $('#scan-google-search').textContent = needsRescan ? '再スキャンが必要' : (lastScanUrl ? 'URLに飛ぶ' : 'Googleで検索');
 
-    $('#scan-note').textContent = note ? note : '';
+    $('#scan-note').textContent = needsRescan ? '旧方式で読み取ったURLは文字が欠落している可能性があります。再スキャンしてください。' : note;
     if (isNewScan && kind.toUpperCase() === 'JAN' && isJanCode(raw)) offerScannedJan(raw.trim());
 }
 

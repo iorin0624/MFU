@@ -546,6 +546,7 @@ def api_timer_scan_report():
     raw = (data.get("raw") or "").strip()
     kind = (data.get("kind") or "").strip()
     note = (data.get("note") or "").strip()
+    decoder_version = (data.get("decoder_version") or "").strip()[:32]
 
     if not raw:
         return jsonify({"error": "raw is empty"}), 400
@@ -554,6 +555,7 @@ def api_timer_scan_report():
         "raw": raw,
         "kind": kind,
         "note": note,
+        "decoder_version": decoder_version,
         "ts": int(time.time()),
     }
     with _last_scan_lock:

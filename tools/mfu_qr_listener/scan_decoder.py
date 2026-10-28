@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-import re
 from urllib.parse import urlsplit
 
 
 JAN_LENGTHS = (8, 12, 13)
 
 _PUNCTUATION = {
-    "KEY_MINUS": ("-", "_"),
-    "KEY_EQUAL": ("=", "+"),
-    "KEY_LEFTBRACE": ("[", "{"),
-    "KEY_RIGHTBRACE": ("]", "}"),
-    "KEY_BACKSLASH": ("\\", "|"),
-    "KEY_SEMICOLON": (";", ":"),
-    "KEY_APOSTROPHE": ("'", '"'),
-    "KEY_GRAVE": ("`", "~"),
+    # Honeywell 1900 is configured for the Japanese 106/109-key layout.
+    "KEY_MINUS": ("-", "="),
+    "KEY_EQUAL": ("^", "~"),
+    "KEY_LEFTBRACE": ("@", "`"),
+    "KEY_RIGHTBRACE": ("[", "{"),
+    "KEY_BACKSLASH": ("]", "}"),
+    "KEY_SEMICOLON": (";", "+"),
+    "KEY_APOSTROPHE": (":", "*"),
+    "KEY_RO": ("\\", "_"),
+    "KEY_YEN": ("\\", "|"),
     "KEY_COMMA": (",", "<"),
     "KEY_DOT": (".", ">"),
     "KEY_SLASH": ("/", "?"),
     "KEY_SPACE": (" ", " "),
 }
-_SHIFTED_DIGITS = ")!@#$%^&*("
+_SHIFTED_DIGITS = '~!"#$%&\'()'
 _SHIFT_KEYS = {"KEY_LEFTSHIFT", "KEY_RIGHTSHIFT"}
 _ALT_KEYS = {"KEY_LEFTALT", "KEY_RIGHTALT"}
 _ENTER_KEYS = {"KEY_ENTER", "KEY_KPENTER"}
@@ -97,11 +98,6 @@ class ScanDecoder:
         return None
 
 
-def normalize_scanned_url(value: str) -> str:
-    """The Honeywell's Japanese layout emits an apostrophe for the URL colon."""
-    return re.sub(r"(?i)^(https?)'//", r"\1://", value, count=1)
-
-
 def is_http_url(value: str) -> bool:
     if any(char.isspace() or ord(char) < 32 for char in value) or "\\" in value:
         return False
@@ -121,7 +117,7 @@ def is_http_url(value: str) -> bool:
 
 def classify_code(value: str) -> str:
     upper = value.upper()
-    if is_http_url(normalize_scanned_url(value)):
+    if is_http_url(value):
         return "URL"
     if upper == "START":
         return "START"

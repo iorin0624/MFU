@@ -61,7 +61,7 @@ test('Google search uses only the displayed scan text and requires a click', () 
 test('HTTP URL scan keeps punctuation and case and opens the URL on click', () => {
   const page = makePage();
   const raw = 'https://www.webq.jp/orca/936537937/OnKkUz?token=a%2Fb#part';
-  page.context.applyScanStatus({ last_scan: { raw, kind: 'URL', ts: 1 } });
+  page.context.applyScanStatus({ last_scan: { raw, kind: 'URL', decoder_version: 'jp106-v2', ts: 1 } });
   assert.equal(page.get('scan-raw').textContent, raw);
   assert.equal(page.get('scan-kind').textContent, 'URL');
   assert.equal(page.get('scan-google-search').textContent, 'URLに飛ぶ');
@@ -70,16 +70,22 @@ test('HTTP URL scan keeps punctuation and case and opens the URL on click', () =
   assert.deepEqual(page.opened[0], [raw, '_blank', 'noopener,noreferrer']);
 });
 
-test('old Japanese-layout scan fixes only the scheme apostrophe for display and navigation', () => {
+test('old Japanese-layout scan requires a rescan instead of guessing a URL', () => {
   const page = makePage();
   const raw = "https'//www.example.com/O'Brien?next=1";
-  const fixed = "https://www.example.com/O'Brien?next=1";
   page.context.applyScanStatus({ last_scan: { raw, kind: 'OTHER', ts: 1 } });
-  assert.equal(page.get('scan-raw').textContent, fixed);
-  assert.equal(page.get('scan-kind').textContent, 'URL');
-  assert.equal(page.get('scan-google-search').textContent, 'URLに飛ぶ');
+  assert.equal(page.get('scan-raw').textContent, raw);
+  assert.equal(page.get('scan-google-search').textContent, '再スキャンが必要');
+  assert.equal(page.get('scan-google-search').disabled, true);
   page.get('scan-google-search').click();
-  assert.deepEqual(page.opened[0], [fixed, '_blank', 'noopener,noreferrer']);
+  assert.equal(page.opened.length, 0);
+});
+
+test('plausible but unversioned old URLs are not opened', () => {
+  const page = makePage();
+  page.context.applyScanStatus({ last_scan: { raw: 'https://example.jp/a_b', kind: 'URL', ts: 1 } });
+  assert.equal(page.get('scan-google-search').textContent, '再スキャンが必要');
+  assert.equal(page.get('scan-google-search').disabled, true);
 });
 
 test('non-HTTP or malformed URL is never opened directly', () => {
