@@ -12,13 +12,14 @@ spec.loader.exec_module(decoder_module)
 
 
 def _type(decoder, text: str) -> str:
-    """Generate US keyboard events, including Shift for case and URL symbols."""
+    """Generate Japanese 106/109-key events, including Shift for URL symbols."""
     shifted = {
-        ":": "KEY_SEMICOLON", "?": "KEY_SLASH", "#": "KEY_3",
+        "?": "KEY_SLASH", "#": "KEY_3", "_": "KEY_RO",
+        "=": "KEY_MINUS", "'": "KEY_7",
     }
     simple = {
         "/": "KEY_SLASH", ".": "KEY_DOT", "-": "KEY_MINUS",
-        "=": "KEY_EQUAL", "%": None,
+        ":": "KEY_APOSTROPHE", "@": "KEY_LEFTBRACE", "%": None,
     }
     for char in text:
         if char == "%":
@@ -41,9 +42,12 @@ def _type(decoder, text: str) -> str:
 
 
 def test_url_punctuation_and_case_are_preserved():
-    value = "https://www.webq.jp/orca/936537937/OnKkUz?token=a%2Fb#part"
+    value = "https://www.example.jp/orca/93653793/7oNkkuzdH5EojLHhl1Q-kECi_c4RjUW7RLZjhNiQpeKG=a"
     assert _type(decoder_module.ScanDecoder(), value) == value
     assert decoder_module.classify_code(value) == "URL"
+    assert _type(decoder_module.ScanDecoder(), "https://example.jp/O'Brien?token=a%2Fb#part") == (
+        "https://example.jp/O'Brien?token=a%2Fb#part"
+    )
 
 
 def test_legacy_codes_and_alt_keypad_still_work():
@@ -65,9 +69,5 @@ def test_only_http_urls_are_classified_as_urls():
         assert decoder_module.classify_code(value) == "OTHER"
 
 
-def test_japanese_scanner_apostrophe_is_corrected_only_in_url_scheme():
-    raw = "https'//www.example.com/O'Brien?next=1"
-    fixed = "https://www.example.com/O'Brien?next=1"
-    assert decoder_module.normalize_scanned_url(raw) == fixed
-    assert decoder_module.classify_code(raw) == "URL"
-    assert decoder_module.normalize_scanned_url("Bob's barcode") == "Bob's barcode"
+def test_old_corrupted_scheme_is_not_guessed_into_a_valid_url():
+    assert decoder_module.classify_code("https'//www.example.com/path") == "OTHER"

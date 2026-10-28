@@ -8,13 +8,14 @@ import time
 import requests
 from evdev import InputDevice, categorize, ecodes
 
-from scan_decoder import ScanDecoder, classify_code, normalize_scanned_url
+from scan_decoder import ScanDecoder, classify_code
 
 
 MFU_BASE_URL = "http://127.0.0.1:8080"
 INPUT_DEVICE_PATH = "/dev/input/by-id/usb-Honeywell_Imaging___Mobility_1900_16319B3C95-event-kbd"
 ENABLE_SCAN_REPORT = True
 SCAN_REPORT_PATH = "/api/timer/scan-report"
+DECODER_VERSION = "jp106-v2"
 
 
 def post_json(path: str, payload: dict | None = None) -> bool:
@@ -30,11 +31,14 @@ def post_json(path: str, payload: dict | None = None) -> bool:
 
 def report_scan(raw: str, kind: str, note: str = "") -> None:
     if ENABLE_SCAN_REPORT:
-        post_json(SCAN_REPORT_PATH, {"raw": raw, "kind": kind, "note": note})
+        post_json(SCAN_REPORT_PATH, {
+            "raw": raw, "kind": kind, "note": note,
+            "decoder_version": DECODER_VERSION,
+        })
 
 
 def handle_code(code: str) -> None:
-    value = normalize_scanned_url(code.strip())
+    value = code.strip()
     if not value:
         return
     kind = classify_code(value)
