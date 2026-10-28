@@ -955,11 +955,20 @@ def _accept_source_event(source: dict[str, Any], event: dict[str, Any], raw: byt
         return jsonify({"ok": False, "error": "feature_key_not_allowed"}), 403
     canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     dedup = str(event.get("dedup_key") or f"source:{source['id']}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}")[:191]
+    previous_usage_body = (
+        build_au_pay_transaction_body(str(event.get("title") or ""), event.get("fields") or [])
+        if requested_feature == "au_pay_usage" and event.get("title") == "💳 au PAY 利用速報"
+        else ""
+    )
     event = add_usage_total_to_event(
         event,
         recipient=str(source.get("recipient_username") or DEFAULT_RECIPIENT),
         dedup_key=dedup,
     )
+    if previous_usage_body and event.get("description") == previous_usage_body:
+        event["description"] = build_au_pay_transaction_body(
+            str(event.get("title") or ""), event.get("fields") or []
+        )
     result = publish_common_notification(
         recipient_username=str(source.get("recipient_username") or DEFAULT_RECIPIENT),
         feature_key=requested_feature,
