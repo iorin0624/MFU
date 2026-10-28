@@ -8,7 +8,7 @@ import time
 import requests
 from evdev import InputDevice, categorize, ecodes
 
-from scan_decoder import ScanDecoder, classify_code
+from scan_decoder import ScanDecoder, classify_code, normalize_scanned_url
 
 
 MFU_BASE_URL = "http://127.0.0.1:8080"
@@ -34,7 +34,7 @@ def report_scan(raw: str, kind: str, note: str = "") -> None:
 
 
 def handle_code(code: str) -> None:
-    value = code.strip()
+    value = normalize_scanned_url(code.strip())
     if not value:
         return
     kind = classify_code(value)

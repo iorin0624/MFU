@@ -847,8 +847,12 @@ let lastScanRaw = '';
 let lastScanUrl = '';
 let lastScanTs = 0;
 
+function normalizeScanUrl(raw){
+  return String(raw || '').replace(/^(https?)'\/\//i, '$1://');
+}
+
 function scanHttpUrl(raw){
-  const value = String(raw || '').trim();
+  const value = normalizeScanUrl(raw).trim();
   if (!value || /[\s\\\x00-\x1f]/.test(value)) return '';
   const candidate = /^www\./i.test(value) ? `https://${value}` : value;
   try {
@@ -899,11 +903,11 @@ function applyScanStatus(data, { live = false } = {}){
     const isNewScan = live || scanStatusSeen;
     _lastScanSig = sig;
     scanStatusSeen = true;
-    lastScanRaw = raw.trim();
+    lastScanRaw = normalizeScanUrl(raw.trim());
     lastScanUrl = scanHttpUrl(lastScanRaw);
     lastScanTs = Math.max(lastScanTs, scanTs);
 
-    $('#scan-raw').textContent  = raw ? raw : '（未検出）';
+    $('#scan-raw').textContent  = lastScanRaw || '（未検出）';
     $('#scan-kind').textContent = lastScanUrl ? 'URL' : kindLabel(kind);
     $('#scan-ts').textContent   = fmtScanTs(ts);
     $('#scan-google-search').disabled = !lastScanRaw;
