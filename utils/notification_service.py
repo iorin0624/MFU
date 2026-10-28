@@ -14,6 +14,7 @@ from flask_socketio import disconnect, emit, join_room
 from app.chat.socketio_ext import socketio
 from app.discord_notifications.repository import FEATURE_DEFINITIONS
 from app.utils.au_pay_push_body import build_au_pay_transaction_body
+from app.utils.au_pay_usage_total import add_usage_total_to_event
 from app.utils.db import get_db
 
 
@@ -149,6 +150,19 @@ def ensure_notification_service_schema() -> None:
               window_start DATETIME NOT NULL,
               request_count INT UNSIGNED NOT NULL DEFAULT 0,
               PRIMARY KEY (source_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mfu_au_pay_usage_ledger (
+              recipient_username VARCHAR(191) NOT NULL,
+              dedup_key VARCHAR(191) NOT NULL,
+              usage_date DATE NOT NULL,
+              amount_yen BIGINT UNSIGNED NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (recipient_username, dedup_key),
+              KEY idx_mfu_au_pay_usage_day (recipient_username, usage_date)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
@@ -941,6 +955,11 @@ def _accept_source_event(source: dict[str, Any], event: dict[str, Any], raw: byt
         return jsonify({"ok": False, "error": "feature_key_not_allowed"}), 403
     canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     dedup = str(event.get("dedup_key") or f"source:{source['id']}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}")[:191]
+    event = add_usage_total_to_event(
+        event,
+        recipient=str(source.get("recipient_username") or DEFAULT_RECIPIENT),
+        dedup_key=dedup,
+    )
     result = publish_common_notification(
         recipient_username=str(source.get("recipient_username") or DEFAULT_RECIPIENT),
         feature_key=requested_feature,
