@@ -38,6 +38,7 @@ function makePage() {
     document: { querySelector: selector => elements.get(selector.slice(1)) },
     window: { open: (...args) => opened.push(args) },
     encodeURIComponent,
+    URL,
   });
   vm.runInContext('const $ = selector => document.querySelector(selector);\n' + janValidator + janHelpers + scanHelpers, context);
   return { context, elements, opened, get: id => elements.get(id) };
@@ -55,6 +56,26 @@ test('Google search uses only the displayed scan text and requires a click', () 
     '_blank', 'noopener,noreferrer',
   ]);
   assert.equal(page.get('mjan-code').value, '');
+});
+
+test('HTTP URL scan keeps punctuation and case and opens the URL on click', () => {
+  const page = makePage();
+  const raw = 'https://www.webq.jp/orca/936537937/OnKkUz?token=a%2Fb#part';
+  page.context.applyScanStatus({ last_scan: { raw, kind: 'URL', ts: 1 } });
+  assert.equal(page.get('scan-raw').textContent, raw);
+  assert.equal(page.get('scan-kind').textContent, 'URL');
+  assert.equal(page.get('scan-google-search').textContent, 'URLに飛ぶ');
+  assert.equal(page.opened.length, 0);
+  page.get('scan-google-search').click();
+  assert.deepEqual(page.opened[0], [raw, '_blank', 'noopener,noreferrer']);
+});
+
+test('non-HTTP or malformed URL is never opened directly', () => {
+  const page = makePage();
+  page.context.applyScanStatus({ last_scan: { raw: 'javascript:alert(1)', kind: 'OTHER', ts: 1 } });
+  assert.equal(page.get('scan-google-search').textContent, 'Googleで検索');
+  page.get('scan-google-search').click();
+  assert.equal(page.opened[0][0], 'https://www.google.com/search?q=javascript%3Aalert(1)');
 });
 
 test('a new valid JAN fills only the registration form without saving', () => {
