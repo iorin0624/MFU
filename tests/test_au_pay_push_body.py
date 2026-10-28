@@ -40,6 +40,13 @@ def test_withdrawal_body_contains_amount_destination_and_balance():
     )
 
 
+def test_refund_body_contains_amount_store_and_balance():
+    build = _module().build_au_pay_transaction_body
+    assert build("↩️ au PAY 返金完了", _fields(返金額="-436円", 店舗名="テスト店舗", 残高="36,607円")) == (
+        "金額：-436円　店舗名：テスト店舗　残高：36,607円"
+    )
+
+
 def test_other_events_and_incomplete_fields_keep_existing_behavior():
     build = _module().build_au_pay_transaction_body
     assert build("↩️ au PAY 取消・返金", _fields(金額="1,000円", 店舗名="店", 残高="500円")) == ""
