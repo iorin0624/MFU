@@ -39,6 +39,9 @@ the AI summary path and posted to the `au_pay_otp` channel. Authenticated usage,
 cancellation, P1009 refund, charge and S3101 withdrawal mail from `info@wallet.auone.jp` is
 handed to `au_pay_transaction_mail.py` and posted to `au_pay_usage` as a focused
 card (five fields for withdrawals).
+Ordinary usage cards gain a fifth `本日使用合計金額` field from MFU's durable
+JST-date usage ledger. Charge, withdrawal, cancellation and refund notices do
+not change this gross purchase total; repeated mail cannot add twice.
 Both handlers must be installed in `/usr/local/lib/mfu-notification-bridge/` and
 the watcher in `/usr/local/bin/mail_summary_watcher.sh`. The Pi bridge needs
 separate source tokens for both features. The watcher defaults to the local
