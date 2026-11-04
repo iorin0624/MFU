@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 from .browser_session import ETCMaintenanceError, ETCTargetPage
 from .credentials import etc_browser_lock
-from .parser import ETCAuthenticationRequired, is_provisional_record, parse_statement_page
+from .parser import ETCAuthenticationRequired, ETCStatementPage, is_provisional_record, parse_statement_page
 from .pdf_metadata import extract_pdf_metadata
 from .repository import (
     acquire_fetch_lock,
@@ -187,8 +187,11 @@ def fetch_month(
         browser_lock_context = etc_browser_lock() if browser is None else nullcontext()
         browser_context = ETCTargetPage() if browser is None else nullcontext(browser)
         with browser_lock_context, browser_context as active_browser:
-            active_browser.open_statement_month(statement_month)
-            first_page = _parse_statement_page_with_logging(active_browser, statement_month, 1)
+            empty_month = active_browser.open_statement_month(statement_month) is True
+            first_page = (
+                ETCStatementPage(records=[], page_numbers=[1], form_token="")
+                if empty_month else _parse_statement_page_with_logging(active_browser, statement_month, 1)
+            )
             pending_page_numbers = sorted({int(value) for value in first_page.page_numbers if int(value) > 0})
             if 1 not in pending_page_numbers:
                 pending_page_numbers.insert(0, 1)
@@ -307,7 +310,11 @@ def fetch_month(
                     _discard_replaced_pdf(current_path, path)
                     downloaded += 1
                     changed_record_ids.add(record_id)
-        reconciliation = reconcile_source_records(statement_month, seen_transaction_keys)
+        # An empty result is safe to report, but never evidence for deleting stored records.
+        reconciliation = (
+            {"checked": 0, "present": 0, "missing": 0, "newly_deleted": 0, "already_deleted": 0}
+            if empty_month else reconcile_source_records(statement_month, seen_transaction_keys)
+        )
         deleted_count = int(reconciliation.get("newly_deleted") or 0)
         change_count = len(changed_record_ids) + deleted_count
         run_status = "partial" if record_failures else "success"
@@ -333,6 +340,7 @@ def fetch_month(
             "restored_count": restored_count,
             "change_count": change_count,
             "reconciliation": reconciliation,
+            "empty_month": empty_month,
             "failures": record_failures,
         }
     except ETCMaintenanceError as exc:
