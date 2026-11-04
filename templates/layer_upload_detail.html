@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}レイヤーアップロード詳細{% endblock %}
 
+{% block head_extra %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/layer-upload-viewer.css') }}">
+{% endblock %}
+
 {% block content %}
 <div class="container mt-4 mb-5">
   <div id="layer-upload-detail"
@@ -31,7 +36,7 @@
   </div>
 
   {% if groups %}
-    <div class="d-grid gap-3">
+    <div class="d-grid gap-3" id="layer-image-gallery">
       {% for group in groups %}
       <section class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -58,7 +63,10 @@
           <div class="row g-2">
             {% for image_name in group.images %}
             <div class="col-6 col-sm-4 col-md-3 col-lg-2">
-              <a href="{{ url_for('upload_history.layer_upload_image', uuid=upload.uuid, reply_uuid=group.folder_name, filename=image_name) }}" target="_blank" rel="noopener" class="text-decoration-none">
+              <a href="{{ url_for('upload_history.layer_upload_image', uuid=upload.uuid, reply_uuid=group.folder_name, filename=image_name) }}"
+                 class="text-decoration-none layer-image-open"
+                 data-reply-uuid="{{ group.reply_uuid }}" data-filename="{{ image_name }}"
+                 aria-label="{{ image_name }}を画像ビュアーで表示">
                 <img src="{{ url_for('upload_history.layer_upload_image', uuid=upload.uuid, reply_uuid=group.folder_name, filename=image_name) }}"
                      alt="{{ image_name }}"
                      class="img-fluid rounded border w-100"
@@ -78,6 +86,34 @@
   {% else %}
     <div class="alert alert-secondary">このアップロードに紐づくレイヤーアップロードはまだありません。</div>
   {% endif %}
+  <dialog id="layer-image-viewer" class="layer-image-viewer" aria-labelledby="layer-image-viewer-title">
+    <div class="layer-image-viewer-panel">
+      <header class="layer-image-viewer-header">
+        <strong id="layer-image-viewer-title">画像ビュアー</strong>
+        <span id="layer-image-viewer-counter" aria-live="polite"></span>
+        <button id="layer-image-viewer-close" type="button" class="btn btn-outline-light btn-sm" aria-label="画像ビュアーを閉じる">閉じる ×</button>
+      </header>
+      <div class="layer-image-viewer-stage">
+        <button id="layer-image-viewer-prev" type="button" class="layer-image-viewer-arrow" aria-label="前の画像">‹</button>
+        <div class="layer-image-viewer-image-wrap">
+          <img id="layer-image-viewer-image" alt="">
+          <p id="layer-image-viewer-image-error" hidden>この画像はブラウザーで表示できません。元画像をダウンロードしてください。</p>
+        </div>
+        <button id="layer-image-viewer-next" type="button" class="layer-image-viewer-arrow" aria-label="次の画像">›</button>
+      </div>
+      <footer class="layer-image-viewer-footer">
+        <div class="layer-image-viewer-caption">
+          <span id="layer-image-viewer-reply"></span>
+          <strong id="layer-image-viewer-filename"></strong>
+        </div>
+        <div class="layer-image-viewer-actions">
+          <span id="layer-image-viewer-status" role="status" aria-live="polite"></span>
+          <button id="layer-image-viewer-copy" type="button" class="btn btn-primary btn-sm" disabled>画像をコピー（Ctrl+C）</button>
+          <a id="layer-image-viewer-download" class="btn btn-outline-light btn-sm" href="#" download>元画像を保存</a>
+        </div>
+      </footer>
+    </div>
+  </dialog>
   </div>
 </div>
 {% endblock %}
@@ -86,4 +122,5 @@
 {{ super() }}
 <script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/layer-upload-detail.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/layer-upload-viewer.js') }}" defer></script>
 {% endblock %}
