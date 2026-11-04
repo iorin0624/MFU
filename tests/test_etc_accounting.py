@@ -1014,6 +1014,48 @@ class ETCAccountingTest(unittest.TestCase):
         browser.recover_statement_page.assert_called_once_with(force=True)
         browser.ensure_logged_in.assert_called_once_with()
 
+    def test_navigation_diagnostic_redacts_unrecognized_title_and_page_content(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.evaluate = Mock(return_value={
+            "title": "Private User 12345",
+            "host": "www2.etc-meisai.jp",
+            "path": "/etc/R",
+            "ready": "complete",
+            "form": True,
+            "login": False,
+            "statement": False,
+            "submit": True,
+            "logout": True,
+            "rejected": True,
+            "maintenance": False,
+            "query": "secret-token",
+        })
+
+        with self.assertLogs(etc_browser_session._LOGGER, level="WARNING") as logs:
+            browser._log_navigation_snapshot("statement_page_unavailable")
+
+        message = logs.output[0]
+        self.assertIn("title=<redacted>", message)
+        self.assertIn("form=True login=False statement=False", message)
+        self.assertIn("rejected=True", message)
+        self.assertNotIn("Private User", message)
+        self.assertNotIn("secret-token", message)
+
+    def test_statement_navigation_failure_records_diagnostic_without_changing_error(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.ensure_logged_in = Mock()
+        browser.has_statement_form = Mock(return_value=False)
+        browser.evaluate = Mock(return_value=True)
+        browser.wait_navigation = Mock()
+        browser.is_logged_in = Mock(return_value=False)
+        browser.has_login_form = Mock(return_value=False)
+        browser._log_navigation_snapshot = Mock()
+
+        with self.assertRaisesRegex(ETCNavigationStateError, "遷移情報が無効"):
+            browser.open_statement_month("202611")
+
+        browser._log_navigation_snapshot.assert_called_once_with("statement_page_unavailable")
+
     def test_new_etc_records_are_rendered_as_summary_and_record_cards(self):
         batches = _discord_batches([
             {
