@@ -1089,6 +1089,32 @@ class ETCAccountingTest(unittest.TestCase):
         self.assertIn("body.includes('ありません')", expression)
         self.assertIn('form[name="frm"] input[name="p"]', expression)
         self.assertIn('input[name="hakkoMeisai"]', expression)
+        self.assertNotIn("params.has('taisyoYM')", expression)
+
+    def test_logged_in_check_rejects_site_error_and_logout_confirmation(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.wait_ready = Mock()
+        browser.evaluate = Mock(return_value=True)
+
+        self.assertTrue(browser.is_logged_in())
+
+        expression = browser.evaluate.call_args.args[0]
+        self.assertIn('form[name="frm"]', expression)
+        self.assertIn("!body.includes('処理が受け付けられませんでした')", expression)
+
+    def test_rejected_site_session_uses_logout_then_fresh_login_page(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.wait_ready = Mock()
+        browser.evaluate = Mock(side_effect=[True, None, True])
+        browser.wait_navigation = Mock()
+        browser.navigate = Mock()
+        browser.has_login_form = Mock(return_value=True)
+
+        self.assertTrue(browser._recover_rejected_site_session())
+
+        browser.wait_navigation.assert_called_once()
+        browser.navigate.assert_called_once_with(etc_browser_session.ETC_TOP_URL)
+        browser.has_login_form.assert_called_once()
 
     def test_statement_month_uses_verified_empty_page_without_recovery(self):
         browser = object.__new__(ETCTargetPage)
