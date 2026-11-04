@@ -3,8 +3,10 @@ import base64
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 
@@ -76,6 +78,22 @@ class BlockedCallNotifyTest(unittest.TestCase):
 
         payload = MODULE.build_discord_payload("08093242655", classification="blacklist", process="hangup_21")
         self.assertNotIn("components", payload)
+
+    def test_blacklist_call_does_not_send_notification(self):
+        args = Namespace(
+            classification="blacklist",
+            caller="08093242655",
+            unique_id="12345.6",
+            did="05068741025",
+            process="hangup_21",
+            dry_run=False,
+        )
+        with patch.object(MODULE, "parse_args", return_value=args), \
+                patch.object(MODULE, "claim") as claim, \
+                patch.object(MODULE, "discord_post") as discord_post:
+            self.assertEqual(MODULE.main(), 0)
+        claim.assert_not_called()
+        discord_post.assert_not_called()
 
     def test_notification_name_metadata_wins_over_truncated_sip_name(self):
         full_name = "ベリーベスト　錦糸町オフィス"
