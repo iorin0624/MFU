@@ -28,3 +28,11 @@ def test_layer_image_endpoint_keeps_existing_permission_checks():
     assert '_ensure_upload_permission(upload, username)' in route
     assert 'layer_reply_file_exists(' in route
     assert 'return send_file(target, conditional=True)' in route
+
+
+def test_viewer_image_is_fitted_inside_the_available_stage():
+    css = (ROOT / "static" / "css" / "layer-upload-viewer.css").read_text(encoding="utf-8")
+    template = (ROOT / "templates" / "layer_upload_detail.html").read_text(encoding="utf-8")
+    assert "grid-template-rows: minmax(0, 1fr)" in css
+    assert ".layer-image-viewer-image-wrap img {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  object-fit: contain;" in css
+    assert "20261104-fit1" in template
