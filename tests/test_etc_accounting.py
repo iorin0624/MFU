@@ -348,6 +348,26 @@ class ETCAccountingTest(unittest.TestCase):
         reconcile.assert_called_once_with("202609", {"page-1", "page-2", "page-3"})
         finish_run.assert_called_once_with(11, status="success", found=3, downloaded=0, skipped=3, error=None)
 
+    def test_verified_empty_month_succeeds_without_marking_old_records_deleted(self):
+        browser = MagicMock()
+        browser.open_statement_month.return_value = True
+        with (
+            patch("app.etc_accounting.fetcher.acquire_fetch_lock", return_value=Mock()),
+            patch("app.etc_accounting.fetcher.release_fetch_lock"),
+            patch("app.etc_accounting.fetcher.start_run", return_value=12),
+            patch("app.etc_accounting.fetcher.finish_run") as finish_run,
+            patch("app.etc_accounting.fetcher.parse_statement_page") as parse,
+            patch("app.etc_accounting.fetcher.reconcile_source_records") as reconcile,
+        ):
+            result = fetch_month("202611", browser=browser)
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["empty_month"])
+        self.assertEqual(result["found"], 0)
+        parse.assert_not_called()
+        reconcile.assert_not_called()
+        finish_run.assert_called_once_with(12, status="success", found=0, downloaded=0, skipped=0, error=None)
+
     def test_fetch_month_does_not_reconcile_when_later_page_authentication_fails(self):
         record = {
             "transaction_key": "page-1",
@@ -1044,7 +1064,7 @@ class ETCAccountingTest(unittest.TestCase):
     def test_statement_navigation_failure_records_diagnostic_without_changing_error(self):
         browser = object.__new__(ETCTargetPage)
         browser.ensure_logged_in = Mock()
-        browser.has_statement_form = Mock(return_value=False)
+        browser.has_statement_page = Mock(return_value=False)
         browser.evaluate = Mock(return_value=True)
         browser.wait_navigation = Mock()
         browser.is_logged_in = Mock(return_value=False)
@@ -1055,6 +1075,35 @@ class ETCAccountingTest(unittest.TestCase):
             browser.open_statement_month("202611")
 
         browser._log_navigation_snapshot.assert_called_once_with("statement_page_unavailable")
+
+    def test_empty_statement_page_requires_the_selected_month_and_safe_markers(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.wait_ready = Mock()
+        browser.evaluate = Mock(return_value=True)
+
+        self.assertTrue(browser.is_empty_statement_page("202611"))
+
+        expression = browser.evaluate.call_args.args[0]
+        self.assertIn('const expectedMonth = "202611"', expression)
+        self.assertIn("params.get('taisyoYM') === expectedMonth", expression)
+        self.assertIn("body.includes('ありません')", expression)
+        self.assertIn('form[name="frm"] input[name="p"]', expression)
+        self.assertIn('input[name="hakkoMeisai"]', expression)
+
+    def test_statement_month_uses_verified_empty_page_without_recovery(self):
+        browser = object.__new__(ETCTargetPage)
+        browser.ensure_logged_in = Mock()
+        browser.has_statement_page = Mock(return_value=True)
+        browser.has_statement_form = Mock(return_value=False)
+        browser.is_empty_statement_page = Mock(return_value=True)
+        browser._submit = Mock()
+
+        self.assertTrue(browser.open_statement_month("202611"))
+
+        browser._submit.assert_called_once_with(
+            "/etc/R?funccode=1013000000&nextfunc=1013200000&taisyoYM=202611"
+        )
+        browser.is_empty_statement_page.assert_called_once_with("202611")
 
     def test_new_etc_records_are_rendered_as_summary_and_record_cards(self):
         batches = _discord_batches([

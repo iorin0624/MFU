@@ -748,6 +748,36 @@ class ETCTargetPage:
         self.wait_ready()
         return bool(self.evaluate("Boolean(document.querySelector('input[name=\"hakkoMeisai\"]'))"))
 
+    def is_empty_statement_page(self, statement_month: str | None = None) -> bool:
+        """Recognize an authenticated, explicitly empty result for the selected month."""
+        self.wait_ready()
+        month_json = json.dumps(statement_month)
+        return bool(self.evaluate(
+            f"""
+            (() => {{
+              const expectedMonth = {month_json};
+              const body = document.body?.innerText || '';
+              const params = new URLSearchParams(location.search);
+              return location.hostname === 'www2.etc-meisai.jp' &&
+                     location.pathname === '/etc/R' &&
+                     params.has('taisyoYM') &&
+                     (expectedMonth === null || params.get('taisyoYM') === expectedMonth) &&
+                     !!document.querySelector('form[name="frm"] input[name="p"]') &&
+                     typeof window.submitPage === 'function' &&
+                     body.includes('ログアウト') &&
+                     body.includes('利用年月日') &&
+                     body.includes('ありません') &&
+                     !body.includes('処理が受け付けられませんでした') &&
+                     !body.includes('最初からやり直してください') &&
+                     !body.includes('メンテナンス') &&
+                     !document.querySelector('input[name="risLoginId"], input[name="risPassword"], input[name="hakkoMeisai"]');
+            }})()
+            """
+        ))
+
+    def has_statement_page(self) -> bool:
+        return self.has_statement_form() or self.is_empty_statement_page()
+
     def _log_navigation_snapshot(self, stage: str) -> None:
         """Log page structure only; never log form values, URL queries or page text."""
         try:
@@ -800,7 +830,7 @@ class ETCTargetPage:
     def recover_statement_page(self, *, force: bool = False) -> bool:
         """Recover through the site's stateful form instead of direct URL navigation."""
         self.wait_ready()
-        if self.has_statement_form() and not force:
+        if self.has_statement_page() and not force:
             return True
         if not self.is_logged_in():
             return False
@@ -819,7 +849,7 @@ class ETCTargetPage:
         if not submitted:
             return False
         self.wait_navigation(marker)
-        return self.has_statement_form()
+        return self.has_statement_page()
 
     def _raise_if_maintenance_page(self) -> None:
         current_url = str(self.evaluate("location.href") or "")
@@ -925,9 +955,10 @@ class ETCTargetPage:
             raise _navigation_state_error("ETC画面の送信フォームが見つかりません。")
         self.wait_navigation(marker)
 
-    def open_statement_month(self, statement_month: str) -> None:
+    def open_statement_month(self, statement_month: str) -> bool:
+        """Select a month and return True only for its verified empty result page."""
         self.ensure_logged_in()
-        has_statement = self.has_statement_form()
+        has_statement = self.has_statement_page()
         if not has_statement:
             marker = uuid.uuid4().hex
             self.evaluate(f"window.__mfuEtcMarker = {json.dumps(marker)}")
@@ -947,7 +978,7 @@ class ETCTargetPage:
                 self._log_navigation_snapshot("statement_link_unavailable")
                 raise _navigation_state_error("ETCの利用明細画面を開けません。")
             self.wait_navigation(marker)
-        if not self.has_statement_form():
+        if not self.has_statement_page():
             if self.is_logged_in() and self.recover_statement_page():
                 pass
             elif self.has_login_form():
@@ -958,6 +989,16 @@ class ETCTargetPage:
                 self._log_navigation_snapshot("statement_page_unavailable")
                 raise _navigation_state_error("ETC利用明細画面への遷移情報が無効です。")
         self._submit(f"/etc/R?funccode=1013000000&nextfunc=1013200000&taisyoYM={statement_month}")
+        if self.has_statement_form():
+            return False
+        if self.is_empty_statement_page(statement_month):
+            return True
+        if self.has_login_form():
+            from .parser import ETCAuthenticationRequired
+
+            raise ETCAuthenticationRequired("ETCのログイン有効期限が切れました。再ログインが必要です。")
+        self._log_navigation_snapshot("statement_month_unavailable")
+        raise _navigation_state_error("ETC利用明細画面への遷移情報が無効です。")
 
     def go_to_page(self, page_number: int) -> None:
         self.evaluate(
