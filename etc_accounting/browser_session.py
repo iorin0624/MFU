@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import json
+import logging
 import os
 import re
 import secrets
@@ -49,6 +51,7 @@ ETC_BROWSER_DOWNLOAD_ROOT = Path(
 _browser_start_thread_lock = threading.Lock()
 _maintenance_cache_lock = threading.Lock()
 _maintenance_cache = {"checked_at": 0.0, "active": False, "message": ""}
+_LOGGER = logging.getLogger(__name__)
 
 
 class ETCMaintenanceError(RuntimeError):
@@ -745,6 +748,55 @@ class ETCTargetPage:
         self.wait_ready()
         return bool(self.evaluate("Boolean(document.querySelector('input[name=\"hakkoMeisai\"]'))"))
 
+    def _log_navigation_snapshot(self, stage: str) -> None:
+        """Log page structure only; never log form values, URL queries or page text."""
+        try:
+            state = self.evaluate(
+                """
+                (() => {
+                  const body = document.body?.innerText || '';
+                  return {
+                    title: document.title || '',
+                    host: location.hostname,
+                    path: location.pathname,
+                    ready: document.readyState,
+                    form: !!document.querySelector('form[name="frm"]'),
+                    login: !!document.querySelector('input[name="risLoginId"]') &&
+                           !!document.querySelector('input[name="risPassword"]'),
+                    statement: !!document.querySelector('input[name="hakkoMeisai"]'),
+                    submit: typeof window.submitPage === 'function',
+                    logout: body.includes('ログアウト'),
+                    rejected: body.includes('処理が受け付けられませんでした') ||
+                              body.includes('最初からやり直してください'),
+                    maintenance: body.includes('メンテナンス'),
+                  };
+                })()
+                """
+            )
+            if not isinstance(state, dict):
+                raise ValueError("invalid browser diagnostic result")
+            raw_title = str(state.get("title") or "").strip()
+            safe_title = raw_title if raw_title in {
+                "ＥＴＣ利用照会サービス", "ETC利用照会サービス",
+            } else "<redacted>"
+            title_hash = hashlib.sha256(raw_title.encode("utf-8")).hexdigest()[:12]
+            host = str(state.get("host") or "").lower()
+            path = str(state.get("path") or "")
+            safe_path = path if host == "www2.etc-meisai.jp" and path == "/etc/R" else "other"
+            _LOGGER.warning(
+                "ETC navigation diagnostic stage=%s title=%s title_hash=%s path=%s "
+                "ready=%s form=%s login=%s statement=%s submit=%s logout=%s "
+                "rejected=%s maintenance=%s",
+                stage, safe_title, title_hash, safe_path,
+                str(state.get("ready") or "unknown") if state.get("ready") in {"loading", "interactive", "complete"} else "unknown",
+                bool(state.get("form")), bool(state.get("login")),
+                bool(state.get("statement")), bool(state.get("submit")),
+                bool(state.get("logout")), bool(state.get("rejected")),
+                bool(state.get("maintenance")),
+            )
+        except Exception:
+            _LOGGER.warning("ETC navigation diagnostic unavailable stage=%s", stage)
+
     def recover_statement_page(self, *, force: bool = False) -> bool:
         """Recover through the site's stateful form instead of direct URL navigation."""
         self.wait_ready()
@@ -801,6 +853,7 @@ class ETCTargetPage:
         )
         if not submitted:
             _raise_if_official_maintenance()
+            self._log_navigation_snapshot("login_form_unavailable")
             if self.is_logged_in():
                 raise _navigation_state_error("ETCのログイン状態は有効ですが、画面遷移情報が無効です。")
             raise _navigation_state_error("ETCログイン画面を正しく開けませんでした。")
@@ -868,6 +921,7 @@ class ETCTargetPage:
             """
         )
         if not submitted:
+            self._log_navigation_snapshot("submit_form_unavailable")
             raise _navigation_state_error("ETC画面の送信フォームが見つかりません。")
         self.wait_navigation(marker)
 
@@ -890,6 +944,7 @@ class ETCTargetPage:
                 """
             )
             if not clicked:
+                self._log_navigation_snapshot("statement_link_unavailable")
                 raise _navigation_state_error("ETCの利用明細画面を開けません。")
             self.wait_navigation(marker)
         if not self.has_statement_form():
@@ -900,6 +955,7 @@ class ETCTargetPage:
 
                 raise ETCAuthenticationRequired("ETCのログイン有効期限が切れました。再ログインが必要です。")
             else:
+                self._log_navigation_snapshot("statement_page_unavailable")
                 raise _navigation_state_error("ETC利用明細画面への遷移情報が無効です。")
         self._submit(f"/etc/R?funccode=1013000000&nextfunc=1013200000&taisyoYM={statement_month}")
 
