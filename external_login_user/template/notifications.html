@@ -52,6 +52,7 @@
   .notification-list { display: grid; gap: .9rem; }
   .notification-entry { --notice-color:#2563eb; border:1px solid #cfd8e6; border-left:6px solid var(--notice-color); border-radius:.85rem; background:#fff; color:#172033; padding:1.15rem; box-shadow:0 .2rem .8rem rgba(15,23,42,.08); }
   .notification-entry.is-unread { background:#f5f9ff; box-shadow:0 .25rem 1rem rgba(37,99,235,.12); }
+  .notification-entry.is-push-target { outline:3px solid #f59e0b; outline-offset:2px; scroll-margin-top:1rem; }
   .notification-entry-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:.65rem; }
   .notification-entry-head h2 { color:#0f172a; font-size:1rem; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
   .notification-lead { white-space:normal; margin:.25rem 0 .75rem; }
@@ -151,11 +152,16 @@
     const configuredChannels = scope === 'mfu' && Array.isArray(cfg.channels) ? cfg.channels : [];
     const channels = [{key:'all', label:'すべて', group:''}, ...configuredChannels];
     const channelKeys = new Set(channels.map((channel) => String(channel.key || '')));
-    const queryChannel = new URLSearchParams(window.location.search).get('channel') || '';
+    const params = new URLSearchParams(window.location.search);
+    const queryChannel = params.get('channel') || '';
+    const requestedNotificationId = Number(params.get('notification_id'));
+    const pushNotificationId = scope === 'mfu' && /^[1-9]\d*$/.test(params.get('notification_id') || '')
+      && Number.isSafeInteger(requestedNotificationId) ? requestedNotificationId : 0;
     const savedChannel = scope === 'mfu' ? (window.localStorage.getItem('mfuNotificationChannel') || '') : '';
-    let currentChannel = channelKeys.has(queryChannel)
+    let currentChannel = pushNotificationId ? 'all' : channelKeys.has(queryChannel)
       ? queryChannel
       : (channelKeys.has(savedChannel) ? savedChannel : 'all');
+    if (pushNotificationId) onlyUnread.checked = false;
     let channelUnread = {};
     let mutedChannels = new Set();
     let muteSettingsLoaded = false;
@@ -271,6 +277,7 @@
       const url = new URL(window.location.href);
       if (currentChannel === 'all') url.searchParams.delete('channel');
       else url.searchParams.set('channel', currentChannel);
+      url.searchParams.delete('notification_id');
       window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
       updateChannelNavigation();
       if (feedEl) feedEl.scrollTop = 0;
@@ -544,7 +551,7 @@
         ${renderCards(item)}
         ${renderOtpValue(item)}
         <div class="notification-meta"># ${escapeHtml(channelLabel(normalizedItemChannel(item)))} ・ ${formatDate(item.created_at)}</div>
-        <div class="notification-actions">${scope === 'mfu' && !isRead ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-mark-read>既読にする</button>' : ''}${showDetails ? '<button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>' : ''}${renderNotificationActions(item)}</div>
+        <div class="notification-actions">${scope === 'mfu' && !isRead ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-mark-read>既読にする</button>' : ''}${showDetails ? (scope === 'mfu' ? `<a class="btn btn-sm btn-outline-primary" href="${escapeHtml(cardLink(targetUrl))}" target="_blank" rel="noopener noreferrer" data-open>詳細を見る</a>` : '<button type="button" class="btn btn-sm btn-outline-primary" data-open>詳細を見る</button>') : ''}${renderNotificationActions(item)}</div>
       `;
       const markItemRead = async () => {
         try {
@@ -569,8 +576,8 @@
         if (scope !== 'mfu') link.addEventListener('click', () => { void markItemRead(); });
       });
       a.querySelector('[data-mark-read]')?.addEventListener('click', markItemRead);
-      a.querySelector('[data-open]')?.addEventListener('click', async () => {
-        if (scope !== 'mfu') await markItemRead();
+      if (scope !== 'mfu') a.querySelector('[data-open]')?.addEventListener('click', async () => {
+        await markItemRead();
         window.location.assign(a.dataset.targetUrl || '/external-login/');
       });
       bindNotificationActions(a, item);
@@ -638,6 +645,33 @@
       if (!append) {
         const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
         lastId = scope === 'mfu' ? latest : Math.max(lastId, latest);
+      }
+    };
+
+    const highlightPushNotification = async () => {
+      if (!pushNotificationId) return;
+      let target = listEl.querySelector(`[data-notification-id="${pushNotificationId}"]`);
+      if (!target) {
+        try {
+          const res = await fetch(`${getListUrl()}/${pushNotificationId}`, {
+            credentials:'same-origin', cache:'no-store',
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.item && !knownIds.has(data.item.id)) {
+              knownIds.add(data.item.id);
+              listEl.insertBefore(createItem(data.item), listEl.firstChild);
+              updateEmptyState();
+            }
+            target = listEl.querySelector(`[data-notification-id="${pushNotificationId}"]`);
+          }
+        } catch (_e) {
+          // Keep the ordinary list available when the targeted item cannot be fetched.
+        }
+      }
+      if (target) {
+        target.classList.add('is-push-target');
+        target.scrollIntoView({block:'center', behavior:'smooth'});
       }
     };
 
@@ -930,6 +964,7 @@
     updateChannelNavigation();
     void refreshMutes();
     load({ append: false }).then(async () => {
+      await highlightPushNotification();
       if (scope === 'mfu' || typeof window.io !== 'function') startPolling();
       await pollUpdatesOnce();
       await refreshUnreadCount();

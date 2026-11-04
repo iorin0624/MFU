@@ -1630,7 +1630,7 @@ def mfu_notifications_manifest():
 @mfu_notifications_bp.get("/mfu-notifications/sw.js")
 def mfu_notifications_service_worker():
     script = r"""
-const SW_VERSION = 'mfu-notifications-2026-10-06-02';
+const SW_VERSION = 'mfu-notifications-2026-11-04-01';
 const BADGE_URL = '/api/mfu-notifications/unread-count';
 
 async function syncBadge() {
@@ -1649,12 +1649,10 @@ self.addEventListener('activate', (event) => event.waitUntil(clients.claim()));
 self.addEventListener('push', (event) => {
   let payload = {};
   try { payload = event.data ? event.data.json() : {}; } catch (_e) {}
-  const target = new URL(payload.target_url || payload.url || '/mfu-notifications/', self.location.origin);
-  if (target.origin !== self.location.origin) target.href = `${self.location.origin}/mfu-notifications/`;
   event.waitUntil(Promise.all([
     self.registration.showNotification(payload.title || 'MFU 通知センター', {
       body: payload.body || '新しい通知があります',
-      data: {url: target.toString()},
+      data: {notification_id: payload.notification_id},
       tag: payload.dedup_key || `mfu-${payload.notification_id || Date.now()}`,
     }),
     syncBadge(),
@@ -1662,18 +1660,26 @@ self.addEventListener('push', (event) => {
 });
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = event.notification?.data?.url || `${self.location.origin}/mfu-notifications/`;
+  const id = Number(event.notification?.data?.notification_id);
+  const landing = new URL('/mfu-notifications/', self.location.origin);
+  if (Number.isSafeInteger(id) && id > 0) landing.searchParams.set('notification_id', String(id));
   event.waitUntil((async () => {
     const windows = await clients.matchAll({type:'window', includeUncontrolled:true});
     const app = windows.find((client) => {
       try { return new URL(client.url).pathname.startsWith('/mfu-notifications'); } catch (_e) { return false; }
     });
-    if (app) {
-      if ('navigate' in app) await app.navigate(target);
-      if ('focus' in app) await app.focus();
-      return;
+    if (app && 'navigate' in app) {
+      try {
+        const navigated = await app.navigate(landing.toString());
+        if (navigated) {
+          if ('focus' in navigated) await navigated.focus();
+          return;
+        }
+      } catch (_e) {
+        // A closed or stale PWA client must not prevent reopening the notification list.
+      }
     }
-    if (clients.openWindow) await clients.openWindow(target);
+    if (clients.openWindow) await clients.openWindow(landing.toString());
   })());
 });
 self.addEventListener('message', (event) => {
@@ -1731,12 +1737,16 @@ def _fetch_mfu_notifications(
     unread_only: bool = False,
     category: str = "all",
     channel: str = "all",
+    notification_id: int | None = None,
 ) -> tuple[list[dict[str, Any]], int | None, int]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         where_sql = "user_kind='mfu' AND recipient_key=%s"
         params: list[Any] = [recipient]
+        if notification_id is not None:
+            where_sql += " AND id=%s"
+            params.append(int(notification_id))
         if unread_only:
             where_sql += " AND read_at IS NULL"
         where_sql += f" AND {_notification_category_sql(category)}"
@@ -1810,6 +1820,20 @@ def api_mfu_notifications_list():
         "latest_id": latest_id,
         "pagination": {"page": page, "per_page": per_page, "total": total, "has_next": page * per_page < total},
     })
+
+
+@mfu_notifications_bp.get("/api/mfu-notifications/<int:notification_id>")
+def api_mfu_notification_detail(notification_id: int):
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    items, _latest_id, _total = _fetch_mfu_notifications(
+        username, limit=1, notification_id=notification_id,
+    )
+    if not items:
+        return jsonify({"ok": False, "reason": "not_found"}), 404
+    return jsonify({"ok": True, "item": items[0]})
 
 
 @mfu_notifications_bp.get("/api/mfu-notifications/updates")
