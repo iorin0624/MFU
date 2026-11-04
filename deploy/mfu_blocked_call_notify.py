@@ -353,6 +353,10 @@ def main() -> int:
         ), ensure_ascii=False, indent=2))
         return 0
 
+    # Keep the blacklist call handling and CDR, but do not deliver its notification.
+    if args.classification == "blacklist":
+        return 0
+
     unique_id = re.sub(r"[^A-Za-z0-9_.:-]", "_", args.unique_id.strip())
     if not unique_id:
         print("Missing Asterisk unique ID", file=sys.stderr)
