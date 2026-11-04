@@ -18,7 +18,7 @@ def test_mfu_notification_links_leave_unread_until_explicit_action():
     assert "scope === 'mfu' && !isRead" in source
     assert 'data-mark-read>既読にする' in source
     assert "if (scope !== 'mfu') link.addEventListener('click'" in source
-    assert "if (scope !== 'mfu') await markItemRead()" in source
+    assert "if (scope !== 'mfu') a.querySelector('[data-open]')" in source
     assert "a.querySelector('[data-mark-read]')?.addEventListener('click', markItemRead)" in source
 
 
@@ -26,3 +26,27 @@ def test_legacy_mfu_notification_list_also_navigates_without_reading():
     source = (ROOT / "templates" / "mfu_notifications.html").read_text(encoding="utf-8")
     assert "a.addEventListener('click'" not in source
     assert "/api/mfu-notifications/read-all" in source
+
+
+def test_push_notification_opens_scoped_list_and_highlights_exact_item():
+    worker = (ROOT / "external_login_user" / "notifications.py").read_text(encoding="utf-8")
+    page = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
+    assert "data: {notification_id: payload.notification_id}" in worker
+    assert "new URL('/mfu-notifications/', self.location.origin)" in worker
+    assert "landing.searchParams.set('notification_id', String(id))" in worker
+    assert "app.navigate(landing.toString())" in worker
+    assert "clients.openWindow(landing.toString())" in worker
+    assert "notification_id: int | None = None" in worker
+    assert "where_sql += \" AND id=%s\"" in worker
+    assert '@mfu_notifications_bp.get("/api/mfu-notifications/<int:notification_id>")' in worker
+    assert "pushNotificationId ? 'all'" in page
+    assert "onlyUnread.checked = false" in page
+    assert "await highlightPushNotification()" in page
+    assert "target.classList.add('is-push-target')" in page
+
+
+def test_mfu_details_open_separately_without_automatic_read():
+    page = (ROOT / "external_login_user" / "template" / "notifications.html").read_text(encoding="utf-8")
+    assert 'target="_blank" rel="noopener noreferrer" data-open' in page
+    assert "if (scope !== 'mfu') a.querySelector('[data-open]')" in page
+    assert "if (scope !== 'mfu') await markItemRead()" not in page
