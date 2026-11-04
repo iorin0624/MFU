@@ -735,7 +735,52 @@ class ETCTargetPage:
 
     def is_logged_in(self) -> bool:
         self.wait_ready()
-        return bool(self.evaluate("document.body && document.body.innerText.includes('ログアウト')"))
+        return bool(self.evaluate(
+            """(() => {
+              const body = document.body?.innerText || '';
+              return body.includes('ログアウト') &&
+                     !!document.querySelector('form[name="frm"]') &&
+                     !document.querySelector('input[name="risLoginId"], input[name="risPassword"]') &&
+                     !body.includes('処理が受け付けられませんでした') &&
+                     !body.includes('最初からやり直してください');
+            })()"""
+        ))
+
+    def _recover_rejected_site_session(self) -> bool:
+        """Use the site's logout link to reset a rejected stateful session."""
+        self.wait_ready()
+        rejected = bool(self.evaluate(
+            """(() => {
+              const body = document.body?.innerText || '';
+              return location.hostname === 'www2.etc-meisai.jp' &&
+                     (body.includes('処理が受け付けられませんでした') ||
+                      body.includes('最初からやり直してください'));
+            })()"""
+        ))
+        if not rejected:
+            return False
+        marker = uuid.uuid4().hex
+        self.evaluate(f"window.__mfuEtcMarker = {json.dumps(marker)}")
+        clicked = bool(self.evaluate(
+            """(() => {
+              const link = [...document.querySelectorAll('a')].find(
+                node => (node.textContent || '').trim() === 'ログアウト'
+              );
+              if (!link) return false;
+              link.click();
+              return true;
+            })()"""
+        ))
+        if not clicked:
+            self._log_navigation_snapshot("rejected_session_logout_unavailable")
+            raise _navigation_state_error("ETCの画面遷移状態を復旧できませんでした。")
+        self.wait_navigation(marker)
+        self.navigate(ETC_TOP_URL)
+        if not self.has_login_form():
+            self._log_navigation_snapshot("rejected_session_login_unavailable")
+            raise _navigation_state_error("ETCのログイン画面へ復旧できませんでした。")
+        _LOGGER.info("ETC rejected navigation session was reset through the site's logout link")
+        return True
 
     def has_login_form(self) -> bool:
         self.wait_ready()
@@ -760,7 +805,6 @@ class ETCTargetPage:
               const params = new URLSearchParams(location.search);
               return location.hostname === 'www2.etc-meisai.jp' &&
                      location.pathname === '/etc/R' &&
-                     params.has('taisyoYM') &&
                      (expectedMonth === null || params.get('taisyoYM') === expectedMonth) &&
                      !!document.querySelector('form[name="frm"] input[name="p"]') &&
                      typeof window.submitPage === 'function' &&
@@ -903,6 +947,7 @@ class ETCTargetPage:
     def ensure_logged_in(self) -> None:
         self.wait_ready()
         self._raise_if_maintenance_page()
+        self._recover_rejected_site_session()
         if self.is_logged_in():
             return
         if not self.has_login_form():
