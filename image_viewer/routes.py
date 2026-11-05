@@ -4936,6 +4936,20 @@ def entry_style_job_status(job_id: str):
     return response
 
 
+@image_viewer_bp.post("/api/entries/style-jobs/status")
+@login_required
+def entry_style_jobs_status():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 300 or any(
+        not isinstance(value, str) or len(value) > 80 for value in ids
+    ):
+        return jsonify({"ok": False, "error": "ジョブIDを1～300件指定してください。"}), 400
+    response = jsonify({"ok": True, "jobs": style_jobs.statuses(ids, _request_username())})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @image_viewer_bp.post("/api/entries/style-jobs/claim")
 def entry_style_job_claim():
     worker = _style_worker()

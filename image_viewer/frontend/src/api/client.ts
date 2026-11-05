@@ -110,9 +110,18 @@ export const imageViewerApi = {
     return requestJson<StyleTagsPayload>(queryUrl(runtimeConfig.styleTagsUrl, { path }));
   },
   startStyleJob(path: string) {
+    return this.startStyleJobs([path]);
+  },
+  startStyleJobs(paths: string[]) {
     return requestJson<{ok: boolean; jobs: StyleJob[]}>(runtimeConfig.styleJobsUrl, {
-      method: 'POST', body: JSON.stringify({ paths: [path] }),
+      method: 'POST', body: JSON.stringify({ paths }),
     });
+  },
+  styleJobStatuses(ids: string[]) {
+    return requestJson<{ok: boolean; jobs: Pick<StyleJob, 'id' | 'status' | 'error'>[]}>(
+      `${runtimeConfig.styleJobsUrl}/status`,
+      { method: 'POST', body: JSON.stringify({ ids }) },
+    );
   },
   styleJob(id: string) {
     return requestJson<{ok: boolean; job: StyleJob}>(`${runtimeConfig.styleJobsUrl}/${encodeURIComponent(id)}`);

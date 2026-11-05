@@ -44,6 +44,8 @@ class StyleJobsTest(unittest.TestCase):
             self.assertEqual(result["suggestion"]["assignment"]["major"], "jirai")
             self.assertIsNone(jobs.get(created["id"], "bob", db))
             self.assertIsNone(jobs.claim("alice", 8, db))
+            self.assertEqual(jobs.statuses([created["id"]], "alice", db)[0]["status"], "done")
+            self.assertEqual(jobs.statuses([created["id"]], "bob", db), [])
 
     def test_invalid_result_does_not_finish_job(self):
         with tempfile.TemporaryDirectory() as temporary:
