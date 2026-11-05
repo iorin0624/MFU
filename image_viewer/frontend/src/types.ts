@@ -27,6 +27,18 @@ export interface MediaItem {
   hasThumb?: boolean;
   sourceUrl?: string;
 }
+
+export interface StyleAssignment {
+  major: 'lolita' | 'jirai' | 'casual';
+  middleTags: {name: string; smallTags: string[]}[];
+  updatedAt?: number;
+}
+
+export interface StyleTagsPayload {
+  ok: boolean;
+  majorStyles: {id: StyleAssignment['major']; label: string}[];
+  assignment: StyleAssignment | null;
+}
 export interface Pagination {
   page: number;
   perPage: number;
@@ -68,6 +80,7 @@ export interface RuntimeConfig {
   createFolderUrl: string;
   folderSettingsUrl: string;
   propertiesUrl: string;
+  styleTagsUrl: string;
   renameUrl: string;
   appendSequenceUrl: string;
   deleteUrl: string;

@@ -32,6 +32,7 @@ from werkzeug.utils import safe_join
 
 from . import image_viewer_bp
 from . import catalog
+from . import style_tags
 from .instagram_credentials import (
     credentials_status as instagram_credentials_status,
     delete_credentials as delete_instagram_credentials,
@@ -4509,6 +4510,7 @@ def index():
         "createFolderUrl": url_for("image_viewer.create_folder"),
         "folderSettingsUrl": url_for("image_viewer.update_folder_settings"),
         "propertiesUrl": url_for("image_viewer.entry_properties"),
+        "styleTagsUrl": url_for("image_viewer.entry_style_tags"),
         "renameUrl": url_for("image_viewer.rename_entry"),
         "appendSequenceUrl": url_for("image_viewer.append_sequence_entries"),
         "deleteUrl": url_for("image_viewer.delete_entry"),
@@ -4825,6 +4827,45 @@ def update_folder_settings():
         return jsonify({"ok": False, "error": str(exc)}), 404
     except catalog.CatalogError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@image_viewer_bp.route("/api/entries/style-tags", methods=["GET", "POST"])
+@login_required
+def entry_style_tags():
+    data = request.get_json(silent=True) or {} if request.method == "POST" else {}
+    path_value = str(data.get("path") or "") if request.method == "POST" else request.args.get("path") or ""
+    try:
+        if catalog.CATALOG_ENABLED:
+            props = catalog.file_properties(path_value)
+            if props.get("mediaType") != "image":
+                raise ValueError("画像ファイルのみ分類できます。")
+            checksum = str(props["sha256"])
+        else:
+            _ensure_upload_root()
+            target = _target_path_for_rel(path_value)
+            if not target.is_file() or target.suffix.lower() not in IMAGE_EXTENSIONS:
+                return jsonify({"ok": False, "error": "画像ファイルが見つかりません。"}), 404
+            checksum = _sha256_hex(target)
+        if request.method == "POST":
+            if data.get("action") == "clear":
+                style_tags.delete_assignment(checksum)
+                assignment = None
+            elif data.get("action") == "save":
+                assignment = style_tags.put_assignment(checksum, data.get("assignment"))
+            else:
+                raise ValueError("操作を確認してください。")
+        else:
+            assignment = style_tags.get_assignment(checksum)
+    except catalog.CatalogNotFound as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except (catalog.CatalogError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError:
+        current_app.logger.exception("image style tag storage failed")
+        return jsonify({"ok": False, "error": "分類タグの保存先にアクセスできません。"}), 500
+    response = jsonify({"ok": True, "majorStyles": style_tags.MAJOR_STYLES, "assignment": assignment})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @image_viewer_bp.route("/api/entries/properties", methods=["GET", "POST"])
