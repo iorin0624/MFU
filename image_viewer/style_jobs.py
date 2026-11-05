@@ -83,6 +83,29 @@ def statuses(job_ids: list[str], owner: str, db_path: Path = DEFAULT_DB_PATH) ->
     return [found[job_id] for job_id in job_ids if job_id in found]
 
 
+def recent(owner: str, db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    """Recover active work and its nearby results after a browser reload."""
+    with closing(_connect(db_path)) as conn:
+        oldest = conn.execute(
+            "SELECT MIN(created_at) FROM image_style_jobs WHERE owner=? "
+            "AND status IN ('pending','running')", (owner,),
+        ).fetchone()[0]
+        since = int(time.time()) - 86400
+        if oldest is not None:
+            since = min(since, oldest - 60)
+        rows = conn.execute(
+            "SELECT id, path, status, error, created_at, updated_at "
+            "FROM image_style_jobs WHERE owner=? AND created_at>=? "
+            "ORDER BY created_at DESC LIMIT 2000", (owner, since),
+        ).fetchall()
+    return [
+        {"id": row["id"], "path": row["path"], "status": row["status"],
+         "error": row["error"], "suggestion": None,
+         "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+        for row in rows
+    ]
+
+
 def latest(path: str, owner: str, sha256: str, db_path: Path = DEFAULT_DB_PATH) -> dict | None:
     if not db_path.is_file():
         return None

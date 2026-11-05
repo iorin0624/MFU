@@ -4925,6 +4925,14 @@ def entry_style_job_create():
     return jsonify({"ok": True, "jobs": jobs})
 
 
+@image_viewer_bp.get("/api/entries/style-jobs/recent")
+@login_required
+def entry_style_jobs_recent():
+    response = jsonify({"ok": True, "jobs": style_jobs.recent(_request_username())})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @image_viewer_bp.get("/api/entries/style-jobs/<job_id>")
 @login_required
 def entry_style_job_status(job_id: str):

@@ -23,6 +23,7 @@ function windowIcon(kind: string) {
   if (kind === 'explorer') return '🗂️';
   if (kind === 'video') return '🎥';
   if (kind === 'image') return '🖼️';
+  if (kind === 'style-progress') return '🧠';
   if (kind === 'video-downloader') return 'VD';
   return 'IG';
 }

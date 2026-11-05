@@ -123,6 +123,9 @@ export const imageViewerApi = {
       { method: 'POST', body: JSON.stringify({ ids }) },
     );
   },
+  recentStyleJobs() {
+    return requestJson<{ok: boolean; jobs: StyleJob[]}>(`${runtimeConfig.styleJobsUrl}/recent`);
+  },
   styleJob(id: string) {
     return requestJson<{ok: boolean; job: StyleJob}>(`${runtimeConfig.styleJobsUrl}/${encodeURIComponent(id)}`);
   },

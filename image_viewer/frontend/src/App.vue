@@ -8,6 +8,7 @@ import VideoViewerWindow from '@/components/VideoViewerWindow.vue';
 import ImageDownloaderWindow from '@/components/ImageDownloaderWindow.vue';
 import VideoDownloaderWindow from '@/components/VideoDownloaderWindow.vue';
 import InstagramAuthWindow from '@/components/InstagramAuthWindow.vue';
+import StyleProgressWindow from '@/components/StyleProgressWindow.vue';
 import WindowFrame from '@/components/WindowFrame.vue';
 import Taskbar from '@/components/Taskbar.vue';
 
@@ -38,7 +39,7 @@ onMounted(() => {
       v-for="win in desktop.windows"
       :key="win.id"
       :win="win"
-      :icon="win.kind === 'explorer' ? '🗂️' : win.kind === 'video' ? '🎥' : win.kind === 'image' ? '🖼️' : win.kind === 'video-downloader' ? 'VD' : 'IG'"
+      :icon="win.kind === 'explorer' ? '🗂️' : win.kind === 'video' ? '🎥' : win.kind === 'image' ? '🖼️' : win.kind === 'style-progress' ? '🧠' : win.kind === 'video-downloader' ? 'VD' : 'IG'"
     >
       <ExplorerWindow v-if="win.kind === 'explorer'" :win="win" />
       <ImageViewerWindow v-else-if="win.kind === 'image'" :win="win" />
@@ -46,6 +47,7 @@ onMounted(() => {
       <ImageDownloaderWindow v-else-if="win.kind === 'image-downloader'" />
       <VideoDownloaderWindow v-else-if="win.kind === 'video-downloader'" />
       <InstagramAuthWindow v-else-if="win.kind === 'instagram-auth'" />
+      <StyleProgressWindow v-else-if="win.kind === 'style-progress'" :win="win" />
     </WindowFrame>
 
     <Transition name="toast">
