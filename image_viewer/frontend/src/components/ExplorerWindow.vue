@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import FileGrid from './FileGrid.vue';
 import FolderTree from './FolderTree.vue';
+import ExplorerDetailSidebar from './ExplorerDetailSidebar.vue';
 import XpDialog from './XpDialog.vue';
 import { imageViewerApi } from '@/api/client';
 import { saveGrouping, saveSort, savedGrouping, savedSort, useDesktopStore } from '@/stores/desktop';
@@ -34,6 +35,11 @@ type ExplorerDialog =
   | { kind: 'append-confirm'; title: string; sources: string[]; target: MediaItem }
   | { kind: 'properties'; title: string; item: MediaItem; data: Record<string, unknown> };
 const dialog = ref<ExplorerDialog | null>(null);
+const detailSidebarOpen = ref((() => {
+  try { return localStorage.getItem('mfu.imageViewer.detailsSidebar') !== 'closed'; }
+  catch { return true; }
+})());
+const detailSidebarVersion = ref(0);
 const styleMajor = ref<StyleAssignment['major'] | ''>('');
 const styleMiddleRows = ref<{name: string; smallText: string}[]>([]);
 const styleBusy = ref(false);
@@ -54,6 +60,12 @@ const selectedItems = computed(() => {
   return items.value.filter((item) => selected.has(item.path));
 });
 const selectedImages = computed(() => selectedItems.value.filter((item) => item.mediaType === 'image'));
+const detailItem = computed(() => selectedItems.value.length === 1 ? selectedItems.value[0] : undefined);
+function toggleDetailSidebar() {
+  detailSidebarOpen.value = !detailSidebarOpen.value;
+  try { localStorage.setItem('mfu.imageViewer.detailsSidebar', detailSidebarOpen.value ? 'open' : 'closed'); }
+  catch { /* 設定保存が禁止されていても切り替えは有効 */ }
+}
 const bulkStyleJobs = ref<StyleJob[]>([]);
 const bulkStyleSubmitting = ref(false);
 const bulkStyleError = ref('');
@@ -906,6 +918,9 @@ function propertySourceUrl() {
 }
 
 watch(() => model.value.folder, () => { props.win.title = `エクスプローラー - ${currentLabel.value}`; });
+watch(() => dialog.value?.kind, (kind, previous) => {
+  if (previous === 'properties' && kind !== 'properties') detailSidebarVersion.value++;
+});
 onMounted(() => {
   loadCollapsedGroups();
   load(true);
@@ -925,7 +940,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="explorer-layout" :class="{ busy: folderData.loading }">
+  <div class="explorer-layout" :class="{ busy: folderData.loading, 'details-open': detailSidebarOpen, 'details-overlay': detailSidebarOpen && !win.maximized && win.width < 900 }">
     <aside class="explorer-sidebar">
       <div class="sidebar-title">フォルダー</div>
       <FolderTree
@@ -960,6 +975,7 @@ onBeforeUnmount(() => {
         </label>
         <button v-for="size in viewSizes" :key="size" type="button" :class="{pressed: model.viewSize === size}" @click="setSize(size)">{{ viewLabels[size] }}</button>
         <button type="button" @click="desktop.openExplorer(model.folder)">別窓</button>
+        <button type="button" :class="{pressed: detailSidebarOpen}" :aria-expanded="detailSidebarOpen" @click="toggleDetailSidebar">詳細 {{ detailSidebarOpen ? '非表示' : '表示' }}</button>
       </div>
       <div class="explorer-actions">
         <button type="button" @click="createFolder">新規フォルダー</button>
@@ -1018,6 +1034,14 @@ onBeforeUnmount(() => {
         <span v-if="bulkStyleJobs.length">GPU分類: {{ bulkStyleDone }} / {{ bulkStyleJobs.length }}枚完了<span v-if="bulkStyleFailed">、{{ bulkStyleFailed }}枚失敗</span><span v-if="bulkStyleError">（進捗確認エラー）</span></span>
       </footer>
     </section>
+    <ExplorerDetailSidebar
+      v-if="detailSidebarOpen"
+      :key="`${detailItem?.path || 'none'}:${detailSidebarVersion}`"
+      :item="detailItem"
+      @close="toggleDetailSidebar"
+      @rename="renameSelected"
+      @properties="showProperties"
+    />
     <div v-if="contextMenu.visible && contextMenu.item" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
       <button type="button" @click="contextMenu.item && openItem(contextMenu.item); closeContext()">開く</button>
       <button type="button" @click="renameSelected(); closeContext()">名前変更</button>
