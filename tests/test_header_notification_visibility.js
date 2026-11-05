@@ -60,6 +60,7 @@ vm.runInNewContext(script[1], {
 });
 
 assert.equal(socketOptions.autoConnect, false);
+assert.equal(socketOptions.forceNew, true, 'notification-only lifecycle must not disable admin sockets');
 assert.equal(connects, 0);
 assert.equal(requests.length, 0);
 assert.equal(timers.size, 0);

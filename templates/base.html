@@ -326,7 +326,8 @@
 
     if (window.io) {
       try {
-        notificationSocket = window.io({transports:['websocket','polling'], autoConnect:false});
+        // Do not share this Manager's autoConnect:false with /admin-system sockets.
+        notificationSocket = window.io({transports:['websocket','polling'], autoConnect:false, forceNew:true});
         notificationSocket.on('notif_unread', (p) => {
           if (document.hidden) return;
           if (p && typeof p.count !== 'undefined') setBadge(p.count);
