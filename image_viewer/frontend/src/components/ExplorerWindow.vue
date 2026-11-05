@@ -35,10 +35,7 @@ type ExplorerDialog =
   | { kind: 'append-confirm'; title: string; sources: string[]; target: MediaItem }
   | { kind: 'properties'; title: string; item: MediaItem; data: Record<string, unknown> };
 const dialog = ref<ExplorerDialog | null>(null);
-const detailSidebarOpen = ref((() => {
-  try { return localStorage.getItem('mfu.imageViewer.detailsSidebar') !== 'closed'; }
-  catch { return true; }
-})());
+const detailSidebarOpen = ref(false);
 const detailSidebarVersion = ref(0);
 const styleMajor = ref<StyleAssignment['major'] | ''>('');
 const styleMiddleRows = ref<{name: string; smallText: string}[]>([]);
@@ -63,8 +60,6 @@ const selectedImages = computed(() => selectedItems.value.filter((item) => item.
 const detailItem = computed(() => selectedItems.value.length === 1 ? selectedItems.value[0] : undefined);
 function toggleDetailSidebar() {
   detailSidebarOpen.value = !detailSidebarOpen.value;
-  try { localStorage.setItem('mfu.imageViewer.detailsSidebar', detailSidebarOpen.value ? 'open' : 'closed'); }
-  catch { /* 設定保存が禁止されていても切り替えは有効 */ }
 }
 const bulkStyleJobs = ref<StyleJob[]>([]);
 const bulkStyleSubmitting = ref(false);
