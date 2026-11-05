@@ -1,5 +1,5 @@
 import { runtimeConfig } from '@/config';
-import type { ApiErrorPayload, FolderSettings, GroupBy, GroupUnit, ImageListPayload, StyleAssignment, StyleTagsPayload } from '@/types';
+import type { ApiErrorPayload, FolderSettings, GroupBy, GroupUnit, ImageListPayload, StyleAssignment, StyleJob, StyleTagsPayload } from '@/types';
 
 export class ApiError extends Error {
   constructor(
@@ -108,6 +108,14 @@ export const imageViewerApi = {
   },
   styleTags(path: string) {
     return requestJson<StyleTagsPayload>(queryUrl(runtimeConfig.styleTagsUrl, { path }));
+  },
+  startStyleJob(path: string) {
+    return requestJson<{ok: boolean; jobs: StyleJob[]}>(runtimeConfig.styleJobsUrl, {
+      method: 'POST', body: JSON.stringify({ paths: [path] }),
+    });
+  },
+  styleJob(id: string) {
+    return requestJson<{ok: boolean; job: StyleJob}>(`${runtimeConfig.styleJobsUrl}/${encodeURIComponent(id)}`);
   },
   saveStyleTags(path: string, assignment: StyleAssignment) {
     return requestJson<StyleTagsPayload>(runtimeConfig.styleTagsUrl, {

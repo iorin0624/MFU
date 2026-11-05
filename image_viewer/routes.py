@@ -33,6 +33,7 @@ from werkzeug.utils import safe_join
 from . import image_viewer_bp
 from . import catalog
 from . import style_tags
+from . import style_jobs
 from .instagram_credentials import (
     credentials_status as instagram_credentials_status,
     delete_credentials as delete_instagram_credentials,
@@ -4511,6 +4512,7 @@ def index():
         "folderSettingsUrl": url_for("image_viewer.update_folder_settings"),
         "propertiesUrl": url_for("image_viewer.entry_properties"),
         "styleTagsUrl": url_for("image_viewer.entry_style_tags"),
+        "styleJobsUrl": url_for("image_viewer.entry_style_job_create"),
         "renameUrl": url_for("image_viewer.rename_entry"),
         "appendSequenceUrl": url_for("image_viewer.append_sequence_entries"),
         "deleteUrl": url_for("image_viewer.delete_entry"),
@@ -4863,9 +4865,138 @@ def entry_style_tags():
     except OSError:
         current_app.logger.exception("image style tag storage failed")
         return jsonify({"ok": False, "error": "分類タグの保存先にアクセスできません。"}), 500
-    response = jsonify({"ok": True, "majorStyles": style_tags.MAJOR_STYLES, "assignment": assignment})
+    response = jsonify({"ok": True, "majorStyles": style_tags.MAJOR_STYLES,
+                        "assignment": assignment,
+                        "gpuJob": style_jobs.latest(path_value, _request_username(), checksum)})
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _style_image(path_value: str) -> tuple[Path, str]:
+    if catalog.CATALOG_ENABLED:
+        props = catalog.file_properties(path_value)
+        if props.get("mediaType") != "image":
+            raise ValueError("画像ファイルのみ分類できます。")
+        target = Path(str(props["realPath"]))
+        checksum = str(props["sha256"])
+    else:
+        _ensure_upload_root()
+        target = _target_path_for_rel(path_value)
+        if not target.is_file() or target.suffix.lower() not in IMAGE_EXTENSIONS:
+            raise ValueError("画像ファイルのみ分類できます。")
+        checksum = _sha256_hex(target)
+    if not target.is_file():
+        raise FileNotFoundError("画像ファイルが見つかりません。")
+    return target, checksum
+
+
+def _style_worker() -> dict | None:
+    row = verify_media_clipboard_token()
+    if not row or row.get("label") != "MFU Media Hub":
+        return None
+    return row
+
+
+@image_viewer_bp.post("/api/entries/style-jobs")
+@login_required
+def entry_style_job_create():
+    data = request.get_json(silent=True) or {}
+    paths = data.get("paths")
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 30:
+        return jsonify({"ok": False, "error": "1～30枚の画像を選択してください。"}), 400
+    owner = _request_username()
+    jobs = []
+    try:
+        validated = []
+        for value in paths:
+            path_value = str(value or "")
+            _, checksum = _style_image(path_value)
+            validated.append((path_value, checksum))
+        for path_value, checksum in validated:
+            jobs.append(style_jobs.create(owner, path_value, checksum))
+    except (catalog.CatalogError, ValueError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    try:
+        from app.chat.socketio_ext import socketio
+        socketio.emit("style_job_available", {"count": len(jobs)},
+                      room=f"style-user:{owner}", namespace="/media-clipboard")
+    except Exception:
+        current_app.logger.exception("style job websocket notification failed")
+    return jsonify({"ok": True, "jobs": jobs})
+
+
+@image_viewer_bp.get("/api/entries/style-jobs/<job_id>")
+@login_required
+def entry_style_job_status(job_id: str):
+    job = style_jobs.get(job_id, _request_username())
+    if not job:
+        return jsonify({"ok": False, "error": "ジョブが見つかりません。"}), 404
+    response = jsonify({"ok": True, "job": job})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@image_viewer_bp.post("/api/entries/style-jobs/claim")
+def entry_style_job_claim():
+    worker = _style_worker()
+    if not worker:
+        return jsonify({"ok": False, "error": "Media Hub認証が必要です。"}), 401
+    job = style_jobs.claim(str(worker["username"]), int(worker["id"]))
+    if job:
+        job["imagePath"] = url_for("image_viewer.entry_style_job_image", job_id=job["id"])
+    return jsonify({"ok": True, "job": job})
+
+
+@image_viewer_bp.get("/api/entries/style-jobs/<job_id>/image")
+def entry_style_job_image(job_id: str):
+    worker = _style_worker()
+    if not worker:
+        return jsonify({"ok": False, "error": "Media Hub認証が必要です。"}), 401
+    row = style_jobs.claimed_row(job_id, str(worker["username"]), int(worker["id"]))
+    if not row:
+        return jsonify({"ok": False, "error": "ジョブが見つかりません。"}), 404
+    try:
+        target, checksum = _style_image(str(row["path"]))
+        if checksum != row["sha256"]:
+            return jsonify({"ok": False, "error": "分類待ちの画像が変更されました。"}), 409
+        with Image.open(target) as source:
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((768, 768))
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=85)
+        output.seek(0)
+        response = send_file(output, mimetype="image/jpeg", download_name="style-preview.jpg")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except (catalog.CatalogError, ValueError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+
+
+@image_viewer_bp.post("/api/entries/style-jobs/<job_id>/result")
+def entry_style_job_result(job_id: str):
+    worker = _style_worker()
+    if not worker:
+        return jsonify({"ok": False, "error": "Media Hub認証が必要です。"}), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        if data.get("error"):
+            ok = style_jobs.fail(job_id, str(worker["username"]), int(worker["id"]),
+                                 str(data["error"]))
+        else:
+            row = style_jobs.claimed_row(job_id, str(worker["username"]), int(worker["id"]))
+            if not row:
+                ok = False
+            else:
+                _, checksum = _style_image(str(row["path"]))
+                if checksum != row["sha256"]:
+                    raise ValueError("分類中に画像が変更されました。")
+                ok = style_jobs.complete(job_id, str(worker["username"]),
+                                         int(worker["id"]), data.get("suggestion"))
+    except (catalog.CatalogError, ValueError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    return jsonify({"ok": ok, "error": None if ok else "ジョブの処理権限がありません。"}), 200 if ok else 409
 
 
 @image_viewer_bp.route("/api/entries/properties", methods=["GET", "POST"])

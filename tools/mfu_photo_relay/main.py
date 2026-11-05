@@ -178,6 +178,7 @@ class ReceiverThread(QThread):
         self.resync_worker: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.media_call_lock = threading.Lock()
+        self.style_worker = None
         self._bind()
 
     def _bind(self) -> None:
@@ -215,6 +216,11 @@ class ReceiverThread(QThread):
         def media_progress(data):
             if isinstance(data, dict):
                 self.media_progress.emit(data)
+
+        @self.sio.on("style_job_available", namespace="/media-clipboard")
+        def style_job_available(_data):
+            if self.style_worker is not None:
+                self.style_worker.notify()
 
         @self.sio.on("notification_new", namespace="/media-hub-notifications")
         def notification_new(data):
@@ -346,6 +352,16 @@ class ReceiverThread(QThread):
         self.worker.start()
         self.resync_worker = threading.Thread(target=self._resync_loop, daemon=True)
         self.resync_worker.start()
+        if self.media_token:
+            try:
+                from tools.mfu_media_hub.style_worker import StyleWorker
+                self.style_worker = StyleWorker(
+                    self.api.base_url, self.media_token, self.stop_event, self.error.emit,
+                )
+                self.style_worker.start()
+            except ImportError:
+                # Standalone photo relay builds do not bundle Media Hub's GPU worker.
+                pass
         self.status_changed.emit("red", "MFUへ接続しています")
         try:
             namespaces = ["/photo-relay"]
@@ -389,6 +405,8 @@ class ReceiverThread(QThread):
 
     def stop(self) -> None:
         self.stop_event.set()
+        if self.style_worker is not None:
+            self.style_worker.notify()
         try:
             if self.sio.connected:
                 self.sio.disconnect()

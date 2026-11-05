@@ -38,6 +38,16 @@ export interface StyleTagsPayload {
   ok: boolean;
   majorStyles: {id: StyleAssignment['major']; label: string}[];
   assignment: StyleAssignment | null;
+  gpuJob?: StyleJob | null;
+}
+export interface StyleJob {
+  id: string;
+  path: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  suggestion: {assignment: StyleAssignment; scores: Record<StyleAssignment['major'], number>; model: string} | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 export interface Pagination {
   page: number;
@@ -81,6 +91,7 @@ export interface RuntimeConfig {
   folderSettingsUrl: string;
   propertiesUrl: string;
   styleTagsUrl: string;
+  styleJobsUrl: string;
   renameUrl: string;
   appendSequenceUrl: string;
   deleteUrl: string;

@@ -7,7 +7,7 @@ import { imageViewerApi } from '@/api/client';
 import { saveGrouping, saveSort, savedGrouping, savedSort, useDesktopStore } from '@/stores/desktop';
 import { useExplorerStore } from '@/stores/explorer';
 import { useNotificationStore } from '@/stores/notifications';
-import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, StyleAssignment, ViewSize } from '@/types';
+import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, StyleAssignment, StyleJob, ViewSize } from '@/types';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
@@ -37,6 +37,8 @@ const dialog = ref<ExplorerDialog | null>(null);
 const styleMajor = ref<StyleAssignment['major'] | ''>('');
 const styleMiddleRows = ref<{name: string; smallText: string}[]>([]);
 const styleBusy = ref(false);
+const styleJob = ref<StyleJob | null>(null);
+let stylePollTimer = 0;
 let versionTimer = 0;
 const viewSizes: ViewSize[] = ['xxl', 'xl', 'lg'];
 const viewLabels: Record<ViewSize, string> = { xxl: '特大', xl: '大', lg: '中' };
@@ -464,12 +466,52 @@ async function loadStyleTags(path: string) {
     const payload = await imageViewerApi.styleTags(path);
     if (dialog.value?.kind !== 'properties' || dialog.value.item.path !== path) return;
     styleMajor.value = payload.assignment?.major || '';
+    styleJob.value = payload.gpuJob || null;
     styleMiddleRows.value = (payload.assignment?.middleTags || []).map((tag) => ({
       name: tag.name, smallText: tag.smallTags.join('、'),
     }));
   } catch (error) {
     notice.show(errorMessage(error, '分類タグを取得できませんでした。'), true);
   } finally { styleBusy.value = false; }
+}
+
+async function refreshStyleJob() {
+  const id = styleJob.value?.id;
+  if (!id || dialog.value?.kind !== 'properties') return;
+  try {
+    const result = await imageViewerApi.styleJob(id);
+    if (styleJob.value?.id !== id) return;
+    styleJob.value = result.job;
+    if (result.job.status === 'pending' || result.job.status === 'running') {
+      stylePollTimer = window.setTimeout(refreshStyleJob, 3000);
+    }
+  } catch (error) {
+    notice.show(errorMessage(error, 'GPU分類の進捗を取得できませんでした。'), true);
+  }
+}
+
+async function startStyleJob() {
+  if (dialog.value?.kind !== 'properties' || styleBusy.value) return;
+  styleBusy.value = true;
+  try {
+    const result = await imageViewerApi.startStyleJob(dialog.value.item.path);
+    styleJob.value = result.jobs[0] || null;
+    window.clearTimeout(stylePollTimer);
+    stylePollTimer = window.setTimeout(refreshStyleJob, 3000);
+    notice.show('GPU分類を依頼しました。Media Hubが接続すると処理します。');
+  } catch (error) {
+    notice.show(errorMessage(error, 'GPU分類を依頼できませんでした。'), true);
+  } finally { styleBusy.value = false; }
+}
+
+function applyStyleSuggestion() {
+  const assignment = styleJob.value?.suggestion?.assignment;
+  if (!assignment) return;
+  styleMajor.value = assignment.major;
+  styleMiddleRows.value = assignment.middleTags.map((tag) => ({
+    name: tag.name, smallText: tag.smallTags.join('、'),
+  }));
+  notice.show('候補を編集欄に反映しました。確認後に「分類タグを保存」を押してください。');
 }
 
 async function saveStyleTags() {
@@ -820,6 +862,7 @@ onMounted(() => {
   versionTimer = window.setInterval(pollVersion, 10000);
 });
 onBeforeUnmount(() => {
+  window.clearTimeout(stylePollTimer);
   document.removeEventListener('paste', pasteHandler);
   document.removeEventListener('keydown', keyHandler);
   document.removeEventListener('pointerdown', closeContext);
@@ -1031,7 +1074,17 @@ onBeforeUnmount(() => {
         </dl></section>
         <section v-if="dialog.item.mediaType === 'image'" class="property-section style-tag-section">
           <h3>服装の分類タグ</h3>
-          <p class="dialog-hint">大分類は1つ。中分類を複数追加でき、それぞれに小分類タグを複数指定できます。自動判定はまだ行いません。</p>
+          <p class="dialog-hint">大分類は1つ。中分類を複数追加できます。GPU分類は参考候補です。内容を確認してから保存してください。</p>
+          <div class="style-tag-actions">
+            <button type="button" :disabled="styleBusy || styleJob?.status === 'pending' || styleJob?.status === 'running'" @click="startStyleJob">GPUで候補を作成</button>
+            <template v-if="styleJob">
+              <span v-if="styleJob.status === 'pending'">Media Hubの処理待ち</span>
+              <span v-else-if="styleJob.status === 'running'">GPUで分類中</span>
+              <span v-else-if="styleJob.status === 'error'">分類エラー: {{ styleJob.error }}</span>
+              <span v-else-if="styleJob.suggestion">候補: {{ { lolita: 'ロリータ系', jirai: '地雷系', casual: '私服系' }[styleJob.suggestion.assignment.major] }}（相対スコア {{ Math.round(styleJob.suggestion.scores[styleJob.suggestion.assignment.major] * 100) }}%）</span>
+              <button v-if="styleJob.status === 'done' && styleJob.suggestion" type="button" @click="applyStyleSuggestion">候補を編集欄に反映</button>
+            </template>
+          </div>
           <label>大分類
             <select v-model="styleMajor" :disabled="styleBusy">
               <option value="">未分類</option>

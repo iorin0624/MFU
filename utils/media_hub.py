@@ -16,7 +16,7 @@ from flask import (
     session,
     url_for,
 )
-from flask_socketio import disconnect, emit
+from flask_socketio import disconnect, emit, join_room
 
 from app.chat.socketio_ext import socketio
 from app.utils.media_clipboard_auth import (
@@ -145,6 +145,7 @@ _OPERATIONS = {
     "fetch_video_frames": ("POST", "/image_viewer/api/video/frames/fetch"),
     "save_images": ("POST", "/image_viewer/api/instagram/save"),
     "save_videos": ("POST", "/image_viewer/api/video/save-async"),
+    "style_claim": ("POST", "/image_viewer/api/entries/style-jobs/claim"),
 }
 
 
@@ -234,9 +235,12 @@ def _direct_job_status(operation: str, data: dict, owner_username: str) -> dict:
 def media_clipboard_connect(auth=None):
     auth = auth if isinstance(auth, dict) else {}
     token = str(auth.get("media_token") or auth.get("token") or "")
-    if not verify_media_clipboard_token(token):
+    row = verify_media_clipboard_token(token)
+    if not row:
         return False
     _sid_tokens[request.sid] = token
+    if row.get("label") == "MFU Media Hub":
+        join_room(f"style-user:{row['username']}")
     emit("media_clipboard_connected", {"ok": True})
 
 
