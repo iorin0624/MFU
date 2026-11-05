@@ -254,6 +254,8 @@
     const readAllBtn = document.getElementById('mfuNotifReadAll');
     let latestId = 0;
     let opened = false;
+    let notificationSocket = null;
+    let pollTimer = null;
 
     const iconByKind = (kind) => kind === 'dm' ? '💬' : (kind === 'event_chat' ? '📢' : '🔔');
     const badgeText = (n) => n > 99 ? '99+' : String(n);
@@ -322,16 +324,41 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && opened) closePopup(); });
     readAllBtn.addEventListener('click', async () => { await fetch('/api/mfu-notifications/read-all', {method:'POST'}); await fetchList(); });
 
-    fetchCount();
-    setInterval(() => { fetchCount(); if (opened) fetchUpdates(); }, 15000);
-
     if (window.io) {
       try {
-        const socket = window.io({transports:['websocket','polling']});
-        socket.on('notif_unread', (p) => { if (p && typeof p.count !== 'undefined') setBadge(p.count); if (opened) fetchUpdates(); });
-        socket.on('notif_new', () => { if (opened) fetchUpdates(); else fetchCount(); });
+        notificationSocket = window.io({transports:['websocket','polling'], autoConnect:false});
+        notificationSocket.on('notif_unread', (p) => {
+          if (document.hidden) return;
+          if (p && typeof p.count !== 'undefined') setBadge(p.count);
+          if (opened) fetchUpdates();
+        });
+        notificationSocket.on('notif_new', () => {
+          if (document.hidden) return;
+          if (opened) fetchUpdates(); else fetchCount();
+        });
       } catch (_) {}
     }
+
+    function stopNotificationActivity(){
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (notificationSocket) notificationSocket.disconnect();
+    }
+    function startNotificationActivity(){
+      if (document.hidden || pollTimer) return;
+      pollTimer = setInterval(() => {
+        if (opened) fetchUpdates(); else fetchCount();
+      }, 15000);
+      if (notificationSocket && !notificationSocket.connected) notificationSocket.connect();
+      if (opened) fetchList(); else fetchCount();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopNotificationActivity();
+      else startNotificationActivity();
+    });
+    window.addEventListener('pagehide', stopNotificationActivity);
+    window.addEventListener('pageshow', startNotificationActivity);
+    startNotificationActivity();
   })();
   </script>
 
