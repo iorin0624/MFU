@@ -7,7 +7,7 @@ import { imageViewerApi } from '@/api/client';
 import { saveGrouping, saveSort, savedGrouping, savedSort, useDesktopStore } from '@/stores/desktop';
 import { useExplorerStore } from '@/stores/explorer';
 import { useNotificationStore } from '@/stores/notifications';
-import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, ViewSize } from '@/types';
+import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, StyleAssignment, ViewSize } from '@/types';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
@@ -34,6 +34,9 @@ type ExplorerDialog =
   | { kind: 'append-confirm'; title: string; sources: string[]; target: MediaItem }
   | { kind: 'properties'; title: string; item: MediaItem; data: Record<string, unknown> };
 const dialog = ref<ExplorerDialog | null>(null);
+const styleMajor = ref<StyleAssignment['major'] | ''>('');
+const styleMiddleRows = ref<{name: string; smallText: string}[]>([]);
+const styleBusy = ref(false);
 let versionTimer = 0;
 const viewSizes: ViewSize[] = ['xxl', 'xl', 'lg'];
 const viewLabels: Record<ViewSize, string> = { xxl: '特大', xl: '大', lg: '中' };
@@ -449,7 +452,53 @@ async function showProperties() {
   try {
     const data = await imageViewerApi.properties(item.path);
     dialog.value = { kind: 'properties', title: `${item.name} のプロパティ`, item, data };
+    if (item.mediaType === 'image') await loadStyleTags(item.path);
   } catch (error) { notice.show(errorMessage(error, 'プロパティを取得できませんでした。'), true); }
+}
+
+async function loadStyleTags(path: string) {
+  styleBusy.value = true;
+  styleMajor.value = '';
+  styleMiddleRows.value = [];
+  try {
+    const payload = await imageViewerApi.styleTags(path);
+    if (dialog.value?.kind !== 'properties' || dialog.value.item.path !== path) return;
+    styleMajor.value = payload.assignment?.major || '';
+    styleMiddleRows.value = (payload.assignment?.middleTags || []).map((tag) => ({
+      name: tag.name, smallText: tag.smallTags.join('、'),
+    }));
+  } catch (error) {
+    notice.show(errorMessage(error, '分類タグを取得できませんでした。'), true);
+  } finally { styleBusy.value = false; }
+}
+
+async function saveStyleTags() {
+  if (dialog.value?.kind !== 'properties' || !styleMajor.value) return;
+  styleBusy.value = true;
+  try {
+    const assignment: StyleAssignment = {
+      major: styleMajor.value,
+      middleTags: styleMiddleRows.value.map((row) => ({
+        name: row.name.trim(),
+        smallTags: row.smallText.split(/[、,，\n]/).map((part) => part.trim()).filter(Boolean),
+      })),
+    };
+    await imageViewerApi.saveStyleTags(dialog.value.item.path, assignment);
+    notice.show('分類タグを保存しました。');
+  } catch (error) { notice.show(errorMessage(error, '分類タグを保存できませんでした。'), true); }
+  finally { styleBusy.value = false; }
+}
+
+async function clearStyleTags() {
+  if (dialog.value?.kind !== 'properties') return;
+  styleBusy.value = true;
+  try {
+    await imageViewerApi.clearStyleTags(dialog.value.item.path);
+    styleMajor.value = '';
+    styleMiddleRows.value = [];
+    notice.show('分類タグを解除しました。');
+  } catch (error) { notice.show(errorMessage(error, '分類タグを解除できませんでした。'), true); }
+  finally { styleBusy.value = false; }
 }
 
 async function reloadProperties() {
@@ -457,6 +506,7 @@ async function reloadProperties() {
   try {
     const data = await imageViewerApi.properties(dialog.value.item.path);
     dialog.value.data = data;
+    if (dialog.value.item.mediaType === 'image') await loadStyleTags(dialog.value.item.path);
   } catch (error) { notice.show(errorMessage(error, 'プロパティを再読み込みできませんでした。'), true); }
 }
 
@@ -979,6 +1029,28 @@ onBeforeUnmount(() => {
           <dt>更新日時:</dt><dd>{{ formatDateTime(propertyValue('modified', dialog.item.mtime)) }}</dd>
           <dt>アクセス日時:</dt><dd>{{ formatDateTime(propertyValue('accessed')) }}</dd>
         </dl></section>
+        <section v-if="dialog.item.mediaType === 'image'" class="property-section style-tag-section">
+          <h3>服装の分類タグ</h3>
+          <p class="dialog-hint">大分類は1つ。中分類を複数追加でき、それぞれに小分類タグを複数指定できます。自動判定はまだ行いません。</p>
+          <label>大分類
+            <select v-model="styleMajor" :disabled="styleBusy">
+              <option value="">未分類</option>
+              <option value="lolita">ロリータ系</option>
+              <option value="jirai">地雷系</option>
+              <option value="casual">私服系</option>
+            </select>
+          </label>
+          <div v-for="(row, index) in styleMiddleRows" :key="index" class="style-tag-row">
+            <label>中分類<input v-model="row.name" maxlength="50" placeholder="例: クラシカル"></label>
+            <label>小分類（「、」区切り）<input v-model="row.smallText" placeholder="例: 青、レース、長袖"></label>
+            <button type="button" :disabled="styleBusy" @click="styleMiddleRows.splice(index, 1)">削除</button>
+          </div>
+          <div class="style-tag-actions">
+            <button type="button" :disabled="styleBusy || !styleMajor || styleMiddleRows.length >= 12" @click="styleMiddleRows.push({ name: '', smallText: '' })">中分類を追加</button>
+            <button type="button" :disabled="styleBusy || !styleMajor" @click="saveStyleTags">分類タグを保存</button>
+            <button type="button" :disabled="styleBusy || !styleMajor" @click="clearStyleTags">分類を解除</button>
+          </div>
+        </section>
       </div>
       <div class="xp-dialog-actions"><button type="submit">OK</button><button type="button" @click="dialog = null">キャンセル</button><button type="button" :disabled="!propertyNameChanged()" @click="applyPropertyRename(false)">適用</button></div>
       </form>

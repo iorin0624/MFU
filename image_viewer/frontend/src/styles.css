@@ -317,6 +317,13 @@ button.temporary-warning.pressed {
 .property-section dl { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px 8px; margin: 0; font-size: 14px; }
 .property-section dt { color: #293344; }
 .property-section dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.style-tag-section h3 { margin: 0 0 8px; font-size: 15px; }
+.style-tag-section > label { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+.style-tag-section select { min-width: 180px; }
+.style-tag-row { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(220px, 2fr) auto; gap: 8px; align-items: end; margin: 8px 0; }
+.style-tag-row label { display: grid; gap: 4px; font-size: 13px; }
+.style-tag-row input { min-width: 0; width: 100%; box-sizing: border-box; }
+.style-tag-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
 .xp-taskbar { position: fixed; z-index: 10000; left: 0; right: 0; bottom: 0; display: flex; align-items: center; height: 43px; padding: 3px 5px 3px 0; background: linear-gradient(#2c87ed, #1161ce 45%, #0752bd); box-shadow: 0 -1px #60afff; }
 .start-button { align-self: stretch; min-width: 104px; border: 0; border-radius: 0 14px 14px 0; color: #fff; background: linear-gradient(#58ba62, #22933c 52%, #14742c); font-size: 15px; font-style: italic; font-weight: 800; text-shadow: 1px 1px #174c21; }
