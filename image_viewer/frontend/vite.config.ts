@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../../static/image_viewer_vue',
+    outDir: fileURLToPath(new URL('../../static/image_viewer_vue', import.meta.url)),
     emptyOutDir: true,
     cssCodeSplit: false,
     rollupOptions: {

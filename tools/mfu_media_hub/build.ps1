@@ -13,5 +13,6 @@ $python = if (Test-Path $venvPython) { $venvPython } else { "python" }
   --specpath $PSScriptRoot `
   --collect-submodules socketio `
   --collect-submodules engineio `
+  --add-data "$(Join-Path $PSScriptRoot 'gpu_classifier.py');." `
   $entry
 Write-Host "Built: $dist\MFU Media Hub"
