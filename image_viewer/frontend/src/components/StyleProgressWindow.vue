@@ -7,7 +7,10 @@ const props = defineProps<{win: DesktopWindow}>();
 const jobs = computed(() => [...(props.win.styleJobs || [])].sort((a, b) => a.createdAt - b.createdAt));
 const list = ref<HTMLUListElement | null>(null);
 const currentJobId = computed(() => jobs.value.find((job) => job.status === 'running')?.id
-  || jobs.value.find((job) => job.status === 'pending')?.id || '');
+  || jobs.value.find((job) => job.status === 'pending')?.id
+  || jobs.value.filter((job) => job.status === 'done' || job.status === 'error')
+    .reduce<StyleJob | undefined>((latest, job) => !latest || job.updatedAt >= latest.updatedAt ? job : latest, undefined)?.id
+  || '');
 const loading = ref(false);
 const error = ref('');
 const completed = computed(() => jobs.value.filter((job) => job.status === 'done').length);
@@ -19,7 +22,7 @@ const percent = computed(() => jobs.value.length ? Math.round(settled.value / jo
 let timer = 0;
 let stopped = false;
 
-watch(() => [currentJobId.value, props.win.minimized], async () => {
+async function scrollToCurrentJob(behavior: ScrollBehavior = 'smooth') {
   const id = currentJobId.value;
   if (!id || props.win.minimized) return;
   await nextTick();
@@ -31,9 +34,11 @@ watch(() => [currentJobId.value, props.win.minimized], async () => {
   const rowRect = row.getBoundingClientRect();
   container.scrollTo({
     top: container.scrollTop + rowRect.top - listRect.top - (container.clientHeight - rowRect.height) / 2,
-    behavior: 'smooth',
+    behavior,
   });
-}, {immediate: true});
+}
+
+watch(() => [currentJobId.value, props.win.minimized], () => { void scrollToCurrentJob(); });
 
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
@@ -68,7 +73,10 @@ async function refresh() {
   }
 }
 
-onMounted(refresh);
+onMounted(async () => {
+  await refresh();
+  await scrollToCurrentJob('auto');
+});
 onBeforeUnmount(() => { stopped = true; window.clearTimeout(timer); });
 </script>
 
