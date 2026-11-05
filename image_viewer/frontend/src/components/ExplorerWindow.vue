@@ -53,6 +53,14 @@ const selectedItems = computed(() => {
   const selected = new Set(model.value.selectedPaths);
   return items.value.filter((item) => selected.has(item.path));
 });
+const selectedImages = computed(() => selectedItems.value.filter((item) => item.mediaType === 'image'));
+const bulkStyleJobs = ref<StyleJob[]>([]);
+const bulkStyleSubmitting = ref(false);
+const bulkStyleError = ref('');
+const bulkStyleActive = computed(() => bulkStyleJobs.value.some((job) => job.status === 'pending' || job.status === 'running'));
+const bulkStyleDone = computed(() => bulkStyleJobs.value.filter((job) => job.status === 'done').length);
+const bulkStyleFailed = computed(() => bulkStyleJobs.value.filter((job) => job.status === 'error').length);
+let bulkStylePollTimer = 0;
 const selectedClipboardImage = computed(() =>
   selectedItems.value.length === 1 && selectedItems.value[0]?.mediaType === 'image'
     ? selectedItems.value[0]
@@ -504,6 +512,50 @@ async function startStyleJob() {
   } finally { styleBusy.value = false; }
 }
 
+async function pollBulkStyleJobs() {
+  if (!bulkStyleJobs.value.length || !bulkStyleActive.value) return;
+  try {
+    const updates = new Map<string, Pick<StyleJob, 'id' | 'status' | 'error'>>();
+    const ids = bulkStyleJobs.value.map((job) => job.id);
+    for (let index = 0; index < ids.length; index += 300) {
+      const result = await imageViewerApi.styleJobStatuses(ids.slice(index, index + 300));
+      result.jobs.forEach((job) => updates.set(job.id, job));
+    }
+    bulkStyleJobs.value = bulkStyleJobs.value.map((job) => ({ ...job, ...(updates.get(job.id) || {}) }));
+    bulkStyleError.value = '';
+    if (!bulkStyleActive.value) {
+      notice.show(`GPU分類が終了しました。候補 ${bulkStyleDone.value}枚、失敗 ${bulkStyleFailed.value}枚。${bulkStyleDone.value ? '画像のプロパティから候補を確認できます。' : ''}`,
+        bulkStyleFailed.value > 0);
+      return;
+    }
+  } catch (error) {
+    bulkStyleError.value = errorMessage(error, '進捗を取得できませんでした。');
+  }
+  bulkStylePollTimer = window.setTimeout(pollBulkStyleJobs, 5000);
+}
+
+async function startSelectedStyleJobs() {
+  if (!selectedImages.value.length || bulkStyleSubmitting.value || bulkStyleActive.value) return;
+  const paths = selectedImages.value.map((item) => item.path);
+  bulkStyleSubmitting.value = true;
+  bulkStyleJobs.value = [];
+  bulkStyleError.value = '';
+  window.clearTimeout(bulkStylePollTimer);
+  try {
+    for (let index = 0; index < paths.length; index += 30) {
+      const result = await imageViewerApi.startStyleJobs(paths.slice(index, index + 30));
+      bulkStyleJobs.value.push(...result.jobs);
+    }
+    notice.show(`選択画像${bulkStyleJobs.value.length}枚をGPU分類へ依頼しました。候補は各画像のプロパティで確認してください。`);
+  } catch (error) {
+    bulkStyleError.value = errorMessage(error, '一括分類を依頼できませんでした。');
+    notice.show(`${bulkStyleJobs.value.length}枚を依頼済み。残りは依頼できませんでした: ${bulkStyleError.value}`, true);
+  } finally {
+    bulkStyleSubmitting.value = false;
+    if (bulkStyleActive.value) bulkStylePollTimer = window.setTimeout(pollBulkStyleJobs, 3000);
+  }
+}
+
 function applyStyleSuggestion() {
   const assignment = styleJob.value?.suggestion?.assignment;
   if (!assignment) return;
@@ -863,6 +915,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   window.clearTimeout(stylePollTimer);
+  window.clearTimeout(bulkStylePollTimer);
   document.removeEventListener('paste', pasteHandler);
   document.removeEventListener('keydown', keyHandler);
   document.removeEventListener('pointerdown', closeContext);
@@ -928,6 +981,7 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>
         <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
         <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
+        <button type="button" title="選択中の画像をまとめてGPU分類し、確認用の候補を作成します" :disabled="!selectedImages.length || bulkStyleSubmitting || bulkStyleActive" @click="startSelectedStyleJobs">{{ bulkStyleSubmitting ? 'GPU分類を依頼中…' : `選択画像をGPU分類（${selectedImages.length}枚）` }}</button>
         <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
         <button type="button" :class="{pressed: model.appendSources.length}" :disabled="!selectedItems.length && !model.appendSources.length" @click="startAppend">{{ model.appendSources.length ? '後付け解除' : '後付け' }}</button>
         <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>
@@ -959,6 +1013,7 @@ onBeforeUnmount(() => {
       <footer class="explorer-status">
         <span>{{ folderData.total || items.length }}件</span>
         <span>{{ selectedItems.length }}件選択</span>
+        <span v-if="bulkStyleJobs.length">GPU分類: {{ bulkStyleDone }} / {{ bulkStyleJobs.length }}枚完了<span v-if="bulkStyleFailed">、{{ bulkStyleFailed }}枚失敗</span><span v-if="bulkStyleError">（進捗確認エラー）</span></span>
       </footer>
     </section>
     <div v-if="contextMenu.visible && contextMenu.item" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>

@@ -69,6 +69,20 @@ def get(job_id: str, owner: str, db_path: Path = DEFAULT_DB_PATH) -> dict | None
         return _public(row) if row else None
 
 
+def statuses(job_ids: list[str], owner: str, db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    """Return only the progress needed by the bulk UI, scoped to its owner."""
+    if not job_ids:
+        return []
+    placeholders = ",".join("?" for _ in job_ids)
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            f"SELECT id, status, error FROM image_style_jobs WHERE owner=? AND id IN ({placeholders})",
+            (owner, *job_ids),
+        ).fetchall()
+    found = {row["id"]: dict(row) for row in rows}
+    return [found[job_id] for job_id in job_ids if job_id in found]
+
+
 def latest(path: str, owner: str, sha256: str, db_path: Path = DEFAULT_DB_PATH) -> dict | None:
     if not db_path.is_file():
         return None
