@@ -8,7 +8,8 @@ export type WindowKind =
   | 'video'
   | 'image-downloader'
   | 'video-downloader'
-  | 'instagram-auth';
+  | 'instagram-auth'
+  | 'style-progress';
 
 export interface MediaItem {
   id?: number;
@@ -162,6 +163,7 @@ export interface DesktopWindow {
   maximized: boolean;
   explorer?: ExplorerWindowState;
   media?: MediaItem;
+  styleJobs?: StyleJob[];
   sequence?: MediaItem[];
   sequenceContext?: {
     folder: string;

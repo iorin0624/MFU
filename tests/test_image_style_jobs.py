@@ -1,8 +1,11 @@
 import importlib.util
+import sqlite3
 import sys
 import tempfile
+import time
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -58,6 +61,20 @@ class StyleJobsTest(unittest.TestCase):
                     "scores": {"lolita": 0.2, "jirai": 0.2, "casual": 0.6},
                 }, db)
             self.assertEqual(jobs.get(created["id"], "alice", db)["status"], "running")
+
+    def test_recent_recovers_running_job_and_scopes_to_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            db = Path(temporary) / "jobs.sqlite3"
+            old = jobs.create("alice", "old.jpg", "a" * 64, db)
+            jobs.create("bob", "private.jpg", "b" * 64, db)
+            with closing(sqlite3.connect(db)) as conn:
+                with conn:
+                    conn.execute("UPDATE image_style_jobs SET created_at=? WHERE id=?",
+                                 (int(time.time()) - 7200, old["id"]))
+            found = jobs.recent("alice", db)
+            self.assertEqual([item["id"] for item in found], [old["id"]])
+            self.assertEqual(found[0]["status"], "pending")
+            self.assertIsNone(found[0]["suggestion"])
 
 
 if __name__ == "__main__":

@@ -545,6 +545,7 @@ async function startSelectedStyleJobs() {
     for (let index = 0; index < paths.length; index += 30) {
       const result = await imageViewerApi.startStyleJobs(paths.slice(index, index + 30));
       bulkStyleJobs.value.push(...result.jobs);
+      desktop.openStyleProgress(result.jobs);
     }
     notice.show(`選択画像${bulkStyleJobs.value.length}枚をGPU分類へ依頼しました。候補は各画像のプロパティで確認してください。`);
   } catch (error) {
@@ -982,6 +983,7 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
         <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
         <button type="button" title="選択中の画像をまとめてGPU分類し、確認用の候補を作成します" :disabled="!selectedImages.length || bulkStyleSubmitting || bulkStyleActive" @click="startSelectedStyleJobs">{{ bulkStyleSubmitting ? 'GPU分類を依頼中…' : `選択画像をGPU分類（${selectedImages.length}枚）` }}</button>
+        <button type="button" title="進行中・最近の分類ジョブを別ウィンドウで確認します" @click="desktop.openStyleProgress(bulkStyleJobs)">分類の進捗</button>
         <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
         <button type="button" :class="{pressed: model.appendSources.length}" :disabled="!selectedItems.length && !model.appendSources.length" @click="startAppend">{{ model.appendSources.length ? '後付け解除' : '後付け' }}</button>
         <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>

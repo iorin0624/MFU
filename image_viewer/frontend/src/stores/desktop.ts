@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
-import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, SortDirection, ViewSize } from '@/types';
+import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, SortDirection, StyleJob, ViewSize } from '@/types';
 
 export function savedSort(folder: string): SortDirection {
   try {
@@ -127,6 +127,26 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
     return definition.id;
   }
 
+  function openStyleProgress(jobs: StyleJob[] = []) {
+    const existing = windows.value.find((entry) => entry.kind === 'style-progress');
+    if (existing) {
+      const merged = new Map((existing.styleJobs || []).map((job) => [job.id, job]));
+      jobs.forEach((job) => merged.set(job.id, job));
+      existing.styleJobs = [...merged.values()];
+      activate(existing.id);
+      return existing.id;
+    }
+    const id = 'vue-style-progress';
+    windows.value.push({
+      id, kind: 'style-progress', title: 'GPU分類の進捗',
+      x: 140, y: 86, width: 720, height: 530,
+      z: ++topZ, minimized: false, maximized: false,
+      styleJobs: jobs.slice(),
+    });
+    activeId.value = id;
+    return id;
+  }
+
   function close(id: string) {
     windows.value = windows.value.filter((entry) => entry.id !== id);
     if (activeId.value === id) {
@@ -157,6 +177,6 @@ export const useDesktopStore = defineStore('image-viewer-desktop', () => {
 
   return {
     windows, activeId, activeWindow,
-    activate, openExplorer, openMedia, openUtility, close, minimize, toggleMaximize, updateGeometry,
+    activate, openExplorer, openMedia, openUtility, openStyleProgress, close, minimize, toggleMaximize, updateGeometry,
   };
 });
