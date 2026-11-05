@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { imageViewerApi } from '@/api/client';
 import type { DesktopWindow, StyleJob } from '@/types';
 
 const props = defineProps<{win: DesktopWindow}>();
 const jobs = computed(() => [...(props.win.styleJobs || [])].sort((a, b) => a.createdAt - b.createdAt));
+const list = ref<HTMLUListElement | null>(null);
+const currentJobId = computed(() => jobs.value.find((job) => job.status === 'running')?.id
+  || jobs.value.find((job) => job.status === 'pending')?.id || '');
 const loading = ref(false);
 const error = ref('');
 const completed = computed(() => jobs.value.filter((job) => job.status === 'done').length);
@@ -15,6 +18,22 @@ const settled = computed(() => completed.value + failed.value);
 const percent = computed(() => jobs.value.length ? Math.round(settled.value / jobs.value.length * 100) : 0);
 let timer = 0;
 let stopped = false;
+
+watch(() => [currentJobId.value, props.win.minimized], async () => {
+  const id = currentJobId.value;
+  if (!id || props.win.minimized) return;
+  await nextTick();
+  const container = list.value;
+  const row = [...(container?.querySelectorAll<HTMLLIElement>('[data-job-id]') || [])]
+    .find((entry) => entry.dataset.jobId === id);
+  if (!container || !row || !container.clientHeight) return;
+  const listRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  container.scrollTo({
+    top: container.scrollTop + rowRect.top - listRect.top - (container.clientHeight - rowRect.height) / 2,
+    behavior: 'smooth',
+  });
+}, {immediate: true});
 
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
@@ -71,8 +90,8 @@ onBeforeUnmount(() => { stopped = true; window.clearTimeout(timer); });
     </div>
     <p v-if="error" class="progress-error">{{ error }}</p>
     <p v-if="!jobs.length && !loading" class="progress-empty">進行中または最近の分類ジョブはありません。</p>
-    <ul v-else class="progress-list">
-      <li v-for="job in jobs" :key="job.id" :class="`status-${job.status}`">
+    <ul v-else ref="list" class="progress-list">
+      <li v-for="job in jobs" :key="job.id" :data-job-id="job.id" :class="`status-${job.status}`">
         <span class="job-name" :title="job.path">{{ fileName(job.path) }}</span>
         <span class="job-status">{{ statusText(job) }}</span>
         <small v-if="job.error" :title="job.error">{{ job.error }}</small>
