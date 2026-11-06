@@ -29,6 +29,8 @@ ssh server-103-16 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:809
 ssh server-103-16 'curl -sS "http://127.0.0.1:8091/socket.io/?EIO=4&transport=polling" | head -c 120'
 ```
 
+GitHubが非公開で `mfu` ユーザーに読み取り権限がない場合、上のcloneを無理に進めない。サーバーへGitHub認証情報を恒久配置せず、作業端末で対象コミットを固定したハッシュ確認済みの配備アーカイブを作成し、承認済みの安全な転送経路で**新規**検証ディレクトリへ展開する方式に切り替える。作業前に手順とファイル一覧をレビューする。
+
 `/opt/mfu-socketio-stage/app` のソースは本番の `/mnt/mfu/app` とは別にする。`PYTHONPATH=/opt/mfu-socketio-stage:/mnt/mfu` により `app` は新checkout、`config` は既存の `/mnt/mfu/config.py` を読む。秘密設定はsystemd `EnvironmentFile=/mnt/mfu/app/.env` で参照するためGit checkout内に残らない。ただし本番DB・Redisを共有するので、アプリ起動時や接続時の副作用は段階検証し、**実ユーザー接続や負荷試験は別途承認まで行わない**。検証環境でのポート8091は127.0.0.1にしかbindしない。Pi/Nginxから接続する段階で初めて、接続元限定のLAN bind・ファイアウォールを検討する。
 
 ## 起動後に確認する順番
