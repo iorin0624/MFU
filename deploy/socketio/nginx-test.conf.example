@@ -1,4 +1,6 @@
-# Separate loopback-only test listener. Apache keeps its public 80/443.
+# Legacy LAN-bind example: its upstream is 192.168.103.16:8091.
+# For the actual loopback-bound N5105 stage service and Pi SSH tunnel, use
+# nginx-pi-18443.conf.example instead. Apache keeps its public 80/443.
 # Place inside nginx http{} after nginx-socketio-common.conf.example.
 # Test through an SSH tunnel and --resolve mfu.iori0624.jp:18443:127.0.0.1.
 server {
