@@ -1,0 +1,65 @@
+# Standalone, loopback-only Pi validation. Never include this file from the
+# system nginx.conf or enable the packaged default site for this test.
+# The Pi SSH tunnel must forward 127.0.0.1:18091 to N5105 127.0.0.1:8091.
+user www-data;
+worker_processes 1;
+pid /run/mfu-socketio-nginx-18443.pid;
+error_log /var/log/nginx/mfu-socketio-18443.error.log warn;
+
+events {
+    worker_connections 128;
+}
+
+http {
+    access_log off;
+
+    map $http_upgrade $mfu_test_connection {
+        default upgrade;
+        '' close;
+    }
+
+    server {
+        listen 127.0.0.1:18443 ssl;
+        server_name mfu.iori0624.jp;
+        ssl_certificate /etc/letsencrypt/live/iori0624.jp/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/iori0624.jp/privkey.pem;
+
+        location = /socket.io {
+            return 308 /socket.io/$is_args$args;
+        }
+
+        location ^~ /socket.io/ {
+            proxy_pass http://127.0.0.1:18091;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $mfu_test_connection;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Port 18443;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            proxy_buffering off;
+        }
+
+        location / {
+            proxy_pass https://127.0.0.1:443;
+            proxy_http_version 1.1;
+            proxy_ssl_server_name on;
+            proxy_ssl_name mfu.iori0624.jp;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+            proxy_ssl_verify_depth 2;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Port 18443;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 120s;
+            proxy_redirect https://mfu.iori0624.jp/ https://mfu.iori0624.jp:18443/;
+        }
+    }
+}
