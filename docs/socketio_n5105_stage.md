@@ -4,6 +4,18 @@
 
 実機ではRedis疎通、`/socketio-health` 200、通常HTTP `/admin` 404、Engine.IO polling 200、WebSocket/Pollingでの `/download-progress` 接続・切断、匿名 `/admin-system`・`/media-clipboard`・`/media-hub-notifications`・`/photo-relay` 接続拒否、不正Origin 400を確認した。別のRedisクライアントから `flask-socketio` チャンネルへ一意な接続SID宛てに送った検証イベントが、8091番のWebSocketクライアントへ届いた。本番8080番は引き続き応答し、`mfu`、`redis-server` も稼働中。初回確認時のDB `Threads_connected` は83、専用サービスのワーカーRSSは約144 MB、再起動回数0。実ユーザーの認証済み接続、実際の8080番ワーカーからの送信、Pi経由の公開WebSocketは未検証。
 
+## 2026-11-06 追加実機テスト
+
+- 22:33:06〜22:38:46 JSTに、本番サービスやRedisの設定変更・再起動なしで少数接続を試した。
+- 本番8080番の8ワーカーと検証8091番の1ワーカーが、同じRedisの `flask-socketio` チャンネルを購読していた（購読数9）。本番 `.env` と検証設定のRedis URLは一致し、検証側はRedis必須・DBプール3に設定されている。実際の8080番ワーカーに安全なテストイベント送信経路はないため、8080番からの直接送信は未実施。
+- 本番 `.env` のキュー設定を読む独立した送信プロセスから、一意な試験専用ZIP進捗ルームへイベントを1回配信した。8091番の3クライアント（WebSocket 2、Polling 1）全てが受信し、1クライアントの再接続後も受信した。最初の配信は送信プロセス起動を含め約489 ms。
+- Redis不通を模擬するため、別の短命プロセスだけに到達不能なRedis URLを設定して必須モードを呼び出し、`RuntimeError` で拒否されることを確認した。本番Redisと稼働中のサービスの設定は変更していない。
+- 匿名の `/`、`/admin-system`、`/media-clipboard`、`/media-hub-notifications`、`/photo-relay`、`/x-ff-admin`、`/x-ff-agent` 接続と、無効Cookieでの管理者接続はいずれも拒否された。`/download-progress` の不正な購読キーも拒否された。認証済みテストアカウント・端末トークンがないため、各名前空間の正常認証、実チャット・実ファイル処理、ログアウト後の挙動は未検証。
+- 前後でDB `Threads_connected=83`、`Threads_running=1`、`Max_used_connections=134`、`Connection_errors_max_connections=0`、Redis `connected_clients=31`、Pub/Sub購読数9、サービス再起動数0が維持された。ワーカーRSSは144260→144948 KiB、スレッド数は6→8、CPU使用率表示は0.3→0.2%。8080番はHTTP 302、8091番のヘルスは200、Apacheはactive・設定検査OK。検証サービスには想定した匿名管理者接続拒否の警告のみで、例外・Tracebackはなかった。
+- 本番と検証のSocket.IOハンドラーをASTで比較した。既存ハンドラーの主な差分は検証側に追加された接続統計処理で、イベント名や認証条件の変更は見つからなかった。検証側に負荷試験用イベント等の追加はある。コード比較は実機の全機能テストを代替しない。
+
+判定は**条件付き合格**。N5105側の基礎動作は確認でき、次は公開443番を変えずにNginx 18443番などの隔離経路でHTTPS・Cookie・Originを含む認証済み接続を検証できる。ただし本番8080番ワーカーからの実送信、認証済みユーザーとWindows端末の正常接続、実機能の回帰、負荷試験は残っている。Nginxの導入・起動や8091番のLAN公開はこの追加テストでは実施していない。
+
 ## 調査済みの前提
 
 - `/mnt/mfu` は本番データと未追跡ファイルを多数含む、コミット履歴のないGitディレクトリ。`git pull`、`git add .`、`git reset`、`git clean` を使わない。
