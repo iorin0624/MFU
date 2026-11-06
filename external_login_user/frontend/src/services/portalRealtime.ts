@@ -23,6 +23,7 @@ const boundEvents = new Set<string>();
 let resumeBound = false;
 let resumeTimer = 0;
 let chatAuthScope = '';
+let hasConnected = false;
 
 export function setPortalChatAuthScope(value: string) {
   const next = value === 'mfu' ? 'mfu' : '';
@@ -76,7 +77,11 @@ export function portalSocket(): SocketLike | null {
     query: chatAuthScope ? { chat_auth_scope: chatAuthScope } : undefined,
   });
   boundEvents.clear();
-  socket.on('connect', () => lifecycleListeners.forEach((handler) => handler(true)));
+  socket.on('connect', () => {
+    if (hasConnected) socket?.emit('client_reconnected');
+    hasConnected = true;
+    lifecycleListeners.forEach((handler) => handler(true));
+  });
   socket.on('disconnect', () => lifecycleListeners.forEach((handler) => handler(false)));
   socket.on('connect_error', () => lifecycleListeners.forEach((handler) => handler(false)));
   socket.on('force_logout', (payload: any = {}) => {

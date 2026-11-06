@@ -1,0 +1,5 @@
+# Include inside an nginx http{} context, before the server blocks.
+map $http_upgrade $mfu_connection_upgrade {
+    default upgrade;
+    ''      close;
+}

@@ -22,6 +22,7 @@ from flask_socketio import disconnect, join_room
 from app.utils.admin_auth import ADMIN_USERNAME, validate_admin_session
 from app.utils.admin_passkey_stepup import require_admin_passkey
 from app.utils.db import get_db
+from app.utils.socket_connection_metrics import record_connection_event, register_connection, unregister_connection
 
 
 bp = Blueprint("x_ff_remote", __name__, url_prefix="/admin/x-ff-remote")
@@ -297,9 +298,15 @@ def register_socketio(socketio):
     @socketio.on("connect", namespace=ADMIN_NS)
     def admin_connect(auth=None):
         if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
+            record_connection_event("rejected", ADMIN_NS)
             return False
+        register_connection(socketio, ADMIN_NS)
         join_room(ADMIN_ROOM)
         return True
+
+    @socketio.on("disconnect", namespace=ADMIN_NS)
+    def admin_disconnect(reason=None):
+        unregister_connection(socketio, ADMIN_NS)
 
     @socketio.on("connect", namespace=AGENT_NS)
     def agent_connect(auth=None):
@@ -307,7 +314,9 @@ def register_socketio(socketio):
         expected = os.getenv("X_FF_AGENT_TOKEN", "")
         supplied = str((auth or {}).get("token") or "")
         if not expected or not hmac.compare_digest(expected, supplied):
+            record_connection_event("rejected", AGENT_NS)
             return False
+        register_connection(socketio, AGENT_NS)
         with _lock:
             _agent_sid = request.sid
             _last_seen = time.monotonic()
@@ -319,6 +328,7 @@ def register_socketio(socketio):
     @socketio.on("disconnect", namespace=AGENT_NS)
     def agent_disconnect(reason=None):
         global _agent_sid, _last_seen
+        unregister_connection(socketio, AGENT_NS)
         with _lock:
             if _agent_sid != request.sid:
                 return
