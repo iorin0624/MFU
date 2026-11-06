@@ -12,6 +12,7 @@ from flask import Blueprint, abort, current_app, flash, has_app_context, jsonify
 from flask_socketio import disconnect, emit, join_room
 
 from app.chat.socketio_ext import socketio
+from app.utils.socket_connection_metrics import record_connection_event, register_connection, unregister_connection
 from app.discord_notifications.repository import FEATURE_DEFINITIONS
 from app.utils.au_pay_push_body import build_au_pay_transaction_body
 from app.utils.au_pay_usage_total import add_usage_total_to_event
@@ -830,7 +831,9 @@ def media_hub_notifications_connect(auth=None):
     auth = auth if isinstance(auth, dict) else {}
     row = verify_notification_token(str(auth.get("notification_token") or auth.get("token") or ""))
     if not row:
+        record_connection_event("rejected", "/media-hub-notifications")
         return False
+    register_connection(socketio, "/media-hub-notifications")
     _socket_tokens[request.sid] = row
     join_room(f"media-hub-notifications:{row['username']}")
     db = get_db()
@@ -880,6 +883,7 @@ def media_hub_notification_received(payload=None):
 
 @socketio.on("disconnect", namespace="/media-hub-notifications")
 def media_hub_notifications_disconnect():
+    unregister_connection(socketio, "/media-hub-notifications")
     _socket_tokens.pop(request.sid, None)
 
 

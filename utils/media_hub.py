@@ -19,6 +19,7 @@ from flask import (
 from flask_socketio import disconnect, emit, join_room
 
 from app.chat.socketio_ext import socketio
+from app.utils.socket_connection_metrics import record_connection_event, register_connection, unregister_connection
 from app.utils.media_clipboard_auth import (
     issue_media_clipboard_token,
     verify_media_clipboard_token,
@@ -237,7 +238,9 @@ def media_clipboard_connect(auth=None):
     token = str(auth.get("media_token") or auth.get("token") or "")
     row = verify_media_clipboard_token(token)
     if not row:
+        record_connection_event("rejected", "/media-clipboard")
         return False
+    register_connection(socketio, "/media-clipboard")
     _sid_tokens[request.sid] = token
     if row.get("label") == "MFU Media Hub":
         join_room(f"style-user:{row['username']}")
@@ -284,6 +287,7 @@ def media_clipboard_request(payload=None):
 
 @socketio.on("disconnect", namespace="/media-clipboard")
 def media_clipboard_disconnect():
+    unregister_connection(socketio, "/media-clipboard")
     _sid_tokens.pop(request.sid, None)
 
 

@@ -48,7 +48,7 @@ from app.utils.photo_relay_connection_notifications import (
     connection_notification_payload,
     should_notify_connection,
 )
-from app.utils.socket_connection_metrics import register_connection, unregister_connection
+from app.utils.socket_connection_metrics import record_connection_event, register_connection, unregister_connection
 from app.utils.upload_security import detect_mime_from_bytes
 from app.utils.uploader_auth import TOKEN_SCOPE_IOS, verify_uploader_token
 
@@ -1212,6 +1212,7 @@ def photo_relay_socket_connect(auth=None):
     auth = auth if isinstance(auth, dict) else {}
     device = _verify_device_token(str(auth.get("photo_token") or auth.get("token") or ""))
     if not device:
+        record_connection_event("rejected", "/photo-relay")
         return False
     _cleanup_expired_jobs()
     join_room(f"photo-relay:{device['device_uuid']}")

@@ -19,11 +19,29 @@ from flask import current_app, request
 
 _ZSET_KEY = "mfu:socket-connections:active"
 _TRANSPORT_KEY = "mfu:socket-connections:transport"
+_EVENTS_KEY = "mfu:socket-connections:events"
 _STALE_AFTER_SECONDS = 75
 _REFRESH_SECONDS = 20
 _registry: dict[str, dict[str, str]] = {}
 _registry_lock = threading.Lock()
 _refresh_started = False
+_event_counts: dict[str, int] = {}
+
+
+def record_connection_event(kind: str, namespace: str = "/") -> None:
+    """Count rejected connections and client-reported reconnects, without IDs."""
+
+    if kind not in {"rejected", "reconnected"}:
+        raise ValueError("unsupported Socket.IO metric event")
+    key = f"{kind}:{namespace}"
+    with _registry_lock:
+        _event_counts[key] = _event_counts.get(key, 0) + 1
+    client = _redis_client(current_app.config.get("SOCKETIO_MESSAGE_QUEUE"))
+    if client is not None:
+        try:
+            client.hincrby(_EVENTS_KEY, key, 1)
+        except Exception:
+            current_app.logger.warning("Socket.IO metric Redis write failed", exc_info=True)
 
 
 def _redis_client(queue_url: str | None):
@@ -151,6 +169,9 @@ def connection_snapshot(queue_url: str | None) -> dict[str, Any]:
     now = time.time()
     members: list[str] = []
     transports: dict[str, str] = {}
+    event_counts: dict[str, int] = {}
+    source = "local"
+    redis_error = False
     client = _redis_client(queue_url)
     if client is not None:
         try:
@@ -169,9 +190,14 @@ def connection_snapshot(queue_url: str | None) -> dict[str, Any]:
                     member: str(value or "unknown")
                     for member, value in zip(members, values)
                 }
+            event_counts = {key: int(value) for key, value in client.hgetall(_EVENTS_KEY).items()}
+            source = "redis"
         except Exception:
             members = []
             transports = {}
+            redis_error = True
+    elif queue_url:
+        redis_error = True
 
     if not members:
         with _registry_lock:
@@ -180,6 +206,15 @@ def connection_snapshot(queue_url: str | None) -> dict[str, Any]:
                 member: details.get("transport", "unknown")
                 for member, details in _registry.items()
             }
+            if members:
+                source = "local"
+            if source == "local":
+                event_counts = dict(_event_counts)
+
+    namespaces: dict[str, int] = {}
+    for member in members:
+        namespace = member.rsplit("|", 1)[-1]
+        namespaces[namespace] = namespaces.get(namespace, 0) + 1
 
     unique: dict[str, str] = {}
     for member in members:
@@ -197,5 +232,10 @@ def connection_snapshot(queue_url: str | None) -> dict[str, Any]:
         "websocket": websocket_count,
         "polling": polling_count,
         "other": max(0, len(unique) - websocket_count - polling_count),
+        "namespaces": namespaces,
+        "rejected": sum(value for key, value in event_counts.items() if key.startswith("rejected:")),
+        "reconnected": sum(value for key, value in event_counts.items() if key.startswith("reconnected:")),
+        "redis_error": redis_error,
+        "source": source,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }

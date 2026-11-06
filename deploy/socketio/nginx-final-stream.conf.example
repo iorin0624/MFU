@@ -1,0 +1,16 @@
+# nginx top-level stream{} context. NOT deployable without the companion
+# Apache 8443 PROXY-protocol migration described in the runbook.
+# SNI is inspected without decrypting non-MFU sites, preserving their certs.
+map $ssl_preread_server_name $mfu_tls_backend {
+    mfu.iori0624.jp 127.0.0.1:4443;
+    default           127.0.0.1:8443;
+}
+server {
+    listen 443;
+    listen [::]:443;
+    ssl_preread on;
+    proxy_protocol on;
+    proxy_pass $mfu_tls_backend;
+    proxy_connect_timeout 3s;
+    proxy_timeout 3600s;
+}
