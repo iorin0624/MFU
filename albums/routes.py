@@ -1073,6 +1073,8 @@ def _ensure_event_gate_columns():
 
 @album_bp.record_once
 def _albums_on_register(state):
+    if os.environ.get("MFU_SOCKETIO_DEDICATED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
     try:
         _ensure_event_gate_columns()
     except Exception as e:

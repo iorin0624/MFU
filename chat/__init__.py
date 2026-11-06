@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hmac
 import io
 import hashlib
 import json
@@ -44,7 +45,7 @@ from app.external_login_user.session_revocation import (
     unregister_external_user_socket,
 )
 from app.utils.db import get_db
-from app.utils.socket_connection_metrics import register_connection, unregister_connection
+from app.utils.socket_connection_metrics import record_connection_event, register_connection, unregister_connection
 
 try:
     from redis import Redis
@@ -7793,6 +7794,7 @@ def chat_connect():
             ext_user_id = int(ext_user_id)
         except (TypeError, ValueError):
             current_app.logger.warning("chat socket connect denied: invalid ext_user_id")
+            record_connection_event("rejected")
             return False
         try:
             if not is_external_user_active(ext_user_id, force_refresh=True):
@@ -7800,18 +7802,21 @@ def chat_connect():
                     "chat socket connect denied: external user deleted user_id=%s",
                     ext_user_id,
                 )
+                record_connection_event("rejected")
                 return False
         except Exception:
             current_app.logger.exception(
                 "chat socket connect denied: external user status check failed user_id=%s",
                 ext_user_id,
             )
+            record_connection_event("rejected")
             return False
 
     actor = get_chat_actor()
     _audit_log("room_join", actor=_actor_log_id(actor), result="connect")
     if not actor:
         current_app.logger.info("chat socket connect denied: no actor")
+        record_connection_event("rejected")
         return False
     _remember_socket_actor(actor)
 
@@ -7864,6 +7869,41 @@ def chat_disconnect():
     ext_user_id = _external_user_id_for_actor(actor)
     if ext_user_id > 0:
         unregister_external_user_socket(ext_user_id, sid)
+
+
+@socketio.on("client_reconnected")
+def chat_client_reconnected():
+    if not get_chat_actor():
+        return {"ok": False}
+    record_connection_event("reconnected")
+    return {"ok": True}
+
+
+@socketio.on("load_test_join")
+def chat_load_test_join(data=None):
+    """Staging-only fanout room; never stores messages or reaches real users."""
+    expected = (
+        os.environ.get("SOCKETIO_LOAD_TEST_TOKEN", "")
+        if os.environ.get("MFU_SOCKETIO_DEDICATED", "").strip().lower() in {"1", "true", "yes", "on"}
+        else ""
+    )
+    supplied = str((data or {}).get("token") or "")
+    if not expected or not hmac.compare_digest(expected, supplied) or not get_chat_actor():
+        return {"ok": False}
+    join_room("mfu-socketio-load-test")
+    return {"ok": True}
+
+
+@socketio.on("load_test_probe")
+def chat_load_test_probe(data=None):
+    if not os.environ.get("SOCKETIO_LOAD_TEST_TOKEN") or "mfu-socketio-load-test" not in socket_rooms():
+        return {"ok": False}
+    payload = data if isinstance(data, dict) else {}
+    sequence = str(payload.get("sequence") or "")[:40]
+    if not sequence:
+        return {"ok": False}
+    socketio.emit("load_test_probe", {"sequence": sequence}, room="mfu-socketio-load-test")
+    return {"ok": True}
 
 
 @socketio.on("external_event_unread_counts")
