@@ -39,6 +39,12 @@ from PySide6.QtWidgets import (
 
 from tools.mfu_media_clipboard import main as clipboard
 from tools.mfu_media_hub.card_links import notification_card_url as _notification_card_url
+from tools.mfu_media_hub.notification_sound import (
+    NotificationSoundPlayer,
+    NotificationSoundSettingsDialog,
+    load_sound_settings,
+    save_sound_settings,
+)
 from tools.mfu_photo_relay.core import load_settings as load_photo_settings, save_settings as save_photo_settings
 from tools.mfu_photo_relay.main import (
     ApiClient as PhotoApiClient,
@@ -51,7 +57,7 @@ from tools.mfu_photo_relay.main import (
 
 
 APP_NAME = "MFU Media Hub"
-APP_VERSION = "2.2.8"
+APP_VERSION = "2.2.9"
 APP_DIR = Path(os.environ.get("APPDATA") or Path.home()) / "MFU" / APP_NAME
 TOKEN_PATH = APP_DIR / "tokens.bin"
 
@@ -446,6 +452,8 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         clipboard.APP_NAME = APP_NAME
         super().__init__(qt_app)
         self.photo_settings = load_photo_settings()
+        self.notification_sound_settings = load_sound_settings()
+        self.notification_sound_player = NotificationSoundPlayer(self)
         self.photo_receiver: ReceiverThread | None = None
         self.last_saved_path = ""
         self.notification_popups: list[NotificationPopup] = []
@@ -521,6 +529,9 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         settings = QAction("写真転送設定", menu)
         settings.triggered.connect(self._open_photo_settings)
         menu.addAction(settings)
+        sound_settings = QAction("通知音設定", menu)
+        sound_settings.triggered.connect(self._open_notification_sound_settings)
+        menu.addAction(sound_settings)
         login = QAction("3機能をまとめてログイン", menu)
         login.triggered.connect(self._open_login)
         menu.addAction(login)
@@ -614,6 +625,18 @@ class MediaHubApp(clipboard.MediaClipboardApp):
             finally:
                 self._start_receiver()
 
+    def _open_notification_sound_settings(self) -> None:
+        dialog = NotificationSoundSettingsDialog(self.notification_sound_settings, self.notification_sound_player)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.result_values()
+        try:
+            save_sound_settings(values)
+        except OSError as exc:
+            QMessageBox.warning(None, APP_NAME, f"通知音設定を保存できませんでした。\n{exc}")
+            return
+        self.notification_sound_settings = values
+
     def _disable_legacy_startups(self) -> None:
         try:
             set_legacy_photo_startup(False)
@@ -688,6 +711,10 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         popup.finished.connect(lambda _=0, value=popup: self._remove_popup(value))
         popup.show()
         self._position_popups()
+        if self.notification_sound_settings["enabled"] and not self.manual_url_dialog_open:
+            self.notification_sound_player.play(
+                self.notification_sound_settings["file_path"], self.notification_sound_settings["volume"]
+            )
 
     def _remove_popup(self, popup: NotificationPopup) -> None:
         if popup in self.notification_popups:
