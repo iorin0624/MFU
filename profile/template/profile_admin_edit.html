@@ -217,10 +217,28 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const textareas = document.querySelectorAll('.profile-auto-textarea');
+  const mirrors = new Map();
+  textareas.forEach((textarea) => {
+    const mirror = textarea.cloneNode(false);
+    mirror.removeAttribute('id');
+    mirror.removeAttribute('name');
+    mirror.removeAttribute('aria-describedby');
+    mirror.setAttribute('aria-hidden', 'true');
+    mirror.tabIndex = -1;
+    mirror.style.cssText = 'position:fixed;left:-100vw;top:0;height:0;min-height:0;visibility:hidden;pointer-events:none;';
+    document.body.appendChild(mirror);
+    mirrors.set(textarea, mirror);
+  });
   function resizeTextarea(textarea) {
-    textarea.style.height = 'auto';
-    const borderHeight = textarea.offsetHeight - textarea.clientHeight;
-    textarea.style.height = `${textarea.scrollHeight + borderHeight}px`;
+    const mirror = mirrors.get(textarea);
+    mirror.style.width = `${textarea.getBoundingClientRect().width}px`;
+    mirror.value = textarea.value;
+    const style = getComputedStyle(textarea);
+    const borderHeight = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const minHeight = textarea.rows * parseFloat(style.lineHeight) +
+      parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + borderHeight;
+    textarea.style.height = `${Math.ceil(Math.max(minHeight, mirror.scrollHeight + borderHeight))}px`;
+    textarea.scrollTop = 0;
   }
   function resizeAll() { textareas.forEach(resizeTextarea); }
   textareas.forEach((textarea) => textarea.addEventListener('input', () => resizeTextarea(textarea)));
