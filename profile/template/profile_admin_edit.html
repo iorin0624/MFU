@@ -13,6 +13,7 @@
   .profile-social-mode[hidden], .profile-social-preview[hidden] { display: none !important; }
   .profile-icon-choice { width: 56px; height: 56px; font-size: 1.7rem; }
   #socialIconChoices [hidden] { display: none !important; }
+  .profile-auto-textarea { width: 100%; max-width: 100%; min-width: 0; overflow-y: hidden; resize: none; }
 </style>
 {% endblock %}
 
@@ -76,15 +77,15 @@
     </div>
     <div class="mb-3">
       <label class="form-label">自己紹介文</label>
-      <textarea class="form-control" name="intro_text" rows="5">{{ profile.intro_text or '' }}</textarea>
+      <textarea class="form-control profile-auto-textarea" name="intro_text" rows="5">{{ profile.intro_text or '' }}</textarea>
     </div>
     <div class="mb-3">
       <label class="form-label">撮影依頼案内</label>
-      <textarea class="form-control" name="request_notes_text" rows="5">{{ profile.request_notes_text or '' }}</textarea>
+      <textarea class="form-control profile-auto-textarea" name="request_notes_text" rows="5">{{ profile.request_notes_text or '' }}</textarea>
     </div>
     <div class="mb-3">
       <label class="form-label" for="qa_text">Q&A</label>
-      <textarea class="form-control" id="qa_text" name="qa_text" rows="12" maxlength="30000" aria-describedby="qa_text_help">{{ profile.qa_text or '' }}</textarea>
+      <textarea class="form-control profile-auto-textarea" id="qa_text" name="qa_text" rows="12" maxlength="30000" aria-describedby="qa_text_help">{{ profile.qa_text or '' }}</textarea>
       <div class="form-text" id="qa_text_help">「Q1. 質問文」の次の行から回答を入力してください。次のQ行までが一つの回答です。Q1から連番で入力し、空欄にすると公開ページでは非表示になります。</div>
     </div>
     <div class="form-check mb-2">
@@ -213,6 +214,21 @@
   </div></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const textareas = document.querySelectorAll('.profile-auto-textarea');
+  function resizeTextarea(textarea) {
+    textarea.style.height = 'auto';
+    const borderHeight = textarea.offsetHeight - textarea.clientHeight;
+    textarea.style.height = `${textarea.scrollHeight + borderHeight}px`;
+  }
+  function resizeAll() { textareas.forEach(resizeTextarea); }
+  textareas.forEach((textarea) => textarea.addEventListener('input', () => resizeTextarea(textarea)));
+  window.addEventListener('resize', resizeAll);
+  resizeAll();
+  if (document.fonts) document.fonts.ready.then(resizeAll);
+});
+</script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('profileAvatarForm');
