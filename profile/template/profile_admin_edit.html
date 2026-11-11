@@ -1,5 +1,20 @@
 {% extends "base.html" %}
 {% block title %}プロフィール管理{% endblock %}
+{% block head_extra %}
+<link href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+  .profile-avatar-preview { width: 150px; height: 150px; border-radius: 50%; object-fit: cover; background: #f1f4f8; }
+  .profile-avatar-empty { width: 150px; height: 150px; border-radius: 50%; display: grid; place-items: center; background: #f1f4f8; color: #65748b; }
+  .profile-crop-wrap { height: min(65dvh, 620px); min-height: 280px; background: #f1f4f8; }
+  .profile-crop-wrap img { display: block; max-width: 100%; }
+  .profile-social-preview { min-width: 72px; height: 72px; display: inline-flex; align-items: center; justify-content: center; font-size: 2.5rem; }
+  .profile-social-preview img { max-width: 64px; max-height: 64px; object-fit: contain; }
+  .profile-social-mode[hidden], .profile-social-preview[hidden] { display: none !important; }
+  .profile-icon-choice { width: 56px; height: 56px; font-size: 1.7rem; }
+  #socialIconChoices [hidden] { display: none !important; }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="container" style="max-width: 900px;">
@@ -15,6 +30,36 @@
       {% endfor %}
     {% endif %}
   {% endwith %}
+
+  {% if form_errors %}
+    <div class="alert alert-danger" role="alert">
+      <ul class="mb-0">
+        {% for error in form_errors %}<li>{{ error }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <div class="card card-body shadow-sm mb-4">
+    <h2 class="h5">プロフィール写真</h2>
+    <p class="text-muted small">公開ページの上部に円形で表示します。写真を選び、位置と拡大率を調整して保存してください。</p>
+    <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+      <img id="profileAvatarPreview" class="profile-avatar-preview" src="{{ profile.avatar_url or '' }}" alt="現在のプロフィール写真" {% if not profile.avatar_url %}hidden{% endif %}>
+      <div id="profileAvatarEmpty" class="profile-avatar-empty" {% if profile.avatar_url %}hidden{% endif %}>写真未設定</div>
+      {% if profile.avatar_file %}
+      <form method="post" action="{{ url_for('profile.admin_profile_avatar_delete') }}" onsubmit="return confirm('プロフィール写真を削除しますか？');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+        <button class="btn btn-outline-danger btn-sm" type="submit">写真を削除</button>
+      </form>
+      {% endif %}
+    </div>
+    <form method="post" action="{{ url_for('profile.admin_profile_avatar_upload') }}" enctype="multipart/form-data" id="profileAvatarForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+      <label class="form-label" for="profileAvatarInput">新しい写真</label>
+      <input class="form-control mb-3" type="file" id="profileAvatarInput" name="avatar_file" accept="image/jpeg,image/png,image/webp">
+      <button class="btn btn-primary" id="profileAvatarSave" type="submit" disabled>写真を保存</button>
+      <div class="text-danger small mt-2" id="profileAvatarError" role="alert" hidden></div>
+    </form>
+  </div>
 
   <form method="post" action="{{ url_for('profile.admin_profile_edit') }}" class="card card-body shadow-sm">
     <div class="mb-3">
@@ -38,18 +83,10 @@
       <textarea class="form-control" name="request_notes_text" rows="5">{{ profile.request_notes_text or '' }}</textarea>
     </div>
     <div class="mb-3">
-      <label class="form-label">X URL</label>
-      <input class="form-control" name="x_url" value="{{ profile.x_url or '' }}" placeholder="https://...">
+      <label class="form-label" for="qa_text">Q&A</label>
+      <textarea class="form-control" id="qa_text" name="qa_text" rows="12" maxlength="30000" aria-describedby="qa_text_help">{{ profile.qa_text or '' }}</textarea>
+      <div class="form-text" id="qa_text_help">「Q1. 質問文」の次の行から回答を入力してください。次のQ行までが一つの回答です。Q1から連番で入力し、空欄にすると公開ページでは非表示になります。</div>
     </div>
-    <div class="mb-3">
-      <label class="form-label">Instagram URL</label>
-      <input class="form-control" name="instagram_url" value="{{ profile.instagram_url or '' }}" placeholder="https://...">
-    </div>
-    <div class="mb-3">
-      <label class="form-label">ポートフォリオ URL</label>
-      <input class="form-control" name="portfolio_url" value="{{ profile.portfolio_url or '' }}" placeholder="https://...">
-    </div>
-
     <div class="form-check mb-2">
       <input class="form-check-input" type="checkbox" name="is_public" id="is_public" value="1" {% if profile.is_public %}checked{% endif %}>
       <label class="form-check-label" for="is_public">公開する</label>
@@ -67,5 +104,331 @@
       <button class="btn btn-primary" type="submit">保存する</button>
     </div>
   </form>
+
+  <section class="card card-body shadow-sm mt-4" id="profile-social-links">
+    <h2 class="h5">各種SNS　リンク</h2>
+    <p class="text-muted small">表示名・URL・アイコンをリンクごとに設定できます。独自画像は正方形に切り抜き、透過を保って保存します。</p>
+    {% for link in social_links %}
+    <div class="border rounded p-3 mb-3">
+      <form method="post" action="{{ url_for('profile.admin_profile_social_update', link_id=link.id) }}" enctype="multipart/form-data" class="profile-social-form" data-has-custom-icon="{{ '1' if link.icon_file else '0' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+        <div class="row g-3">
+          <div class="col-md-4"><label class="form-label">表示名<input class="form-control" name="label" maxlength="100" value="{{ link.label }}" required></label></div>
+          <div class="col-md-8"><label class="form-label">URL<input class="form-control" name="url" type="url" maxlength="1000" value="{{ link.url }}" required></label></div>
+          <div class="col-md-4">
+            <label class="form-label">アイコンの種類
+              <select class="form-select" name="icon_mode" data-icon-mode>
+                <option value="bootstrap" {% if link.icon_mode == 'bootstrap' %}selected{% endif %}>Bootstrap Icons</option>
+                <option value="custom" {% if link.icon_mode == 'custom' %}selected{% endif %}>独自画像</option>
+              </select>
+            </label>
+          </div>
+          <div class="col-md-8 profile-social-mode" data-bootstrap-fields>
+            <label class="form-label">Bootstrap Iconsの名前
+              <div class="input-group">
+                <input class="form-control" name="icon_name" data-bootstrap-name value="{{ link.icon_name or 'bi-link-45deg' }}" placeholder="bi-instagram" maxlength="64">
+                <button class="btn btn-outline-secondary" type="button" data-open-icon-picker>一覧から選択</button>
+              </div>
+            </label>
+          </div>
+          <div class="col-12 profile-social-mode" data-custom-fields>
+            <label class="form-label">独自画像（JPEG・PNG・WebP、5MB以下）
+              <input class="form-control" type="file" name="icon_file" accept="image/jpeg,image/png,image/webp" data-custom-file>
+            </label>
+          </div>
+          <div class="col-12 d-flex align-items-center gap-3">
+            <span class="profile-social-preview" data-bootstrap-preview><i class="bi {{ link.icon_name or 'bi-link-45deg' }}" aria-hidden="true"></i></span>
+            <span class="profile-social-preview" data-custom-preview {% if not link.icon_url %}hidden{% endif %}><img src="{{ link.icon_url or '' }}" alt="現在の独自アイコン"></span>
+            <label class="form-check mb-0"><input class="form-check-input" type="checkbox" name="is_visible" value="1" {% if link.is_visible %}checked{% endif %}> 公開する</label>
+            <button class="btn btn-primary ms-auto" type="submit">このリンクを保存</button>
+          </div>
+        </div>
+      </form>
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <form method="post" action="{{ url_for('profile.admin_profile_social_move', link_id=link.id, direction='up') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><button class="btn btn-outline-secondary btn-sm" type="submit" {% if loop.first %}disabled{% endif %}>↑ 上へ</button></form>
+        <form method="post" action="{{ url_for('profile.admin_profile_social_move', link_id=link.id, direction='down') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><button class="btn btn-outline-secondary btn-sm" type="submit" {% if loop.last %}disabled{% endif %}>↓ 下へ</button></form>
+        <form method="post" action="{{ url_for('profile.admin_profile_social_delete', link_id=link.id) }}" onsubmit="return confirm('このリンクを削除しますか？');"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><button class="btn btn-outline-danger btn-sm" type="submit">削除</button></form>
+      </div>
+    </div>
+    {% endfor %}
+
+    <h3 class="h6 mt-2">リンクを追加</h3>
+    <form method="post" action="{{ url_for('profile.admin_profile_social_add') }}" enctype="multipart/form-data" class="profile-social-form" data-has-custom-icon="0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+      <div class="row g-3">
+        <div class="col-md-4"><label class="form-label">表示名<input class="form-control" name="label" maxlength="100" required></label></div>
+        <div class="col-md-8"><label class="form-label">URL<input class="form-control" name="url" type="url" maxlength="1000" placeholder="https://..." required></label></div>
+        <div class="col-md-4"><label class="form-label">アイコンの種類<select class="form-select" name="icon_mode" data-icon-mode><option value="bootstrap">Bootstrap Icons</option><option value="custom">独自画像</option></select></label></div>
+        <div class="col-md-8 profile-social-mode" data-bootstrap-fields><label class="form-label">Bootstrap Iconsの名前<div class="input-group"><input class="form-control" name="icon_name" data-bootstrap-name value="bi-link-45deg" maxlength="64"><button class="btn btn-outline-secondary" type="button" data-open-icon-picker>一覧から選択</button></div></label></div>
+        <div class="col-12 profile-social-mode" data-custom-fields><label class="form-label">独自画像（JPEG・PNG・WebP、5MB以下）<input class="form-control" type="file" name="icon_file" accept="image/jpeg,image/png,image/webp" data-custom-file></label></div>
+        <div class="col-12 d-flex align-items-center gap-3">
+          <span class="profile-social-preview" data-bootstrap-preview><i class="bi bi-link-45deg" aria-hidden="true"></i></span>
+          <span class="profile-social-preview" data-custom-preview hidden><img src="" alt="独自アイコンのプレビュー"></span>
+          <label class="form-check mb-0"><input class="form-check-input" type="checkbox" name="is_visible" value="1" checked> 公開する</label>
+          <button class="btn btn-primary ms-auto" type="submit">リンクを追加</button>
+        </div>
+      </div>
+    </form>
+  </section>
 </div>
+{% endblock %}
+
+{% block body_extra %}
+<div class="modal fade" id="profileCropModal" tabindex="-1" aria-labelledby="profileCropTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-fullscreen-sm-down">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5" id="profileCropTitle">写真の位置を調整（1:1）</h2>
+        <button class="btn-close" type="button" data-bs-dismiss="modal" aria-label="閉じる"></button>
+      </div>
+      <div class="modal-body">
+        <div class="profile-crop-wrap"><img id="profileCropImage" alt="切り抜く写真"></div>
+        <p class="text-muted small mt-2 mb-0">ドラッグ・ピンチ操作やマウスホイールで位置と拡大率を調整できます。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="profileCropApply" type="button">切り抜きを適用</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal fade" id="socialIconPickerModal" tabindex="-1" aria-labelledby="socialIconPickerTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg"><div class="modal-content">
+    <div class="modal-header"><h2 class="modal-title h5" id="socialIconPickerTitle">Bootstrap Iconsを選択</h2><button class="btn-close" type="button" data-bs-dismiss="modal" aria-label="閉じる"></button></div>
+    <div class="modal-body">
+      <input class="form-control mb-3" id="socialIconSearch" type="search" placeholder="アイコン名で絞り込み">
+      <div class="d-flex flex-wrap gap-2" id="socialIconChoices">
+        {% for icon in ['bi-twitter-x', 'bi-instagram', 'bi-globe', 'bi-youtube', 'bi-tiktok', 'bi-facebook', 'bi-discord', 'bi-github', 'bi-envelope', 'bi-camera', 'bi-link-45deg', 'bi-threads', 'bi-twitch', 'bi-pinterest', 'bi-telegram', 'bi-whatsapp', 'bi-reddit', 'bi-rss', 'bi-house', 'bi-calendar', 'bi-geo-alt', 'bi-music-note', 'bi-images', 'bi-camera-video'] %}
+        <button class="btn btn-outline-secondary profile-icon-choice" type="button" data-icon-choice="{{ icon }}" title="{{ icon }}" aria-label="{{ icon }}"><i class="bi {{ icon }}"></i></button>
+        {% endfor %}
+      </div>
+      <p class="form-text mt-3 mb-0">一覧にないアイコンは、フォームへ <code>bi-</code> から始まる名前を直接入力できます。</p>
+    </div>
+  </div></div>
+</div>
+<div class="modal fade" id="socialIconCropModal" tabindex="-1" aria-labelledby="socialIconCropTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-fullscreen-sm-down"><div class="modal-content">
+    <div class="modal-header"><h2 class="modal-title h5" id="socialIconCropTitle">独自アイコンを切り抜く（1:1）</h2><button class="btn-close" type="button" data-bs-dismiss="modal" aria-label="閉じる"></button></div>
+    <div class="modal-body"><div class="profile-crop-wrap"><img id="socialIconCropImage" alt="切り抜くアイコン"></div><p class="form-text mt-2">位置と拡大率を調整できます。透明な部分は保持されます。</p></div>
+    <div class="modal-footer"><button class="btn btn-primary" type="button" id="socialIconCropApply">切り抜きを適用</button></div>
+  </div></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('profileAvatarForm');
+  const input = document.getElementById('profileAvatarInput');
+  const preview = document.getElementById('profileAvatarPreview');
+  const empty = document.getElementById('profileAvatarEmpty');
+  const save = document.getElementById('profileAvatarSave');
+  const error = document.getElementById('profileAvatarError');
+  const modalElement = document.getElementById('profileCropModal');
+  const cropImage = document.getElementById('profileCropImage');
+  const modal = new bootstrap.Modal(modalElement, { backdrop: 'static' });
+  let cropper = null;
+  let croppedBlob = null;
+  let sourceUrl = null;
+  let previewUrl = null;
+
+  function showError(message) {
+    error.textContent = message;
+    error.hidden = !message;
+  }
+  input.addEventListener('change', () => {
+    croppedBlob = null;
+    save.disabled = true;
+    showError('');
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 8 * 1024 * 1024) {
+      showError('JPEG・PNG・WebPの写真を8MB以下で選択してください。');
+      input.value = '';
+      return;
+    }
+    if (typeof Cropper === 'undefined') {
+      showError('画像編集機能を読み込めませんでした。ページを再読み込みしてください。');
+      return;
+    }
+    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+    sourceUrl = URL.createObjectURL(file);
+    cropImage.src = sourceUrl;
+    modal.show();
+  });
+  modalElement.addEventListener('shown.bs.modal', () => {
+    if (cropper) cropper.destroy();
+    cropper = new Cropper(cropImage, {
+      aspectRatio: 1, viewMode: 2, autoCropArea: 1,
+      dragMode: 'move', movable: true, zoomable: true,
+      zoomOnTouch: true, zoomOnWheel: true, responsive: true,
+      background: false,
+    });
+  });
+  modalElement.addEventListener('hidden.bs.modal', () => {
+    if (cropper) { cropper.destroy(); cropper = null; }
+    if (!croppedBlob) input.value = '';
+  });
+  document.getElementById('profileCropApply').addEventListener('click', () => {
+    if (!cropper) return;
+    const canvas = cropper.getCroppedCanvas({ width: 1024, height: 1024, imageSmoothingQuality: 'high' });
+    if (!canvas) { showError('写真を切り抜けませんでした。'); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { showError('写真を切り抜けませんでした。'); return; }
+      croppedBlob = blob;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(blob);
+      preview.src = previewUrl;
+      preview.hidden = false;
+      empty.hidden = true;
+      save.disabled = false;
+      modal.hide();
+    }, 'image/webp', 0.92);
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!croppedBlob) return;
+    save.disabled = true;
+    showError('');
+    const data = new FormData(form);
+    const extension = croppedBlob.type === 'image/webp' ? 'webp' : 'png';
+    data.set('avatar_file', croppedBlob, `profile-avatar.${extension}`);
+    try {
+      const response = await fetch(form.action, { method: 'POST', body: data, credentials: 'same-origin' });
+      if (!response.ok) throw new Error('upload_failed');
+      window.location.assign(response.url);
+    } catch (_) {
+      showError('保存できませんでした。通信とログイン状態を確認して再試行してください。');
+      save.disabled = false;
+    }
+  });
+});
+</script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const pickerElement = document.getElementById('socialIconPickerModal');
+  const picker = new bootstrap.Modal(pickerElement);
+  const cropElement = document.getElementById('socialIconCropModal');
+  const cropModal = new bootstrap.Modal(cropElement, { backdrop: 'static' });
+  const cropImage = document.getElementById('socialIconCropImage');
+  const pendingBlobs = new WeakMap();
+  let pickerForm = null;
+  let cropForm = null;
+  let cropInput = null;
+  let cropper = null;
+  let sourceUrl = null;
+  let cropApplied = false;
+
+  function refreshForm(form) {
+    const custom = form.querySelector('[data-icon-mode]').value === 'custom';
+    form.querySelector('[data-bootstrap-fields]').hidden = custom;
+    form.querySelector('[data-custom-fields]').hidden = !custom;
+    form.querySelector('[data-bootstrap-preview]').hidden = custom;
+    const customPreview = form.querySelector('[data-custom-preview]');
+    customPreview.hidden = !custom || !customPreview.querySelector('img').getAttribute('src');
+    const name = form.querySelector('[data-bootstrap-name]').value.trim();
+    form.querySelector('[data-bootstrap-preview] i').className = /^bi-[a-z0-9-]+$/.test(name) ? `bi ${name}` : 'bi bi-question-circle';
+  }
+
+  document.querySelectorAll('.profile-social-form').forEach((form) => {
+    form.querySelector('[data-icon-mode]').addEventListener('change', () => refreshForm(form));
+    form.querySelector('[data-bootstrap-name]').addEventListener('input', () => refreshForm(form));
+    form.querySelector('[data-open-icon-picker]').addEventListener('click', () => {
+      pickerForm = form;
+      document.getElementById('socialIconSearch').value = '';
+      pickerElement.querySelectorAll('[data-icon-choice]').forEach((button) => { button.hidden = false; });
+      picker.show();
+    });
+    form.querySelector('[data-custom-file]').addEventListener('change', (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+        alert('JPEG・PNG・WebPの画像を5MB以下で選択してください。');
+        event.target.value = '';
+        return;
+      }
+      if (typeof Cropper === 'undefined') {
+        alert('画像編集機能を読み込めませんでした。ページを再読み込みしてください。');
+        event.target.value = '';
+        return;
+      }
+      cropForm = form;
+      cropInput = event.target;
+      cropApplied = false;
+      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+      sourceUrl = URL.createObjectURL(file);
+      cropImage.src = sourceUrl;
+      cropModal.show();
+    });
+    form.addEventListener('submit', async (event) => {
+      if (form.querySelector('[data-icon-mode]').value !== 'custom') return;
+      const blob = pendingBlobs.get(form);
+      if (!blob && form.dataset.hasCustomIcon !== '1') {
+        event.preventDefault();
+        alert('独自画像を選択し、切り抜きを適用してください。');
+        return;
+      }
+      if (!blob) return;
+      event.preventDefault();
+      const submitButton = form.querySelector('[type="submit"]');
+      submitButton.disabled = true;
+      const data = new FormData(form);
+      data.set('icon_file', blob, blob.type === 'image/webp' ? 'social-icon.webp' : 'social-icon.png');
+      try {
+        const response = await fetch(form.action, { method: 'POST', body: data, credentials: 'same-origin' });
+        if (!response.ok) throw new Error('upload_failed');
+        window.location.assign(response.url);
+      } catch (_) {
+        alert('リンクを保存できませんでした。通信とログイン状態を確認してください。');
+        submitButton.disabled = false;
+      }
+    });
+    refreshForm(form);
+  });
+
+  pickerElement.querySelectorAll('[data-icon-choice]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (pickerForm) {
+        pickerForm.querySelector('[data-bootstrap-name]').value = button.dataset.iconChoice;
+        refreshForm(pickerForm);
+      }
+      picker.hide();
+    });
+  });
+  document.getElementById('socialIconSearch').addEventListener('input', (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    pickerElement.querySelectorAll('[data-icon-choice]').forEach((button) => {
+      button.hidden = !button.dataset.iconChoice.includes(query);
+    });
+  });
+  cropElement.addEventListener('shown.bs.modal', () => {
+    if (cropper) cropper.destroy();
+    cropper = new Cropper(cropImage, {
+      aspectRatio: 1, viewMode: 2, autoCropArea: 1,
+      dragMode: 'move', movable: true, zoomable: true,
+      zoomOnTouch: true, zoomOnWheel: true, responsive: true,
+      background: false,
+    });
+  });
+  cropElement.addEventListener('hidden.bs.modal', () => {
+    if (cropper) { cropper.destroy(); cropper = null; }
+    if (!cropApplied && cropInput) cropInput.value = '';
+    cropInput = null;
+  });
+  document.getElementById('socialIconCropApply').addEventListener('click', () => {
+    if (!cropper || !cropForm) return;
+    const canvas = cropper.getCroppedCanvas({ width: 256, height: 256, imageSmoothingQuality: 'high' });
+    if (!canvas) { alert('画像を切り抜けませんでした。'); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { alert('画像を切り抜けませんでした。'); return; }
+      pendingBlobs.set(cropForm, blob);
+      const preview = cropForm.querySelector('[data-custom-preview]');
+      const image = preview.querySelector('img');
+      if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+      image.dataset.objectUrl = URL.createObjectURL(blob);
+      image.src = image.dataset.objectUrl;
+      preview.hidden = false;
+      cropApplied = true;
+      cropModal.hide();
+    }, 'image/webp', 0.92);
+  });
+});
+</script>
 {% endblock %}

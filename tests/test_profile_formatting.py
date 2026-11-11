@@ -1,6 +1,12 @@
 import importlib.util
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+except ImportError:
+    Environment = FileSystemLoader = select_autoescape = None
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "profile" / "formatting.py"
 spec = importlib.util.spec_from_file_location("profile_formatting", MODULE_PATH)
@@ -29,6 +35,104 @@ class ProfileFormattingTest(unittest.TestCase):
         self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', rendered)
         self.assertIn('href="https://example.com?q=&lt;tag&gt;"', rendered)
         self.assertNotIn('<script>', rendered)
+
+    def test_default_qa_has_two_questions(self):
+        items = profile_formatting.parse_profile_qa_text(profile_formatting.DEFAULT_PROFILE_QA_TEXT)
+        self.assertEqual([item["number"] for item in items], [1, 2])
+        self.assertIn("撮影の依頼", items[0]["question"])
+        self.assertIn("新規のご依頼", items[1]["answer"])
+
+    def test_qa_parser_preserves_multiline_answers_and_blank_lines(self):
+        items = profile_formatting.parse_profile_qa_text(
+            "Q1. 最初の質問\r\n一行目\r\n\r\n二行目\r\n\r\nQ2. 次の質問\r\n回答"
+        )
+        self.assertEqual(items[0]["answer"], "一行目\n\n二行目")
+        self.assertEqual(items[1]["question"], "次の質問")
+
+    def test_qa_parser_rejects_missing_answer_and_number_gap(self):
+        with self.assertRaisesRegex(ValueError, "Q1の回答"):
+            profile_formatting.parse_profile_qa_text("Q1. 質問\n\nQ2. 次の質問\n回答")
+        with self.assertRaisesRegex(ValueError, "Q2. から順番"):
+            profile_formatting.parse_profile_qa_text("Q1. 質問\n回答\nQ3. 次の質問\n回答")
+
+    def test_qa_parser_rejects_text_before_first_question_and_malformed_heading(self):
+        with self.assertRaisesRegex(ValueError, "最初の質問"):
+            profile_formatting.parse_profile_qa_text("前置き\nQ1. 質問\n回答")
+        with self.assertRaisesRegex(ValueError, "質問は"):
+            profile_formatting.parse_profile_qa_text("Q1 質問\n回答")
+
+    def test_qa_parser_empty_text_hides_section(self):
+        self.assertEqual(profile_formatting.parse_profile_qa_text("  \n "), [])
+
+    def test_qa_update_date_uses_japan_calendar_day(self):
+        self.assertIsNone(profile_formatting.format_qa_updated_at(None))
+        self.assertEqual(
+            profile_formatting.format_qa_updated_at(datetime(2026, 11, 11, 15, 30)),
+            "2026/11/12更新",
+        )
+        self.assertEqual(
+            profile_formatting.format_qa_updated_at(datetime(2026, 11, 11, 14, 59, tzinfo=timezone.utc)),
+            "2026/11/11更新",
+        )
+
+    def test_legacy_qa_is_extracted_without_losing_request_notes(self):
+        original = "撮影依頼の案内\n別の段落\n\nQ&A\n\nQ1. 最初の質問\n回答\n\nQ2. 次の質問\n二つ目の回答"
+        notes, qa = profile_formatting.split_legacy_profile_qa(original)
+        self.assertEqual(notes, "撮影依頼の案内\n別の段落")
+        self.assertEqual(len(profile_formatting.parse_profile_qa_text(qa)), 2)
+        self.assertIsNone(profile_formatting.split_legacy_profile_qa("撮影依頼の案内のみ"))
+
+    @unittest.skipIf(Environment is None, "Jinja2 is not installed")
+    def test_public_qa_uses_independent_closed_details_and_escapes_text(self):
+        items = profile_formatting.parse_profile_qa_text(
+            "Q1. <script>質問</script>\n回答\n\n続き\nQ2. 次の質問\n回答"
+        )
+        for item in items:
+            item["answer_html"] = profile_formatting.linkify_plain_text_for_display(str(item["answer"]))
+        templates = MODULE_PATH.parent / "template"
+        env = Environment(loader=FileSystemLoader(templates), autoescape=select_autoescape(["html"]))
+        rendered = env.get_template("profile_public.html").render(
+            profile={"page_title": "プロフィール", "display_name": "テスト"},
+            grouped_works=[], qa_items=items, qa_updated_label="2026/11/11更新",
+        )
+        self.assertEqual(rendered.count('<details class="profile-qa-item'), 2)
+        self.assertIn("すべて開く", rendered)
+        self.assertIn("すべて閉じる", rendered)
+        self.assertNotIn("data-bs-parent", rendered)
+        self.assertIn("&lt;script&gt;質問&lt;/script&gt;", rendered)
+        self.assertNotIn("<script>質問</script>", rendered)
+        self.assertLess(rendered.rindex("Q2."), rendered.index("2026/11/11更新"))
+
+    @unittest.skipIf(Environment is None, "Jinja2 is not installed")
+    def test_public_social_links_follow_intro_and_avatar_precedes_title(self):
+        env = Environment(
+            loader=FileSystemLoader(MODULE_PATH.parent / "template"),
+            autoescape=select_autoescape(["html"]),
+        )
+        rendered = env.get_template("profile_public.html").render(
+            profile={
+                "page_title": "ページタイトル",
+                "display_name": "表示名",
+                "avatar_url": "https://mfu.iori0624.jp/profile/avatar/example.webp",
+                "intro_text": "自己紹介テスト",
+                "request_notes_text": "撮影依頼テスト",
+                "show_sns_links": True,
+                "x_url": "https://x.example/",
+                "instagram_url": "https://instagram.example/",
+                "portfolio_url": "https://portfolio.example/",
+            },
+            grouped_works=[], qa_items=[],
+            social_links=[
+                {"label": "X", "url": "https://x.example/", "icon_mode": "bootstrap", "icon_name": "bi-twitter-x", "icon_url": None},
+                {"label": "独自", "url": "https://custom.example/", "icon_mode": "custom", "icon_name": None, "icon_url": "https://mfu.iori0624.jp/profile/social-icon/example.webp"},
+            ],
+        )
+        self.assertLess(rendered.index("profile/avatar/example.webp"), rendered.index("ページタイトル</h1>"))
+        self.assertLess(rendered.index("自己紹介テスト"), rendered.index("各種SNS　リンク"))
+        self.assertLess(rendered.index("各種SNS　リンク"), rendered.index("撮影依頼テスト"))
+        self.assertEqual(rendered.count("各種SNS　リンク"), 1)
+        self.assertIn("bi bi-twitter-x", rendered)
+        self.assertIn("/profile/social-icon/example.webp", rendered)
 
 
 if __name__ == "__main__":
