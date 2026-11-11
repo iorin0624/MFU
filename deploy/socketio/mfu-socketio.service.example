@@ -1,0 +1,25 @@
+# MFU SE02 (.16). Copy only during an approved deployment window.
+# The main mfu.service and its port 8080 stay unchanged.
+[Unit]
+Description=MFU dedicated Socket.IO
+After=network-online.target redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+Environment=PYTHONUNBUFFERED=1
+Environment=TMPDIR=/mnt/mfu/tmp
+EnvironmentFile=/etc/mfu/socketio.env
+ExecStart=/mnt/mfu/venv/bin/gunicorn --workers 1 --worker-class gthread --threads 320 --bind 192.168.103.16:8091 --timeout 120 --graceful-timeout 30 --keep-alive 5 --backlog 512 --worker-tmp-dir /mnt/mfu/tmp --capture-output --error-logfile - --log-level info app.socketio_dedicated:application
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

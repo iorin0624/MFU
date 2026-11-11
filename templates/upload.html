@@ -116,7 +116,9 @@
           <div class="realtime-count-item"><strong id="realtime-websocket">--</strong><span>WebSocket</span></div>
           <div class="realtime-count-item"><strong id="realtime-polling">--</strong><span>Long-polling</span></div>
         </div>
-        <div class="small text-muted mt-2">サーバー全体の匿名集計です。同じブラウザーでもタブごとに1接続として数えます。</div>
+        <div class="small text-muted mt-2" id="realtime-namespace-counts">機能別接続数を取得中…</div>
+        <div class="small text-muted" id="realtime-event-counts"></div>
+        <div class="small text-muted mt-2">上段は物理接続数、機能別は名前空間ごとの接続数です。同じタブが複数機能へ接続すると機能別では重複します。</div>
       </div>
     </section>
   </div>
@@ -531,6 +533,13 @@ function renderRealtimeConnections(data) {
   if (total) total.textContent = String(Number(data.total) || 0);
   if (websocket) websocket.textContent = String(Number(data.websocket) || 0);
   if (polling) polling.textContent = String(Number(data.polling) || 0);
+  const byNamespace = data.namespaces || {};
+  const namespaceCounts = document.getElementById('realtime-namespace-counts');
+  if (namespaceCounts) namespaceCounts.textContent =
+    `チャット ${Number(byNamespace['/']) || 0} ・ 管理 ${Number(byNamespace['/admin-system']) || 0} ・ ダウンロード進捗 ${Number(byNamespace['/download-progress']) || 0}`;
+  const eventCounts = document.getElementById('realtime-event-counts');
+  if (eventCounts) eventCounts.textContent =
+    `接続拒否 ${Number(data.rejected) || 0} ・ 再接続申告 ${Number(data.reconnected) || 0} ・ Redis ${data.redis_error ? '異常' : data.source === 'local' ? 'ローカル集計' : '正常'}`;
 }
 
 function stopUsageFallback() {

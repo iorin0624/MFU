@@ -1,0 +1,27 @@
+# Review and install only after approval. Never replaces mfu.service (:8080).
+# Checkout the reviewed commit into /opt/mfu-socketio-stage/app first.
+[Unit]
+Description=MFU Socket.IO isolated loopback validation
+After=network-online.target redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=mfu
+Group=mfu
+WorkingDirectory=/opt/mfu-socketio-stage
+Environment=PYTHONPATH=/opt/mfu-socketio-stage:/mnt/mfu
+Environment=PYTHONUNBUFFERED=1
+# Read existing secrets in place; do not copy them into the Git checkout.
+EnvironmentFile=/mnt/mfu/app/.env
+EnvironmentFile=/etc/mfu/socketio-stage.env
+ExecStart=/mnt/mfu/venv/bin/gunicorn --workers 1 --worker-class gthread --threads 16 --bind 127.0.0.1:8091 --timeout 120 --graceful-timeout 30 --keep-alive 5 --backlog 64 --capture-output --error-logfile - --log-level info app.socketio_dedicated:application
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=4096
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

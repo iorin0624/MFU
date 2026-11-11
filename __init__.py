@@ -125,9 +125,11 @@ from app.utils.message import (
 from app.utils.storage_info import get_storage_info
 from app.utils.socket_connection_metrics import (
     connection_snapshot,
+    record_connection_event,
     register_connection,
     unregister_connection,
 )
+from app.utils.socketio_runtime import dedicated_mode, resolve_message_queue
 from app.utils.thumbs import enqueue_thumb_job
 from app.utils.traffic_source import (
     PUBLIC_TRAFFIC_SOURCE_SESSION_KEY,
@@ -271,25 +273,7 @@ def create_app():
 app.secret_key = os.environ.get("SECRET_KEY")
 
 
-def _resolve_socketio_message_queue():
-    queue_url = (os.environ.get("SOCKETIO_MESSAGE_QUEUE") or "").strip()
-    if not queue_url:
-        return None
-
-    try:
-        import importlib
-        if importlib.util.find_spec("redis") is None:
-            app.logger.warning("SOCKETIO_MESSAGE_QUEUE is set but redis package is not installed; fallback to local mode")
-            return None
-        redis = importlib.import_module("redis")
-        redis.Redis.from_url(queue_url, socket_connect_timeout=1, socket_timeout=1).ping()
-        return queue_url
-    except Exception as exc:
-        app.logger.warning("SOCKETIO_MESSAGE_QUEUE connection failed; fallback to local mode: %s", exc)
-        return None
-
-
-app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
+app.config["SOCKETIO_MESSAGE_QUEUE"] = resolve_message_queue(app.logger)
 
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 app.session_interface = MFUSecureCookieSessionInterface()
@@ -1139,6 +1123,7 @@ def _ensure_system_usage_collector():
 def admin_system_connect(auth=None):
     if session.get("user") != ADMIN_USERNAME or not validate_admin_session():
         app.logger.warning("admin system socket rejected ip=%s", request.remote_addr)
+        record_connection_event("rejected", "/admin-system")
         return False
     register_connection(socketio, "/admin-system")
     return True
@@ -1415,7 +1400,7 @@ def _resolve_relpath(rel: str):
 # =====================================
 # 🔁 起動時のメンテ自動スケジュール
 # =====================================
-if os.environ.get("MFU_LAN_UPLOADER_SERVICE") != "1":
+if os.environ.get("MFU_LAN_UPLOADER_SERVICE") != "1" and not dedicated_mode():
     schedule_restart_if_needed()
 
 # =====================================
@@ -6957,13 +6942,15 @@ from app.discord_notifications import (
 app.register_blueprint(discord_notifications_bp)
 
 try:
-    ensure_discord_notification_schema()
-    ensure_discord_notification_nav_item()
+    if not dedicated_mode():
+        ensure_discord_notification_schema()
+        ensure_discord_notification_nav_item()
 except Exception as exc:
     app.logger.warning(f"Discord notification schema/nav init skipped: {exc}")
 
 try:
-    ensure_admin_auth_schema()
+    if not dedicated_mode():
+        ensure_admin_auth_schema()
 except Exception as exc:
     app.logger.error("admin auth schema init failed: %s", exc)
 
@@ -6980,8 +6967,9 @@ from app.utils.notification_service import (
 )
 app.register_blueprint(notification_service_bp)
 try:
-    ensure_notification_service_schema()
-    ensure_notification_service_nav_item()
+    if not dedicated_mode():
+        ensure_notification_service_schema()
+        ensure_notification_service_nav_item()
 except Exception as exc:
     app.logger.warning("Notification service schema/nav init skipped: %s", exc)
 
@@ -7012,8 +7000,9 @@ try:
     from app.etc_accounting.repository import ensure_nav_item as ensure_etc_accounting_nav_item
     from app.etc_accounting.repository import ensure_schema as ensure_etc_accounting_schema
 
-    ensure_etc_accounting_schema()
-    ensure_etc_accounting_nav_item()
+    if not dedicated_mode():
+        ensure_etc_accounting_schema()
+        ensure_etc_accounting_nav_item()
 except Exception as exc:
     app.logger.warning(f"ETC accounting schema/nav init skipped: {exc}")
 
@@ -7021,8 +7010,9 @@ try:
     from app.recurring_expenses.repository import ensure_nav_item as ensure_recurring_expenses_nav_item
     from app.recurring_expenses.repository import ensure_schema as ensure_recurring_expenses_schema
 
-    ensure_recurring_expenses_schema()
-    ensure_recurring_expenses_nav_item()
+    if not dedicated_mode():
+        ensure_recurring_expenses_schema()
+        ensure_recurring_expenses_nav_item()
 except Exception as exc:
     app.logger.warning(f"Recurring expenses schema/nav init skipped: {exc}")
 
@@ -7055,8 +7045,11 @@ app.register_blueprint(fare_bp)
 from app.shipment_tracking import shipment_tracking_bp
 app.register_blueprint(shipment_tracking_bp)
 
-from app.bank_account import register_bank_account
-register_bank_account(app)
+from app.bank_account import bank_account_bp, register_bank_account
+if dedicated_mode():
+    app.register_blueprint(bank_account_bp)
+else:
+    register_bank_account(app)
 
 from app.ticket_price_research import ticket_price_research_bp
 app.register_blueprint(ticket_price_research_bp)
@@ -7072,8 +7065,9 @@ app.register_blueprint(signage_admin_bp)
 app.register_blueprint(train_status_bp)
 
 try:
-    ensure_tdr_schema()
-    ensure_tdr_nav_item()
+    if not dedicated_mode():
+        ensure_tdr_schema()
+        ensure_tdr_nav_item()
 except Exception as exc:
     app.logger.warning(f"TDR popcorn schema/nav init skipped: {exc}")
 
@@ -7085,8 +7079,9 @@ from app.phone_whitelist import (
 app.register_blueprint(phone_whitelist_bp)
 
 try:
-    ensure_phone_whitelist_schema()
-    ensure_phone_whitelist_nav_item()
+    if not dedicated_mode():
+        ensure_phone_whitelist_schema()
+        ensure_phone_whitelist_nav_item()
 except Exception as exc:
     app.logger.warning(f"phone whitelist schema/nav init skipped: {exc}")
 
@@ -7098,8 +7093,9 @@ from app.phone_diagnostics import (
 app.register_blueprint(phone_diagnostics_bp)
 
 try:
-    ensure_phone_diagnostics_schema()
-    ensure_phone_diagnostics_nav_item()
+    if not dedicated_mode():
+        ensure_phone_diagnostics_schema()
+        ensure_phone_diagnostics_nav_item()
 except Exception as exc:
     app.logger.warning(f"phone diagnostics schema/nav init skipped: {exc}")
 
@@ -7120,36 +7116,42 @@ app.register_blueprint(x_ff_remote_bp)
 register_x_ff_socketio(socketio)
 try:
     from app.x_ff_remote import _db as ensure_x_ff_remote_schema, ensure_nav_item as ensure_x_ff_nav_item
-    ensure_x_ff_remote_schema()
-    ensure_x_ff_nav_item()
+    if not dedicated_mode():
+        ensure_x_ff_remote_schema()
+        ensure_x_ff_nav_item()
 except Exception as exc:
     app.logger.warning("X follow remote schema/nav init skipped: %s", exc)
 
 try:
-    ensure_mail_filter_schema()
-    ensure_mail_filter_nav_item()
+    if not dedicated_mode():
+        ensure_mail_filter_schema()
+        ensure_mail_filter_nav_item()
 except Exception as exc:
     app.logger.warning(f"mail filter schema/nav init skipped: {exc}")
 
 try:
-    _ensure_upload_security_schema_once()
+    if not dedicated_mode():
+        _ensure_upload_security_schema_once()
 except Exception as exc:
     app.logger.warning(f"upload security schema init skipped: {exc}")
 
 try:
-    ensure_notification_message_schema()
+    if not dedicated_mode():
+        ensure_notification_message_schema()
 except Exception as exc:
     app.logger.warning(f"upload notification message schema init skipped: {exc}")
 
 try:
-    ensure_uuid_registry_schema()
+    if not dedicated_mode():
+        ensure_uuid_registry_schema()
 except Exception as exc:
     app.logger.warning(f"central UUID registry schema init skipped: {exc}")
 
 try:
     from app.shipment_tracking.services import ensure_nav_item, ensure_shipment_tracking_schema
 
-    ensure_shipment_tracking_schema()
-    ensure_nav_item()
+    if not dedicated_mode():
+        ensure_shipment_tracking_schema()
+        ensure_nav_item()
 except Exception as exc:
     app.logger.warning(f"shipment tracking schema/nav init skipped: {exc}")

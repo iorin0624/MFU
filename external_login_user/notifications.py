@@ -753,6 +753,8 @@ def _ensure_notification_schema() -> None:
 
 @bp.record_once
 def _ensure_notification_table(state) -> None:
+    if os.environ.get("MFU_SOCKETIO_DEDICATED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
     app = state.app
     with app.app_context():
         try:

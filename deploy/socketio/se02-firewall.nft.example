@@ -1,0 +1,9 @@
+# Example only. Merge with the SE02's existing firewall policy; do not flush
+# or replace existing rules. Verify console/SSH recovery before applying.
+table inet mfu_socketio_guard {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        ip saddr 192.168.103.15 tcp dport 8091 accept
+        tcp dport 8091 drop
+    }
+}
