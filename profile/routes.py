@@ -15,6 +15,7 @@ from .social_icons import (
 from .formatting import (
     format_qa_updated_at,
     linkify_plain_text_for_display,
+    list_profile_qa_categories,
     normalize_plain_text_for_display,
     parse_profile_qa_text,
 )
@@ -160,7 +161,8 @@ def profile_public():
     social_links = _social_links_for_view(profile["id"], public=True) if profile.get("show_sns_links") else []
     return render_template(
         "profile_public.html", profile=profile_view, grouped_works=grouped_works,
-        qa_items=qa_items, qa_updated_label=format_qa_updated_at(profile.get("qa_updated_at")),
+        qa_items=qa_items, qa_categories=list_profile_qa_categories(qa_items),
+        qa_updated_label=format_qa_updated_at(profile.get("qa_updated_at")),
         social_links=social_links,
     )
 

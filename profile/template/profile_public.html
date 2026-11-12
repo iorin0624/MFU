@@ -16,8 +16,11 @@
     .badge { font-weight: normal; }
     .profile-qa-item summary { cursor: pointer; list-style: none; }
     .profile-qa-item summary::-webkit-details-marker { display: none; }
-    .profile-qa-item summary::after { content: "⌄"; margin-left: auto; font-size: 1.35rem; line-height: 1; }
+    .profile-qa-item summary::after { content: "⌄"; margin-left: auto; flex: none; font-size: 1.35rem; line-height: 1; }
     .profile-qa-item[open] summary::after { content: "⌃"; }
+    .profile-qa-item summary > span { min-width: 0; overflow-wrap: anywhere; }
+    .profile-qa-item[hidden] { display: none !important; }
+    .profile-qa-preview { display: block; color: #6c757d; font-size: .95rem; line-height: 1.5; font-weight: 400; }
   </style>
 </head>
 <body>
@@ -93,14 +96,24 @@
           <button class="btn btn-outline-secondary btn-sm" type="button" data-qa-action="close">すべて閉じる</button>
         </div>
       </div>
+      <label class="visually-hidden" for="profile-qa-search">Q&Aを検索</label>
+      <input class="form-control mb-3" id="profile-qa-search" type="search" placeholder="質問・回答を検索（例：キャンセル、納品）" autocomplete="off">
+      <div class="d-flex flex-wrap gap-2 mb-3" role="group" aria-label="Q&Aのカテゴリ">
+        <button class="btn btn-primary btn-sm" type="button" data-qa-category-filter="" aria-pressed="true">すべて <span>{{ qa_items | length }}</span></button>
+        {% for category in qa_categories %}
+        <button class="btn btn-outline-primary btn-sm" type="button" data-qa-category-filter="{{ category.name }}" aria-pressed="false">{{ category.name }} <span>{{ category.count }}</span></button>
+        {% endfor %}
+      </div>
+      <p class="small text-muted mb-3" id="profile-qa-result-count" role="status" aria-live="polite">{{ qa_items | length }}件表示</p>
       <div class="d-grid gap-2">
         {% for item in qa_items %}
-        <details class="profile-qa-item card border-0 shadow-sm">
-          <summary class="card-body d-flex align-items-center gap-2 fw-semibold fs-5">Q{{ item.number }}. {{ item.question }}</summary>
+        <details class="profile-qa-item card border-0 shadow-sm" id="profile-qa-{{ item.number }}" data-qa-category="{{ item.category }}">
+          <summary class="card-body d-flex align-items-center gap-2 fw-semibold fs-5"><span>Q{{ item.number }}. {{ item.question }}{% if item.summary %}<span class="profile-qa-preview mt-1">要点：{{ item.summary }}</span>{% endif %}</span></summary>
           <div class="card-body border-top lh-lg" style="white-space: pre-line; overflow-wrap: anywhere;">{{ item.answer_html | safe }}</div>
         </details>
         {% endfor %}
       </div>
+      <p class="text-muted mt-3" id="profile-qa-empty" hidden>該当するQ&Aがありません。検索語やカテゴリを変えてみてください。</p>
       {% if qa_updated_label %}
       <p class="text-end text-muted small mt-2 mb-0">{{ qa_updated_label }}</p>
       {% endif %}
@@ -134,12 +147,44 @@
     (() => {
       const section = document.getElementById('profile-qa');
       if (!section) return;
-      const items = section.querySelectorAll('details.profile-qa-item');
+      const items = Array.from(section.querySelectorAll('details.profile-qa-item'));
+      const search = section.querySelector('#profile-qa-search');
+      const categoryButtons = Array.from(section.querySelectorAll('[data-qa-category-filter]'));
+      const resultCount = section.querySelector('#profile-qa-result-count');
+      const empty = section.querySelector('#profile-qa-empty');
+      const normalize = (value) => value.normalize('NFKC').toLocaleLowerCase('ja-JP');
+      const records = items.map((item) => ({
+        element: item, category: item.dataset.qaCategory, text: normalize(item.textContent),
+      }));
+      let activeCategory = '';
+      function filterQuestions() {
+        const terms = normalize(search.value.trim()).split(/\s+/).filter(Boolean);
+        let visible = 0;
+        records.forEach((record) => {
+          const matches = (!activeCategory || record.category === activeCategory) &&
+            terms.every((term) => record.text.includes(term));
+          record.element.hidden = !matches;
+          if (matches) visible += 1;
+        });
+        resultCount.textContent = `${visible} / ${items.length}件表示`;
+        empty.hidden = visible !== 0;
+      }
+      search.addEventListener('input', filterQuestions);
+      categoryButtons.forEach((button) => button.addEventListener('click', () => {
+        activeCategory = button.dataset.qaCategoryFilter;
+        categoryButtons.forEach((choice) => {
+          const selected = choice === button;
+          choice.setAttribute('aria-pressed', String(selected));
+          choice.classList.toggle('btn-primary', selected);
+          choice.classList.toggle('btn-outline-primary', !selected);
+        });
+        filterQuestions();
+      }));
       section.querySelector('[data-qa-action="open"]').addEventListener('click', () => {
-        items.forEach((item) => { item.open = true; });
+        items.filter((item) => !item.hidden).forEach((item) => { item.open = true; });
       });
       section.querySelector('[data-qa-action="close"]').addEventListener('click', () => {
-        items.forEach((item) => { item.open = false; });
+        items.filter((item) => !item.hidden).forEach((item) => { item.open = false; });
       });
     })();
     (() => {

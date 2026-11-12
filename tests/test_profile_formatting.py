@@ -49,6 +49,44 @@ class ProfileFormattingTest(unittest.TestCase):
         self.assertEqual(items[0]["answer"], "一行目\n\n二行目")
         self.assertEqual(items[1]["question"], "次の質問")
 
+    def test_qa_parser_reads_optional_category_and_summary_without_changing_answer(self):
+        items = profile_formatting.parse_profile_qa_text(
+            "Q1. 納品方法は？\n【カテゴリ】納品・保存\n【要点】専用サービスでお渡しします。\n回答の一行目\n\n回答の二行目\n"
+            "Q2. 次の質問\n回答"
+        )
+        self.assertEqual(items[0]["category"], "納品・保存")
+        self.assertEqual(items[0]["summary"], "専用サービスでお渡しします。")
+        self.assertEqual(items[0]["answer"], "回答の一行目\n\n回答の二行目")
+        self.assertEqual(items[1]["summary"], "")
+        self.assertEqual(items[1]["category"], "その他")
+        self.assertEqual(
+            profile_formatting.list_profile_qa_categories(items),
+            [{"name": "納品・保存", "count": 1}, {"name": "その他", "count": 1}],
+        )
+
+    def test_untagged_existing_questions_get_suggested_categories(self):
+        items = profile_formatting.parse_profile_qa_text(
+            "Q1. 撮影の依頼方法は？\n回答\n"
+            "Q2. 支払い方法は？\n回答\n"
+            "Q3. キャンセルできますか？\n回答\n"
+            "Q4. 写真はいつ受け取れますか？\n回答\n"
+            "Q5. SNSに掲載できますか？\n回答"
+        )
+        self.assertEqual(
+            [item["category"] for item in items],
+            ["依頼・日程", "費用・支払い", "キャンセル・変更", "納品・保存", "写真の利用"],
+        )
+
+    def test_qa_metadata_is_validated(self):
+        for text, message in (
+            ("Q1. 質問\n【要点】\n回答", "要点は1"),
+            ("Q1. 質問\n【カテゴリ】その他\n【カテゴリ】納品・保存\n回答", "カテゴリは1問"),
+            ("Q1. 質問\n回答\n【要点】後から追加", "回答本文より前"),
+            ("Q1. 質問\n【要点】" + "あ" * 201 + "\n回答", "要点は1"),
+        ):
+            with self.subTest(text=text[:40]), self.assertRaisesRegex(ValueError, message):
+                profile_formatting.parse_profile_qa_text(text)
+
     def test_qa_parser_rejects_missing_answer_and_number_gap(self):
         with self.assertRaisesRegex(ValueError, "Q1の回答"):
             profile_formatting.parse_profile_qa_text("Q1. 質問\n\nQ2. 次の質問\n回答")
@@ -102,6 +140,27 @@ class ProfileFormattingTest(unittest.TestCase):
         self.assertIn("&lt;script&gt;質問&lt;/script&gt;", rendered)
         self.assertNotIn("<script>質問</script>", rendered)
         self.assertLess(rendered.rindex("Q2."), rendered.index("2026/11/11更新"))
+
+    @unittest.skipIf(Environment is None, "Jinja2 is not installed")
+    def test_public_qa_renders_search_categories_and_escaped_summary(self):
+        items = profile_formatting.parse_profile_qa_text(
+            "Q1. 納品方法は？\n【カテゴリ】納品・保存\n【要点】<script>要点</script>\n回答"
+        )
+        items[0]["answer_html"] = profile_formatting.linkify_plain_text_for_display(str(items[0]["answer"]))
+        env = Environment(
+            loader=FileSystemLoader(MODULE_PATH.parent / "template"),
+            autoescape=select_autoescape(["html"]),
+        )
+        rendered = env.get_template("profile_public.html").render(
+            profile={"page_title": "プロフィール", "display_name": "テスト"},
+            grouped_works=[], qa_items=items,
+            qa_categories=profile_formatting.list_profile_qa_categories(items),
+        )
+        self.assertIn('id="profile-qa-search"', rendered)
+        self.assertIn('data-qa-category-filter="納品・保存"', rendered)
+        self.assertIn('data-qa-category="納品・保存"', rendered)
+        self.assertIn('要点：&lt;script&gt;要点&lt;/script&gt;', rendered)
+        self.assertNotIn('<script>要点</script>', rendered)
 
     @unittest.skipIf(Environment is None, "Jinja2 is not installed")
     def test_public_social_links_follow_intro_and_avatar_precedes_title(self):

@@ -86,7 +86,15 @@
     <div class="mb-3">
       <label class="form-label" for="qa_text">Q&A</label>
       <textarea class="form-control profile-auto-textarea" id="qa_text" name="qa_text" rows="12" maxlength="30000" aria-describedby="qa_text_help">{{ profile.qa_text or '' }}</textarea>
-      <div class="form-text" id="qa_text_help">「Q1. 質問文」の次の行から回答を入力してください。次のQ行までが一つの回答です。Q1から連番で入力し、空欄にすると公開ページでは非表示になります。</div>
+      <div class="form-text" id="qa_text_help">「Q1. 質問文」の次の行から回答を入力してください。次のQ行までが一つの回答です。Q1から連番で入力し、空欄にすると公開ページでは非表示になります。カテゴリ・要点は任意で、質問の直後、回答本文より前に入力できます。</div>
+      <details class="form-text mt-2">
+        <summary>カテゴリ・要点の入力例</summary>
+        <pre class="bg-light border rounded p-2 mt-2 mb-1" style="white-space: pre-wrap; overflow-wrap: anywhere;">Q1. 撮影の依頼方法は？
+【カテゴリ】依頼・日程
+【要点】予定を確認してからDMでご相談ください。
+詳しいご案内をここに入力します。</pre>
+        <span>カテゴリと要点の行がない従来の文章も利用できます。未指定のカテゴリは質問文から仮分類されるため、必要に応じて明示してください。要点は自動作成されません。</span>
+      </details>
     </div>
     <div class="form-check mb-2">
       <input class="form-check-input" type="checkbox" name="is_public" id="is_public" value="1" {% if profile.is_public %}checked{% endif %}>
