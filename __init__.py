@@ -99,6 +99,7 @@ from app.utils.upload_email_otp import (
 from app.utils.image import save_as_jpeg
 from app.utils.layer_reply_store import list_layer_reply_groups
 from app.utils.logs import (
+    REPLY_IMAGE_ACCESS_LOG_ENDPOINT,
     get_fw_404_settings,
     list_fw_auto_permanent_bans,
     log_request_raw,
@@ -4980,6 +4981,14 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
 
     where = []
     params = []
+
+    # Keep historical image hits in the database/export, but hide routine
+    # successful transfers from the admin list (including filtered searches).
+    where.append(
+        "NOT (COALESCE(endpoint, '') = %s AND method IN ('GET', 'HEAD') "
+        "AND status IN (200, 206, 304))"
+    )
+    params.append(REPLY_IMAGE_ACCESS_LOG_ENDPOINT)
 
     if selected_date and _valid_date(selected_date):
         where.append("log_date >= %s AND log_date < DATE_ADD(%s, INTERVAL 1 DAY)")

@@ -166,6 +166,17 @@ SKIP_ENDPOINTS = {
     "api_vcgencmd",
 }
 
+REPLY_IMAGE_ACCESS_LOG_ENDPOINT = "layer_reply.public_reply_image"
+
+
+def is_successful_reply_image_access(method: str, endpoint: Optional[str], status: int) -> bool:
+    """Skip routine image transfers, but retain denied and missing-file requests."""
+    return (
+        method in {"GET", "HEAD"}
+        and endpoint == REPLY_IMAGE_ACCESS_LOG_ENDPOINT
+        and status in {200, 206, 304}
+    )
+
 # ----------------------------------------------------------
 # 補助：バイナリ配信など（旧来の除外条件を継続）
 # ----------------------------------------------------------
@@ -1223,6 +1234,10 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
     """
     path = flask_request.path or ""
     if getattr(g, "mfu_skip_access_log", False):
+        return
+    if is_successful_reply_image_access(
+        flask_request.method, endpoint, flask_response.status_code
+    ):
         return
     if should_skip_access_log(path, endpoint):
         return
