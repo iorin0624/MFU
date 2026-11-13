@@ -1,0 +1,16 @@
+[Unit]
+Description=MFU SUC calendar sync via Baikal CalDAV
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MYSQL_POOL_SIZE=2
+ExecStart=/mnt/mfu/venv/bin/python /mnt/mfu/app/s_u_calendar/baikal_sync.py --apply
+TimeoutStartSec=120
+NoNewPrivileges=yes
+PrivateTmp=yes

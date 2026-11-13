@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Baikal calendar updates every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=10s
+Unit=mfu-suc-baikal-sync.service
+
+[Install]
+WantedBy=timers.target

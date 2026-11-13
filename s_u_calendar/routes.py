@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import os
-import requests
-import msal
 import datetime as dt
 
 from datetime import date, datetime, timedelta
@@ -19,6 +17,7 @@ from .month_update import (
     existing_comparable_values,
     parse_month_updates,
 )
+from .baikal_sync import read_range as read_baikal_range
 
 # 既存のDBユーティリティを使用（プロジェクトの実装に合わせて）
 # 例: app/utils/db.py に get_db() がある前提
@@ -195,88 +194,41 @@ def upsert_su_calendar_month_flag(year: int, month: int, show_closed_notice: boo
 # -----------------------------------------------------------------------------
 
 
-# ---- 日本の祝日ユーティリティ（API優先、jpholidayはフォールバック） ----------
+# ---- 日本の祝日ユーティリティ（BaikalのCalDAV同期済みスナップショット） ---
 import time
-from calendar import monthrange as _monthrange
-
-# 依存は任意。requests が無ければ urllib を使う
-try:
-    import requests as _requests
-except Exception:
-    _requests = None
-
-from urllib.request import urlopen as _urlopen
-from urllib.error import URLError as _URLError, HTTPError as _HTTPError
-import json as _json
-
-# 任意: pip install jpholiday（API障害時のフォールバックとして使用）
-try:
-    import jpholiday as _jph
-except Exception:
-    _jph = None
-
-_HOL_API_BASE = "https://api.national-holidays.jp"
-_HOL_CACHE: dict[int, tuple[float, dict]] = {}  # year -> (fetched_at, { "YYYY-MM-DD": {"name":..., "type":...} })
-_HOL_TTL_SEC = 24 * 60 * 60  # 24h キャッシュ
-
-def _http_get_json(url: str, timeout: int = 5):
-    """requests があればそれを、無ければ urllib を使って JSON を取得"""
-    if _requests is not None:
-        r = _requests.get(url, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    else:
-        with _urlopen(url, timeout=timeout) as resp:
-            # Pythonの標準ライブラリでJSONを読む
-            return _json.load(resp)
-
-def _load_holidays_year_from_api(year: int) -> dict:
-    """APIから指定年の祝日を取得し dict[date] = {name,type} を返す（無ければ空）。"""
-    url = f"{_HOL_API_BASE}/{year}"
-    arr = _http_get_json(url, timeout=6)
-    # 年指定は基本 JSON配列。万一オブジェクトが返ってきたら配列化して握りつぶす。
-    if isinstance(arr, dict):
-        arr = [arr]
-    data = {}
-    for row in arr or []:
-        d = row.get("date")
-        nm = row.get("name")
-        tp = row.get("type")
-        if d and nm:
-            data[d] = {"name": nm, "type": tp}
-    return data
+_HOL_CACHE: dict[int, tuple[float, dict]] = {}
+_HOL_TTL_SEC = 30
 
 def _load_holidays_year(year: int) -> dict:
-    """キャッシュ付きで年単位の祝日表を返す。API優先、失敗時は jpholiday を使って補完。"""
+    """Read the last successful Baikal holiday snapshot; never fetch per view."""
     now = time.time()
     ent = _HOL_CACHE.get(year)
     if ent and now - ent[0] < _HOL_TTL_SEC:
         return ent[1]
-
     data = {}
     try:
-        data = _load_holidays_year_from_api(year)
-    except Exception as e:
-        current_app.logger.warning("[SUCAL] holiday API failed for year %s: %r", year, e)
-
-        # --- APIが失敗した場合のみ、jpholiday で最小限のフォールバックを構築 ---
-        if _jph is not None:
+        db = get_db()
+        try:
+            cur = db.cursor()
             try:
-                for m in range(1, 13):
-                    last = _monthrange(year, m)[1]
-                    for dd in range(1, last + 1):
-                        dt = date(year, m, dd)
-                        nm = _jph.is_holiday_name(dt)
-                        if nm:
-                            data[dt.strftime("%Y-%m-%d")] = {"name": nm, "type": "国民の祝日"}
-            except Exception as e2:
-                current_app.logger.warning("[SUCAL] jpholiday fallback failed: %r", e2)
-
+                cur.execute(
+                    "SELECT day_date, name FROM su_calendar_holidays "
+                    "WHERE day_date BETWEEN %s AND %s",
+                    (date(year, 1, 1), date(year, 12, 31)),
+                )
+                data = {day.isoformat(): {"name": name} for day, name in cur.fetchall()}
+            finally:
+                cur.close()
+        finally:
+            db.close()
+    except Exception as e:
+        current_app.logger.warning("[SUCAL] Baikal holiday snapshot unavailable: %r", e)
+        return ent[1] if ent else {}
     _HOL_CACHE[year] = (now, data)
     return data
 
 def _holiday_info(d: date) -> tuple[bool, str | None]:
-    """(is_holiday, holiday_name) を返す。API結果が最優先。"""
+    """Return a holiday from the synchronized Baikal calendar."""
     table = _load_holidays_year(d.year)
     key = d.strftime("%Y-%m-%d")
     rec = table.get(key)
@@ -301,55 +253,14 @@ def admin_or_token_required(view):
         return jsonify({"error": "forbidden"}), 403
     return _wrap
 
-# === Graph: free/busy 取得（最小）==============================================
-TENANT = os.environ["GRAPH_TENANT_ID"]
-CLIENT_ID = os.environ["GRAPH_CLIENT_ID"]
-CLIENT_SECRET = os.environ["GRAPH_CLIENT_SECRET"]
-UPN = os.environ["OUTLOOK_SYNC_UPN"]
-
-def get_app_token():
-    auth = msal.ConfidentialClientApplication(
-        CLIENT_ID,
-        authority=f"https://login.microsoftonline.com/{TENANT}",
-        client_credential=CLIENT_SECRET,
-    )
-    scope = ["https://graph.microsoft.com/.default"]
-    result = auth.acquire_token_silent(scope, account=None) or auth.acquire_token_for_client(scopes=scope)
-    if "access_token" not in result:
-        raise RuntimeError(result.get("error_description"))
-    return result["access_token"]
-
+# === Baikal CalDAV: main-calendar busy dates =================================
 def get_freebusy(date_from: dt.date, date_to: dt.date):
-    token = get_app_token()
-    url = f"https://graph.microsoft.com/v1.0/users/{UPN}/calendar/getSchedule"
-    body = {
-        "schedules": [UPN],
-        "startTime": {"dateTime": f"{date_from}T00:00:00", "timeZone": "Tokyo Standard Time"},
-        "endTime":   {"dateTime": f"{date_to}T23:59:59", "timeZone": "Tokyo Standard Time"},
-        "availabilityViewInterval": 60
-    }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Prefer": 'outlook.timezone="Tokyo Standard Time"',
-    }
-    r = requests.post(url, json=body, headers=headers, timeout=15)
-    if r.status_code >= 400:
-        try:
-            err = r.json()
-        except Exception:
-            err = {"text": r.text}
-        current_app.logger.error("Graph getSchedule error %s: %s", r.status_code, err)
-        r.raise_for_status()  # ← 既存どおり
-    return r.json()
-
-def _debug_decode_token():
-    tok = get_app_token()
-    import base64, json
-    payload = tok.split('.')[1] + '=='
-    data = json.loads(base64.urlsafe_b64decode(payload))
-    current_app.logger.info("GRAPH token roles=%s, appid=%s, tid=%s",
-                            data.get("roles"), data.get("appid"), data.get("tid"))
+    busy_days = read_baikal_range(date_from, date_to, kind="main")
+    return {"value": [{"scheduleItems": [
+        {"start": {"dateTime": f"{day}T00:00:00"},
+         "end": {"dateTime": f"{(date.fromisoformat(day) + timedelta(days=1)).isoformat()}T00:00:00"}}
+        for day in sorted(busy_days)
+    ]}]}
 # ==============================================================================
 
 def _get_meta(db, key: str) -> str | None:
@@ -1017,12 +928,13 @@ def admin_api_quick_add():
     }), 200
 
 
-# === Outlook → MFU 同期（指定範囲・62日分割対応） ===============================
+# === Baikal → MFU 同期（指定範囲） ==========================================
 @s_u_calendar_bp.route("/admin/sync_outlook_range", methods=["POST", "GET"])
+@s_u_calendar_bp.route("/admin/sync_baikal_range", methods=["POST", "GET"])
 @admin_required
-def sync_outlook_range():
+def sync_baikal_range():
     """
-    Outlook（Graph）から指定範囲の予定を取得し、MFUカレンダーへ反映。
+    Baikal（CalDAV）から指定範囲の予定を取得し、MFUカレンダーへ反映。
 
     受け付け（GET/POST 共通）:
       A) from=YYYY-MM-DD, to=YYYY-MM-DD
@@ -1030,7 +942,7 @@ def sync_outlook_range():
       C) from_year=YYYY, from_month=MM, months=1..6
 
     オプション:
-      - clear_missing: 1/true で範囲内で Outlook 側に存在しない日を free に戻す（synced_busy=1 の日だけ）
+      - clear_missing: 1/true でBaikalに存在しない日を free に戻す（synced_busy=1 の日だけ）
       - clear_labels : 1/true で上記 free 化時にラベルも消す
     """
     from datetime import datetime, date, timedelta
@@ -1038,7 +950,7 @@ def sync_outlook_range():
 
     fmt = "%Y-%m-%d"
     v = request.values  # GET/POST 両対応
-    MAX_WINDOW_DAYS = 62  # Graph FreeBusyViewOptions.TimeWindow 制限に合わせる
+    MAX_WINDOW_DAYS = 62
 
     # ---- helpers ------------------------------------------------------------
     def _month_edges(y: int, m: int) -> tuple[date, date]:
@@ -1146,7 +1058,7 @@ def sync_outlook_range():
     clear_missing = _as_bool(v.get("clear_missing"), False)
     clear_labels  = _as_bool(v.get("clear_labels"),  False)
 
-    # ---- Graph 取得（62日分割で統合） ---------------------------------------
+    # ---- CalDAV 取得 -------------------------------------------------------
     busy_days: set[str] = set()
     windows = list(_iter_windows(start_d, end_d, MAX_WINDOW_DAYS))
 
@@ -1156,7 +1068,7 @@ def sync_outlook_range():
                 data = get_freebusy(ws, we)
             except Exception as e:
                 return jsonify({
-                    "error": "graph_error",
+                    "error": "baikal_error",
                     "reason": repr(e),
                     "window": {"from": ws.strftime(fmt), "to": we.strftime(fmt)}
                 }), 502
@@ -1165,7 +1077,7 @@ def sync_outlook_range():
                 items = (data.get("value") or [{}])[0].get("scheduleItems", []) or []
             except Exception as e:
                 return jsonify({
-                    "error": "graph_payload_unexpected",
+                    "error": "baikal_payload_unexpected",
                     "reason": repr(e),
                     "window": {"from": ws.strftime(fmt), "to": we.strftime(fmt)},
                     "raw_keys": list(data.keys()) if isinstance(data, dict) else str(type(data))
@@ -1193,9 +1105,11 @@ def sync_outlook_range():
         # busy upsert
         for key in busy_days:
             d = datetime.strptime(key, fmt).date()
-            cur.execute("SELECT id FROM su_calendar_days WHERE day_date=%s", (d,))
+            cur.execute("SELECT id, status, synced_busy FROM su_calendar_days WHERE day_date=%s", (d,))
             row = cur.fetchone()
             if row:
+                if row[1] == "busy" and not row[2]:
+                    continue  # 手動の予定ありを同期対象へ取り込まない
                 cur.execute("""
                     UPDATE su_calendar_days
                        SET status=%s, is_public=%s, synced_busy=1
@@ -1245,7 +1159,7 @@ def sync_outlook_range():
                       or request.remote_addr or "-")
         _log_admin(
             db, ip_for_log,
-            f"SYNC_OUTLOOK_RANGE {start_d.isoformat()}..{end_d.isoformat()} "
+            f"SYNC_BAIKAL_RANGE {start_d.isoformat()}..{end_d.isoformat()} "
             f"busy={len(busy_days)} clear_missing={int(clear_missing)} windows={len(windows)}"
         )
     except Exception:
@@ -1262,10 +1176,11 @@ def sync_outlook_range():
     }), 200
 
 
-# === 当月から6ヶ月分 同期API（GET/トークン対応・62日分割・最終同期記録） ========
+# === 当月から6ヶ月分 同期API（GET/トークン対応・最終同期記録） ===============
 @s_u_calendar_bp.route("/admin/api/v1/sync_outlook_6m", methods=["GET"])
+@s_u_calendar_bp.route("/admin/api/v1/sync_baikal_6m", methods=["GET"])
 @admin_or_token_required
-def admin_api_sync_outlook_6m():
+def admin_api_sync_baikal_6m():
     from datetime import datetime, date, timedelta, timezone
     from calendar import monthrange
 
@@ -1324,12 +1239,12 @@ def admin_api_sync_outlook_6m():
     clear_missing = _as_bool(q.get("clear_missing"), False)
     clear_labels  = _as_bool(q.get("clear_labels"), False)
 
-    # ----- Graph 取得（62日分割で結合） -------------------------------------
+    # ----- CalDAV 取得 ------------------------------------------------------
     busy_days: set[str] = set()
     windows = list(_iter_windows(start_d, end_d, MAX_WINDOW_DAYS))
     try:
         for (ws, we) in windows:
-            data = get_freebusy(ws, we)  # 既存のGraphヘルパを利用
+            data = get_freebusy(ws, we)
             items = (data.get("value") or [{}])[0].get("scheduleItems", []) or []
             for it in items:
                 try:
@@ -1337,7 +1252,7 @@ def admin_api_sync_outlook_6m():
                     en = _to_dt(it["end"]["dateTime"]).date()
                 except Exception:
                     continue
-                # Graphの終了は非包含 → 日単位に正規化
+                # CalDAV由来の終了日時は非包含 → 日単位に正規化
                 d_last = (en - timedelta(days=1)) if en > st else st
                 d = max(st, ws)
                 while d <= min(we, d_last):
@@ -1345,7 +1260,7 @@ def admin_api_sync_outlook_6m():
                         busy_days.add(d.strftime(fmt))
                     d += timedelta(days=1)
     except Exception as e:
-        return jsonify({"error": "graph_error", "reason": repr(e)}), 502
+        return jsonify({"error": "baikal_error", "reason": repr(e)}), 502
 
     # ----- DB反映 ------------------------------------------------------------
     db = get_db()
@@ -1354,9 +1269,11 @@ def admin_api_sync_outlook_6m():
         # busy upsert（synced_busy=1 に設定）
         for key in busy_days:
             d = datetime.strptime(key, fmt).date()
-            cur.execute("SELECT id FROM su_calendar_days WHERE day_date=%s", (d,))
+            cur.execute("SELECT id, status, synced_busy FROM su_calendar_days WHERE day_date=%s", (d,))
             row = cur.fetchone()
             if row:
+                if row[1] == "busy" and not row[2]:
+                    continue  # 手動の予定ありは維持
                 cur.execute("""
                     UPDATE su_calendar_days
                        SET status=%s, is_public=%s, synced_busy=1
@@ -1422,7 +1339,7 @@ def admin_api_sync_outlook_6m():
                       or request.remote_addr or "-")
         _log_admin(
             db, ip_for_log,
-            f"API_SYNC_OUTLOOK_6M {start_d.isoformat()}..{end_d.isoformat()} "
+            f"API_SYNC_BAIKAL_6M {start_d.isoformat()}..{end_d.isoformat()} "
             f"busy={len(busy_days)} clear_missing={int(clear_missing)} windows={len(windows)}"
         )
     except Exception:
