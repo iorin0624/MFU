@@ -159,7 +159,7 @@ def _put_meta(cursor, key: str, value: str) -> None:
 
 def _month_horizon(today: date) -> tuple[date, date]:
     first = today.replace(day=1)
-    offset = today.year * 12 + today.month - 1 + 5
+    offset = today.year * 12 + today.month - 1 + 11
     year, month_zero = divmod(offset, 12)
     return first, date(year, month_zero + 1, monthrange(year, month_zero + 1)[1])
 
@@ -178,6 +178,8 @@ def synchronize(db, *, today: date | None = None, apply: bool = False) -> dict:
     try:
         old_tokens = {kind: _meta(cursor, f"suc_baikal_{kind}_token") for kind in CALENDARS}
         last_full = _meta(cursor, "suc_baikal_last_full_day")
+        sync_range = f"{first}..{last}"
+        last_range = _meta(cursor, "suc_baikal_last_range")
         cursor.execute(
             "SELECT day_date, status, synced_busy FROM su_calendar_days "
             "WHERE day_date BETWEEN %s AND %s", (first, last)
@@ -197,7 +199,7 @@ def synchronize(db, *, today: date | None = None, apply: bool = False) -> dict:
 
         secret = _password()
         tokens = {kind: collection_token(kind, secret) for kind in CALENDARS}
-        full = last_full != today.isoformat()
+        full = last_full != today.isoformat() or last_range != sync_range
         changed = {kind: full or tokens[kind] != old_tokens[kind] for kind in CALENDARS}
         # After a calendar rolls into a new month, daily full refresh is mandatory.
         if not any(changed.values()):
@@ -227,7 +229,7 @@ def synchronize(db, *, today: date | None = None, apply: bool = False) -> dict:
             holiday_changes += sum(day not in holidays for day in old_holidays)
         summary = {
             "changed": True, "main": changed["main"], "holidays": changed["holidays"],
-            "range": f"{first}..{last}", "added": added, "cleared": cleared,
+            "range": sync_range, "added": added, "cleared": cleared,
             "manual_overlap": manual_overlap, "holiday_changes": holiday_changes,
         }
         if not apply:
@@ -271,8 +273,9 @@ def synchronize(db, *, today: date | None = None, apply: bool = False) -> dict:
                 _put_meta(cursor, f"suc_baikal_{kind}_token", tokens[kind])
         if full:
             _put_meta(cursor, "suc_baikal_last_full_day", today.isoformat())
+        _put_meta(cursor, "suc_baikal_last_range", sync_range)
         _put_meta(cursor, "last_sync_at", datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S%z"))
-        _put_meta(cursor, "last_sync_range", f"{first}..{last}")
+        _put_meta(cursor, "last_sync_range", sync_range)
         db.commit()
         return summary
     except Exception:

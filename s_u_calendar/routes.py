@@ -938,8 +938,8 @@ def sync_baikal_range():
 
     受け付け（GET/POST 共通）:
       A) from=YYYY-MM-DD, to=YYYY-MM-DD
-      B) ym=YYYY-MM, months=1..6
-      C) from_year=YYYY, from_month=MM, months=1..6
+      B) ym=YYYY-MM, months=1..12
+      C) from_year=YYYY, from_month=MM, months=1..12
 
     オプション:
       - clear_missing: 1/true でBaikalに存在しない日を free に戻す（synced_busy=1 の日だけ）
@@ -1018,8 +1018,8 @@ def sync_baikal_range():
             except Exception:
                 return jsonify({"error": "invalid ym"}), 400
 
-            if not (1 <= months <= 6):
-                return jsonify({"error": "months must be 1..6"}), 400
+            if not (1 <= months <= 12):
+                return jsonify({"error": "months must be 1..12"}), 400
 
             s0, _ = _month_edges(y, m)
             yy, mm = y, m + (months - 1)
@@ -1037,8 +1037,8 @@ def sync_baikal_range():
             except Exception:
                 return jsonify({"error": "invalid from_year/from_month"}), 400
 
-            if not (1 <= months <= 6):
-                return jsonify({"error": "months must be 1..6"}), 400
+            if not (1 <= months <= 12):
+                return jsonify({"error": "months must be 1..12"}), 400
 
             s0, _ = _month_edges(y, m)
             yy, mm = y, m + (months - 1)
@@ -1176,11 +1176,12 @@ def sync_baikal_range():
     }), 200
 
 
-# === 当月から6ヶ月分 同期API（GET/トークン対応・最終同期記録） ===============
+# === 当月から12ヶ月分 同期API（GET/トークン対応・最終同期記録） ==============
 @s_u_calendar_bp.route("/admin/api/v1/sync_outlook_6m", methods=["GET"])
 @s_u_calendar_bp.route("/admin/api/v1/sync_baikal_6m", methods=["GET"])
+@s_u_calendar_bp.route("/admin/api/v1/sync_baikal_12m", methods=["GET"])
 @admin_or_token_required
-def admin_api_sync_baikal_6m():
+def admin_api_sync_baikal_12m():
     from datetime import datetime, date, timedelta, timezone
     from calendar import monthrange
 
@@ -1223,14 +1224,14 @@ def admin_api_sync_baikal_6m():
                     pass
             return datetime.fromisoformat(s)
 
-    # ----- JSTの当月 → 6ヶ月目末日 -----------------------------------------
+    # ----- JSTの当月 → 12ヶ月目末日 ----------------------------------------
     jst = timezone(timedelta(hours=9))
     now_jst = datetime.now(jst)
     today = now_jst.date()
     y, m = today.year, today.month
     start_d, _ = _month_edges(y, m)
 
-    yy, mm = y, m + 5  # 当月を1として+5ヶ月 → 合計6ヶ月分
+    yy, mm = y, m + 11  # 当月を1として+11ヶ月 → 合計12ヶ月分
     yy += (mm - 1) // 12
     mm = ((mm - 1) % 12) + 1
     _, lastd = monthrange(yy, mm)

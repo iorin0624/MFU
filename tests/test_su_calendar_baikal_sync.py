@@ -2,6 +2,7 @@ import sys
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -50,9 +51,32 @@ class BaikalCalendarTests(unittest.TestCase):
         self.assertEqual(expand_days([ics], date(2027, 3, 1), date(2027, 3, 31), holidays=True),
                          {"2027-03-21": "春分の日"})
 
-    def test_six_month_horizon(self):
+    def test_twelve_month_horizon(self):
         self.assertEqual(_month_horizon(date(2026, 11, 13)),
-                         (date(2026, 11, 1), date(2027, 4, 30)))
+                         (date(2026, 11, 1), date(2027, 10, 31)))
+        self.assertEqual(_month_horizon(date(2027, 1, 1)),
+                         (date(2027, 1, 1), date(2027, 12, 31)))
+
+    def test_expanded_range_refreshes_even_when_tokens_are_unchanged(self):
+        from s_u_calendar.baikal_sync import synchronize
+
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [
+            ("unchanged",), ("unchanged",), ("2026-11-13",),
+            ("2026-11-01..2027-04-30",),
+        ]
+        cursor.fetchall.side_effect = [[], []]
+        db = MagicMock()
+        db.cursor.return_value = cursor
+        with patch("s_u_calendar.baikal_sync._password", return_value="test"), \
+             patch("s_u_calendar.baikal_sync.collection_token", return_value="unchanged"), \
+             patch("s_u_calendar.baikal_sync.read_range", side_effect=[set(), {}]) as read:
+            result = synchronize(db, today=date(2026, 11, 13))
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["range"], "2026-11-01..2027-10-31")
+        self.assertEqual(read.call_args_list[0].args[:2],
+                         (date(2026, 11, 1), date(2027, 10, 31)))
+        db.commit.assert_not_called()
 
 
 if __name__ == "__main__":

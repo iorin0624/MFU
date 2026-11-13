@@ -133,7 +133,7 @@
     <input type="month" id="syncYM" value="{{ "%04d-%02d"|format(year, month) }}">
     <span class="hint">期間：</span>
     <select id="syncMonths">
-      {% for n in range(1,7) %}
+      {% for n in range(1,13) %}
         <option value="{{ n }}" {{ "selected" if n==3 else "" }}>{{ n }}ヶ月</option>
       {% endfor %}
     </select>

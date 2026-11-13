@@ -13,7 +13,8 @@ CalDAV/authentication/parser errors leave the last successful snapshot intact.
 Only rows with `synced_busy=1` may be cleared by automatic sync. Manually
 marked busy rows (`synced_busy=0`) are preserved.
 
-The rolling busy range is the current month through the fifth following month.
+The rolling busy range is the current month through the eleventh following month.
+Changing that range forces a full refresh even if CalDAV sync tokens are unchanged.
 Holiday names are cached for the current and following year. View requests
 read MFU's local snapshot; they do not query CalDAV themselves.
 
@@ -31,3 +32,5 @@ sudo -u mfu /mnt/mfu/venv/bin/python app/s_u_calendar/baikal_sync.py
 Add `--apply` only after reviewing the reported added/cleared dates. Inspect
 `journalctl -u mfu-suc-baikal-sync.service` for failures. The old Outlook route
 paths remain as compatibility aliases, but they now use Baïkal, not Graph.
+The legacy `sync_baikal_6m` and `sync_outlook_6m` API paths are also aliases
+for the current 12-month sync; new callers should use `sync_baikal_12m`.
