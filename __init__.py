@@ -6411,6 +6411,16 @@ def finalize_response(response):
     except Exception as e:
         app.logger.warning(f"log_access failed: {e}")
 
+    # Keep public pro/SUC PVs separate from the general access log. Never
+    # interrupt a visitor if the analytics database is temporarily unavailable.
+    try:
+        from app.pro_suc_pv.analytics import event_for_request, insert_event
+        event = event_for_request(request, response, session, getattr(g, "mfu_access_log_marker", ""))
+        if event is not None:
+            insert_event(event)
+    except Exception as e:
+        app.logger.warning("pro/suc PV recording failed: %s", e)
+
     try:
         resource = getattr(g, "mfu_uuid_resource", None) or {}
         endpoint = request.endpoint or ""
@@ -7094,6 +7104,14 @@ app.register_blueprint(chat_bp)
 
 from app.profile import profile_bp
 app.register_blueprint(profile_bp)
+
+from app.pro_suc_pv import bp as pro_suc_pv_bp
+app.register_blueprint(pro_suc_pv_bp)
+try:
+    from app.pro_suc_pv.analytics import ensure_nav_item as _ensure_pro_suc_pv_nav
+    _ensure_pro_suc_pv_nav()
+except Exception as exc:
+    app.logger.warning("pro/suc PV navigation setup failed: %s", exc)
 
 from app.fare import fare_bp
 app.register_blueprint(fare_bp)

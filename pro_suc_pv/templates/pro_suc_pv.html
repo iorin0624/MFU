@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}pro・SUC PV分析 | MFU{% endblock %}
+{% block head_extra %}
+<style>
+  .pv-wrap{max-width:1400px;margin:1.5rem auto;padding:0 1rem 2rem;color:#172238}
+  .pv-head{display:flex;gap:1rem;flex-wrap:wrap;justify-content:space-between;align-items:end;margin-bottom:1rem}
+  .pv-filters{display:flex;gap:.5rem;flex-wrap:wrap;align-items:end}
+  .pv-filters label{font-size:.8rem;color:#52647a}
+  .pv-filters select,.pv-filters input{display:block;min-height:2.4rem;border:1px solid #ccd6e5;border-radius:.5rem;padding:.3rem .5rem;background:#fff;color:#172238}
+  .pv-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.8rem;margin-bottom:1rem}
+  .pv-card,.pv-panel{background:#fff;border:1px solid #dbe2ed;border-radius:.8rem;box-shadow:0 2px 8px #142d4a0c}
+  .pv-card{padding:1rem}.pv-card .num{font-size:1.75rem;font-weight:700}.pv-card .label{color:#52647a;font-size:.9rem}
+  .pv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:1rem}
+  .pv-panel{padding:1rem;min-width:0}.pv-panel h2{font-size:1.15rem;margin:0 0 .7rem}
+  .pv-table-wrap{max-height:360px;overflow:auto}.pv-table{width:100%;border-collapse:collapse;font-size:.9rem}
+  .pv-table th,.pv-table td{padding:.45rem .35rem;border-bottom:1px solid #e7ecf3;text-align:left;overflow-wrap:anywhere}
+  .pv-table th:last-child,.pv-table td:last-child{text-align:right;white-space:nowrap}
+  .pv-muted{color:#60738c;font-size:.86rem}.pv-note{margin:.7rem 0 1rem;padding:.6rem .8rem;background:#edf4ff;border-radius:.5rem}
+  .pv-link{border:0;background:none;color:#1368c6;text-decoration:underline;cursor:pointer;padding:0;text-align:left}
+  @media(max-width:600px){.pv-filters>*{flex:1 1 42%}.pv-filters input,.pv-filters select{width:100%}}
+</style>
+{% endblock %}
+{% block content %}
+<main class="pv-wrap">
+  <div class="pv-head"><div><h1 class="h3 mb-1">pro・SUC PV分析</h1><div class="pv-muted">公開プロフィールとSUCカレンダーのページ閲覧</div></div>
+    <form id="pv-filters" class="pv-filters">
+      <label>サイト<select name="site"><option value="all">両方</option><option value="pro">pro</option><option value="suc">SUC</option></select></label>
+      <label>期間<select name="range" id="pv-range"><option value="today">今日</option><option value="7d">直近7日</option><option value="30d">直近30日</option><option value="custom">範囲指定</option></select></label>
+      <label class="pv-custom" hidden>開始日<input type="date" name="start" id="pv-start"></label>
+      <label class="pv-custom" hidden>終了日<input type="date" name="end" id="pv-end"></label>
+      <label style="align-self:center"><input type="checkbox" name="bots" value="1"> Botも含める</label>
+      <button class="btn btn-primary" type="submit">表示</button>
+    </form>
+  </div>
+  <div id="pv-error" class="alert alert-danger" role="alert" hidden></div>
+  <div id="pv-period" class="pv-muted mb-2"></div>
+  <div class="pv-cards">
+    <div class="pv-card"><div class="label">合計PV</div><div id="pv-total" class="num">—</div></div>
+    <div class="pv-card"><div class="label">pro</div><div id="pv-pro" class="num">—</div></div>
+    <div class="pv-card"><div class="label">SUC</div><div id="pv-suc" class="num">—</div></div>
+    <div class="pv-card"><div class="label">うち履歴からの推定</div><div id="pv-estimated" class="num">—</div></div>
+  </div>
+  <div class="pv-note pv-muted">過去分は現存するアクセスログから復元しています。Apacheログで確認できた期間はホストと閲覧月を特定し、それより古いDBログはパスからの推定です。PVは閲覧回数であり、ユニーク訪問者数ではありません。Botは既定で除外します。</div>
+  <div class="pv-grid">
+    <section class="pv-panel"><h2>日別PV</h2><div id="pv-daily" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>流入元（src・参照元）</h2><div id="pv-sources" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>SUCで見られた月</h2><div id="pv-months" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>参照ドメイン</h2><div id="pv-referrers" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>端末</h2><div id="pv-devices" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>OS</h2><div id="pv-oses" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>ブラウザー</h2><div id="pv-browsers" class="pv-table-wrap"></div></section>
+    <section class="pv-panel"><h2>アクセス元IP</h2><div class="pv-muted mb-2">国・事業者はIPをクリックすると取得します。</div><div id="pv-ips" class="pv-table-wrap"></div></section>
+  </div>
+</main>
+{% endblock %}
+{% block body_extra %}
+<script>
+(() => {
+  const form = document.getElementById('pv-filters');
+  const range = document.getElementById('pv-range');
+  const fmt = n => Number(n || 0).toLocaleString('ja-JP');
+  const label = value => value === null || value === '' ? '不明' : String(value);
+  const names = {src:'src',referrer:'参照元',direct:'直接・不明'};
+  let controller;
+  function text(id, value){document.getElementById(id).textContent = value;}
+  function table(id, rows, keyfn, action){
+    const box = document.getElementById(id); box.replaceChildren();
+    if (!rows.length){box.textContent='該当するデータはありません';return;}
+    const table = document.createElement('table');table.className='pv-table';
+    const body = document.createElement('tbody');
+    for (const row of rows){
+      const tr=document.createElement('tr'), left=document.createElement('td'), right=document.createElement('td');
+      if(action){const button=document.createElement('button');button.type='button';button.className='pv-link';button.textContent=keyfn(row);button.addEventListener('click',()=>action(row,left));left.append(button);}
+      else left.textContent=keyfn(row);
+      right.textContent=fmt(row.pv);tr.append(left,right);body.append(tr);
+    }
+    table.append(body);box.append(table);
+  }
+  function syncDates(){document.querySelectorAll('.pv-custom').forEach(x => x.hidden = range.value !== 'custom');}
+  range.addEventListener('change',syncDates);syncDates();
+  async function load(){
+    if(controller) controller.abort();controller=new AbortController();
+    const error=document.getElementById('pv-error');error.hidden=true;
+    const query=new URLSearchParams(new FormData(form));
+    try{
+      const response=await fetch('/admin/pro_suc_pv/data?'+query,{signal:controller.signal,credentials:'same-origin',cache:'no-store'});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||'取得に失敗しました');
+      text('pv-period',`${data.start} ～ ${data.end} ・30秒ごとに更新`);
+      for(const key of ['total','pro','suc','estimated'])text('pv-'+key,fmt(data[key]));
+      table('pv-daily',data.daily,r=>`${r.day}　${r.site}`);
+      table('pv-sources',data.sources,r=>`${names[r.source_kind]||r.source_kind}：${label(r.source_label)}`);
+      table('pv-months',data.months,r=>label(r.calendar_month));
+      table('pv-referrers',data.referrers,r=>label(r.referer_host));
+      table('pv-devices',data.devices,r=>label(r.device));
+      table('pv-oses',data.oses,r=>label(r.os_name));
+      table('pv-browsers',data.browsers,r=>label(r.browser));
+      table('pv-ips',data.ips,r=>label(r.ip),async(r,cell)=>{
+        let detail=cell.querySelector('.pv-muted');if(detail)return;
+        detail=document.createElement('div');detail.className='pv-muted';detail.textContent='照会中…';cell.append(detail);
+        try{const response=await fetch('/admin/pro_suc_pv/ip-info?ip='+encodeURIComponent(r.ip));const info=await response.json();if(!response.ok)throw new Error(info.error||'照会失敗');detail.textContent=`${info.country} / ${info.provider}`;}
+        catch(e){detail.textContent=e.message;}
+      });
+    }catch(e){if(e.name!=='AbortError'){error.textContent=e.message;error.hidden=false;}}
+  }
+  form.addEventListener('submit',e=>{e.preventDefault();load();});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});
+  window.setInterval(()=>{if(!document.hidden)load();},30000);
+  load();
+})();
+</script>
+{% endblock %}
