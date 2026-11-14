@@ -399,7 +399,9 @@ class NotificationPopup(QDialog):
         self.item = item
         # Use an ordinary top-level window so popup actions remain interactive
         # even while the tray-only application is in the background.
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+        )
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setFixedWidth(390)
         layout = QVBoxLayout(self)
@@ -686,7 +688,11 @@ class MediaHubApp(clipboard.MediaClipboardApp):
         popup = NotificationPopup(self, item)
         self.notification_popups.append(popup)
         popup.finished.connect(lambda _=0, value=popup: self._remove_popup(value))
+        # Avoid taking focus from a full-screen game when the popup appears.
+        # Clear this show-only attribute afterwards so its buttons stay usable.
+        popup.setAttribute(Qt.WA_ShowWithoutActivating, True)
         popup.show()
+        popup.setAttribute(Qt.WA_ShowWithoutActivating, False)
         self._position_popups()
 
     def _remove_popup(self, popup: NotificationPopup) -> None:

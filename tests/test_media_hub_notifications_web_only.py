@@ -91,3 +91,57 @@ def test_new_socket_event_reaches_popup_signal():
         {"item": {"id": 42, "title": "新着テスト"}}
     )
     assert seen == [{"id": 42, "title": "新着テスト"}]
+
+
+def test_popup_show_does_not_activate_but_actions_remain_clickable(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+    from tools.mfu_media_hub.main import MediaHubApp, NotificationPopup
+
+    class Controller:
+        def __init__(self):
+            self.notification_popups = []
+            self.opened = []
+
+        def _append_notification_actions(self, _card, _item):
+            pass
+
+        def _position_popups(self):
+            pass
+
+        def _remove_popup(self, _popup):
+            pass
+
+        def _open_notification_center(self):
+            self.opened.append("web")
+
+    app = QApplication.instance() or QApplication([])
+    controller = Controller()
+    foreground = QWidget()
+    foreground.show()
+    foreground.activateWindow()
+    app.processEvents()
+    assert app.activeWindow() is foreground
+    original_show = NotificationPopup.show
+    show_attributes = []
+
+    def observe_show(popup):
+        show_attributes.append(popup.testAttribute(Qt.WA_ShowWithoutActivating))
+        original_show(popup)
+
+    monkeypatch.setattr(NotificationPopup, "show", observe_show)
+    MediaHubApp._show_notification_popup(controller, {"id": 2, "title": "通知テスト", "severity": "critical"})
+    app.processEvents()
+    popup = controller.notification_popups[0]
+    assert show_attributes == [True]
+    assert popup.windowFlags() & Qt.WindowDoesNotAcceptFocus
+    if app.platformName() != "offscreen":
+        assert app.activeWindow() is foreground
+    assert not popup.testAttribute(Qt.WA_ShowWithoutActivating)
+    web = next(button for button in popup.findChildren(QPushButton) if button.text() == "Webで開く")
+    QTest.mouseClick(web, Qt.LeftButton)
+    assert controller.opened == ["web"]
+    popup.close()
+    foreground.close()

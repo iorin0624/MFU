@@ -153,6 +153,27 @@ URL_TRAILING_PUNCTUATION = ".,;:!?)]}>\u3001\u3002\uff01\uff1f\u3011\u300d\u300f
 FOLDER_RANGE_PATTERN = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
 
 
+def _prepare_media_dialog(dialog: QDialog) -> None:
+    """Keep an interactive media dialog above the browser on the primary display."""
+    dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    screen = QApplication.primaryScreen()
+    if screen is None:
+        return
+    dialog.ensurePolished()
+    if isinstance(dialog, QMessageBox):
+        dialog.adjustSize()
+    dialog.winId()  # Create the native window before assigning its display.
+    handle = dialog.windowHandle()
+    if handle is not None:
+        handle.setScreen(screen)
+    area = screen.availableGeometry()
+    dialog.resize(min(dialog.width(), area.width()), min(dialog.height(), area.height()))
+    dialog.move(
+        area.x() + (area.width() - dialog.width()) // 2,
+        area.y() + (area.height() - dialog.height()) // 2,
+    )
+
+
 def extract_media_urls(text: str) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
@@ -2152,6 +2173,7 @@ class MediaClipboardApp(QObject):
 
     def _open_manual_url(self) -> None:
         dialog = ManualUrlDialog()
+        _prepare_media_dialog(dialog)
         self.manual_url_dialog_open = True
         try:
             accepted = dialog.exec() == QDialog.Accepted
@@ -2236,6 +2258,7 @@ class MediaClipboardApp(QObject):
         frames_btn = box.addButton("動画を写真で取得", QMessageBox.AcceptRole)
         both_btn = box.addButton("画像と動画", QMessageBox.AcceptRole)
         box.addButton("キャンセル", QMessageBox.RejectRole)
+        _prepare_media_dialog(box)
         box.exec()
         clicked = box.clickedButton()
         if clicked == images_btn:
@@ -2276,7 +2299,10 @@ class MediaClipboardApp(QObject):
         self.progress.setAutoClose(False)
         self.progress.setAutoReset(False)
         self.progress.canceled.connect(self._cancel_batch)
+        _prepare_media_dialog(self.progress)
         self.progress.show()
+        self.progress.raise_()
+        self.progress.activateWindow()
         self._start_next_batch_item()
 
     def _start_next_batch_item(self) -> None:
@@ -2358,15 +2384,15 @@ class MediaClipboardApp(QObject):
         duplicates = 0
         skipped = 0
         errors = [str(value) for value in (result.get("errors") or [])]
-        show_completion_message = len(self.batch_urls) == 1
         image_job = result.get("images")
         if isinstance(image_job, dict) and image_job.get("images"):
             shown = True
             dialog = ImageSelectionDialog(
                 self.api,
                 image_job,
-                show_completion_message=show_completion_message,
+                show_completion_message=True,
             )
+            _prepare_media_dialog(dialog)
             accepted = dialog.exec() == QDialog.Accepted
             if accepted and dialog.save_result:
                 saved += int(dialog.save_result.get("saved") or 0)
@@ -2384,8 +2410,9 @@ class MediaClipboardApp(QObject):
             dialog = VideoSelectionDialog(
                 self.api,
                 video_job,
-                show_completion_message=show_completion_message,
+                show_completion_message=True,
             )
+            _prepare_media_dialog(dialog)
             accepted = dialog.exec() == QDialog.Accepted
             if accepted and dialog.save_result:
                 saved += int(dialog.save_result.get("saved") or 0)
@@ -2446,6 +2473,7 @@ class MediaClipboardApp(QObject):
         outcomes = self._batch_outcomes(results)
         if self._batch_has_selectable_media(results):
             dialog = BatchMediaSelectionDialog(self.api, results)
+            _prepare_media_dialog(dialog)
             if dialog.exec() == QDialog.Accepted and dialog.save_outcomes is not None:
                 outcomes = dialog.save_outcomes
             else:
@@ -2498,16 +2526,20 @@ class MediaClipboardApp(QObject):
             text = "取得できるメディアが見つかりませんでした。"
             if errors:
                 text += "\n\n" + "\n".join(str(value) for value in errors)
-            QMessageBox.warning(None, APP_NAME, text)
+            box = QMessageBox(QMessageBox.Warning, APP_NAME, text)
+            _prepare_media_dialog(box)
+            box.exec()
         elif errors:
-            QMessageBox.warning(
-                None,
-                APP_NAME,
-                "一部の取得または保存に失敗しました。\n\n"
-                + "\n".join(str(value) for value in errors),
+            box = QMessageBox(
+                QMessageBox.Warning, APP_NAME,
+                "一部の取得または保存に失敗しました。\n\n" + "\n".join(str(value) for value in errors),
             )
+            _prepare_media_dialog(box)
+            box.exec()
         if any("ログイン" in str(value) for value in errors):
-            if QMessageBox.question(None, APP_NAME, "ログイン画面を開きますか？") == QMessageBox.Yes:
+            box = QMessageBox(QMessageBox.Question, APP_NAME, "ログイン画面を開きますか？", QMessageBox.Yes | QMessageBox.No)
+            _prepare_media_dialog(box)
+            if box.exec() == QMessageBox.Yes:
                 self._open_login()
 
     def _show_batch_summary(
@@ -2556,6 +2588,7 @@ class MediaClipboardApp(QObject):
         if failed_urls:
             retry_button = box.addButton("失敗したURLだけ再試行", QMessageBox.ActionRole)
         box.addButton("閉じる", QMessageBox.AcceptRole)
+        _prepare_media_dialog(box)
         box.exec()
         if retry_button is not None and box.clickedButton() == retry_button:
             QTimer.singleShot(0, lambda urls=failed_urls, values=kinds: self._start_batch(urls, values))

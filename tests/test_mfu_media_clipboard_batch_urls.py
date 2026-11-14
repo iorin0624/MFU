@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -94,6 +95,43 @@ def test_manual_url_dialog_accepts_multiple_urls_and_enforces_batch_limit():
     assert len(dialog.urls()) == module.MAX_BATCH_URLS + 1
     assert not dialog.ok_button.isEnabled()
     dialog.close()
+
+
+def test_media_dialog_opens_on_primary_screen_and_above_browser():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+    dialog = module.ManualUrlDialog()
+    module._prepare_media_dialog(dialog)
+
+    screen = app.primaryScreen()
+    assert dialog.windowHandle().screen() == screen
+    assert screen.availableGeometry().contains(dialog.frameGeometry().center())
+    assert dialog.windowFlags() & module.Qt.WindowStaysOnTopHint
+    dialog.close()
+
+
+def test_single_url_selection_keeps_completion_message_after_batch_reset(monkeypatch):
+    module = _load_module()
+    module.QApplication.instance() or module.QApplication([])
+    seen = []
+
+    class FakeSelection:
+        def __init__(self, _api, _job, *, show_completion_message):
+            seen.append(show_completion_message)
+            self.save_result = None
+            self.save_error = ""
+
+        def exec(self):
+            return module.QDialog.Rejected
+
+    monkeypatch.setattr(module, "ImageSelectionDialog", FakeSelection)
+    monkeypatch.setattr(module, "_prepare_media_dialog", lambda _dialog: None)
+    controller = SimpleNamespace(api=object(), batch_urls=[])
+    module.MediaClipboardApp._show_selection_dialogs(
+        controller, {"images": {"images": [{"index": 1}]}}
+    )
+
+    assert seen == [True]
 
 
 def test_manual_url_dialog_appends_supported_clipboard_urls_without_duplicates():
