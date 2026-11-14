@@ -257,7 +257,7 @@
       return;
     }
     $('jihoStatus').className = 'small text-primary mt-2';
-    $('jihoStatus').textContent = `NTP基準で117風時報を鳴らします（秒音50ms／予報音200ms＋秒音／10秒ごとに1.5秒減衰音）。現在: ${formatClock(ntpNow)}`;
+    $('jihoStatus').textContent = `NTP基準で117風時報を鳴らします（秒音50ms／0秒・30秒の直前3秒は440Hz・100msの予報音／0秒・30秒は880Hz・2秒の減衰音）。現在: ${formatClock(ntpNow)}`;
   }
 
   function createJihoAudioContext() {
@@ -272,9 +272,12 @@
   function jihoTonesForSecond(second) {
     if ([27, 28, 29, 57, 58, 59].includes(second)) {
       return [
-        {frequency: 500, duration: 0.2, attack: 0.005, release: 0.025, level: 0.22, envelope: 'short'},
+        {frequency: 440, duration: 0.1, attack: 0.005, release: 0.025, level: 0.22, envelope: 'short'},
         {frequency: 2000, duration: 0.05, attack: 0.002, release: 0.008, level: 0.12, envelope: 'short'}
       ];
+    }
+    if (second === 0 || second === 30) {
+      return [{frequency: 880, duration: 2, attack: 0.003, level: 0.3, envelope: 'decay'}];
     }
     if (second % 10 === 0) {
       return [{frequency: 1000, duration: 1.5, attack: 0.003, level: 0.3, envelope: 'decay'}];
