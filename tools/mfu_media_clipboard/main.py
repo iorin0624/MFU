@@ -1043,7 +1043,6 @@ class ImageSelectionDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.folder_edit = QComboBox()
-        self.folder_edit.setEditable(True)
         self._load_folder_options(self.api.get_setting("last_image_folder"))
         self.start_spin = QSpinBox()
         self.start_spin.setRange(1, 999999)
@@ -1091,9 +1090,6 @@ class ImageSelectionDialog(QDialog):
         layout.addWidget(self.status)
 
         self.folder_edit.activated.connect(lambda _=None: self._refresh_next_number())
-        line_edit = self.folder_edit.lineEdit()
-        if line_edit:
-            line_edit.editingFinished.connect(self._refresh_next_number)
         self._render()
         self._refresh_next_number()
 
@@ -1189,21 +1185,13 @@ class ImageSelectionDialog(QDialog):
             folders = [""]
         for folder in folders:
             self.folder_edit.addItem("(ルート)" if folder == "" else folder, folder)
-        if current:
-            match_index = self.folder_edit.findData(current)
-            if match_index < 0:
-                self.folder_edit.insertItem(0, current, current)
-                match_index = 0
-            self.folder_edit.setCurrentIndex(match_index)
-        else:
-            self.folder_edit.setCurrentIndex(max(0, self.folder_edit.findData("")))
+        match_index = self.folder_edit.findData(current)
+        self.folder_edit.setCurrentIndex(match_index if match_index >= 0 else max(0, self.folder_edit.findData("")))
         self.folder_edit.blockSignals(False)
 
     def _folder_text(self) -> str:
         data = self.folder_edit.currentData()
-        if isinstance(data, str) and self.folder_edit.currentText() in {"(ルート)", data}:
-            return data
-        return self.folder_edit.currentText().strip()
+        return data if isinstance(data, str) else ""
 
     def _selected_indexes(self) -> list[int]:
         selected: list[int] = []
@@ -1538,9 +1526,9 @@ class BatchMediaSelectionDialog(QDialog):
                 notes.append(f"{index}. ℹ メディアなし: {row.get('url') or ''}")
         return "\n".join(notes)
 
-    def _folder_combo(self, current: str) -> QComboBox:
+    def _folder_combo(self, current: str, *, editable: bool = True) -> QComboBox:
         combo = QComboBox()
-        combo.setEditable(True)
+        combo.setEditable(editable)
         try:
             folders = self.api.folders()
         except Exception:
@@ -1548,15 +1536,17 @@ class BatchMediaSelectionDialog(QDialog):
         for folder in folders:
             combo.addItem("(ルート)" if folder == "" else folder, folder)
         match = combo.findData(current)
-        if match < 0 and current:
+        if match < 0 and current and editable:
             combo.insertItem(0, current, current)
             match = 0
-        combo.setCurrentIndex(max(0, match))
+        combo.setCurrentIndex(match if match >= 0 else max(0, combo.findData("")))
         return combo
 
     @staticmethod
     def _folder_text(combo: QComboBox) -> str:
         data = combo.currentData()
+        if not combo.isEditable():
+            return data if isinstance(data, str) else ""
         if isinstance(data, str) and combo.currentText() in {"(ルート)", data}:
             return data
         return combo.currentText().strip()
@@ -1586,7 +1576,7 @@ class BatchMediaSelectionDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         form = QFormLayout()
-        self.image_folder = self._folder_combo(self.api.get_setting("last_image_folder"))
+        self.image_folder = self._folder_combo(self.api.get_setting("last_image_folder"), editable=False)
         self.image_start = QSpinBox()
         self.image_start.setRange(1, 999999)
         self.image_digits = QSpinBox()
@@ -1667,9 +1657,6 @@ class BatchMediaSelectionDialog(QDialog):
         self.image_number_status = QLabel("")
         layout.addWidget(self.image_number_status)
         self.image_folder.activated.connect(lambda _=None: self._refresh_next_number())
-        line_edit = self.image_folder.lineEdit()
-        if line_edit:
-            line_edit.editingFinished.connect(self._refresh_next_number)
         return page
 
     def _build_video_tab(self) -> QWidget:

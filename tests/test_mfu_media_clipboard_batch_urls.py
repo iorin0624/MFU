@@ -302,6 +302,39 @@ def test_batch_result_dialog_combines_media_from_every_url():
     dialog.close()
 
 
+def test_image_save_folders_only_allow_existing_choices():
+    module = _load_module()
+    app = module.QApplication.instance() or module.QApplication([])
+
+    class FakeApi:
+        def get_setting(self, _key, default=""):
+            return "削除済みフォルダー" if _key == "last_image_folder" else default
+
+        def folders(self):
+            return ["", "既存フォルダー"]
+
+        def image_next_number(self, _folder):
+            return 1
+
+    api = FakeApi()
+    single = module.ImageSelectionDialog(api, {"images": []})
+    assert not single.folder_edit.isEditable()
+    assert single.folder_edit.findData("削除済みフォルダー") == -1
+    assert single._folder_text() == ""
+    single.folder_edit.setCurrentIndex(single.folder_edit.findData("既存フォルダー"))
+    assert single._folder_text() == "既存フォルダー"
+    single.close()
+
+    batch = module.BatchMediaSelectionDialog(api, [])
+    app.processEvents()
+    assert not batch.image_folder.isEditable()
+    assert batch.image_folder.findData("削除済みフォルダー") == -1
+    assert batch._folder_text(batch.image_folder) == ""
+    batch.image_folder.setCurrentIndex(batch.image_folder.findData("既存フォルダー"))
+    assert batch._folder_text(batch.image_folder) == "既存フォルダー"
+    batch.close()
+
+
 def test_thumbnail_downloads_are_bounded_and_retry_transient_failures():
     module = _load_module()
     lock = threading.Lock()
