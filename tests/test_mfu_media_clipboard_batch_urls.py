@@ -97,16 +97,28 @@ def test_manual_url_dialog_accepts_multiple_urls_and_enforces_batch_limit():
     dialog.close()
 
 
-def test_media_dialog_opens_on_primary_screen_and_above_browser():
+def test_media_dialog_opens_on_primary_screen_without_staying_on_top():
     module = _load_module()
     app = module.QApplication.instance() or module.QApplication([])
+    browser = module.QWidget()
+    browser.showMaximized()
+    app.processEvents()
     dialog = module.ManualUrlDialog()
     module._prepare_media_dialog(dialog)
 
     screen = app.primaryScreen()
     assert dialog.windowHandle().screen() == screen
     assert screen.availableGeometry().contains(dialog.frameGeometry().center())
-    assert dialog.windowFlags() & module.Qt.WindowStaysOnTopHint
+    assert not dialog.windowFlags() & module.Qt.WindowStaysOnTopHint
+    dialog.show()
+    app.processEvents()
+    if app.platformName() != "offscreen":
+        assert app.activeWindow() is dialog
+    browser.activateWindow()
+    app.processEvents()
+    if app.platformName() != "offscreen":
+        assert app.activeWindow() is browser
+    browser.close()
     dialog.close()
 
 

@@ -154,8 +154,7 @@ FOLDER_RANGE_PATTERN = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
 
 
 def _prepare_media_dialog(dialog: QDialog) -> None:
-    """Keep an interactive media dialog above the browser on the primary display."""
-    dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    """Show a media dialog on the primary display without pinning it on top."""
     screen = QApplication.primaryScreen()
     if screen is None:
         return
@@ -172,6 +171,14 @@ def _prepare_media_dialog(dialog: QDialog) -> None:
         area.x() + (area.width() - dialog.width()) // 2,
         area.y() + (area.height() - dialog.height()) // 2,
     )
+    # Run after show()/exec() creates the window. The user can then return to
+    # Chrome normally; a permanent WindowStaysOnTopHint would prevent that.
+    def activate_when_visible() -> None:
+        if dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+
+    QTimer.singleShot(0, activate_when_visible)
 
 
 def extract_media_urls(text: str) -> list[str]:
@@ -2301,8 +2308,6 @@ class MediaClipboardApp(QObject):
         self.progress.canceled.connect(self._cancel_batch)
         _prepare_media_dialog(self.progress)
         self.progress.show()
-        self.progress.raise_()
-        self.progress.activateWindow()
         self._start_next_batch_item()
 
     def _start_next_batch_item(self) -> None:
