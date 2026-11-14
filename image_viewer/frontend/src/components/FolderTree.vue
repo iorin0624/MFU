@@ -5,6 +5,7 @@ const props = defineProps<{ folders: string[]; current: string }>();
 const emit = defineEmits<{
   select: [folder: string];
   move: [paths: string[], folder: string];
+  context: [event: MouseEvent, folder: string];
 }>();
 
 function label(folder: string) {
@@ -70,6 +71,7 @@ function onDrop(event: DragEvent, folder: string) {
       :class="{ active: folder === current }"
       :style="{ paddingInlineStart: `${6 + depth(folder) * 18}px` }"
       @click="emit('select', folder)"
+      @contextmenu.prevent.stop="emit('context', $event, folder)"
       @dblclick="toggle(folder)"
       @dragover.prevent
       @drop="onDrop($event, folder)"
