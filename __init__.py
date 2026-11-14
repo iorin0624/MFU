@@ -166,6 +166,13 @@ from app.utils.speedtest import (
     parse_expected_bytes as parse_speedtest_expected_bytes,
     validate_content_length as validate_speedtest_content_length,
 )
+from app.utils.speedtest_history import (
+    SPEEDTEST_HISTORY_RETENTION_DAYS,
+    SpeedtestHistoryError,
+    list_speedtest_history,
+    record_speedtest_result,
+    request_ip as speedtest_request_ip,
+)
 from app.utils.chrony_monitor import (
     fetch_chrony_status,
     fetch_chrony_time_sample,
@@ -6062,7 +6069,20 @@ def api_storage_usage():
 @app.route("/speedtest", methods=["GET"])
 @admin_required
 def speedtest_page():
-    return render_template("speedtest.html", speedtest_sizes_mb=SPEEDTEST_UPLOAD_SIZES_MB)
+    try:
+        speedtest_history = list_speedtest_history()
+        history_error = None
+    except Exception:
+        app.logger.exception("speedtest history load failed")
+        speedtest_history = []
+        history_error = True
+    return render_template(
+        "speedtest.html",
+        speedtest_sizes_mb=SPEEDTEST_UPLOAD_SIZES_MB,
+        speedtest_history=speedtest_history,
+        speedtest_history_retention_days=SPEEDTEST_HISTORY_RETENTION_DAYS,
+        speedtest_history_error=history_error,
+    )
 
 
 @app.route("/api/speedtest/ping", methods=["GET"])
@@ -6097,6 +6117,23 @@ def speedtest_upload():
     )
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return response
+
+
+@app.post("/api/speedtest/result")
+@admin_required
+def speedtest_save_result():
+    try:
+        saved = record_speedtest_result(
+            request.get_json(silent=True),
+            ip_address=speedtest_request_ip(request),
+        )
+    except SpeedtestHistoryError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    except Exception:
+        app.logger.exception("speedtest history save failed")
+        return jsonify({"ok": False, "message": "測定履歴を保存できませんでした。"}), 500
+
+    return jsonify({"ok": True, "result_id": saved["id"], "created": saved["created"]})
 
 
 @app.route("/api/vcgencmd")

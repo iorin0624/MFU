@@ -59,5 +59,7 @@ def test_speedtest_template_posts_raw_samples_and_shows_history():
     assert 'fetch("/api/speedtest/result"' in template
     assert "server_elapsed_ms" in template
     assert "Ping個別値" in template
+    assert "speedtest_history = list_speedtest_history()" in app_source
+    assert "speedtest_history=speedtest_history" in app_source
     assert '@app.post("/api/speedtest/result")' in app_source
     assert "speedtest_request_ip(request)" in app_source
