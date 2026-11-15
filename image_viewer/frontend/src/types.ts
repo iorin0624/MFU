@@ -91,6 +91,8 @@ export interface RuntimeConfig {
   createFolderUrl: string;
   folderSettingsUrl: string;
   propertiesUrl: string;
+  cropUrl: string;
+  transferSmbUrl: string;
   styleTagsUrl: string;
   styleJobsUrl: string;
   renameUrl: string;

@@ -1,0 +1,14 @@
+[Unit]
+Description=MFU Image Viewer Raspberry Pi SMB transfer
+Wants=network-online.target
+After=network-online.target
+
+[Mount]
+What=//192.168.103.15/Pi4_SMB
+Where=/mnt/mfu/image_viewer_smb
+Type=cifs
+Options=credentials=/etc/mfu/image_viewer_smb.credentials,vers=3.0,uid=997,gid=985,file_mode=0664,dir_mode=0775,iocharset=utf8,nosuid,nodev,noexec
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

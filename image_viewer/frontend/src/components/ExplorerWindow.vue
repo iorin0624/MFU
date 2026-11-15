@@ -5,6 +5,7 @@ import FolderTree from './FolderTree.vue';
 import ExplorerDetailSidebar from './ExplorerDetailSidebar.vue';
 import XpDialog from './XpDialog.vue';
 import { imageViewerApi } from '@/api/client';
+import { runtimeConfig } from '@/config';
 import { saveGrouping, saveSort, savedGrouping, savedSort, useDesktopStore } from '@/stores/desktop';
 import { useExplorerStore } from '@/stores/explorer';
 import { useNotificationStore } from '@/stores/notifications';
@@ -37,6 +38,9 @@ type ExplorerDialog =
 const dialog = ref<ExplorerDialog | null>(null);
 const detailSidebarOpen = ref(false);
 const detailSidebarVersion = ref(0);
+const downloadResults = ref<MediaItem[]>([]);
+const transferResults = ref<{path: string; name?: string; ok: boolean; error?: string}[]>([]);
+const transferBusy = ref(false);
 const styleMajor = ref<StyleAssignment['major'] | ''>('');
 const styleMiddleRows = ref<{name: string; smallText: string}[]>([]);
 const styleBusy = ref(false);
@@ -57,6 +61,50 @@ const selectedItems = computed(() => {
   return items.value.filter((item) => selected.has(item.path));
 });
 const selectedImages = computed(() => selectedItems.value.filter((item) => item.mediaType === 'image'));
+function downloadHref(item: MediaItem) {
+  const url = new URL(item.url, window.location.origin);
+  url.searchParams.set('download', '1');
+  return `${url.pathname}${url.search}`;
+}
+function downloadImage(item: MediaItem) {
+  const link = document.createElement('a');
+  link.href = downloadHref(item);
+  link.download = item.name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function downloadSelected() {
+  if (!selectedImages.value.length) return;
+  transferResults.value = [];
+  downloadResults.value = [...selectedImages.value];
+  downloadResults.value.forEach((entry, index) => {
+    window.setTimeout(() => downloadImage(entry), index * 180);
+  });
+}
+
+async function transferSelectedToSmb() {
+  if (!selectedImages.value.length || transferBusy.value) return;
+  transferBusy.value = true;
+  downloadResults.value = [];
+  try {
+    const paths = selectedImages.value.map((entry) => entry.path);
+    const results: typeof transferResults.value = [];
+    for (let offset = 0; offset < paths.length; offset += 50) {
+      const payload = await imageViewerApi.transferSmb(paths.slice(offset, offset + 50));
+      results.push(...payload.results);
+      transferResults.value = [...results];
+    }
+    const succeeded = results.filter((result) => result.ok).length;
+    const failed = results.length - succeeded;
+    notice.show(`ラズパイへ${succeeded}枚転送しました。${failed ? `失敗${failed}枚。` : ''}`, !!failed);
+  } catch (error) {
+    notice.show(errorMessage(error, 'ラズパイへの転送に失敗しました。'), true);
+  } finally {
+    transferBusy.value = false;
+  }
+}
 const detailItem = computed(() => selectedItems.value.length === 1 ? selectedItems.value[0] : undefined);
 function toggleDetailSidebar() {
   detailSidebarOpen.value = !detailSidebarOpen.value;
@@ -989,6 +1037,8 @@ onBeforeUnmount(() => {
           @click="model.allowDuplicateImages = !model.allowDuplicateImages"
         >重複一時許可 {{ model.allowDuplicateImages ? 'ON' : 'OFF' }}</button>
         <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
+        <button type="button" :disabled="!selectedImages.length" @click="downloadSelected">画像DL（{{ selectedImages.length }}枚）</button>
+        <button v-if="runtimeConfig.isAdmin" type="button" :disabled="!selectedImages.length || transferBusy" @click="transferSelectedToSmb">{{ transferBusy ? 'ラズパイへ転送中…' : 'ラズパイへ転送' }}</button>
         <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
         <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>
         <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
@@ -1043,6 +1093,7 @@ onBeforeUnmount(() => {
       <button type="button" @click="movePaths(); closeContext()">移動</button>
       <button type="button" @click="copyPaths(); closeContext()">コピー</button>
       <button type="button" :disabled="contextMenu.item?.mediaType !== 'image'" @click="copyImageToClipboard(contextMenu.item); closeContext()">コピー（クリップボード）</button>
+      <button type="button" :disabled="contextMenu.item?.mediaType !== 'image'" @click="contextMenu.item && downloadImage(contextMenu.item); closeContext()">画像をDL</button>
       <button type="button" @click="showProperties(); closeContext()">プロパティ</button>
       <hr>
       <button type="button" class="danger" @click="deletePaths(); closeContext()">削除</button>
@@ -1056,6 +1107,23 @@ onBeforeUnmount(() => {
       <button type="button" class="danger" :disabled="!contextMenu.folder" @click="deleteFolder(contextMenu.folder); closeContext()">フォルダーの削除</button>
     </div>
 
+    <XpDialog v-if="downloadResults.length" title="画像の個別ダウンロード" :width="600" @close="downloadResults = []">
+      <p>{{ downloadResults.length }}枚のダウンロードを個別に開始しました。ブラウザーが複数ダウンロードを止めた場合は、下のリンクから再度取得してください。</p>
+      <div class="transfer-result-list">
+        <div v-for="entry in downloadResults" :key="entry.path"><a :href="downloadHref(entry)" :download="entry.name">{{ entry.name }} をダウンロード</a></div>
+      </div>
+      <div class="xp-dialog-actions"><button type="button" @click="downloadResults = []">閉じる</button></div>
+    </XpDialog>
+    <XpDialog v-if="transferResults.length" title="ラズパイへの転送結果" :width="650" @close="transferResults = []">
+      <div class="transfer-result-list">
+        <div v-for="result in transferResults" :key="result.path">
+          <span>{{ result.ok ? '✓' : '✕' }} {{ result.path }}</span>
+          <span v-if="result.ok"> → {{ result.name }}</span>
+          <span v-else>：{{ result.error }}</span>
+        </div>
+      </div>
+      <div class="xp-dialog-actions"><button type="button" @click="transferResults = []">閉じる</button></div>
+    </XpDialog>
     <XpDialog v-if="dialog?.kind === 'new-folder'" :title="dialog.title" @close="dialog = null">
       <form class="xp-form" @submit.prevent="commitCreateFolder(dialog.value)">
         <label>フォルダー名<input v-model="dialog.value" autofocus></label>

@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 
 from app.utils.db import get_db
 from PIL import Image, ImageOps
+from . import image_edits
 
 
 CATALOG_ENABLED = os.environ.get("IMAGE_VIEWER_CATALOG_ENABLED", "").lower() in {
@@ -185,6 +186,8 @@ def update_folder_settings(folder_path: str, numbering: bool, digits: object) ->
 def _record(row: dict, folder_path: str) -> dict:
     name = row["display_name"]
     virtual_path = f"{folder_path}/{name}".strip("/")
+    changed = row.get("updated_at")
+    revision = str(changed).replace("-", "").replace(":", "").replace(" ", "").replace(".", "") if changed else "0"
     return {
         "id": int(row["id"]),
         "uuid": row["file_uuid"],
@@ -197,9 +200,9 @@ def _record(row: dict, folder_path: str) -> dict:
         "contentUpdatedAt": int(row["mtime_epoch"]),
         "registeredAt": int(row.get("registered_epoch") or 0),
         "capturedAt": int(row.get("captured_epoch") or 0) or None,
-        "url": f"/image_viewer/files/{row['file_uuid']}",
+        "url": f"/image_viewer/files/{row['file_uuid']}?v={revision}",
         "thumbUrl": (
-            f"/image_viewer/thumbs/{row['file_uuid']}"
+            f"/image_viewer/thumbs/{row['file_uuid']}?v={revision}"
             if row.get("thumbnail_relpath")
             else None
         ),
@@ -794,6 +797,67 @@ def file_properties(path: str) -> dict:
             "sha256": bytes(row["checksum_sha256"]).hex() if row.get("checksum_sha256") else checksum_file(real_path).hex(),
             "sourceUrl": str(row.get("source_url") or ""),
         }
+    finally:
+        conn.close()
+
+
+def crop_status(path: str) -> bool:
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        row, _ = _file_row_for_virtual_path(cursor, path)
+        key = str(row["file_uuid"])
+        suffix = Path(str(row["storage_relpath"])).suffix
+        return image_edits.backup_path(STORE_ROOT / "crop_originals", key, suffix).is_file()
+    finally:
+        conn.close()
+
+
+def crop_or_restore(path: str, rectangle: dict | None = None, *, restore: bool = False) -> dict:
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        row, folder = _file_row_for_virtual_path(cursor, path)
+        if row["media_type"] != "image":
+            raise image_edits.ImageEditError("画像を選択してください。")
+        source = (ORIGINAL_ROOT / row["storage_relpath"]).resolve()
+        source.relative_to(ORIGINAL_ROOT.resolve())
+        original = image_edits.backup_path(
+            STORE_ROOT / "crop_originals", str(row["file_uuid"]), source.suffix,
+        )
+        image_edits.ensure_private_backup_root(STORE_ROOT / "crop_originals")
+
+        def update_metadata(active: Path, dimensions: tuple[int, int]) -> None:
+            cursor.execute(
+                "UPDATE image_viewer_files SET file_size=%s, file_mtime=FROM_UNIXTIME(%s), "
+                "checksum_sha256=%s, width=%s, height=%s, updated_at=NOW(6) "
+                "WHERE id=%s AND status='active'",
+                (active.stat().st_size, active.stat().st_mtime,
+                 checksum_file(active), *dimensions, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                raise CatalogNotFound("File not found")
+            conn.commit()
+
+        image_edits.edit_image(
+            source, original, rectangle=rectangle, restore=restore,
+            after_replace=update_metadata,
+        )
+        if not generate_thumbnail(str(row["file_uuid"])):
+            cursor.execute(
+                "UPDATE image_viewer_files SET thumbnail_relpath=NULL WHERE id=%s",
+                (row["id"],),
+            )
+            conn.commit()
+        cursor.execute(
+            "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch "
+            "FROM image_viewer_files f WHERE id=%s", (row["id"],),
+        )
+        record = _record(cursor.fetchone(), folder)
+        return {"ok": True, "entry": record, "hasOriginal": True}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

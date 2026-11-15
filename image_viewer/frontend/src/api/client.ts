@@ -106,6 +106,25 @@ export const imageViewerApi = {
   properties(path: string) {
     return requestJson<Record<string, unknown>>(queryUrl(runtimeConfig.propertiesUrl, { path }));
   },
+  cropStatus(path: string) {
+    return requestJson<{ok: boolean; hasOriginal: boolean}>(queryUrl(runtimeConfig.cropUrl, { path }));
+  },
+  crop(path: string, rectangle: {x: number; y: number; width: number; height: number}) {
+    return requestJson<{ok: boolean; entry: import('@/types').MediaItem; hasOriginal: boolean}>(runtimeConfig.cropUrl, {
+      method: 'POST', body: JSON.stringify({ path, action: 'crop', rectangle }),
+    });
+  },
+  restoreOriginal(path: string) {
+    return requestJson<{ok: boolean; entry: import('@/types').MediaItem; hasOriginal: boolean}>(runtimeConfig.cropUrl, {
+      method: 'POST', body: JSON.stringify({ path, action: 'restore' }),
+    });
+  },
+  transferSmb(paths: string[]) {
+    return requestJson<{ok: boolean; succeeded: number; failed: number; results: {path: string; name?: string; ok: boolean; error?: string}[]}>(
+      runtimeConfig.transferSmbUrl,
+      { method: 'POST', body: JSON.stringify({ paths }) },
+    );
+  },
   styleTags(path: string) {
     return requestJson<StyleTagsPayload>(queryUrl(runtimeConfig.styleTagsUrl, { path }));
   },

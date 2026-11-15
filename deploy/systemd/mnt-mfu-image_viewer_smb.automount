@@ -1,0 +1,9 @@
+[Unit]
+Description=Automount MFU Image Viewer Raspberry Pi SMB share
+
+[Automount]
+Where=/mnt/mfu/image_viewer_smb
+TimeoutIdleSec=600
+
+[Install]
+WantedBy=multi-user.target

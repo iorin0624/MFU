@@ -32,6 +32,8 @@ from werkzeug.utils import safe_join
 
 from . import image_viewer_bp
 from . import catalog
+from . import image_edits
+from . import smb_transfer
 from . import style_tags
 from . import style_jobs
 from .instagram_credentials import (
@@ -77,6 +79,8 @@ MEDIA_DOWNLOAD_DOMAINS = (
 MEDIA_IMAGE_MAX_BYTES = max(1, int(os.environ.get("IMAGE_VIEWER_MEDIA_IMAGE_MAX_MB", "100"))) * 1024 * 1024
 MEDIA_VIDEO_MAX_BYTES = max(1, int(os.environ.get("IMAGE_VIEWER_MEDIA_VIDEO_MAX_MB", "900"))) * 1024 * 1024
 UPLOAD_ROOT = Path(os.environ.get("IMAGE_VIEWER_UPLOAD_DIR", "/mnt/mfu/image_viewer_uploads")).expanduser()
+CROP_BACKUP_ROOT = Path(os.environ.get("IMAGE_VIEWER_CROP_BACKUP_DIR", "/mnt/mfu/image_viewer_crop_originals")).expanduser()
+SMB_MOUNT_ROOT = Path(os.environ.get("IMAGE_VIEWER_SMB_MOUNT", "/mnt/mfu/image_viewer_smb")).expanduser()
 THUMB_DIR_NAME = ".thumbs"
 THUMB_ROOT = UPLOAD_ROOT / THUMB_DIR_NAME
 PREVIEW_ROOT = Path(os.environ.get("IMAGE_VIEWER_PREVIEW_DIR", os.path.join(os.environ.get("TMPDIR", "/tmp"), "mfu_image_viewer_instagram_previews"))).expanduser()
@@ -4362,8 +4366,8 @@ def _media_record(path: Path) -> dict:
         "folder": path.parent.relative_to(UPLOAD_ROOT).as_posix() if path.parent != UPLOAD_ROOT else "",
         "size": stat.st_size,
         "mtime": int(stat.st_mtime),
-        "url": url_for("image_viewer.image_file", path=rel),
-        "thumbUrl": url_for("image_viewer.thumbnail_file", path=thumb_rel) if has_fresh_thumb else None,
+        "url": url_for("image_viewer.image_file", path=rel, v=stat.st_mtime_ns),
+        "thumbUrl": url_for("image_viewer.thumbnail_file", path=thumb_rel, v=stat.st_mtime_ns) if has_fresh_thumb else None,
         "hasThumb": has_fresh_thumb,
     }
 
@@ -4511,6 +4515,8 @@ def index():
         "createFolderUrl": url_for("image_viewer.create_folder"),
         "folderSettingsUrl": url_for("image_viewer.update_folder_settings"),
         "propertiesUrl": url_for("image_viewer.entry_properties"),
+        "cropUrl": url_for("image_viewer.crop_image_entry"),
+        "transferSmbUrl": url_for("image_viewer.transfer_images_to_smb"),
         "styleTagsUrl": url_for("image_viewer.entry_style_tags"),
         "styleJobsUrl": url_for("image_viewer.entry_style_job_create"),
         "renameUrl": url_for("image_viewer.rename_entry"),
@@ -5021,6 +5027,118 @@ def entry_style_job_result(job_id: str):
     return jsonify({"ok": ok, "error": None if ok else "ジョブの処理権限がありません。"}), 200 if ok else 409
 
 
+def _legacy_crop_backup(path: Path) -> Path:
+    # Backup material must never appear in the browsable upload tree.
+    backup_root = CROP_BACKUP_ROOT.resolve()
+    try:
+        backup_root.relative_to(UPLOAD_ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise image_edits.ImageEditError("復元用フォルダーの設定を確認してください。")
+    relative = path.relative_to(UPLOAD_ROOT.resolve()).as_posix()
+    return image_edits.backup_path(backup_root, relative, path.suffix)
+
+
+def _move_legacy_crop_backup(source: Path, target: Path, is_dir: bool) -> None:
+    if is_dir:
+        old = CROP_BACKUP_ROOT / source.relative_to(UPLOAD_ROOT)
+        new = CROP_BACKUP_ROOT / target.relative_to(UPLOAD_ROOT)
+        if old.exists():
+            new.parent.mkdir(parents=True, exist_ok=True)
+            if new.exists():
+                raise image_edits.ImageEditError("移動先に復元用画像があります。")
+            old.rename(new)
+    else:
+        image_edits.move_backup(
+            CROP_BACKUP_ROOT, source.relative_to(UPLOAD_ROOT).as_posix(),
+            target.relative_to(UPLOAD_ROOT).as_posix(), source.suffix, target.suffix,
+        )
+
+
+def _remove_legacy_crop_backup(source: Path) -> None:
+    image_edits.remove_backup(
+        CROP_BACKUP_ROOT, source.relative_to(UPLOAD_ROOT).as_posix(), source.suffix,
+    )
+
+
+@image_viewer_bp.route("/api/entries/crop", methods=["GET", "POST"])
+@login_required
+def crop_image_entry():
+    data = request.args if request.method == "GET" else (request.get_json(silent=True) or {})
+    path_value = str(data.get("path") or "")
+    if not path_value:
+        return jsonify({"ok": False, "error": "画像を選択してください。"}), 400
+    try:
+        if catalog.CATALOG_ENABLED:
+            if request.method == "GET":
+                return jsonify({"ok": True, "hasOriginal": catalog.crop_status(path_value)})
+            payload = catalog.crop_or_restore(
+                path_value, data.get("rectangle"), restore=data.get("action") == "restore",
+            )
+            return jsonify(payload)
+        _ensure_upload_root()
+        target = _target_path_for_rel(path_value)
+        if not target.is_file() or target.suffix.lower() not in image_edits.CROPPABLE_EXTENSIONS:
+            raise image_edits.ImageEditError("画像が見つからないか、切り抜き非対応の形式です。")
+        original = _legacy_crop_backup(target)
+        if request.method == "GET":
+            return jsonify({"ok": True, "hasOriginal": original.is_file()})
+        image_edits.ensure_private_backup_root(CROP_BACKUP_ROOT)
+        image_edits.edit_image(
+            target, original, rectangle=data.get("rectangle"),
+            restore=data.get("action") == "restore",
+        )
+        thumb_created = False
+        try:
+            _delete_thumb_for_path(target)
+            thumb_created = _generate_media_thumbnail(target)
+        except Exception:
+            current_app.logger.warning("image viewer crop thumbnail regeneration failed", exc_info=True)
+        _invalidate_image_list_cache()
+        record = _media_record(target)
+        record["thumbCreated"] = thumb_created
+        return jsonify({"ok": True, "entry": record, "hasOriginal": True})
+    except (ValueError, image_edits.ImageEditError, catalog.CatalogError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("image viewer crop failed")
+        return jsonify({"ok": False, "error": "画像の切り抜きに失敗しました。"}), 500
+
+
+@image_viewer_bp.post("/api/entries/transfer-smb")
+@login_required
+def transfer_images_to_smb():
+    if session.get("user") != "admin":
+        return jsonify({"ok": False, "error": "ラズパイへの転送は管理者のみ実行できます。"}), 403
+    data = request.get_json(silent=True) or {}
+    paths = data.get("paths")
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 50:
+        return jsonify({"ok": False, "error": "画像は1回につき1～50枚を選択してください。"}), 400
+    results = []
+    for value in paths:
+        path_value = str(value or "")
+        try:
+            if catalog.CATALOG_ENABLED:
+                properties = catalog.file_properties(path_value)
+                if properties["mediaType"] != "image":
+                    raise smb_transfer.TransferError("画像のみ転送できます。")
+                source = Path(properties["realPath"])
+                name = properties["name"]
+            else:
+                source = _target_path_for_rel(path_value)
+                if source.suffix.lower() not in IMAGE_EXTENSIONS:
+                    raise smb_transfer.TransferError("画像のみ転送できます。")
+                name = source.name
+            saved_name = smb_transfer.copy_image(source, name, SMB_MOUNT_ROOT)
+            results.append({"path": path_value, "name": saved_name, "ok": True})
+        except (ValueError, catalog.CatalogError, smb_transfer.TransferError, OSError) as exc:
+            results.append({"path": path_value, "ok": False, "error": str(exc)})
+    succeeded = sum(bool(result["ok"]) for result in results)
+    current_app.logger.info("image viewer SMB transfer: succeeded=%s failed=%s", succeeded, len(results) - succeeded)
+    return jsonify({"ok": True, "succeeded": succeeded, "failed": len(results) - succeeded, "results": results})
+
+
 @image_viewer_bp.route("/api/entries/properties", methods=["GET", "POST"])
 @login_required
 def entry_properties():
@@ -5081,6 +5199,7 @@ def entry_properties():
         try:
             source.rename(target)
             _move_thumb_for_path(source, target, False)
+            _move_legacy_crop_backup(source, target, False)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc) or "名前変更に失敗しました。"}), 500
         _invalidate_image_list_cache()
@@ -5135,6 +5254,7 @@ def rename_entry():
     try:
         source.rename(target)
         _move_thumb_for_path(source, target, is_dir)
+        _move_legacy_crop_backup(source, target, is_dir)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc) or "名前変更に失敗しました。"}), 500
     _invalidate_image_list_cache()
@@ -5205,6 +5325,16 @@ def append_sequence_entries():
             raise
         for _item, source, _temporary, final in staged:
             _move_thumb_for_path(source, final, False)
+        backup_stages = []
+        for index, (_item, source, _temporary, final) in enumerate(staged, start=1):
+            old_backup = _legacy_crop_backup(source)
+            if old_backup.is_file():
+                staged_backup = old_backup.with_name(f".mfu-sequence-{operation_id}-{index}{old_backup.suffix}")
+                old_backup.rename(staged_backup)
+                backup_stages.append((staged_backup, _legacy_crop_backup(final)))
+        for temporary_backup, final_backup in backup_stages:
+            final_backup.parent.mkdir(parents=True, exist_ok=True)
+            temporary_backup.rename(final_backup)
         _invalidate_image_list_cache()
         return jsonify({"ok": True, "mappings": plan, "count": len(plan)})
     except FileNotFoundError as exc:
@@ -5267,6 +5397,7 @@ def _delete_entry_operation(data: dict) -> tuple[dict, int]:
         else:
             _delete_thumb_for_path(target)
             target.unlink()
+            _remove_legacy_crop_backup(target)
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "削除に失敗しました。"}, 500
     _invalidate_image_list_cache()
@@ -5321,6 +5452,7 @@ def _move_entry_operation(data: dict) -> tuple[dict, int]:
     try:
         shutil.move(str(source), str(target))
         _move_thumb_for_path(source, target, is_dir)
+        _move_legacy_crop_backup(source, target, is_dir)
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "移動に失敗しました。"}, 500
     _invalidate_image_list_cache()
@@ -6436,7 +6568,7 @@ def image_file(path: str):
             resolved,
             mimetype=row.get("mime_type"),
             download_name=row.get("display_name"),
-            as_attachment=False,
+            as_attachment=request.args.get("download") == "1",
             max_age=3600,
         )
     _ensure_upload_root()
@@ -6450,7 +6582,10 @@ def image_file(path: str):
         abort(404)
     if not resolved.is_file() or resolved.suffix.lower() not in MEDIA_EXTENSIONS:
         abort(404)
-    return send_from_directory(str(resolved.parent), resolved.name, as_attachment=False, max_age=3600)
+    return send_from_directory(
+        str(resolved.parent), resolved.name,
+        as_attachment=request.args.get("download") == "1", max_age=3600,
+    )
 
 
 @image_viewer_bp.get("/thumbs/<path:path>")

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { imageViewerApi } from '@/api/client';
 import { useDesktopStore } from '@/stores/desktop';
 import { useNotificationStore } from '@/stores/notifications';
@@ -11,6 +11,7 @@ import {
   VIEWER_SETTINGS_CHANGED_EVENT,
 } from '@/utils/viewerSettings';
 import XpDialog from './XpDialog.vue';
+import CropDialog from './CropDialog.vue';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
@@ -20,6 +21,9 @@ const zoom = ref(100);
 const rotation = ref(0);
 const moving = ref(false);
 const settingsOpen = ref(false);
+const cropOpen = ref(false);
+const cropBusy = ref(false);
+const hasOriginal = ref(false);
 const wheelNavigationCooldownMs = ref(loadWheelNavigationCooldown());
 const wheelNavigationCooldownDraft = ref(wheelNavigationCooldownMs.value);
 let wheelNavigationAllowedAt = 0;
@@ -39,6 +43,61 @@ const imageStyle = computed(() => ({
   height: fit.value ? undefined : 'auto',
   transform: `rotate(${rotation.value}deg)`,
 }));
+const canCrop = computed(() => /\.(jpe?g|png|webp)$/i.test(item.value.name));
+watch(() => item.value.path, async (path) => {
+  hasOriginal.value = false;
+  if (!path || !canCrop.value) return;
+  try {
+    hasOriginal.value = (await imageViewerApi.cropStatus(path)).hasOriginal;
+  } catch { /* Restoration status can be refreshed after the next edit. */ }
+}, { immediate: true });
+
+function downloadCurrent() {
+  const url = new URL(item.value.url, window.location.origin);
+  url.searchParams.set('download', '1');
+  const link = document.createElement('a');
+  link.href = `${url.pathname}${url.search}`;
+  link.download = item.value.name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function replaceCurrent(entry: MediaItem) {
+  props.win.media = entry;
+  props.win.sequence = sequence.value.map((previous) => previous.path === entry.path ? entry : previous);
+  props.win.title = entry.name;
+  hasOriginal.value = true;
+}
+
+async function saveCrop(rectangle: {x: number; y: number; width: number; height: number}) {
+  if (cropBusy.value) return;
+  cropBusy.value = true;
+  try {
+    const result = await imageViewerApi.crop(item.value.path, rectangle);
+    replaceCurrent(result.entry);
+    cropOpen.value = false;
+    notice.show('画像を切り抜きました。元画像はいつでも復元できます。');
+  } catch (error) {
+    notice.show(error instanceof Error ? error.message : '切り抜きに失敗しました。', true);
+  } finally {
+    cropBusy.value = false;
+  }
+}
+
+async function restoreOriginal() {
+  if (cropBusy.value || !hasOriginal.value) return;
+  cropBusy.value = true;
+  try {
+    const result = await imageViewerApi.restoreOriginal(item.value.path);
+    replaceCurrent(result.entry);
+    notice.show('元画像に戻しました。');
+  } catch (error) {
+    notice.show(error instanceof Error ? error.message : '元画像を復元できませんでした。', true);
+  } finally {
+    cropBusy.value = false;
+  }
+}
 
 function show(entry?: MediaItem) {
   if (!entry) return;
@@ -214,6 +273,7 @@ function wheel(event: WheelEvent) {
 
 function keydown(event: KeyboardEvent) {
   if (desktop.activeId !== props.win.id) return;
+  if (cropOpen.value || settingsOpen.value) return;
   if (event.key === 'ArrowLeft') move(-1);
   if (event.key === 'ArrowRight') move(1);
   if (event.key === '+' || event.key === '=') setZoom(zoom.value + 10);
@@ -247,6 +307,9 @@ onBeforeUnmount(() => {
       <span class="zoom-label">{{ fit ? '全体' : `${zoom}%` }}</span>
       <button type="button" @click="setZoom(zoom + 10)">+</button>
       <button type="button" @click="rotation = (rotation + 90) % 360">回転</button>
+      <button type="button" @click="downloadCurrent">画像DL</button>
+      <button type="button" :disabled="!canCrop || cropBusy" @click="cropOpen = true">切り抜き</button>
+      <button type="button" :disabled="!hasOriginal || cropBusy" @click="restoreOriginal">元画像に戻す</button>
       <button type="button" title="画像ビューアー設定" @click="openSettings">設定</button>
       <span class="viewer-counter">{{ globalIndex + 1 }} / {{ counterTotal }}</span>
     </nav>
@@ -254,6 +317,7 @@ onBeforeUnmount(() => {
       <img :src="item.url" :alt="item.name" :class="{fit}" :style="imageStyle" draggable="false">
     </div>
     <footer class="viewer-status">{{ item.name }}</footer>
+    <CropDialog v-if="cropOpen" :src="item.url" :name="item.name" :busy="cropBusy" @close="cropOpen = false" @save="saveCrop" />
     <XpDialog v-if="settingsOpen" title="画像ビューアー設定" @close="settingsOpen = false">
       <form class="xp-form" @submit.prevent="saveSettings">
         <label>ホイール画像送り間隔（ミリ秒）
