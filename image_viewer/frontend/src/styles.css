@@ -156,6 +156,16 @@ button.temporary-warning.pressed {
 }
 .path-box { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px inset #aaa; background: #fff; color: #17233b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .explorer-actions { min-height: 35px; padding-left: 8px; }
+.explorer-actions > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-height: 28px;
+  padding: 3px 9px;
+  line-height: 1;
+}
 .toolbar-dropdown {
   position: fixed;
   z-index: 10002;

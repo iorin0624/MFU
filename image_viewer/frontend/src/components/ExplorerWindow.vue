@@ -1078,6 +1078,7 @@ onBeforeUnmount(() => {
         <button type="button" :class="{pressed: detailSidebarOpen}" :aria-expanded="detailSidebarOpen" @click="toggleDetailSidebar">詳細 {{ detailSidebarOpen ? '非表示' : '表示' }}</button>
       </div>
       <div class="explorer-actions">
+        <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'new'" :class="{pressed: toolbarMenu === 'new'}" @click="toggleToolbarMenu('new', $event)">新規 ▾</button>
         <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
         <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
         <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>
@@ -1086,7 +1087,6 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
         <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
         <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
-        <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'new'" :class="{pressed: toolbarMenu === 'new'}" @click="toggleToolbarMenu('new', $event)">新規 ▾</button>
         <button type="button" :class="{pressed: model.numbering}" @click="saveNumberingSettings(!model.numbering, model.numberingDigits)">連番 {{ model.numbering ? 'ON' : 'OFF' }}</button>
         <label class="toolbar-select">桁数
           <select :value="model.numberingDigits" :disabled="!model.numbering" @change="saveNumberingSettings(model.numbering, Number(($event.target as HTMLSelectElement).value))">
