@@ -25,6 +25,50 @@ const fileGrid = ref<{
   ) => Promise<void>;
 }>();
 const contextMenu = ref<{visible: boolean; x: number; y: number; item?: MediaItem; folder?: string}>({ visible: false, x: 0, y: 0 });
+type ToolbarMenu = 'new' | 'download' | 'classification';
+const toolbarMenu = ref<ToolbarMenu | null>(null);
+const toolbarMenuElement = ref<HTMLElement | null>(null);
+const toolbarMenuTrigger = ref<HTMLElement | null>(null);
+const toolbarMenuPosition = ref({ left: 0, top: 0 });
+const toolbarMenuId = computed(() => `explorer-toolbar-menu-${props.win.id}`);
+async function toggleToolbarMenu(menu: ToolbarMenu, event: MouseEvent) {
+  if (toolbarMenu.value === menu) {
+    toolbarMenu.value = null;
+    return;
+  }
+  toolbarMenuTrigger.value = event.currentTarget as HTMLElement;
+  toolbarMenu.value = menu;
+  await nextTick();
+  if (toolbarMenu.value !== menu) return;
+  const button = toolbarMenuTrigger.value;
+  const panel = toolbarMenuElement.value;
+  if (!button || !panel) return;
+  const anchor = button.getBoundingClientRect();
+  const width = panel.offsetWidth;
+  const height = panel.offsetHeight;
+  toolbarMenuPosition.value = {
+    left: Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8)),
+    top: anchor.bottom + height + 8 <= window.innerHeight
+      ? anchor.bottom + 2
+      : Math.max(8, anchor.top - height - 2),
+  };
+  panel.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+}
+function closeToolbarMenu(restoreFocus = false) {
+  toolbarMenu.value = null;
+  if (restoreFocus) toolbarMenuTrigger.value?.focus();
+}
+function closeToolbarMenuOnPointer(event: PointerEvent) {
+  const target = event.target;
+  if (target instanceof Node && (toolbarMenuElement.value?.contains(target)
+    || toolbarMenuTrigger.value?.contains(target))) return;
+  closeToolbarMenu();
+}
+function closeToolbarMenuOnScroll(event: Event) {
+  if (event.target instanceof Node && toolbarMenuElement.value?.contains(event.target)) return;
+  closeToolbarMenu();
+}
+function closeToolbarMenuOnResize() { closeToolbarMenu(); }
 type ExplorerDialog =
   | { kind: 'new-folder'; title: string; value: string }
   | { kind: 'rename'; title: string; value: string; extension: string; item: MediaItem }
@@ -842,6 +886,13 @@ async function confirmAppend(sources: string[], target: MediaItem) {
 
 function keyHandler(event: KeyboardEvent) {
   if (desktop.activeId !== props.win.id) return;
+  if (toolbarMenu.value) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeToolbarMenu(true);
+    }
+    return;
+  }
   if (dialog.value) return;
   const target = event.target as HTMLElement | null;
   if (target?.matches('input, textarea, select, [contenteditable="true"]')) return;
@@ -970,6 +1021,9 @@ onMounted(() => {
   document.addEventListener('paste', pasteHandler);
   document.addEventListener('keydown', keyHandler);
   document.addEventListener('pointerdown', closeContext);
+  document.addEventListener('pointerdown', closeToolbarMenuOnPointer);
+  document.addEventListener('scroll', closeToolbarMenuOnScroll, true);
+  window.addEventListener('resize', closeToolbarMenuOnResize);
   versionTimer = window.setInterval(pollVersion, 10000);
 });
 onBeforeUnmount(() => {
@@ -978,6 +1032,9 @@ onBeforeUnmount(() => {
   document.removeEventListener('paste', pasteHandler);
   document.removeEventListener('keydown', keyHandler);
   document.removeEventListener('pointerdown', closeContext);
+  document.removeEventListener('pointerdown', closeToolbarMenuOnPointer);
+  document.removeEventListener('scroll', closeToolbarMenuOnScroll, true);
+  window.removeEventListener('resize', closeToolbarMenuOnResize);
   window.clearInterval(versionTimer);
 });
 </script>
@@ -1021,8 +1078,15 @@ onBeforeUnmount(() => {
         <button type="button" :class="{pressed: detailSidebarOpen}" :aria-expanded="detailSidebarOpen" @click="toggleDetailSidebar">詳細 {{ detailSidebarOpen ? '非表示' : '表示' }}</button>
       </div>
       <div class="explorer-actions">
-        <button type="button" @click="createFolder">新規フォルダー</button>
-        <button type="button" @click="uploadInput?.click()">追加</button>
+        <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
+        <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
+        <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>
+        <button type="button" :class="{pressed: model.appendSources.length}" :disabled="!selectedItems.length && !model.appendSources.length" @click="startAppend">{{ model.appendSources.length ? '後付け解除' : '後付け' }}</button>
+        <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>
+        <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
+        <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
+        <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
+        <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'new'" :class="{pressed: toolbarMenu === 'new'}" @click="toggleToolbarMenu('new', $event)">新規 ▾</button>
         <button type="button" :class="{pressed: model.numbering}" @click="saveNumberingSettings(!model.numbering, model.numberingDigits)">連番 {{ model.numbering ? 'ON' : 'OFF' }}</button>
         <label class="toolbar-select">桁数
           <select :value="model.numberingDigits" :disabled="!model.numbering" @change="saveNumberingSettings(model.numbering, Number(($event.target as HTMLSelectElement).value))">
@@ -1036,21 +1100,27 @@ onBeforeUnmount(() => {
           :title="model.allowDuplicateImages ? 'このフォルダーを開いている間、重複画像を保存します' : 'フォルダー移動または再読み込みまで重複画像を保存可能にします'"
           @click="model.allowDuplicateImages = !model.allowDuplicateImages"
         >重複一時許可 {{ model.allowDuplicateImages ? 'ON' : 'OFF' }}</button>
-        <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
-        <button type="button" :disabled="!selectedImages.length" @click="downloadSelected">画像DL（{{ selectedImages.length }}枚）</button>
-        <button v-if="runtimeConfig.isAdmin" type="button" :disabled="!selectedImages.length || transferBusy" @click="transferSelectedToSmb">{{ transferBusy ? 'ラズパイへ転送中…' : 'ラズパイへ転送' }}</button>
-        <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
-        <button type="button" :disabled="!selectedItems.length" @click="movePaths()">移動</button>
-        <button type="button" :disabled="!selectedItems.length" @click="copyPaths()">コピー</button>
-        <button type="button" title="選択画像をクリップボードへコピー" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
-        <button type="button" title="選択中の画像をまとめてGPU分類し、確認用の候補を作成します" :disabled="!selectedImages.length || bulkStyleSubmitting || bulkStyleActive" @click="startSelectedStyleJobs">{{ bulkStyleSubmitting ? 'GPU分類を依頼中…' : `選択画像をGPU分類（${selectedImages.length}枚）` }}</button>
-        <button type="button" title="進行中・最近の分類ジョブを別ウィンドウで確認します" @click="desktop.openStyleProgress(bulkStyleJobs)">分類の進捗</button>
-        <button type="button" title="クリップボード画像を現在のフォルダーへ貼り付け" @click="pasteFromClipboard">貼付</button>
-        <button type="button" :class="{pressed: model.appendSources.length}" :disabled="!selectedItems.length && !model.appendSources.length" @click="startAppend">{{ model.appendSources.length ? '後付け解除' : '後付け' }}</button>
-        <button type="button" :disabled="!selectedItems.length" class="danger" @click="deletePaths()">削除</button>
-        <button type="button" @click="rebuildThumbnails">サムネイル再生成</button>
+        <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'download'" :class="{pressed: toolbarMenu === 'download'}" @click="toggleToolbarMenu('download', $event)">DL/転送 ▾</button>
+        <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'classification'" :class="{pressed: toolbarMenu === 'classification'}" @click="toggleToolbarMenu('classification', $event)">分類/システム ▾</button>
         <input ref="uploadInput" type="file" multiple accept="image/*,video/*" hidden @change="uploadFiles(Array.from(($event.target as HTMLInputElement).files || []))">
       </div>
+      <Teleport to="body">
+        <div v-if="toolbarMenu" :id="toolbarMenuId" ref="toolbarMenuElement" class="toolbar-dropdown" role="menu" :style="{left: `${toolbarMenuPosition.left}px`, top: `${toolbarMenuPosition.top}px`}" @pointerdown.stop>
+          <template v-if="toolbarMenu === 'new'">
+            <button type="button" role="menuitem" @click="closeToolbarMenu(); createFolder()">新規フォルダー</button>
+            <button type="button" role="menuitem" @click="closeToolbarMenu(); uploadInput?.click()">追加</button>
+          </template>
+          <template v-else-if="toolbarMenu === 'download'">
+            <button type="button" role="menuitem" :disabled="!selectedImages.length" @click="closeToolbarMenu(); downloadSelected()">画像DL（{{ selectedImages.length }}枚）</button>
+            <button v-if="runtimeConfig.isAdmin" type="button" role="menuitem" :disabled="!selectedImages.length || transferBusy" @click="closeToolbarMenu(); transferSelectedToSmb()">{{ transferBusy ? 'ラズパイへ転送中…' : 'ラズパイに転送' }}</button>
+          </template>
+          <template v-else>
+            <button type="button" role="menuitem" title="選択中の画像をまとめてGPU分類し、確認用の候補を作成します" :disabled="!selectedImages.length || bulkStyleSubmitting || bulkStyleActive" @click="closeToolbarMenu(); startSelectedStyleJobs()">{{ bulkStyleSubmitting ? 'GPU分類を依頼中…' : `選択画像をGPU分類（${selectedImages.length}枚）` }}</button>
+            <button type="button" role="menuitem" title="進行中・最近の分類ジョブを別ウィンドウで確認します" @click="closeToolbarMenu(); desktop.openStyleProgress(bulkStyleJobs)">分類進捗</button>
+            <button type="button" role="menuitem" @click="closeToolbarMenu(); rebuildThumbnails()">サムネイル再生成</button>
+          </template>
+        </div>
+      </Teleport>
       <div v-if="model.appendSources.length" class="append-banner">{{ model.appendSources.length }}件の後付け先を選択してください。Escで中止</div>
       <FileGrid
         ref="fileGrid"
