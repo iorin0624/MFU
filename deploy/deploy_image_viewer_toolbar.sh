@@ -1,33 +1,44 @@
 #!/bin/sh
-# Deploy the image-viewer toolbar source and compiled assets on MFU SE02.
+# Deploy the image-viewer frontend source and compiled assets on MFU SE02.
 set -eu
 
 APP=/mnt/mfu/app
 STAGE=/tmp/mfu-imageviewer-toolbar-stage
 BACKUP="/mnt/mfu/deploy-backups/image-viewer-toolbar-$(date +%Y%m%d%H%M%S)"
-FILES='image_viewer/frontend/src/components/ExplorerWindow.vue image_viewer/frontend/src/styles.css image_viewer/template/image_viewer_vue.html static/image_viewer_vue/image-viewer.js static/image_viewer_vue/image-viewer.css'
+FILES='image_viewer/frontend/src/components/ExplorerWindow.vue image_viewer/frontend/src/components/CropDialog.vue image_viewer/frontend/src/utils/cropGeometry.ts image_viewer/frontend/src/styles.css image_viewer/template/image_viewer_vue.html static/image_viewer_vue/image-viewer.js static/image_viewer_vue/image-viewer.css'
 
-for name in ExplorerWindow.vue styles.css image_viewer_vue.html image-viewer.js image-viewer.css; do
+for name in ExplorerWindow.vue CropDialog.vue cropGeometry.ts styles.css image_viewer_vue.html image-viewer.js image-viewer.css; do
     test -s "$STAGE/$name"
 done
 install -d -o root -g root -m 0750 "$BACKUP"
 (
     cd "$APP"
     for path in $FILES; do
-        cp -a --parents "$path" "$BACKUP"
+        if [ -e "$path" ]; then
+            cp -a --parents "$path" "$BACKUP"
+        fi
     done
 )
 
 rollback() {
     if [ "${complete:-0}" = 0 ]; then
         echo 'Toolbar validation failed; restoring prior files.' >&2
-        (cd "$BACKUP" && for path in $FILES; do cp -a "$path" "$APP/$path"; done)
+        for path in $FILES; do
+            if [ -e "$BACKUP/$path" ]; then
+                cp -a "$BACKUP/$path" "$APP/$path"
+            else
+                rm -f "$APP/$path"
+            fi
+        done
         systemctl restart mfu.service || true
     fi
 }
 trap rollback EXIT
 
 install -o mfu -g mfu -m 0644 "$STAGE/ExplorerWindow.vue" "$APP/image_viewer/frontend/src/components/ExplorerWindow.vue"
+install -o mfu -g mfu -m 0644 "$STAGE/CropDialog.vue" "$APP/image_viewer/frontend/src/components/CropDialog.vue"
+install -d -o mfu -g mfu -m 0755 "$APP/image_viewer/frontend/src/utils"
+install -o mfu -g mfu -m 0644 "$STAGE/cropGeometry.ts" "$APP/image_viewer/frontend/src/utils/cropGeometry.ts"
 install -o mfu -g mfu -m 0644 "$STAGE/styles.css" "$APP/image_viewer/frontend/src/styles.css"
 install -o mfu -g mfu -m 0644 "$STAGE/image_viewer_vue.html" "$APP/image_viewer/template/image_viewer_vue.html"
 install -o mfu -g mfu -m 0644 "$STAGE/image-viewer.js" "$APP/static/image_viewer_vue/image-viewer.js"
