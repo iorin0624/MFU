@@ -11,9 +11,25 @@ spec = importlib.util.spec_from_file_location(
 )
 analytics = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(analytics)
+local_spec = importlib.util.spec_from_file_location(
+    "local_networks", Path(__file__).resolve().parents[1] / "utils" / "local_networks.py"
+)
+local_networks = importlib.util.module_from_spec(local_spec)
+local_spec.loader.exec_module(local_networks)
 
 
 class PageViewAnalyticsTests(unittest.TestCase):
+    def test_local_networks_match_existing_ranges(self):
+        for value in ("127.0.0.1", "::1", "192.168.103.21",
+                      "2404:7a81:bc40:2a00::1234", "2404:7a81:8ac1:1000::abcd"):
+            self.assertTrue(local_networks.is_local_ip(value), value)
+        for value in ("192.168.104.21", "2404:7a81:bc40:2a01::1", "203.0.113.2"):
+            self.assertFalse(local_networks.is_local_ip(value), value)
+        sql, values = local_networks.sql_local_ip_predicate()
+        self.assertEqual(sql.count("%s"), len(values))
+        self.assertIn("192.168.103.%", values)
+        self.assertIn("2404:7a81:bc40:2a00:%", values)
+
     def test_only_public_host_page_success_is_counted(self):
         request = SimpleNamespace(
             host="pro.iori0624.jp", method="GET", path="/profile",

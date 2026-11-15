@@ -4588,7 +4588,8 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
       search_date_from=YYYY-MM-DD
       search_date_to=YYYY-MM-DD
     """
-    from ipaddress import ip_address, ip_network, IPv4Network, IPv6Network
+    from ipaddress import ip_address, IPv4Network, IPv6Network
+    from app.utils.local_networks import LOCAL_NETS_OBJ
 
     def _progress(**updates):
         if progress_cb:
@@ -4598,14 +4599,6 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         return (args_dict.get(name, default) or "").strip()
 
     # --------- ローカル扱いネットを1か所で管理 ----------
-    LOCAL_NETS = [
-        "127.0.0.1",
-        "192.168.103.0/24",
-        "2404:7a81:bc40:2a00::/64",
-        "2404:7a81:8ac1:1000::/64",
-    ]
-    LOCAL_NETS_OBJ = [ip_network(c) for c in LOCAL_NETS]
-
     def _like_prefixes_for_networks(networks):
         """
         /24 や /64 など 8/16ビット境界のネットだけ SQL LIKE 前方一致で粗除外。

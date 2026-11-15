@@ -260,11 +260,14 @@ def parse_apache_page_view(line: str, site: str) -> dict | None:
 def summary(start: date, end: date, site: str = "all", include_bots: bool = False) -> dict:
     ensure_schema()
     from app.utils.db import get_db
+    from app.utils.local_networks import sql_local_ip_predicate
     db = get_db()
     try:
         cur = db.cursor(dictionary=True)
-        where = ["viewed_at >= %s", "viewed_at < %s"]
+        local_ip_sql, local_ip_values = sql_local_ip_predicate("ip")
+        where = ["viewed_at >= %s", "viewed_at < %s", f"NOT {local_ip_sql}"]
         params: list = [datetime.combine(start, datetime.min.time()), datetime.combine(end + timedelta(days=1), datetime.min.time())]
+        params.extend(local_ip_values)
         if site in {"pro", "suc"}:
             where.append("site=%s")
             params.append(site)
