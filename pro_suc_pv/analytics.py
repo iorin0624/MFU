@@ -7,7 +7,11 @@ import ipaddress
 import json
 import re
 import threading
+import time
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 JST = timezone(timedelta(hours=9))
@@ -257,10 +261,71 @@ def parse_apache_page_view(line: str, site: str) -> dict | None:
     )
 
 
+def _origin_label(value: object, *, country: bool = False) -> str:
+    label = re.sub(r"\s+", " ", str(value or "")).strip()[:160]
+    if not label or label.lower() in {"unknown", "none", "n/a", "-", "不明"} or label.startswith("取得エラー"):
+        return "未判定"
+    if "jpnic" in label.lower() or "japan network information center" in label.lower():
+        return "未判定"
+    if country:
+        return {"JAPAN": "JP", "日本": "JP", "UNITED STATES": "US", "USA": "US"}.get(label.upper(), label.upper())
+    return label
+
+
+@lru_cache(maxsize=8192)
+def _cached_origin(ip: str, cache_dir: str, refresh_bucket: int) -> tuple[str, str]:
+    """Use the existing WHOIS cache only; never contact RDAP during page load.
+
+    Expired entries may still describe a historical visit, so they remain
+    usable for approximate grouping. They are re-read every five minutes.
+    """
+    path = Path(cache_dir) / (hashlib.md5(ip.encode()).hexdigest() + ".json")
+    try:
+        if path.stat().st_size > 32768:
+            return "未判定", "未判定"
+        info = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(info, dict):
+            return "未判定", "未判定"
+    except (OSError, UnicodeError, ValueError):
+        return "未判定", "未判定"
+    country = _origin_label(info.get("country"), country=True)
+    provider = "未判定"
+    for field in ("display_name", "org", "asname", "netname"):
+        candidate = _origin_label(info.get(field))
+        if candidate != "未判定":
+            provider = candidate
+            break
+    return country, provider
+
+
+def group_cached_origins(ip_rows: list[dict], cache_dir: str, *, lookup=None) -> dict:
+    """Group all selected PVs by country and by country/provider."""
+    classify = lookup or (lambda ip: _cached_origin(ip, cache_dir, int(time.time() // 300)))
+    countries: Counter[str] = Counter()
+    providers: Counter[tuple[str, str]] = Counter()
+    total = known_country = known_provider = 0
+    for row in ip_rows:
+        count = int(row["pv"])
+        country, provider = classify(row["ip"])
+        countries[country] += count
+        providers[(country, provider)] += count
+        total += count
+        known_country += count if country != "未判定" else 0
+        known_provider += count if provider != "未判定" else 0
+    return {
+        "countries": [{"country": name, "pv": count} for name, count in countries.most_common()],
+        "providers": [{"country": country, "provider": provider, "pv": count}
+                      for (country, provider), count in providers.most_common()],
+        "known_country": known_country, "known_provider": known_provider,
+        "origin_total": total,
+    }
+
+
 def summary(start: date, end: date, site: str = "all", include_bots: bool = False) -> dict:
     ensure_schema()
     from app.utils.db import get_db
     from app.utils.local_networks import sql_local_ip_predicate
+    from app.utils.whois_util import WHOIS_CACHE_DIR
     db = get_db()
     try:
         cur = db.cursor(dictionary=True)
@@ -283,6 +348,8 @@ def summary(start: date, end: date, site: str = "all", include_bots: bool = Fals
         totals = cur.fetchone() or {}
         cur.execute(f"SELECT DATE(viewed_at) AS day, site, COUNT(*) AS pv FROM pro_suc_page_views WHERE {clause} GROUP BY DATE(viewed_at),site ORDER BY day", tuple(params))
         daily = [{"day": row["day"].isoformat(), "site": row["site"], "pv": row["pv"]} for row in cur.fetchall()]
+        cur.execute(f"SELECT ip, COUNT(*) AS pv FROM pro_suc_page_views WHERE {clause} GROUP BY ip", tuple(params))
+        origins = group_cached_origins(cur.fetchall(), WHOIS_CACHE_DIR)
         return {
             "total": int(totals.get("total") or 0), "pro": int(totals.get("pro") or 0),
             "suc": int(totals.get("suc") or 0), "estimated": int(totals.get("estimated") or 0),
@@ -291,8 +358,9 @@ def summary(start: date, end: date, site: str = "all", include_bots: bool = Fals
             "referrers": grouped("referer_host", 20),
             "months": grouped("calendar_month", 30),
             "devices": grouped("device", 20), "oses": grouped("os_name", 20),
-            "browsers": grouped("browser", 20), "ips": grouped("ip", 20),
+            "browsers": grouped("browser", 20),
             "origins": grouped("origin", 10),
+            **origins,
         }
     finally:
         db.close()

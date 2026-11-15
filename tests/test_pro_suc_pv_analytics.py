@@ -1,7 +1,10 @@
 """Pure tests for pro/SUC PV extraction; no production database required."""
 
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -19,6 +22,26 @@ local_spec.loader.exec_module(local_networks)
 
 
 class PageViewAnalyticsTests(unittest.TestCase):
+    def test_country_provider_grouping_counts_all_pvs(self):
+        rows = [{"ip": "a", "pv": 3}, {"ip": "b", "pv": 2}, {"ip": "c", "pv": 1}]
+        labels = {"a": ("JP", "KDDI"), "b": ("JP", "KDDI"), "c": ("未判定", "未判定")}
+        result = analytics.group_cached_origins(rows, "unused", lookup=labels.__getitem__)
+        self.assertEqual(result["countries"], [{"country": "JP", "pv": 5}, {"country": "未判定", "pv": 1}])
+        self.assertEqual(result["providers"], [
+            {"country": "JP", "provider": "KDDI", "pv": 5},
+            {"country": "未判定", "provider": "未判定", "pv": 1},
+        ])
+        self.assertEqual((result["origin_total"], result["known_country"], result["known_provider"]), (6, 5, 5))
+
+    def test_expired_whois_cache_remains_available_for_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ip = "203.0.113.9"
+            name = hashlib.md5(ip.encode()).hexdigest() + ".json"
+            (Path(folder) / name).write_text(json.dumps({
+                "country": "Japan", "display_name": "Sample Net", "expires_at": 1,
+            }), encoding="utf-8")
+            self.assertEqual(analytics._cached_origin(ip, folder, 1), ("JP", "Sample Net"))
+
     def test_local_networks_match_existing_ranges(self):
         for value in ("127.0.0.1", "::1", "192.168.103.21",
                       "2404:7a81:bc40:2a00::1234", "2404:7a81:8ac1:1000::abcd"):
