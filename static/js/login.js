@@ -25,25 +25,34 @@
       body: JSON.stringify({...body, csrf_token: csrf}),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || data.message || "認証処理に失敗しました。");
+    if (!response.ok) throw new Error(data.error || data.message || `認証処理に失敗しました（HTTP ${response.status}）。`);
     return data;
   };
 
-  const passkey = async () => {
+  const passkey = async ({discoverable = false} = {}) => {
     clear();
     const name = (username?.value || form.dataset.preauthUsername || "").trim();
-    if (!name) throw new Error("ユーザー名を入力してください。");
+    if (!discoverable && !name) throw new Error("ユーザー名を入力してください。");
     if (!window.PublicKeyCredential || !navigator.credentials) throw new Error("この端末ではパスキーを利用できません。");
-    const options = await post("/webauthn/auth/options", {username: name});
-    const credential = await navigator.credentials.get({publicKey: PasskeyUtils.decodeRequestOptions(options)});
+    const options = await post("/webauthn/auth/options", discoverable ? {discoverable: true} : {username: name});
+    let credential;
+    try {
+      credential = await navigator.credentials.get({publicKey: PasskeyUtils.decodeRequestOptions(options)});
+    } catch (error) {
+      if (discoverable && error?.name === "NotAllowedError") {
+        throw new Error("IDなしで使えるパスキーが見つからないか、操作がキャンセルされました。既存のパスキーは、一般ユーザーならユーザー名入力、管理者なら従来のID・パスワード確認後に試してください。");
+      }
+      throw error;
+    }
     const result = await post("/webauthn/auth/verify", {
-      username: name,
+      ...(discoverable ? {discoverable: true} : {username: name}),
       credential: PasskeyUtils.serializeAuthenticationCredential(credential),
     });
     location.href = result.redirect || "/upload";
   };
 
-  document.getElementById("initial-passkey")?.addEventListener("click", () => passkey().catch(e => show(errorBox, e.message)));
+  document.getElementById("initial-passkey")?.addEventListener("click", () => passkey({discoverable: true}).catch(e => show(errorBox, e.message)));
+  document.getElementById("named-passkey")?.addEventListener("click", () => passkey().catch(e => show(errorBox, e.message)));
   document.getElementById("mfa-passkey")?.addEventListener("click", () => passkey().catch(e => show(errorBox, e.message)));
   document.getElementById("totp-verify")?.addEventListener("click", async () => {
     clear();

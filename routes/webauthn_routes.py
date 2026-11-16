@@ -248,6 +248,12 @@ def register_options():
                 exclude_credentials.append(descriptor)
 
         challenge = _b64url_encode(os.urandom(32))
+        authenticator_selection = {
+            "userVerification": _user_verification_string(username)
+        }
+        # 新規パスキーは管理者を含め ID なしログインでも選べるものに限定する。
+        authenticator_selection["residentKey"] = "required"
+        authenticator_selection["userVerification"] = "required"
         options = {
             "rp": {"name": RP_NAME, "id": RP_ID},
             "user": {
@@ -258,9 +264,7 @@ def register_options():
             "challenge": challenge,
             "timeout": CHALLENGE_TTL_SECONDS * 1000,
             "attestation": "none",
-            "authenticatorSelection": {
-                "userVerification": _user_verification_string(username)
-            },
+            "authenticatorSelection": authenticator_selection,
             "pubKeyCredParams": [
                 {"type": "public-key", "alg": -7},
                 {"type": "public-key", "alg": -257},
@@ -390,6 +394,18 @@ def auth_options():
     purpose = (payload.get("purpose") or "").strip()
     qr_token = str(payload.get("qr_token") or "")
     action = str(payload.get("action") or "")
+    discoverable = payload.get("discoverable") is True
+    if discoverable:
+        if username or purpose or qr_token or action:
+            return jsonify(error="リクエストが不正です"), 400
+        challenge = _b64url_encode(os.urandom(32))
+        _store_challenge("auth_discoverable", "", challenge)
+        return jsonify(
+            challenge=challenge,
+            timeout=CHALLENGE_TTL_SECONDS * 1000,
+            rpId=RP_ID,
+            userVerification="required",
+        )
     if not username:
         return jsonify(error="ユーザー名が必要です"), 400
 
@@ -483,11 +499,14 @@ def auth_verify():
     purpose = (payload.get("purpose") or "").strip()
     qr_token = str(payload.get("qr_token") or "")
     action = str(payload.get("action") or "")
-    if not username or not credential:
+    discoverable = payload.get("discoverable") is True
+    if not credential or (not discoverable and not username):
         _log_webauthn_request(logger, reason="missing_fields")
         return jsonify(error="リクエストが不正です"), 400
+    if discoverable and (username or purpose or qr_token or action):
+        return jsonify(error="リクエストが不正です"), 400
 
-    challenge_kind = "auth"
+    challenge_kind = "auth_discoverable" if discoverable else "auth"
     if purpose == STEPUP_PURPOSE:
         try:
             action = normalize_admin_action(action)
@@ -526,15 +545,28 @@ def auth_verify():
 
     db = get_db()
     cur = db.cursor(dictionary=True)
-    cur.execute(
-        """
-        SELECT id, credential_id, public_key, sign_count
-        FROM user_passkeys
-        WHERE username = %s AND credential_id = %s
-        """,
-        (username, credential_id),
-    )
-    passkey = cur.fetchone()
+    if discoverable:
+        cur.execute(
+            """
+            SELECT id, username, credential_id, public_key, sign_count
+            FROM user_passkeys
+            WHERE credential_id = %s
+            LIMIT 2
+            """,
+            (credential_id,),
+        )
+        matches = cur.fetchall()
+        passkey = matches[0] if len(matches) == 1 else None
+    else:
+        cur.execute(
+            """
+            SELECT id, credential_id, public_key, sign_count
+            FROM user_passkeys
+            WHERE username = %s AND credential_id = %s
+            """,
+            (username, credential_id),
+        )
+        passkey = cur.fetchone()
     if not passkey:
         write_auth_audit_log(
             "PASSKEY_LOGIN_FAILED",
@@ -544,6 +576,9 @@ def auth_verify():
         )
         db.close()
         return jsonify(error="このパスキーは登録されていません"), 404
+
+    if discoverable:
+        username = passkey["username"]
 
     user = _fetch_user(username)
     if not user:
@@ -563,7 +598,8 @@ def auth_verify():
             credential_public_key=_b64url_decode(passkey["public_key"]),
             credential_current_sign_count=int(passkey["sign_count"] or 0),
             require_user_verification=(
-                _user_verification(username) == UserVerificationRequirement.REQUIRED
+                discoverable
+                or _user_verification(username) == UserVerificationRequirement.REQUIRED
             ),
         )
     except Exception:
@@ -607,10 +643,13 @@ def auth_verify():
         return jsonify(ok=True, purpose=STEPUP_PURPOSE, action=action, token=token)
 
     if username == ADMIN_USERNAME:
-        if not password_preauth_valid(username):
-            audit("PASSKEY_AUTH_REJECTED", details={"reason": "password_preauth_expired"})
-            return jsonify(error="パスワード認証からやり直してください。"), 401
-        establish_admin_session(method="passkey", nickname=user.get("nickname"))
+        if discoverable:
+            establish_admin_session(method="passkey_direct", nickname=user.get("nickname"))
+        else:
+            if not password_preauth_valid(username):
+                audit("PASSKEY_AUTH_REJECTED", details={"reason": "password_preauth_expired"})
+                return jsonify(error="パスワード認証からやり直してください。"), 401
+            establish_admin_session(method="passkey", nickname=user.get("nickname"))
     else:
         session["user"] = username
         session["nickname"] = user.get("nickname")

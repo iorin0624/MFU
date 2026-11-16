@@ -47,7 +47,8 @@
           <input type="password" id="password" name="password" class="form-control" autocomplete="current-password">
         </div>
         <button type="submit" class="btn btn-primary w-100 mb-2">ID・パスワードを確認</button>
-        <button type="button" id="initial-passkey" class="btn btn-outline-secondary w-100">一般ユーザー：パスキーでログイン</button>
+        <button type="button" id="initial-passkey" class="btn btn-outline-secondary w-100 mb-2">パスキーで直接ログイン（ID入力不要）</button>
+        <button type="button" id="named-passkey" class="btn btn-link btn-sm w-100">一般ユーザー：ID指定の旧パスキーでログイン</button>
       </div>
     </form>
 
@@ -72,6 +73,6 @@
     </section>
   </main>
   <script src="{{ url_for('static', filename='js/passkey-utils.js') }}" defer></script>
-  <script src="{{ url_for('static', filename='js/login.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/login.js', v='20261116-passkey-direct') }}" defer></script>
 </body>
 </html>
