@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="container mt-4">
-  <h2 class="mb-2">📜 ログ記録（サーバー側フィルタ／上限 {{ filters.limit or 1000 }} 件）</h2>
+  <h2 class="mb-2">📜 ログ記録（サーバー側フィルタ／上限 {{ filters.limit or 100 }} 件）</h2>
   <div class="mb-3">
     <a class="btn btn-sm btn-outline-danger" href="{{ url_for('admin_logs_404_ban_settings') }}">
       404アクセスBAN判定を編集
@@ -252,7 +252,7 @@
       <label class="small text-muted">表示上限</label>
       <select class="form-select form-select-sm" name="limit" onchange="this.form.submit()">
         {% for n in [100,300,500,1000] %}
-          <option value="{{ n }}" {{ 'selected' if (filters.limit or 1000)==n else '' }}>{{ n }}</option>
+          <option value="{{ n }}" {{ 'selected' if (filters.limit or 100)==n else '' }}>{{ n }}</option>
         {% endfor %}
       </select>
     </form>
@@ -264,7 +264,7 @@
         {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
         {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
         {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
-        <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        <input type="hidden" name="limit" value="{{ filters.limit or 100 }}">
         {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
         {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
         {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
@@ -316,7 +316,7 @@
     {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
     {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
     {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
-    <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+    <input type="hidden" name="limit" value="{{ filters.limit or 100 }}">
     <div class="input-group">
       <input type="date" name="date" class="form-control" value="{{ selected_date }}">
       <button class="btn btn-outline-primary" type="submit">日付で絞り込み</button>
@@ -370,7 +370,7 @@
       <span class="badge bg-light text-dark border">期間: {{ filters.search_date_from or '未指定' }} 〜 {{ filters.search_date_to or '未指定' }}</span>
     {% endif %}
     {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
-    <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
+    <span class="badge bg-dark">上限: {{ filters.limit or 100 }}</span>
   </div>
 
   <!-- 検索（サーバー側・全ページ対象） -->
@@ -388,7 +388,7 @@
         {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
         {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
         {% if selected_date %}<input type="hidden" name="date" value="{{ selected_date }}">{% endif %}
-        <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        <input type="hidden" name="limit" value="{{ filters.limit or 100 }}">
         <div class="row g-2 align-items-end">
           <div class="col-12 col-lg-4">
             <label class="form-label small">フリーワード</label>

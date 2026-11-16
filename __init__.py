@@ -4582,7 +4582,7 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
       nonjp_only=1
       exclude_suc=1          ← /suc/配下のアクセスを除外表示
       exclude_3xx=1          ← 3xxレスポンスを除外表示（※今は強制ONにする）
-      limit <= 1000 (デフォルト1000)
+      limit <= 1000 (デフォルト100)
       page >= 1
       date=YYYY-MM-DD
       search_date_from=YYYY-MM-DD
@@ -4705,9 +4705,9 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         exclude_suc = True
 
     try:
-        per_page = int(args_dict.get("limit", "1000") or "1000")
+        per_page = int(args_dict.get("limit", "100") or "100")
     except ValueError:
-        per_page = 1000
+        per_page = 100
     per_page = max(1, min(1000, per_page))
 
     try:
