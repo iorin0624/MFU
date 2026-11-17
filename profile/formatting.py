@@ -151,6 +151,61 @@ def list_profile_qa_categories(items: list[dict[str, str | int]]) -> list[dict[s
     return [{'name': name, 'count': counts[name]} for name in names]
 
 
+def render_profile_markdown(
+    profile: dict,
+    *,
+    qa_items: list[dict],
+    social_links: list[dict],
+    grouped_works: list[dict],
+) -> str:
+    """Render only the sections visible on the public profile from current DB data."""
+    def plain(value: object) -> str:
+        return html.escape(normalize_plain_text_for_display(str(value or "")) or "", quote=False)
+
+    def heading(value: object) -> str:
+        return " ".join(plain(value).split())
+
+    lines = [f"# {heading(profile.get('page_title'))}", ""]
+    if profile.get("display_name"):
+        lines.extend([heading(profile["display_name"]), ""])
+    if profile.get("subtitle"):
+        lines.extend([plain(profile["subtitle"]), ""])
+
+    if profile.get("intro_text"):
+        lines.extend(["## 自己紹介", "", plain(profile["intro_text"]).strip(), ""])
+
+    if social_links:
+        lines.extend(["## 各種SNSリンク", ""])
+        for link in social_links:
+            label = heading(link.get("label") or "リンク")
+            url = str(link.get("url") or "")
+            if url.startswith(("https://", "http://")):
+                lines.append(f"- {label}: {url}")
+        lines.append("")
+
+    if profile.get("request_notes_text"):
+        lines.extend(["## 撮影依頼について", "", plain(profile["request_notes_text"]).strip(), ""])
+
+    if qa_items:
+        lines.extend(["## Q&A", ""])
+        for item in qa_items:
+            lines.extend([f"### Q{item['number']}. {heading(item['question'])}", ""])
+            if item.get("category"):
+                lines.extend([f"カテゴリ: {heading(item['category'])}", ""])
+            if item.get("summary"):
+                lines.extend([f"要点: {plain(item['summary'])}", ""])
+            lines.extend([plain(item["answer"]).strip(), ""])
+
+    if grouped_works:
+        lines.extend(["## 知っている作品", ""])
+        for group in grouped_works:
+            lines.extend([f"### {heading(group['category_name'])}", ""])
+            lines.extend(f"- {plain(item['item_name'])}" for item in group["items"])
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def format_qa_updated_at(value: datetime | None) -> str | None:
     """Format a UTC database timestamp as an unpadded Japanese calendar date."""
     if value is None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from flask import abort, current_app, flash, redirect, render_template, request, send_from_directory, session, url_for
+from flask import Response, abort, current_app, flash, redirect, render_template, request, send_from_directory, session, url_for
 
 from app import _validate_csrf_request, admin_required
 
@@ -18,6 +18,7 @@ from .formatting import (
     list_profile_qa_categories,
     normalize_plain_text_for_display,
     parse_profile_qa_text,
+    render_profile_markdown,
 )
 from .services import (
     add_known_work,
@@ -164,6 +165,48 @@ def profile_public():
         qa_items=qa_items, qa_categories=list_profile_qa_categories(qa_items),
         qa_updated_label=format_qa_updated_at(profile.get("qa_updated_at")),
         social_links=social_links,
+    )
+
+
+@profile_bp.get("/profile.md")
+def profile_markdown():
+    profile = get_main_profile()
+    if not profile or int(profile.get("is_public") or 0) != 1:
+        abort(404)
+
+    try:
+        qa_items = parse_profile_qa_text(profile.get("qa_text"))
+    except ValueError:
+        current_app.logger.warning("Invalid profile Q&A text; hiding Q&A section")
+        qa_items = []
+    grouped_works = (
+        _group_known_works(list_known_works(profile["id"]))
+        if int(profile.get("show_known_works") or 0) == 1 else []
+    )
+    social_links = (
+        list_social_links(profile["id"], visible_only=True)
+        if profile.get("show_sns_links") else []
+    )
+    markdown = render_profile_markdown(
+        profile, qa_items=qa_items, social_links=social_links,
+        grouped_works=grouped_works,
+    )
+    return Response(markdown, content_type="text/markdown; charset=utf-8")
+
+
+@profile_bp.get("/profile-llms.txt")
+def profile_llms_txt():
+    profile = get_main_profile()
+    if not profile or int(profile.get("is_public") or 0) != 1:
+        abort(404)
+    return Response(
+        "# いおりん写真室\n\n"
+        "> 撮影者の公開プロフィールと撮影依頼に関する案内です。\n\n"
+        "## 公開ページ\n\n"
+        "- [プロフィール・撮影案内・Q&A（Markdown）](https://pro.iori0624.jp/index.md): "
+        "最新の公開プロフィールをテキストで確認できます。\n"
+        "- [プロフィール（Web）](https://pro.iori0624.jp/): 元の公開ページです。\n",
+        content_type="text/plain; charset=utf-8",
     )
 
 
