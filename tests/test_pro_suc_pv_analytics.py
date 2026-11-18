@@ -44,13 +44,16 @@ class PageViewAnalyticsTests(unittest.TestCase):
 
     def test_local_networks_match_existing_ranges(self):
         for value in ("127.0.0.1", "::1", "192.168.103.21",
+                      "fdba:577c:d08:221a:103::1", "fdba:577c:d08:221a:103::41",
                       "2404:7a81:bc40:2a00::1234", "2404:7a81:8ac1:1000::abcd"):
             self.assertTrue(local_networks.is_local_ip(value), value)
-        for value in ("192.168.104.21", "2404:7a81:bc40:2a01::1", "203.0.113.2"):
+        for value in ("192.168.104.21", "fdba:577c:d08:221b:103::1",
+                      "2404:7a81:bc40:2a01::1", "203.0.113.2"):
             self.assertFalse(local_networks.is_local_ip(value), value)
         sql, values = local_networks.sql_local_ip_predicate()
         self.assertEqual(sql.count("%s"), len(values))
         self.assertIn("192.168.103.%", values)
+        self.assertIn("fdba:577c:d08:221a:%", values)
         self.assertIn("2404:7a81:bc40:2a00:%", values)
 
     def test_only_public_host_page_success_is_counted(self):
