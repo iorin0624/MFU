@@ -296,6 +296,14 @@ button.temporary-warning.pressed {
 
 .viewer-layout { display: flex; flex-direction: column; height: 100%; min-height: 0; background: #101827; }
 .viewer-toolbar { flex: 0 0 auto; }
+.image-viewer .viewer-toolbar > .viewer-compact-action {
+  flex: 0 0 auto;
+  inline-size: calc(2em + 20px);
+  block-size: 28px;
+  padding-inline: 0;
+  line-height: 1;
+  text-align: center;
+}
 .zoom-label { min-width: 48px; text-align: center; font-size: 12px; }
 .viewer-counter { margin-left: auto; padding-right: 5px; font-size: 12px; }
 .image-stage, .video-stage { position: relative; flex: 1; min-height: 0; overflow: auto; background: #111827; }

@@ -39,7 +39,9 @@ it('copies the displayed image and offers DL and transfer together', async () =>
   await wrapper.get('button[title="次の画像"]').trigger('click');
   const toolbar = wrapper.findAll('.viewer-toolbar button');
   const rotate = toolbar.findIndex((button) => button.text() === '回転');
-  expect(toolbar[rotate + 1].text()).toBe('コピー（📎）');
+  expect(toolbar[rotate + 1].text()).toBe('📎');
+  expect(toolbar[rotate + 1].attributes('aria-label')).toBe('コピー（📎）');
+  expect(wrapper.findAll('.viewer-compact-action').map((button) => button.text())).toEqual(['回転', '📎', 'DL ▾', '設定']);
   await toolbar[rotate + 1].trigger('click');
   expect(writeImageToClipboard).toHaveBeenCalledWith(reply.url);
 

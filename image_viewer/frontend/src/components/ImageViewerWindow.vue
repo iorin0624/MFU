@@ -405,12 +405,12 @@ onBeforeUnmount(() => {
       <button type="button" @click="setZoom(zoom - 10)">−</button>
       <span class="zoom-label">{{ fit ? '全体' : `${zoom}%` }}</span>
       <button type="button" @click="setZoom(zoom + 10)">+</button>
-      <button type="button" @click="rotation = (rotation + 90) % 360">回転</button>
-      <button type="button" title="表示中の画像をクリップボードへコピー（Ctrl+C）" :disabled="copying" @click="copyCurrent">コピー（📎）</button>
-      <button ref="menuTrigger" type="button" aria-haspopup="menu" :aria-controls="menuId" :aria-expanded="menuOpen" :class="{pressed: menuOpen}" @click="toggleMenu">DL/転送 ▾</button>
+      <button type="button" class="viewer-compact-action" @click="rotation = (rotation + 90) % 360">回転</button>
+      <button type="button" class="viewer-compact-action" aria-label="コピー（📎）" title="画像をクリップボードにコピー（Ctrl+C）" :disabled="copying" @click="copyCurrent">📎</button>
+      <button ref="menuTrigger" type="button" class="viewer-compact-action" aria-label="DL/転送" title="DL/転送" aria-haspopup="menu" :aria-controls="menuId" :aria-expanded="menuOpen" :class="{pressed: menuOpen}" @click="toggleMenu">DL ▾</button>
       <button v-if="!item.readOnly" type="button" :disabled="!canCrop || cropBusy" @click="cropOpen = true">切り抜き</button>
       <button v-if="!item.readOnly" type="button" :disabled="!hasOriginal || cropBusy" @click="restoreOriginal">元画像に戻す</button>
-      <button type="button" title="画像ビューアー設定" @click="openSettings">設定</button>
+      <button type="button" class="viewer-compact-action" title="画像ビューアー設定" @click="openSettings">設定</button>
       <span class="viewer-counter">{{ globalIndex + 1 }} / {{ counterTotal }}</span>
     </nav>
     <Teleport to="body">
