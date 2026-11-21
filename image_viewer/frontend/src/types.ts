@@ -1,6 +1,6 @@
 export type SortDirection = 'asc' | 'desc';
 export type ViewSize = 'xxl' | 'xl' | 'lg';
-export type GroupBy = 'none' | 'captured' | 'registered' | 'updated' | 'replyParent' | 'replyUploaded';
+export type GroupBy = 'none' | 'captured' | 'registered' | 'updated' | 'replyParent' | 'replyUploaded' | 'replyCaptured';
 export type GroupUnit = 'day' | 'month' | 'year';
 export type WindowKind =
   | 'explorer'

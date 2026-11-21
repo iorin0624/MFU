@@ -29,8 +29,8 @@ export function savedGrouping(folder: string): {groupBy: GroupBy; groupUnit: Gro
   try {
     const values = JSON.parse(localStorage.getItem('mfu.imageViewer.vue.grouping') || '{}');
     const value = values[folder] || {};
-    const allowed = folder === replyRoot ? ['replyParent'] : isReplyFolder(folder)
-      ? ['replyUploaded'] : ['captured', 'registered', 'updated'];
+    const allowed = folder === replyRoot ? ['replyParent', 'replyCaptured'] : isReplyFolder(folder)
+      ? ['replyUploaded', 'replyCaptured'] : ['captured', 'registered', 'updated'];
     return {
       groupBy: allowed.includes(value.groupBy) ? value.groupBy : 'none',
       groupUnit: !isReplyFolder(folder) && ['month', 'year'].includes(value.groupUnit) ? value.groupUnit : 'day',

@@ -16,6 +16,65 @@ const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
 const explorer = useExplorerStore();
 const notice = useNotificationStore();
+const layout = ref<HTMLElement>();
+const layoutWidth = ref(0);
+const sidebarStateKey = 'mfu.imageViewer.vue.folderWidth';
+const minFolderWidth = 130;
+const maxFolderWidth = computed(() => Math.max(minFolderWidth, Math.min(640, Math.floor((layoutWidth.value || 1280) * 0.52))));
+const requestedFolderWidth = ref(205);
+try {
+  const previous = Number(localStorage.getItem(sidebarStateKey));
+  if (previous >= minFolderWidth && previous <= 640) requestedFolderWidth.value = previous;
+} catch { /* Storage is optional. */ }
+const folderWidth = computed(() => Math.min(requestedFolderWidth.value, maxFolderWidth.value));
+const folderPaneId = `explorer-folders-${props.win.id}`;
+const resizingFolders = ref(false);
+let folderResize: { pointerId: number; x: number; width: number } | undefined;
+let layoutObserver: ResizeObserver | undefined;
+
+function setFolderWidth(width: number) {
+  requestedFolderWidth.value = Math.max(minFolderWidth, Math.min(maxFolderWidth.value, Math.round(width)));
+}
+
+function saveFolderWidth() {
+  try { localStorage.setItem(sidebarStateKey, String(requestedFolderWidth.value)); } catch { /* Storage is optional. */ }
+}
+
+function startFolderResize(event: PointerEvent) {
+  if (event.button !== 0 || folderResize) return;
+  const separator = event.currentTarget as HTMLElement;
+  separator.focus();
+  separator.setPointerCapture(event.pointerId);
+  folderResize = { pointerId: event.pointerId, x: event.clientX, width: folderWidth.value };
+  resizingFolders.value = true;
+}
+
+function moveFolderResize(event: PointerEvent) {
+  if (folderResize?.pointerId !== event.pointerId) return;
+  setFolderWidth(folderResize.width + event.clientX - folderResize.x);
+}
+
+function finishFolderResize(event: PointerEvent) {
+  if (folderResize?.pointerId !== event.pointerId) return;
+  folderResize = undefined;
+  resizingFolders.value = false;
+  saveFolderWidth();
+}
+
+function resizeFoldersByKey(event: KeyboardEvent) {
+  const step = event.shiftKey ? 40 : 10;
+  const widths: Partial<Record<string, number>> = {
+    ArrowLeft: folderWidth.value - step, ArrowRight: folderWidth.value + step,
+    Home: minFolderWidth, End: maxFolderWidth.value,
+  };
+  const width = widths[event.key];
+  if (width === undefined) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setFolderWidth(width);
+  saveFolderWidth();
+}
+
 const uploadInput = ref<HTMLInputElement>();
 const fileGrid = ref<{
   scrollToTop: () => void;
@@ -1031,6 +1090,11 @@ watch(() => dialog.value?.kind, (kind, previous) => {
   if (previous === 'properties' && kind !== 'properties') detailSidebarVersion.value++;
 });
 onMounted(() => {
+  if (layout.value) {
+    layoutWidth.value = layout.value.clientWidth;
+    layoutObserver = new ResizeObserver(([entry]) => { if (entry) layoutWidth.value = entry.contentRect.width; });
+    layoutObserver.observe(layout.value);
+  }
   loadCollapsedGroups();
   load(true);
   document.addEventListener('paste', pasteHandler);
@@ -1042,6 +1106,7 @@ onMounted(() => {
   versionTimer = window.setInterval(pollVersion, 10000);
 });
 onBeforeUnmount(() => {
+  layoutObserver?.disconnect();
   window.clearTimeout(stylePollTimer);
   window.clearTimeout(bulkStylePollTimer);
   document.removeEventListener('paste', pasteHandler);
@@ -1055,8 +1120,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="explorer-layout" :class="{ busy: folderData.loading, 'details-open': detailSidebarOpen && !readOnly, 'details-overlay': detailSidebarOpen && !readOnly && !win.maximized && win.width < 900 }">
-    <aside class="explorer-sidebar">
+  <div ref="layout" class="explorer-layout" :style="{'--folder-pane-width': `${folderWidth}px`}" :class="{ busy: folderData.loading, 'folders-resizing': resizingFolders, 'details-open': detailSidebarOpen && !readOnly, 'details-overlay': detailSidebarOpen && !readOnly && !win.maximized && win.width < 900 }">
+    <aside :id="folderPaneId" class="explorer-sidebar">
       <div class="sidebar-title">フォルダー</div>
       <FolderTree
         :folders="explorer.treeFolders"
@@ -1068,17 +1133,26 @@ onBeforeUnmount(() => {
         @context="showFolderContext"
       />
     </aside>
+    <div class="folder-pane-separator" role="separator" tabindex="0" aria-orientation="vertical"
+      aria-label="フォルダー一覧の幅" :aria-controls="folderPaneId" :aria-valuemin="minFolderWidth" :aria-valuemax="maxFolderWidth" :aria-valuenow="folderWidth"
+      title="左右にドラッグしてフォルダー一覧の幅を調整"
+      @pointerdown.prevent="startFolderResize" @pointermove="moveFolderResize" @pointerup="finishFolderResize"
+      @pointercancel="finishFolderResize" @lostpointercapture="finishFolderResize" @keydown="resizeFoldersByKey"
+    ></div>
     <section class="explorer-main">
       <div class="explorer-toolbar">
         <div class="path-box">{{ currentLabel }}</div>
         <button type="button" @click="load(true)">更新</button>
-        <button type="button" :disabled="!model.folder" @click="changeFolder(parentFolder)">上へ</button>
-        <button type="button" :title="readOnly ? 'アップロード日時順' : undefined" @click="setSort">{{ model.sort === 'asc' ? '昇順' : '逆順' }}</button>
+        <button type="button" :disabled="!model.folder || model.folder === replyRoot" @click="changeFolder(parentFolder)">上へ</button>
+        <button type="button" :title="readOnly ? (model.groupBy === 'replyUploaded' ? 'アップロード日順' : '撮影日順') : undefined" @click="setSort">{{ model.sort === 'asc' ? '昇順' : '逆順' }}</button>
         <label class="toolbar-select">グループ
           <select :value="model.groupBy" @change="setGrouping(($event.target as HTMLSelectElement).value as GroupBy, undefined)">
             <option value="none">なし</option>
-            <option v-if="model.folder === replyRoot" value="replyParent">親アップロード</option>
-            <option v-else-if="readOnly" value="replyUploaded">アップロード日</option>
+            <template v-if="readOnly">
+              <option value="replyCaptured">撮影日</option>
+              <option v-if="model.folder === replyRoot" value="replyParent">親アップロード</option>
+              <option v-else value="replyUploaded">アップロード日</option>
+            </template>
             <template v-else>
               <option value="captured">撮影日</option>
               <option value="registered">MFU登録日</option>

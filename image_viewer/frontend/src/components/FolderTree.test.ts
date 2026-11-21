@@ -3,6 +3,17 @@ import { mount } from '@vue/test-utils';
 import FolderTree from './FolderTree.vue';
 
 describe('FolderTree', () => {
+  it('keeps the reply root and its children visible when uploads is collapsed', async () => {
+    const wrapper = mount(FolderTree, { props: {
+      folders: ['', '通常', '..', '../42'], current: '..', labels: { '..': '加工バック', '../42': '撮影会' },
+    } });
+    const [uploads, regular, replyRoot, replyChild] = wrapper.findAll('.folder-row');
+    expect(replyRoot.attributes('style')).toBe(uploads.attributes('style'));
+    expect(replyChild.attributes('style')).toBe(regular.attributes('style'));
+    await uploads.find('.folder-twisty').trigger('click');
+    expect(wrapper.findAll('.folder-label').map((label) => label.text())).toEqual(['uploads', '加工バック', '撮影会']);
+  });
+
   it('shows reply folders by label while selecting a stable, read-only key', async () => {
     const wrapper = mount(FolderTree, {
       props: { folders: ['', '通常', '..', '../42'], current: '..', labels: {

@@ -14,19 +14,20 @@ function label(folder: string) {
 }
 
 function depth(folder: string) {
+  if (isReplyFolder(folder)) return folder.split('/').length - 1;
   return folder ? folder.split('/').length : 0;
 }
 
 const expanded = ref(new Set<string>(['']));
-const parentOf = (folder: string) => folder.split('/').slice(0, -1).join('/');
-const hasChildren = (folder: string) => props.folders.some((candidate) => candidate && parentOf(candidate) === folder);
+const parentOf = (folder: string) => !folder || folder === replyRoot ? null : folder.split('/').slice(0, -1).join('/');
+const parents = computed(() => new Set(props.folders.map(parentOf)));
+const hasChildren = (folder: string) => parents.value.has(folder);
 
 function expandAncestors(folder: string) {
   const next = new Set(expanded.value);
   let current = parentOf(folder);
-  next.add('');
   if (folder === replyRoot) next.add(replyRoot);
-  while (current) {
+  while (current !== null) {
     next.add(current);
     current = parentOf(current);
   }
@@ -42,11 +43,9 @@ function toggle(folder: string) {
 }
 
 const visibleFolders = computed(() => props.folders.filter((folder) => {
-  if (!folder) return true;
   let parent = parentOf(folder);
-  while (parent || folder) {
+  while (parent !== null) {
     if (!expanded.value.has(parent)) return false;
-    if (!parent) break;
     parent = parentOf(parent);
   }
   return true;
@@ -84,7 +83,7 @@ function onDrop(event: DragEvent, folder: string) {
         :class="{ empty: !hasChildren(folder) }"
         @click.stop="toggle(folder)"
       >{{ hasChildren(folder) ? (expanded.has(folder) ? '⌄' : '›') : '' }}</span>
-      <span class="folder-glyph">📁</span><span>{{ label(folder) }}</span>
+      <span class="folder-glyph">📁</span><span class="folder-label" :title="label(folder)">{{ label(folder) }}</span>
     </button>
   </nav>
 </template>

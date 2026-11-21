@@ -2,7 +2,7 @@
 
 import hashlib
 from collections import defaultdict
-from datetime import date, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from flask import url_for
 
@@ -55,17 +55,21 @@ def _parents(username):
         db.close()
 
 
-def _date_label(value):
+def _shooting_date(value):
     if isinstance(value, str):
         try:
-            value = date.fromisoformat(value[:10])
+            return date.fromisoformat(value[:10])
         except ValueError:
-            value = None
-    return value.strftime("%Y年%m月%d日") if isinstance(value, date) else "撮影日未設定"
+            return None
+    return value.date() if isinstance(value, datetime) else value if isinstance(value, date) else None
+
+
+def _date_label(day):
+    return day.strftime("%Y年%m月%d日") if day is not None else "撮影日未設定"
 
 
 def _parent_label(row):
-    return f'{_date_label(row["date"])}　{row["title"] or "（タイトルなし）"}'
+    return f'{_date_label(_shooting_date(row["date"]))}　{row["title"] or "（タイトルなし）"}'
 
 
 def _folder_labels(parents):
@@ -119,37 +123,57 @@ def _images(username, selected):
 
 
 def _order(rows, parents, group_by, descending):
-    # Keep the order of the images inside a single upload in either direction.
+    capture_dates = {i: _shooting_date(parent["date"]) for i, parent in parents.items()}
+
+    def ordered_by_capture(entries, get_day):
+        known, unknown = [], []
+        for entry in entries:
+            day = get_day(entry)
+            if day is None:
+                unknown.append(entry)
+            else:
+                known.append((day, entry))
+        known.sort(key=lambda pair: pair[0], reverse=descending)
+        return [entry for _, entry in known] + unknown
+
+    # The upload timestamp breaks ties; file order within one submission
+    # is preserved in both directions.
     rows.sort(key=lambda r: (r["sort_order"], r["id"]))
     rows.sort(key=lambda r: (r["posted_at"], r["reply_id"]), reverse=descending)
     if group_by == "none":
-        return rows, []
+        return ordered_by_capture(rows, lambda row: capture_dates[row["parent_id"]]), []
     buckets = defaultdict(list)
     for row in rows:
-        key = row["parent_id"] if group_by == "replyParent" else row["posted_at"].date()
+        if group_by == "replyParent":
+            key = row["parent_id"]
+        elif group_by == "replyCaptured":
+            key = capture_dates[row["parent_id"]]
+        else:
+            key = row["posted_at"].date()
         buckets[key].append(row)
     if group_by == "replyParent":
-        # Use the newest upload as the group sort key in either direction.
-        keys = sorted(buckets, key=lambda i: (parents[i]["latest_posted"], i), reverse=descending)
+        keys = ordered_by_capture(sorted(buckets, reverse=descending), capture_dates.get)
     else:
-        keys = sorted(buckets, reverse=descending)
+        keys = ordered_by_capture(buckets, lambda day: day)
     ordered, groups = [], []
     for key in keys:
         bucket = buckets[key]
         label = _parent_label(parents[key]) if group_by == "replyParent" else _date_label(key)
-        groups.append({"key": str(key), "label": label, "start": len(ordered), "count": len(bucket)})
+        groups.append({"key": str(key) if key is not None else "unknown", "label": label, "start": len(ordered), "count": len(bucket)})
         ordered.extend(bucket)
     return ordered, groups
 
 
-def _record(row):
+def _record(row, parent):
     args = {"uuid": row["parent_uuid"], "reply_uuid": row["reply_uuid"], "filename": row["filename"]}
     folder = f'{ROOT}/{row["parent_id"]}'
     posted = row["posted_at"]
+    shooting_date = _shooting_date(parent["date"])
     timestamp = (posted if posted.tzinfo else posted.replace(tzinfo=JST)).timestamp()
     return {
         "name": row["filename"], "path": f'{folder}/{row["id"]}', "folder": folder,
         "mediaType": "image", "readOnly": True, "size": 0, "mtime": timestamp,
+        "capturedAt": datetime.combine(shooting_date, time(), JST).timestamp() if shooting_date else None,
         "registeredAt": timestamp, "url": url_for("upload_history.layer_upload_image", **args),
         "thumbUrl": url_for("upload_history.layer_upload_thumbnail", **args), "hasThumb": True,
     }
@@ -157,7 +181,7 @@ def _record(row):
 
 def list_payload(username, folder, *, sort, page, per_page, center, group_by):
     selected = parent_id(folder)
-    if group_by not in {"none", "replyParent" if selected is None else "replyUploaded"}:
+    if group_by not in {"none", "replyCaptured", "replyParent" if selected is None else "replyUploaded"}:
         raise ValueError("Invalid reply grouping")
     parents = _parents(username)
     if selected is not None and selected not in parents:
@@ -177,7 +201,7 @@ def list_payload(username, folder, *, sort, page, per_page, center, group_by):
         offset = max(0, (page - 1) * per_page - min(150, per_page // 4))
     return {
         "ok": True, "folder": folder, "replyFolders": _folder_labels(parents),
-        "images": [_record(row) for row in rows[offset:offset + per_page]],
+        "images": [_record(row, parents[row["parent_id"]]) for row in rows[offset:offset + per_page]],
         "groups": groups, "version": _version(parents),
         "pagination": {
             "page": page, "perPage": per_page, "total": total, "pages": pages,
