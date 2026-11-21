@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { imageViewerApi } from '@/api/client';
+import { runtimeConfig } from '@/config';
 import { useDesktopStore } from '@/stores/desktop';
 import { useNotificationStore } from '@/stores/notifications';
 import type { DesktopWindow, MediaItem } from '@/types';
+import { writeImageToClipboard } from '@/utils/imageClipboard';
 import {
   DEFAULT_WHEEL_NAVIGATION_COOLDOWN_MS,
   loadWheelNavigationCooldown,
@@ -29,6 +31,13 @@ const wheelNavigationCooldownDraft = ref(wheelNavigationCooldownMs.value);
 let wheelNavigationAllowedAt = 0;
 let versionTimer = 0;
 let refreshingSequence = false;
+const copying = ref(false);
+const transferBusy = ref(false);
+const menuOpen = ref(false);
+const menuId = `image-viewer-transfer-${props.win.id}`;
+const menuTrigger = ref<HTMLButtonElement>();
+const menuPanel = ref<HTMLElement>();
+const menuPosition = ref({ left: 0, top: 0 });
 
 const item = computed(() => props.win.media!);
 const sequence = computed(() => props.win.sequence || []);
@@ -53,6 +62,7 @@ watch(() => item.value.path, async (path) => {
 }, { immediate: true });
 
 function downloadCurrent() {
+  closeMenu(true);
   const url = new URL(item.value.url, window.location.origin);
   url.searchParams.set('download', '1');
   const link = document.createElement('a');
@@ -61,6 +71,81 @@ function downloadCurrent() {
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+async function copyCurrent() {
+  if (copying.value) return;
+  copying.value = true;
+  try {
+    await writeImageToClipboard(item.value.url);
+    notice.show('画像をクリップボードにコピーしました。');
+  } catch (error) {
+    notice.show(error instanceof Error ? error.message : '画像をコピーできませんでした。', true);
+  } finally {
+    copying.value = false;
+  }
+}
+
+async function transferCurrent() {
+  if (!runtimeConfig.isAdmin || transferBusy.value) return;
+  const { path, name } = item.value;
+  closeMenu(true);
+  transferBusy.value = true;
+  try {
+    const payload = await imageViewerApi.transferSmb([path]);
+    const result = payload.results[0];
+    if (!result?.ok) throw new Error(result?.error || '転送結果を確認できませんでした。');
+    notice.show(`ラズパイへ転送しました：${result.name || name}`);
+  } catch (error) {
+    notice.show(`転送に失敗しました：${error instanceof Error ? error.message : name}`, true);
+  } finally {
+    transferBusy.value = false;
+  }
+}
+
+async function toggleMenu() {
+  if (menuOpen.value) { closeMenu(); return; }
+  menuOpen.value = true;
+  await nextTick();
+  const panel = menuPanel.value;
+  const anchor = menuTrigger.value?.getBoundingClientRect();
+  if (!anchor || !panel) return;
+  menuPosition.value = {
+    left: Math.max(8, Math.min(anchor.left, window.innerWidth - panel.offsetWidth - 8)),
+    top: anchor.bottom + panel.offsetHeight + 8 <= window.innerHeight
+      ? anchor.bottom + 2 : Math.max(8, anchor.top - panel.offsetHeight - 2),
+  };
+  panel.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+}
+
+function closeMenu(restoreFocus = false) {
+  menuOpen.value = false;
+  if (restoreFocus) menuTrigger.value?.focus({ preventScroll: true });
+}
+
+function dismissMenuOnPointer(event: PointerEvent) {
+  if (!menuOpen.value || !(event.target instanceof Node)) return;
+  if (!menuPanel.value?.contains(event.target) && !menuTrigger.value?.contains(event.target)) closeMenu();
+}
+
+function dismissMenuOnScroll(event: Event) {
+  if (!menuOpen.value) return;
+  if (!(event.target instanceof Node) || !menuPanel.value?.contains(event.target)) closeMenu();
+}
+
+function dismissMenuOnResize() { closeMenu(); }
+
+function menuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); return; }
+  if (event.key === 'Tab') { closeMenu(true); return; }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const entries = Array.from(menuPanel.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || []);
+  if (!entries.length) return;
+  const index = entries.findIndex((button) => button === document.activeElement);
+  const target = event.key === 'Home' ? 0 : event.key === 'End' ? entries.length - 1
+    : (index + (event.key === 'ArrowDown' ? 1 : entries.length - 1)) % entries.length;
+  entries[target]?.focus({ preventScroll: true });
 }
 
 function replaceCurrent(entry: MediaItem) {
@@ -101,6 +186,7 @@ async function restoreOriginal() {
 
 function show(entry?: MediaItem) {
   if (!entry) return;
+  closeMenu();
   props.win.media = entry;
   props.win.title = entry.name;
   fit.value = true;
@@ -273,7 +359,14 @@ function wheel(event: WheelEvent) {
 
 function keydown(event: KeyboardEvent) {
   if (desktop.activeId !== props.win.id) return;
-  if (cropOpen.value || settingsOpen.value) return;
+  if (cropOpen.value || settingsOpen.value || menuOpen.value) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+    const target = event.target as HTMLElement | null;
+    if (target?.matches('input, textarea, [contenteditable="true"]') || window.getSelection()?.toString()) return;
+    event.preventDefault();
+    void copyCurrent();
+    return;
+  }
   if (event.key === 'ArrowLeft') move(-1);
   if (event.key === 'ArrowRight') move(1);
   if (event.key === '+' || event.key === '=') setZoom(zoom.value + 10);
@@ -284,12 +377,18 @@ function keydown(event: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener('keydown', keydown);
+  document.addEventListener('pointerdown', dismissMenuOnPointer);
+  document.addEventListener('scroll', dismissMenuOnScroll, true);
+  window.addEventListener('resize', dismissMenuOnResize);
   document.addEventListener('visibilitychange', visibilityChanged);
   window.addEventListener(VIEWER_SETTINGS_CHANGED_EVENT, syncSettings);
   versionTimer = window.setInterval(() => { void refreshSequenceIfChanged(); }, 5000);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', keydown);
+  document.removeEventListener('pointerdown', dismissMenuOnPointer);
+  document.removeEventListener('scroll', dismissMenuOnScroll, true);
+  window.removeEventListener('resize', dismissMenuOnResize);
   document.removeEventListener('visibilitychange', visibilityChanged);
   window.removeEventListener(VIEWER_SETTINGS_CHANGED_EVENT, syncSettings);
   window.clearInterval(versionTimer);
@@ -307,12 +406,20 @@ onBeforeUnmount(() => {
       <span class="zoom-label">{{ fit ? '全体' : `${zoom}%` }}</span>
       <button type="button" @click="setZoom(zoom + 10)">+</button>
       <button type="button" @click="rotation = (rotation + 90) % 360">回転</button>
-      <button type="button" @click="downloadCurrent">画像DL</button>
+      <button type="button" title="表示中の画像をクリップボードへコピー（Ctrl+C）" :disabled="copying" @click="copyCurrent">コピー（📎）</button>
+      <button ref="menuTrigger" type="button" aria-haspopup="menu" :aria-controls="menuId" :aria-expanded="menuOpen" :class="{pressed: menuOpen}" @click="toggleMenu">DL/転送 ▾</button>
       <button v-if="!item.readOnly" type="button" :disabled="!canCrop || cropBusy" @click="cropOpen = true">切り抜き</button>
       <button v-if="!item.readOnly" type="button" :disabled="!hasOriginal || cropBusy" @click="restoreOriginal">元画像に戻す</button>
       <button type="button" title="画像ビューアー設定" @click="openSettings">設定</button>
       <span class="viewer-counter">{{ globalIndex + 1 }} / {{ counterTotal }}</span>
     </nav>
+    <Teleport to="body">
+      <div v-if="menuOpen" :id="menuId" ref="menuPanel" class="toolbar-dropdown" role="menu" aria-label="DL/転送"
+        :style="{left: `${menuPosition.left}px`, top: `${menuPosition.top}px`}" @pointerdown.stop @keydown.stop="menuKeydown">
+        <button type="button" role="menuitem" @click="downloadCurrent">画像DL</button>
+        <button v-if="runtimeConfig.isAdmin" type="button" role="menuitem" :disabled="transferBusy" @click="transferCurrent">{{ transferBusy ? 'ラズパイへ転送中…' : 'ラズパイに転送' }}</button>
+      </div>
+    </Teleport>
     <div class="image-stage" @wheel="wheel">
       <img :src="item.url" :alt="item.name" :class="{fit}" :style="imageStyle" draggable="false">
     </div>

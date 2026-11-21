@@ -5,7 +5,9 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from werkzeug.exceptions import Forbidden
 
 
 class ReplyLibraryTests(unittest.TestCase):
@@ -93,6 +95,20 @@ class ReplyLibraryTests(unittest.TestCase):
         self.assertEqual(result["images"][-2]["name"], "newest-upload.jpg")
         self.assertEqual(self.listing("../1", grouping="replyCaptured")["groups"][0]["label"], "2026年11月01日")
 
+    def test_transfer_requires_a_registered_active_reply_image(self):
+        history = ModuleType("app.utils.upload_history")
+        history.resolve_layer_image_path = Mock(return_value=Path("reply-image.jpg"))
+        with patch.dict(sys.modules, {"app.utils.upload_history": history}):
+            self.assertEqual(self.library.transfer_source("../1/101", "admin"), (Path("reply-image.jpg"), "z.jpg"))
+            history.resolve_layer_image_path.assert_called_once_with("parent1", "reply10", "z.jpg", "admin")
+            for bad in ("..", "../1/../101", "../2/101", "../3/301", "../4/401", "../1/99999999999999999999"):
+                with self.assertRaises(ValueError):
+                    self.library.transfer_source(bad, "admin")
+            self.assertEqual(history.resolve_layer_image_path.call_count, 1)
+            history.resolve_layer_image_path.side_effect = Forbidden
+            with self.assertRaisesRegex(ValueError, "見つかりません"):
+                self.library.transfer_source("../1/101", "another")
+
 
 class DatabaseCursor:
     def __init__(self, cursor):
@@ -108,6 +124,10 @@ class DatabaseCursor:
                 if key in row:
                     row[key] = datetime.fromisoformat(row[key])
         return rows
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        return dict(row) if row is not None else None
 
     def close(self):
         self.cursor.close()

@@ -5152,7 +5152,9 @@ def transfer_images_to_smb():
     for value in paths:
         path_value = str(value or "")
         try:
-            if catalog.CATALOG_ENABLED:
+            if catalog.CATALOG_ENABLED and reply_library.is_reply_folder(path_value):
+                source, name = reply_library.transfer_source(path_value, session["user"])
+            elif catalog.CATALOG_ENABLED:
                 properties = catalog.file_properties(path_value)
                 if properties["mediaType"] != "image":
                     raise smb_transfer.TransferError("画像のみ転送できます。")

@@ -1,10 +1,12 @@
 """Read-only, owner-scoped projection of the upload-history reply images."""
 
 import hashlib
+import re
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 
 from flask import url_for
+from werkzeug.exceptions import Forbidden, NotFound
 
 from app.utils.db import get_db
 
@@ -177,6 +179,43 @@ def _record(row, parent):
         "registeredAt": timestamp, "url": url_for("upload_history.layer_upload_image", **args),
         "thumbUrl": url_for("upload_history.layer_upload_thumbnail", **args), "hasThumb": True,
     }
+
+
+def transfer_source(path, username):
+    """Resolve an opaque reply-library key using registered IDs, not paths."""
+    match = re.fullmatch(r"\.\./([0-9]{1,10})/([0-9]{1,20})", path)
+    if not match:
+        raise ValueError("加工バックの画像を選択してください。")
+    upload_id, file_id = map(int, match.groups())
+    if not 0 < upload_id < 2**32 or not 0 < file_id < 2**64:
+        raise ValueError("加工バックの画像を選択してください。")
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT u.uuid, r.reply_uuid, f.filename
+                  FROM uploads u JOIN layer_upload_replies r ON r.upload_id=u.id
+                  JOIN layer_upload_reply_files f ON f.reply_id=r.id
+                 WHERE u.id=%s AND f.id=%s AND f.file_kind='image' AND u.layer_deleted_at IS NULL
+                """,
+                (upload_id, file_id),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    finally:
+        db.close()
+    if row:
+        from app.utils.upload_history import resolve_layer_image_path
+
+        try:
+            source = resolve_layer_image_path(row["uuid"], row["reply_uuid"], row["filename"], username)
+            return source, row["filename"]
+        except (Forbidden, NotFound):
+            pass
+    raise ValueError("加工バックの画像が見つかりません。")
 
 
 def list_payload(username, folder, *, sort, page, per_page, center, group_by):

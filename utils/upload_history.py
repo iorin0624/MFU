@@ -331,7 +331,7 @@ def layer_upload_zip_prepare(uuid):
     ), 202
 
 
-def _layer_image_path(uuid, reply_uuid, filename, username):
+def resolve_layer_image_path(uuid, reply_uuid, filename, username):
     upload = _fetch_upload_by_uuid(uuid, scope="layer")
     _ensure_upload_permission(upload, username)
 
@@ -342,7 +342,10 @@ def _layer_image_path(uuid, reply_uuid, filename, username):
     ):
         abort(404)
 
-    base = (_layer_root() / secure_filename(uuid) / secure_filename(reply_uuid) / "original").resolve()
+    root = _layer_root()
+    base = (root / secure_filename(uuid) / secure_filename(reply_uuid) / "original").resolve()
+    if not base.is_relative_to(root):
+        abort(404)
     target = _safe_path(base, filename)
     if not target or not target.exists() or not target.is_file():
         abort(404)
@@ -356,7 +359,7 @@ def _layer_image_path(uuid, reply_uuid, filename, username):
 def layer_upload_image(uuid, reply_uuid, filename):
     if "user" not in session:
         return redirect(url_for("login"))
-    target = _layer_image_path(uuid, reply_uuid, filename, session["user"])
+    target = resolve_layer_image_path(uuid, reply_uuid, filename, session["user"])
     return send_file(target, conditional=True, as_attachment=request.args.get("download") == "1")
 
 
@@ -375,7 +378,7 @@ def _thumbnail_bytes(path, revision):
 def layer_upload_thumbnail(uuid, reply_uuid, filename):
     if "user" not in session:
         return redirect(url_for("login"))
-    target = _layer_image_path(uuid, reply_uuid, filename, session["user"])
+    target = resolve_layer_image_path(uuid, reply_uuid, filename, session["user"])
     try:
         preview = _thumbnail_bytes(target, target.stat().st_mtime_ns)
     except (OSError, Image.DecompressionBombError):

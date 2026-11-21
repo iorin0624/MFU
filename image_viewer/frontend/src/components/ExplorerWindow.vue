@@ -11,6 +11,7 @@ import { useExplorerStore } from '@/stores/explorer';
 import { useNotificationStore } from '@/stores/notifications';
 import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, StyleAssignment, StyleJob, ViewSize } from '@/types';
 import { isReplyFolder, replyRoot } from '@/utils/replyFolders';
+import { writeImageToClipboard } from '@/utils/imageClipboard';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
@@ -189,7 +190,7 @@ function downloadSelected() {
 }
 
 async function transferSelectedToSmb() {
-  if (!selectedImages.value.length || transferBusy.value) return;
+  if (!runtimeConfig.isAdmin || !selectedImages.value.length || transferBusy.value) return;
   transferBusy.value = true;
   downloadResults.value = [];
   try {
@@ -1027,22 +1028,7 @@ function closeContext() { contextMenu.value.visible = false; }
 async function copyImageToClipboard(item?: MediaItem) {
   if (!item || item.mediaType !== 'image') return;
   try {
-    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
-      throw new Error('このブラウザーは画像のクリップボードコピーに対応していません。');
-    }
-    const response = await fetch(item.url, { credentials: 'same-origin', cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const bitmap = await createImageBitmap(await response.blob());
-    const canvas = document.createElement('canvas');
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('画像を変換できません。');
-    context.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const png = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('画像をPNGに変換できません。')), 'image/png'));
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    await writeImageToClipboard(item.url);
     notice.show('画像をクリップボードにコピーしました。');
   } catch (error) {
     notice.show(errorMessage(error, '画像をクリップボードにコピーできませんでした。'), true);
@@ -1174,7 +1160,7 @@ onBeforeUnmount(() => {
       <div v-if="readOnly" class="explorer-actions">
         <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
         <button type="button" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
-        <button type="button" :disabled="!selectedImages.length" @click="downloadSelected">画像DL</button>
+        <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'download'" :class="{pressed: toolbarMenu === 'download'}" @click="toggleToolbarMenu('download', $event)">DL/転送 ▾</button>
         <span class="dialog-hint">閲覧専用</span>
       </div>
       <div v-else class="explorer-actions">
