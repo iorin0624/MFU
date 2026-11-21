@@ -84,7 +84,7 @@ export const imageViewerApi = {
     center?: number, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day',
   ) {
     return requestJson<ImageListPayload>(queryUrl(runtimeConfig.imagesUrl, {
-      folder, sort, page, perPage, center, groupBy, groupUnit,
+        folder, sort, page, perPage, center, groupBy, groupUnit, replyFolders: folder === '' ? 1 : undefined,
     }));
   },
   version(folder: string) {

@@ -13,6 +13,7 @@ const props = defineProps<{
   offset: number;
   groups: DateGroup[];
   collapsedGroups: string[];
+  readOnly?: boolean;
 }>();
 const emit = defineEmits<{
   select: [event: MouseEvent, item: MediaItem];
@@ -187,6 +188,7 @@ function onScroll() {
 }
 
 function dragStart(event: DragEvent, item: MediaItem) {
+  if (props.readOnly) { event.preventDefault(); return; }
   const paths = props.selected.includes(item.path) ? props.selected : [item.path];
   event.dataTransfer?.setData('application/x-mfu-paths', JSON.stringify(paths));
   event.dataTransfer?.setData('text/plain', paths.join('\n'));
@@ -195,6 +197,7 @@ function dragStart(event: DragEvent, item: MediaItem) {
 
 function dropFiles(event: DragEvent) {
   event.preventDefault();
+  if (props.readOnly) return;
   const files = Array.from(event.dataTransfer?.files || []);
   if (files.length) emit('upload', files);
 }
@@ -382,7 +385,7 @@ onBeforeUnmount(() => {
         :data-path="item.path"
         :title="item.path"
         :aria-selected="selected.includes(item.path)"
-        draggable="true"
+        :draggable="!readOnly"
         @click="emit('select', $event, item)"
         @dblclick="emit('open', item)"
         @contextmenu.prevent="emit('context', $event, item)"
@@ -392,11 +395,14 @@ onBeforeUnmount(() => {
         <span
           class="file-thumb"
           :class="{ video: item.mediaType === 'video' && !item.thumbUrl }"
-          :style="item.thumbUrl || item.mediaType === 'image' ? { backgroundImage: `url(&quot;${item.thumbUrl || item.url}&quot;)` } : {}"
-        ><span v-if="item.mediaType === 'video'" class="play-mark">▶</span></span>
+          :style="!readOnly && (item.thumbUrl || item.mediaType === 'image') ? { backgroundImage: `url(&quot;${item.thumbUrl || item.url}&quot;)` } : {}"
+        >
+          <img v-if="readOnly" :src="item.thumbUrl || item.url" class="reply-thumb" alt="" loading="lazy" decoding="async" draggable="false">
+          <span v-else-if="item.mediaType === 'video'" class="play-mark">▶</span>
+        </span>
         <span class="file-name">{{ item.name }}</span>
       </button>
-      <p v-if="!items.length && !loading" class="empty-folder">このフォルダーに画像・動画がありません。ここへドロップできます。</p>
+      <p v-if="!items.length && !loading" class="empty-folder">{{ readOnly ? '折り返し画像がありません。' : 'このフォルダーに画像・動画がありません。ここへドロップできます。' }}</p>
       <span
         v-if="marquee.visible"
         class="selection-marquee"

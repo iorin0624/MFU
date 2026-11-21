@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, SortDirection, StyleJob, ViewSize } from '@/types';
+import { isReplyFolder, replyRoot } from '@/utils/replyFolders';
 
 export function savedSort(folder: string): SortDirection {
   try {
@@ -28,9 +29,11 @@ export function savedGrouping(folder: string): {groupBy: GroupBy; groupUnit: Gro
   try {
     const values = JSON.parse(localStorage.getItem('mfu.imageViewer.vue.grouping') || '{}');
     const value = values[folder] || {};
+    const allowed = folder === replyRoot ? ['replyParent'] : isReplyFolder(folder)
+      ? ['replyUploaded'] : ['captured', 'registered', 'updated'];
     return {
-      groupBy: ['captured', 'registered', 'updated'].includes(value.groupBy) ? value.groupBy : 'none',
-      groupUnit: ['month', 'year'].includes(value.groupUnit) ? value.groupUnit : 'day',
+      groupBy: allowed.includes(value.groupBy) ? value.groupBy : 'none',
+      groupUnit: !isReplyFolder(folder) && ['month', 'year'].includes(value.groupUnit) ? value.groupUnit : 'day',
     };
   } catch { return { groupBy: 'none', groupUnit: 'day' }; }
 }

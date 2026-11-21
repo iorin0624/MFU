@@ -34,6 +34,7 @@ from . import image_viewer_bp
 from . import catalog
 from . import image_edits
 from . import smb_transfer
+from . import reply_library
 from . import style_tags
 from . import style_jobs
 from .instagram_credentials import (
@@ -4677,6 +4678,22 @@ def image_list():
             center = None if center_arg in {None, ""} else max(0, int(center_arg))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "Invalid pagination values"}), 400
+        if reply_library.is_reply_folder(folder):
+            username = session.get("user")
+            if not username:
+                return jsonify({"ok": False, "error": "ログインが必要です。"}), 401
+            try:
+                response = jsonify(reply_library.list_payload(
+                    username, folder, page=page, per_page=per_page, center=center,
+                    sort=request.args.get("sort") or "asc",
+                    group_by=request.args.get("groupBy") or "none",
+                ))
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            except LookupError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 404
+            response.headers["Cache-Control"] = "private, no-store"
+            return response
         try:
             payload = catalog.list_payload(
                 folder, page=page, per_page=per_page,
@@ -4689,6 +4706,8 @@ def image_list():
             return jsonify({"ok": False, "error": str(exc)}), 404
         except catalog.CatalogError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
+        if not folder and request.args.get("replyFolders") == "1" and session.get("user"):
+            payload["replyFolders"] = reply_library.folder_labels(session["user"])
         response = jsonify(payload)
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return response
@@ -4720,8 +4739,22 @@ def image_list():
 @login_required
 def image_list_version():
     if catalog.CATALOG_ENABLED:
+        folder = request.args.get("folder") or ""
+        if reply_library.is_reply_folder(folder):
+            username = session.get("user")
+            if not username:
+                return jsonify({"ok": False, "error": "ログインが必要です。"}), 401
+            try:
+                revision = reply_library.version(username, folder)
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            except LookupError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 404
+            response = jsonify({"ok": True, "folder": folder, "version": revision})
+            response.headers["Cache-Control"] = "private, no-store"
+            return response
         try:
-            response = jsonify(catalog.catalog_version(request.args.get("folder") or ""))
+            response = jsonify(catalog.catalog_version(folder))
         except catalog.CatalogNotFound as exc:
             return jsonify({"ok": False, "error": str(exc)}), 404
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"

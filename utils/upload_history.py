@@ -2,8 +2,11 @@ from pathlib import Path
 import shutil
 import uuid as uuidlib
 from datetime import date, datetime
+from functools import lru_cache
+from io import BytesIO
 
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
+from PIL import Image, ImageOps
 from werkzeug.utils import secure_filename
 
 from app.utils.db import get_db
@@ -328,12 +331,7 @@ def layer_upload_zip_prepare(uuid):
     ), 202
 
 
-@upload_history_bp.route("/layer_upload_list/<uuid>/image/<reply_uuid>/<filename>")
-def layer_upload_image(uuid, reply_uuid, filename):
-    if "user" not in session:
-        return redirect(url_for("login"))
-
-    username = session["user"]
+def _layer_image_path(uuid, reply_uuid, filename, username):
     upload = _fetch_upload_by_uuid(uuid, scope="layer")
     _ensure_upload_permission(upload, username)
 
@@ -351,7 +349,40 @@ def layer_upload_image(uuid, reply_uuid, filename):
     if target.suffix.lower() not in IMAGE_EXTENSIONS:
         abort(404)
 
-    return send_file(target, conditional=True)
+    return target
+
+
+@upload_history_bp.route("/layer_upload_list/<uuid>/image/<reply_uuid>/<filename>")
+def layer_upload_image(uuid, reply_uuid, filename):
+    if "user" not in session:
+        return redirect(url_for("login"))
+    target = _layer_image_path(uuid, reply_uuid, filename, session["user"])
+    return send_file(target, conditional=True, as_attachment=request.args.get("download") == "1")
+
+
+@lru_cache(maxsize=96)
+def _thumbnail_bytes(path, revision):
+    with Image.open(path) as original:
+        original.draft("RGB", (640, 640))
+        preview = ImageOps.exif_transpose(original)
+        preview.thumbnail((480, 480))
+        output = BytesIO()
+        preview.convert("RGB").save(output, "JPEG", quality=80)
+        return output.getvalue()
+
+
+@upload_history_bp.get("/layer_upload_list/<uuid>/thumbnail/<reply_uuid>/<filename>")
+def layer_upload_thumbnail(uuid, reply_uuid, filename):
+    if "user" not in session:
+        return redirect(url_for("login"))
+    target = _layer_image_path(uuid, reply_uuid, filename, session["user"])
+    try:
+        preview = _thumbnail_bytes(target, target.stat().st_mtime_ns)
+    except (OSError, Image.DecompressionBombError):
+        abort(404)
+    response = send_file(BytesIO(preview), mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @upload_history_bp.route("/upload_delete/<uuid>", methods=["POST"])

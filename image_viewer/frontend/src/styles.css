@@ -275,6 +275,7 @@ button.temporary-warning.pressed {
 .file-card.target:hover { border-color: #d88700; background: #fff1c5; }
 .file-thumb { position: relative; display: block; height: var(--thumb-height); border: 1px solid #d2d2d2; background: #eef2f7 center/contain no-repeat; }
 .file-thumb.video { background: linear-gradient(135deg, #252b37, #101218); }
+.reply-thumb { display: block; width: 100%; height: 100%; object-fit: contain; }
 .play-mark { position: absolute; left: 50%; top: 50%; translate: -50% -50%; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; color: white; background: #000a; font-size: 21px; }
 .file-name { display: -webkit-box; margin-top: 5px; min-height: 2.5em; overflow: hidden; overflow-wrap: anywhere; font-size: 12px; text-align: center; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .empty-folder { margin: 80px auto; color: #68768c; text-align: center; }

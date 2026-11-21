@@ -1,6 +1,6 @@
 export type SortDirection = 'asc' | 'desc';
 export type ViewSize = 'xxl' | 'xl' | 'lg';
-export type GroupBy = 'none' | 'captured' | 'registered' | 'updated';
+export type GroupBy = 'none' | 'captured' | 'registered' | 'updated' | 'replyParent' | 'replyUploaded';
 export type GroupUnit = 'day' | 'month' | 'year';
 export type WindowKind =
   | 'explorer'
@@ -18,6 +18,7 @@ export interface MediaItem {
   path: string;
   folder: string;
   mediaType: 'image' | 'video';
+  readOnly?: boolean;
   size: number;
   mtime: number;
   contentUpdatedAt?: number;
@@ -64,7 +65,8 @@ export interface Pagination {
 export interface ImageListPayload {
   ok: boolean;
   catalog?: boolean;
-  folders: string[];
+  folders?: string[];
+  replyFolders?: Record<string, string>;
   images: MediaItem[];
   folder?: string;
   version?: string;

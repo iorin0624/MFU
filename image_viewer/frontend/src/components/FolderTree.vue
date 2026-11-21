@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { isReplyFolder, replyRoot } from '@/utils/replyFolders';
 
-const props = defineProps<{ folders: string[]; current: string }>();
+const props = defineProps<{ folders: string[]; current: string; labels?: Record<string, string> }>();
 const emit = defineEmits<{
   select: [folder: string];
   move: [paths: string[], folder: string];
@@ -9,7 +10,7 @@ const emit = defineEmits<{
 }>();
 
 function label(folder: string) {
-  return folder ? folder.split('/').at(-1) || folder : 'uploads';
+  return props.labels?.[folder] || (folder ? folder.split('/').at(-1) || folder : 'uploads');
 }
 
 function depth(folder: string) {
@@ -24,6 +25,7 @@ function expandAncestors(folder: string) {
   const next = new Set(expanded.value);
   let current = parentOf(folder);
   next.add('');
+  if (folder === replyRoot) next.add(replyRoot);
   while (current) {
     next.add(current);
     current = parentOf(current);
@@ -54,6 +56,7 @@ watch(() => props.current, expandAncestors, { immediate: true });
 
 function onDrop(event: DragEvent, folder: string) {
   event.preventDefault();
+  if (isReplyFolder(folder)) return;
   try {
     const parsed = JSON.parse(event.dataTransfer?.getData('application/x-mfu-paths') || '[]');
     if (Array.isArray(parsed) && parsed.length) emit('move', parsed.map(String), folder);

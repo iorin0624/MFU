@@ -43,7 +43,7 @@ const imageStyle = computed(() => ({
   height: fit.value ? undefined : 'auto',
   transform: `rotate(${rotation.value}deg)`,
 }));
-const canCrop = computed(() => /\.(jpe?g|png|webp)$/i.test(item.value.name));
+const canCrop = computed(() => !item.value.readOnly && /\.(jpe?g|png|webp)$/i.test(item.value.name));
 watch(() => item.value.path, async (path) => {
   hasOriginal.value = false;
   if (!path || !canCrop.value) return;
@@ -71,7 +71,7 @@ function replaceCurrent(entry: MediaItem) {
 }
 
 async function saveCrop(rectangle: {x: number; y: number; width: number; height: number}) {
-  if (cropBusy.value) return;
+  if (cropBusy.value || !canCrop.value) return;
   cropBusy.value = true;
   try {
     const result = await imageViewerApi.crop(item.value.path, rectangle);
@@ -86,7 +86,7 @@ async function saveCrop(rectangle: {x: number; y: number; width: number; height:
 }
 
 async function restoreOriginal() {
-  if (cropBusy.value || !hasOriginal.value) return;
+  if (cropBusy.value || !canCrop.value || !hasOriginal.value) return;
   cropBusy.value = true;
   try {
     const result = await imageViewerApi.restoreOriginal(item.value.path);
@@ -308,8 +308,8 @@ onBeforeUnmount(() => {
       <button type="button" @click="setZoom(zoom + 10)">+</button>
       <button type="button" @click="rotation = (rotation + 90) % 360">回転</button>
       <button type="button" @click="downloadCurrent">画像DL</button>
-      <button type="button" :disabled="!canCrop || cropBusy" @click="cropOpen = true">切り抜き</button>
-      <button type="button" :disabled="!hasOriginal || cropBusy" @click="restoreOriginal">元画像に戻す</button>
+      <button v-if="!item.readOnly" type="button" :disabled="!canCrop || cropBusy" @click="cropOpen = true">切り抜き</button>
+      <button v-if="!item.readOnly" type="button" :disabled="!hasOriginal || cropBusy" @click="restoreOriginal">元画像に戻す</button>
       <button type="button" title="画像ビューアー設定" @click="openSettings">設定</button>
       <span class="viewer-counter">{{ globalIndex + 1 }} / {{ counterTotal }}</span>
     </nav>

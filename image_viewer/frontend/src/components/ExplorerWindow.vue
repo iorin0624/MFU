@@ -4,12 +4,13 @@ import FileGrid from './FileGrid.vue';
 import FolderTree from './FolderTree.vue';
 import ExplorerDetailSidebar from './ExplorerDetailSidebar.vue';
 import XpDialog from './XpDialog.vue';
-import { imageViewerApi } from '@/api/client';
+import { ApiError, imageViewerApi } from '@/api/client';
 import { runtimeConfig } from '@/config';
 import { saveGrouping, saveSort, savedGrouping, savedSort, useDesktopStore } from '@/stores/desktop';
 import { useExplorerStore } from '@/stores/explorer';
 import { useNotificationStore } from '@/stores/notifications';
 import type { DesktopWindow, GroupBy, GroupUnit, MediaItem, StyleAssignment, StyleJob, ViewSize } from '@/types';
+import { isReplyFolder, replyRoot } from '@/utils/replyFolders';
 
 const props = defineProps<{ win: DesktopWindow }>();
 const desktop = useDesktopStore();
@@ -164,7 +165,13 @@ const selectedClipboardImage = computed(() =>
   selectedItems.value.length === 1 && selectedItems.value[0]?.mediaType === 'image'
     ? selectedItems.value[0]
     : undefined);
-const currentLabel = computed(() => `画像ライブラリ${model.value.folder ? `/${model.value.folder}` : ''}`);
+const readOnly = computed(() => isReplyFolder(model.value.folder));
+const currentLabel = computed(() => {
+  const folder = model.value.folder;
+  if (!isReplyFolder(folder)) return `画像ライブラリ${folder ? `/${folder}` : ''}`;
+  const label = explorer.replyFolders[folder];
+  return `画像ライブラリ/加工バック${folder !== replyRoot && label ? `/${label}` : ''}`;
+});
 const parentFolder = computed(() => model.value.folder.split('/').slice(0, -1).join('/'));
 const folderParent = (folder: string) => folder.split('/').slice(0, -1).join('/');
 const folderName = (folder: string) => folder.split('/').at(-1) || folder;
@@ -187,6 +194,8 @@ async function load(reset = false) {
 }
 
 async function changeFolder(folder: string) {
+  closeContext();
+  closeToolbarMenu();
   model.value.folder = folder;
   model.value.sort = savedSort(folder);
   const grouping = savedGrouping(folder);
@@ -380,6 +389,7 @@ function openSelected() {
 }
 
 async function movePaths(paths = model.value.selectedPaths, destination?: string) {
+  if (readOnly.value || paths.some(isReplyFolder) || (destination !== undefined && isReplyFolder(destination))) return;
   if (!paths.length) return;
   if (destination === undefined) {
     dialog.value = { kind: 'move', title: 'ファイルの移動', destination: model.value.folder, paths: paths.slice() };
@@ -447,7 +457,7 @@ function folderMoveDestinations(source: string) {
 }
 
 async function moveFolder(source: string, destination?: string) {
-  if (!source) return;
+  if (!source || isReplyFolder(source) || (destination !== undefined && isReplyFolder(destination))) return;
   if (destination === undefined) {
     dialog.value = {
       kind: 'move-folder', title: 'フォルダーの移動',
@@ -762,7 +772,7 @@ function uploadBatches(files: File[]) {
 }
 
 async function uploadFiles(files: File[], paste = false) {
-  if (!files.length) return;
+  if (readOnly.value || !files.length) return;
   const allowDuplicateImages = model.value.allowDuplicateImages;
   let savedCount = 0;
   let duplicateCount = 0;
@@ -795,7 +805,7 @@ async function uploadFiles(files: File[], paste = false) {
 }
 
 function pasteHandler(event: ClipboardEvent) {
-  if (desktop.activeId !== props.win.id) return;
+  if (readOnly.value || desktop.activeId !== props.win.id) return;
   const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith('image/'));
   if (!files.length) return;
   event.preventDefault();
@@ -917,8 +927,8 @@ function keyHandler(event: KeyboardEvent) {
   if (event.key === 'Escape' && model.value.appendSources.length) {
     cancelAppendMode();
   }
-  if (event.key === 'Delete' && model.value.selectedPaths.length) deletePaths();
-  if (event.key === 'F2' && selectedItems.value.length === 1) {
+  if (!readOnly.value && event.key === 'Delete' && model.value.selectedPaths.length) deletePaths();
+  if (!readOnly.value && event.key === 'F2' && selectedItems.value.length === 1) {
     event.preventDefault();
     renameSelected();
   }
@@ -992,12 +1002,17 @@ async function loadAt(index: number) {
 
 async function pollVersion() {
   if (document.hidden || folderData.value.loading || !folderData.value.version) return;
+  const folder = model.value.folder;
   try {
-    const result = await imageViewerApi.version(model.value.folder);
-    if (result.version && result.version !== folderData.value.version) {
-      await explorer.refreshFolder(model.value.folder);
+    const result = await imageViewerApi.version(folder);
+    if (folder === model.value.folder && result.version && result.version !== folderData.value.version) {
+      await explorer.refreshFolder(folder);
     }
-  } catch { /* 一時的な失敗は次回に再試行する */ }
+  } catch (error) {
+    if (folder === model.value.folder && isReplyFolder(folder) && folder !== replyRoot && error instanceof ApiError && error.status === 404) {
+      await changeFolder(replyRoot);
+    }
+  }
 }
 
 function propertyValue(key: string, fallback: unknown = '―') {
@@ -1040,11 +1055,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="explorer-layout" :class="{ busy: folderData.loading, 'details-open': detailSidebarOpen, 'details-overlay': detailSidebarOpen && !win.maximized && win.width < 900 }">
+  <div class="explorer-layout" :class="{ busy: folderData.loading, 'details-open': detailSidebarOpen && !readOnly, 'details-overlay': detailSidebarOpen && !readOnly && !win.maximized && win.width < 900 }">
     <aside class="explorer-sidebar">
       <div class="sidebar-title">フォルダー</div>
       <FolderTree
-        :folders="explorer.allFolders"
+        :folders="explorer.treeFolders"
+        :labels="explorer.replyFolders"
         :current="model.folder"
         @select="changeFolder"
         @move="movePaths"
@@ -1057,16 +1073,20 @@ onBeforeUnmount(() => {
         <div class="path-box">{{ currentLabel }}</div>
         <button type="button" @click="load(true)">更新</button>
         <button type="button" :disabled="!model.folder" @click="changeFolder(parentFolder)">上へ</button>
-        <button type="button" @click="setSort">{{ model.sort === 'asc' ? '昇順' : '逆順' }}</button>
+        <button type="button" :title="readOnly ? 'アップロード日時順' : undefined" @click="setSort">{{ model.sort === 'asc' ? '昇順' : '逆順' }}</button>
         <label class="toolbar-select">グループ
           <select :value="model.groupBy" @change="setGrouping(($event.target as HTMLSelectElement).value as GroupBy, undefined)">
             <option value="none">なし</option>
-            <option value="captured">撮影日</option>
-            <option value="registered">MFU登録日</option>
-            <option value="updated">更新日</option>
+            <option v-if="model.folder === replyRoot" value="replyParent">親アップロード</option>
+            <option v-else-if="readOnly" value="replyUploaded">アップロード日</option>
+            <template v-else>
+              <option value="captured">撮影日</option>
+              <option value="registered">MFU登録日</option>
+              <option value="updated">更新日</option>
+            </template>
           </select>
         </label>
-        <label v-if="model.groupBy !== 'none'" class="toolbar-select">単位
+        <label v-if="!readOnly && model.groupBy !== 'none'" class="toolbar-select">単位
           <select :value="model.groupUnit" @change="setGrouping(undefined, ($event.target as HTMLSelectElement).value as GroupUnit)">
             <option value="day">日</option>
             <option value="month">月</option>
@@ -1075,9 +1095,15 @@ onBeforeUnmount(() => {
         </label>
         <button v-for="size in viewSizes" :key="size" type="button" :class="{pressed: model.viewSize === size}" @click="setSize(size)">{{ viewLabels[size] }}</button>
         <button type="button" @click="desktop.openExplorer(model.folder)">別窓</button>
-        <button type="button" :class="{pressed: detailSidebarOpen}" :aria-expanded="detailSidebarOpen" @click="toggleDetailSidebar">詳細 {{ detailSidebarOpen ? '非表示' : '表示' }}</button>
+        <button v-if="!readOnly" type="button" :class="{pressed: detailSidebarOpen}" :aria-expanded="detailSidebarOpen" @click="toggleDetailSidebar">詳細 {{ detailSidebarOpen ? '非表示' : '表示' }}</button>
       </div>
-      <div class="explorer-actions">
+      <div v-if="readOnly" class="explorer-actions">
+        <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
+        <button type="button" :disabled="!selectedClipboardImage" @click="copyImageToClipboard(selectedClipboardImage)">コピー（📎）</button>
+        <button type="button" :disabled="!selectedImages.length" @click="downloadSelected">画像DL</button>
+        <span class="dialog-hint">閲覧専用</span>
+      </div>
+      <div v-else class="explorer-actions">
         <button type="button" data-toolbar-menu-toggle aria-haspopup="menu" :aria-controls="toolbarMenuId" :aria-expanded="toolbarMenu === 'new'" :class="{pressed: toolbarMenu === 'new'}" @click="toggleToolbarMenu('new', $event)">新規 ▾</button>
         <button type="button" :disabled="!selectedItems.length" @click="openSelected">開く</button>
         <button type="button" :disabled="selectedItems.length !== 1" @click="renameSelected">名前変更</button>
@@ -1134,6 +1160,7 @@ onBeforeUnmount(() => {
         :offset="folderData.offset"
         :groups="folderData.groups"
         :collapsed-groups="collapsedGroups"
+        :read-only="readOnly"
         @select="selectItem"
         @open="openFromKeyboard"
         @context="showContext"
@@ -1150,7 +1177,7 @@ onBeforeUnmount(() => {
       </footer>
     </section>
     <ExplorerDetailSidebar
-      v-if="detailSidebarOpen"
+      v-if="detailSidebarOpen && !readOnly"
       :key="`${detailItem?.path || 'none'}:${detailSidebarVersion}`"
       :item="detailItem"
       @close="toggleDetailSidebar"
@@ -1159,22 +1186,28 @@ onBeforeUnmount(() => {
     />
     <div v-if="contextMenu.visible && contextMenu.item" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
       <button type="button" @click="contextMenu.item && openItem(contextMenu.item); closeContext()">開く</button>
-      <button type="button" @click="renameSelected(); closeContext()">名前変更</button>
-      <button type="button" @click="movePaths(); closeContext()">移動</button>
-      <button type="button" @click="copyPaths(); closeContext()">コピー</button>
+      <template v-if="!readOnly">
+        <button type="button" @click="renameSelected(); closeContext()">名前変更</button>
+        <button type="button" @click="movePaths(); closeContext()">移動</button>
+        <button type="button" @click="copyPaths(); closeContext()">コピー</button>
+      </template>
       <button type="button" :disabled="contextMenu.item?.mediaType !== 'image'" @click="copyImageToClipboard(contextMenu.item); closeContext()">コピー（クリップボード）</button>
       <button type="button" :disabled="contextMenu.item?.mediaType !== 'image'" @click="contextMenu.item && downloadImage(contextMenu.item); closeContext()">画像をDL</button>
-      <button type="button" @click="showProperties(); closeContext()">プロパティ</button>
-      <hr>
-      <button type="button" class="danger" @click="deletePaths(); closeContext()">削除</button>
+      <template v-if="!readOnly">
+        <button type="button" @click="showProperties(); closeContext()">プロパティ</button>
+        <hr>
+        <button type="button" class="danger" @click="deletePaths(); closeContext()">削除</button>
+      </template>
     </div>
     <div v-else-if="contextMenu.visible && contextMenu.folder !== undefined" class="context-menu" :style="{left:`${contextMenu.x}px`,top:`${contextMenu.y}px`}" @pointerdown.stop>
       <button type="button" @click="openFolderInWindow(contextMenu.folder)">新しいウィンドウで開く</button>
+      <template v-if="!isReplyFolder(contextMenu.folder)">
       <hr>
       <button type="button" :disabled="!contextMenu.folder" @click="renameFolder(contextMenu.folder); closeContext()">名前の変更</button>
       <button type="button" :disabled="!contextMenu.folder" @click="moveFolder(contextMenu.folder); closeContext()">フォルダーの移動</button>
       <hr>
       <button type="button" class="danger" :disabled="!contextMenu.folder" @click="deleteFolder(contextMenu.folder); closeContext()">フォルダーの削除</button>
+      </template>
     </div>
 
     <XpDialog v-if="downloadResults.length" title="画像の個別ダウンロード" :width="600" @close="downloadResults = []">

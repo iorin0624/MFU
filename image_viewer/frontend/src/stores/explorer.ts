@@ -54,6 +54,7 @@ function naturalFolders(values: string[]) {
 
 export const useExplorerStore = defineStore('image-viewer-explorer', () => {
   const folders = ref<string[]>(['']);
+  const replyFolders = ref<Record<string, string>>({});
   const cache = reactive<Record<string, FolderData>>({});
   const windowCache = new Map<string, ImageListPayload[]>();
   const pendingCenters = new Map<string, number>();
@@ -71,7 +72,8 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
   const hasMore = (folder: string, sort: SortDirection, groupBy: GroupBy = 'none', groupUnit: GroupUnit = 'day') => dataFor(folder, sort, groupBy, groupUnit).hasMore;
 
   function mergePayload(target: FolderData, payload: ImageListPayload, reset: boolean) {
-    folders.value = naturalFolders(Array.from(new Set(['', ...(payload.folders || [])])));
+    if (payload.folders) folders.value = naturalFolders(payload.folders);
+    if (payload.replyFolders) replyFolders.value = payload.replyFolders;
     const incoming = payload.images || [];
     if (reset) target.items.splice(0, target.items.length, ...incoming);
     else {
@@ -299,5 +301,7 @@ export const useExplorerStore = defineStore('image-viewer-explorer', () => {
   }
 
   const allFolders = computed(() => folders.value);
-  return { allFolders, dataFor, itemsFor, isLoading, hasMore, load, loadMore, loadCenter, refreshFolder, clearFolder };
+  const treeFolders = computed(() => [...folders.value, ...Object.keys(replyFolders.value).sort((a, b) =>
+    a.split('/').length - b.split('/').length || naturalCollator.compare(replyFolders.value[a]!, replyFolders.value[b]!))]);
+  return { allFolders, treeFolders, replyFolders, dataFor, itemsFor, isLoading, hasMore, load, loadMore, loadCenter, refreshFolder, clearFolder };
 });
