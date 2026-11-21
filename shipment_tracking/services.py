@@ -10,7 +10,6 @@ from flask import current_app
 from mysql.connector import IntegrityError
 
 from app.utils.db import get_db
-from app.discord_notifications.repository import get_discord_webhook
 
 from .models import CARRIER_MASTER, TRIGGERED_BY_VALUES
 from .parsers import parse_japanpost, parse_sagawa, parse_yamato
@@ -153,23 +152,6 @@ def _http_get(url: str) -> str:
     return response.text
 
 
-def _get_admin_discord_webhook_url() -> str | None:
-    db = get_db()
-    try:
-        cur = db.cursor(dictionary=True)
-        cur.execute(
-            "SELECT webhook_url FROM users WHERE username=%s LIMIT 1",
-            ("admin",),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        webhook_url = (row.get("webhook_url") or "").strip()
-        return get_discord_webhook("shipment_tracking", webhook_url) or None
-    finally:
-        db.close()
-
-
 def _build_shipment_tracking_discord_embed(
     target: dict[str, Any],
     payload: dict[str, Any],
@@ -241,18 +223,17 @@ def _build_shipment_tracking_discord_embed(
     }
 
 
-def _send_shipment_tracking_discord_notification(webhook_url: str, embed: dict[str, Any]) -> None:
+def _send_shipment_tracking_notification(embed: dict[str, Any]) -> None:
     payload = {"embeds": [embed]}
     from app.utils.notification_service import dispatch_discord_notification
 
     result = dispatch_discord_notification(
         "shipment_tracking",
         payload,
-        legacy_webhook=webhook_url,
         timeout=10,
     )
-    if str((result.get("delivery") or {}).get("discord") or "") != "sent":
-        raise ShipmentTrackingError("Discord通知が無効、またはWebhook URLが未設定です。")
+    if not result.get("ok") or (result.get("delivery") or {}).get("in_app") not in {"created", "duplicate"}:
+        raise ShipmentTrackingError("MFU通知の登録に失敗しました。")
 
 
 def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
@@ -528,10 +509,6 @@ def send_test_discord_notification(target_id: int) -> None:
     if not target:
         raise ShipmentTrackingError("対象が見つかりません。")
 
-    webhook_url = _get_admin_discord_webhook_url()
-    if not webhook_url:
-        raise ShipmentTrackingError("admin のDiscord Webhook URLが設定されていません。")
-
     payload: dict[str, Any]
     last_payload_json = target.get("last_payload_json")
     if last_payload_json:
@@ -555,7 +532,9 @@ def send_test_discord_notification(target_id: int) -> None:
         triggered_by="test",
     )
 
-    _send_shipment_tracking_discord_notification(webhook_url, embed)
+    _send_shipment_tracking_notification(embed)
+
+
 def run_check(target_id: int, triggered_by: str) -> bool:
     if triggered_by not in TRIGGERED_BY_VALUES:
         raise ShipmentTrackingError("triggered_by が不正です。")
@@ -592,7 +571,7 @@ def run_check(target_id: int, triggered_by: str) -> bool:
             or previous_detail != current_status_detail
             or previous_latest_event_at != latest_event_at
         )
-        should_notify_discord = (
+        should_notify = (
             triggered_by in ("manual", "scheduled") and has_previous_success and progress_changed
         )
 
@@ -646,9 +625,8 @@ def run_check(target_id: int, triggered_by: str) -> bool:
             ),
         )
         db.commit()
-        if should_notify_discord:
-            webhook_url = _get_admin_discord_webhook_url()
-            if webhook_url:
+        if should_notify:
+            try:
                 embed = _build_shipment_tracking_discord_embed(
                     target=target,
                     payload=payload,
@@ -657,13 +635,12 @@ def run_check(target_id: int, triggered_by: str) -> bool:
                     latest_event_at=latest_event_at,
                     triggered_by=triggered_by,
                 )
-                try:
-                    _send_shipment_tracking_discord_notification(webhook_url, embed)
-                except Exception:
-                    current_app.logger.exception(
-                        "[shipment_tracking] discord webhook notify failed target_id=%s",
-                        target_id,
-                    )
+                _send_shipment_tracking_notification(embed)
+            except Exception:
+                current_app.logger.exception(
+                    "[shipment_tracking] common notification failed target_id=%s",
+                    target_id,
+                )
         return True
     except Exception as exc:
         error_text = str(exc)
